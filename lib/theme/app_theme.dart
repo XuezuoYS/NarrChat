@@ -7,8 +7,9 @@ import 'package:flutter/material.dart';
 /// - 强调克制：少阴影、细边框、圆角适中，整体干净通透。
 ///
 /// 滚动条策略：**使用 Flutter 原生滚动条**（由 MaterialScrollBehavior 为每个
-/// Scrollable 自动添加），仅通过 [ScrollbarThemeData] 统一外观为「常显、细、圆角」，
-/// 避免拇指淡入淡出造成“闪现到不同位置”的观感。不再使用任何自定义/显式滚动条。
+/// Scrollable 自动添加），仅通过 [ScrollbarThemeData] 统一外观为「细、圆角、
+/// 仅滚动时显示」，避免常显拇指在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
+/// 不再使用任何自定义/显式滚动条。
 class NarrChatTheme {
   NarrChatTheme._();
 
@@ -176,9 +177,10 @@ class NarrChatTheme {
               : scheme.surfaceContainerHighest,
         ),
       ),
-      // —— 滚动条：原生实现，常显细圆角拇指（不淡入淡出，避免“闪现”观感） ——
+      // —— 滚动条：原生实现，仅滚动时显示（细圆角拇指，无轨道），
+      //    避免常显滚动条在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感 ——
       scrollbarTheme: ScrollbarThemeData(
-        thumbVisibility: const WidgetStatePropertyAll(true),
+        thumbVisibility: const WidgetStatePropertyAll(false),
         thickness: const WidgetStatePropertyAll(6),
         radius: const Radius.circular(3),
         thumbColor: const WidgetStatePropertyAll(Color(0xFFB9BDC7)),

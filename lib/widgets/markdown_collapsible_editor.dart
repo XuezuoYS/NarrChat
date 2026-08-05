@@ -57,7 +57,6 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
 
   // 一键展开 / 全部折叠控制。
   bool _allExpanded = true;
-  int _expandEpoch = 0;
 
   @override
   void initState() {
@@ -109,11 +108,12 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
   }
 
   /// 一键展开 / 全部折叠所有人物卡片。
+  ///
+  /// 卡片 State 保持不变（不强制重建），由各卡片的 didUpdateWidget
+  /// 根据新的 [MarkdownCollapsibleEditor] 初始展开状态平滑动画过渡，
+  /// 避免内容高度骤变导致侧栏滚动位置被瞬间钳制而“瞬移”。
   void _setAllExpanded(bool expand) {
-    setState(() {
-      _allExpanded = expand;
-      _expandEpoch++;
-    });
+    setState(() => _allExpanded = expand);
   }
 
   @override
@@ -250,9 +250,14 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
                 ),
               )
             else
-              ...displayRoots.map(
-                (n) => _buildPersonNode(context, n, personLevel),
-              ),
+              ...displayRoots.asMap().entries.map(
+                    (e) => _buildPersonNode(
+                      context,
+                      e.value,
+                      personLevel,
+                      'root${e.key}',
+                    ),
+                  ),
             const SizedBox(height: 4),
           ],
         ),
@@ -279,11 +284,18 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
   /// 递归渲染：
   /// - 层级达到“人物层级”的节点 → 可折叠的人物卡片（默认展开显示内容）；
   /// - 层级更浅的节点 → 分组标题（始终展开）+ 其子级。
-  Widget _buildPersonNode(BuildContext context, MarkdownNode node, int personLevel) {
+  ///
+  /// [path] 为卡片在树中的稳定路径（如 `root0.c1`），用于生成唯一 key，
+  /// 保证同一张卡片跨重建保持 State（展开状态与动画不丢失）。
+  Widget _buildPersonNode(
+    BuildContext context,
+    MarkdownNode node,
+    int personLevel,
+    String path,
+  ) {
     if (node.level >= personLevel) {
       return _PersonCard(
-        // 切换“一键展开/全部折叠”时重建卡片。
-        key: ValueKey('person_${node.heading}_$_expandEpoch'),
+        key: ValueKey('person_$path'),
         node: node,
         initiallyExpanded: _allExpanded,
       );
@@ -305,10 +317,15 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
             ),
           ),
         ),
-        ...node.children.map(
-          (c) => Padding(
+        ...node.children.asMap().entries.map(
+          (e) => Padding(
             padding: const EdgeInsets.only(left: 4),
-            child: _buildPersonNode(context, c, personLevel),
+            child: _buildPersonNode(
+              context,
+              e.value,
+              personLevel,
+              '$path.c${e.key}',
+            ),
           ),
         ),
       ],
@@ -438,6 +455,10 @@ class _GroupHeader extends StatelessWidget {
 }
 
 /// 人物卡片：每个人物是一个可折叠卡片，默认收起，点击展开属性内容。
+///
+/// 展开/收起通过 [SizeTransition] 平滑过渡：内容高度渐变，侧栏 ListView 的
+/// 滚动位置随之逐帧平滑跟随，避免“一键展开/全部折叠”时内容高度骤变导致
+/// 滚动偏移被瞬间钳制而“瞬移”。
 class _PersonCard extends StatefulWidget {
   final MarkdownNode node;
   final bool initiallyExpanded;
@@ -452,15 +473,68 @@ class _PersonCard extends StatefulWidget {
   State<_PersonCard> createState() => _PersonCardState();
 }
 
-class _PersonCardState extends State<_PersonCard> {
+class _PersonCardState extends State<_PersonCard>
+    with SingleTickerProviderStateMixin {
   late bool _expanded = widget.initiallyExpanded;
+
+  /// 展开/收起动画控制器（0=收起，1=展开）。
+  late final AnimationController _expandController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+    value: widget.initiallyExpanded ? 1.0 : 0.0,
+  );
+  late final Animation<double> _sizeFactor = CurvedAnimation(
+    parent: _expandController,
+    curve: Curves.easeOutCubic,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // 动画结束时触发重建：完全收起后把展开内容从树中卸载，
+    // 避免高度已为 0 的内容仍残留在树中（占用布局、干扰查询）。
+    _expandController.addStatusListener(_onExpandStatusChanged);
+  }
+
+  void _onExpandStatusChanged(AnimationStatus status) {
+    if (status == AnimationStatus.dismissed ||
+        status == AnimationStatus.completed) {
+      if (mounted) setState(() {});
+    }
+  }
 
   @override
   void didUpdateWidget(covariant _PersonCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.node != widget.node) {
+    // 仅当“一键展开/全部折叠”改变初始状态时，将本卡片动画过渡到新状态；
+    // 普通重建（如流式更新导致 node 实例变化）不重置用户手动展开/收起状态。
+    if (oldWidget.initiallyExpanded != widget.initiallyExpanded &&
+        _expanded != widget.initiallyExpanded) {
       _expanded = widget.initiallyExpanded;
+      if (widget.initiallyExpanded) {
+        _expandController.forward();
+      } else {
+        _expandController.reverse();
+      }
     }
+  }
+
+  @override
+  void dispose() {
+    _expandController.removeStatusListener(_onExpandStatusChanged);
+    _expandController.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() {
+      _expanded = !_expanded;
+      if (_expanded) {
+        _expandController.forward();
+      } else {
+        _expandController.reverse();
+      }
+    });
   }
 
   @override
@@ -488,7 +562,7 @@ class _PersonCardState extends State<_PersonCard> {
           children: [
             InkWell(
               borderRadius: BorderRadius.circular(10),
-              onTap: hasContent ? () => setState(() => _expanded = !_expanded) : null,
+              onTap: hasContent ? _toggle : null,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 child: Row(
@@ -517,48 +591,64 @@ class _PersonCardState extends State<_PersonCard> {
                 ),
               ),
             ),
-            if (_expanded) ...[
-              Divider(
-                height: 1,
-                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ..._groupParagraphs(node.contentLines).map(
-                      (paragraph) => Padding(
-                        padding: const EdgeInsets.only(bottom: 2),
-                        child: MarkdownBody(
-                          data: paragraph.join('\n'),
-                          styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                            p: const TextStyle(fontSize: 13, height: 1.4),
-                          ),
-                        ),
-                      ),
-                    ),
-                    ...node.children.map(
-                      (child) => Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Text(
-                          '${'#' * child.level} ${child.heading}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF3A3550),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            // SizeTransition 平滑过渡展开内容高度；完全收起后卸载内容以节省布局。
+            SizeTransition(
+              sizeFactor: _sizeFactor,
+              alignment: Alignment.topCenter, // 从顶部向下展开
+              child: (_expanded || _expandController.isAnimating)
+                  ? _buildExpandedContent(theme, node)
+                  : const SizedBox.shrink(),
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  /// 展开后的内容区（分隔线 + 属性/子级）。
+  Widget _buildExpandedContent(ThemeData theme, MarkdownNode node) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Divider(
+          height: 1,
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ..._groupParagraphs(node.contentLines).map(
+                (paragraph) => Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: MarkdownBody(
+                    data: paragraph.join('\n'),
+                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                      p: const TextStyle(fontSize: 13, height: 1.4),
+                    ),
+                  ),
+                ),
+              ),
+              ...node.children.map(
+                (child) => Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '${'#' * child.level} ${child.heading}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF3A3550),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

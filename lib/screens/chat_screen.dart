@@ -512,6 +512,22 @@ class _ChatScreenState extends State<ChatScreen>
     final isStreaming = roundProvider.isStreaming;
     final showPending = isSending || isStreaming;
 
+    // 流式输出时若用户位于底部附近（未主动上翻阅读历史），自动跟随新内容，
+    // 避免内容不断增长造成视口漂移、滚动条位置飘忽的“不稳定滚动”观感。
+    // 仅在帧末执行 jumpTo（非动画），不会与用户手动滚动/动画滚动冲突。
+    if (showPending && _scrollController.hasClients) {
+      final pos = _scrollController.position;
+      if (pos.pixels >= pos.maxScrollExtent - 80.0) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(
+              _scrollController.position.maxScrollExtent,
+            );
+          }
+        });
+      }
+    }
+
     // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
     // 左右留 20px 边距，避免内容在窄窗口下贴边（滚动条在最右，不计入边距）。
