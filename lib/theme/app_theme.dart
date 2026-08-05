@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 /// - 主色：DeepSeek 品牌蓝 `#4D6BFE`；
 /// - 背景：浅灰 `#F7F7F8`，内容面为纯白；
 /// - 强调克制：少阴影、细边框、圆角适中，整体干净通透。
+///
+/// 滚动条策略：**使用 Flutter 原生滚动条**（由 MaterialScrollBehavior 为每个
+/// Scrollable 自动添加），仅通过 [ScrollbarThemeData] 统一外观为「常显、细、圆角」，
+/// 避免拇指淡入淡出造成“闪现到不同位置”的观感。不再使用任何自定义/显式滚动条。
 class NarrChatTheme {
   NarrChatTheme._();
 
@@ -171,6 +175,14 @@ class NarrChatTheme {
               ? primary
               : scheme.surfaceContainerHighest,
         ),
+      ),
+      // —— 滚动条：原生实现，常显细圆角拇指（不淡入淡出，避免“闪现”观感） ——
+      scrollbarTheme: ScrollbarThemeData(
+        thumbVisibility: const WidgetStatePropertyAll(true),
+        thickness: const WidgetStatePropertyAll(6),
+        radius: const Radius.circular(3),
+        thumbColor: const WidgetStatePropertyAll(Color(0xFFB9BDC7)),
+        trackVisibility: const WidgetStatePropertyAll(false),
       ),
     );
   }

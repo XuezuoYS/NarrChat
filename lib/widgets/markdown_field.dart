@@ -14,12 +14,16 @@ class MarkdownField extends StatefulWidget {
   /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
   final ValueChanged<String>? onChanged;
 
+  /// 点击「完成」时回调（立即保存，不经过防抖）。
+  final ValueChanged<String>? onSave;
+
   const MarkdownField({
     super.key,
     required this.controller,
     this.hintText,
     this.readOnly = false,
     this.onChanged,
+    this.onSave,
   });
 
   @override
@@ -71,6 +75,7 @@ class _MarkdownFieldState extends State<MarkdownField> {
     _editMode = false;
     if (save) {
       widget.controller.text = _editController.text;
+      widget.onSave?.call(_editController.text);
     } else {
       _editController.text = widget.controller.text;
     }

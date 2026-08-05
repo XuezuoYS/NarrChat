@@ -27,7 +27,8 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _inputController = TextEditingController();
   final TextEditingController _tempPreController = TextEditingController();
   final TextEditingController _tempPostController = TextEditingController();
@@ -36,12 +37,25 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _showTempPrompts = false;
   bool _drawerOpen = false;
 
-  /// 宽屏下右侧栏是否展开（带开合动画）。
-  bool _sidebarOpen = true;
+  /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
+  late final AnimationController _sidebarController;
+  late final Animation<double> _sidebarAnim;
+
+  /// 右侧栏是否展开（以动画进度 0.5 为界）。
+  bool get _sidebarOpen => _sidebarController.value > 0.5;
 
   @override
   void initState() {
     super.initState();
+    _sidebarController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+      value: 1, // 默认展开（不依赖入场动画，避免初始隐藏导致“空白”观感）。
+    );
+    _sidebarAnim = CurvedAnimation(
+      parent: _sidebarController,
+      curve: Curves.easeOutCubic,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final book = context.read<BookProvider>().currentBook;
       if (book != null) {
@@ -52,8 +66,20 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// 展开 / 收起右侧栏（带动画）。
+  void _setSidebarOpen(bool open) {
+    if (open && _sidebarController.value < 1) {
+      _sidebarController.forward();
+    } else if (!open && _sidebarController.value > 0) {
+      _sidebarController.reverse();
+    }
+    // 刷新「打开侧栏」按钮等随状态变化的 UI。
+    setState(() {});
+  }
+
   @override
   void dispose() {
+    _sidebarController.dispose();
     _inputController.dispose();
     _tempPreController.dispose();
     _tempPostController.dispose();
@@ -110,7 +136,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_isWide) {
       // 宽屏：若右侧栏已收起则带动画打开。
       if (!_sidebarOpen) {
-        setState(() => _sidebarOpen = true);
+        _setSidebarOpen(true);
       }
     } else if (!_drawerOpen) {
       setState(() => _drawerOpen = true);
@@ -350,45 +376,83 @@ class _ChatScreenState extends State<ChatScreen> {
         final sidebar = _buildSidebar(
           context,
           onClose: wide
-              ? () => setState(() => _sidebarOpen = false)
+              ? () => _setSidebarOpen(false)
               : () => setState(() => _drawerOpen = false),
         );
 
         if (wide) {
-          return Stack(
-            children: [
-              // 聊天区：右缘用动画 Padding 让位给侧栏（保留空间，绝不覆盖对话区）。
-              AnimatedPadding(
-                duration: const Duration(milliseconds: 260),
-                curve: Curves.easeOutCubic,
-                padding: EdgeInsets.only(right: _sidebarOpen ? 380 : 0),
-                child: RepaintBoundary(child: chat),
-              ),
-              // 侧栏：固定 380 宽，从右缘滑入/滑出（AnimatedSlide，不挤压、不覆盖聊天区）。
-              Align(
-                alignment: Alignment.centerRight,
-                child: AnimatedSlide(
-                  duration: const Duration(milliseconds: 260),
-                  curve: Curves.easeOutCubic,
-                  offset: _sidebarOpen ? Offset.zero : const Offset(1, 0),
-                  child: SizedBox(
+          // 关键设计：聊天区宽度固定（W-380）永不重排 → 滚动条不乱飞、动画不卡顿；
+          // 右侧栏独占固定 380 槽位，用 SlideTransition 从右缘滑入/滑出（不覆盖、不空白）。
+          // 用 AnimatedBuilder 逐帧驱动，使「打开侧栏」按钮随动画进度正确显隐。
+          return AnimatedBuilder(
+            animation: _sidebarController,
+            builder: (context, _) {
+              final open = _sidebarOpen;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 聊天区：固定宽度，绝不因侧栏开合而重排。
+                  Expanded(child: chat),
+                  // 右侧栏固定槽位（380px）。
+                  SizedBox(
                     width: 380,
-                    child: Material(elevation: 12, child: sidebar),
+                    child: Stack(
+                      children: [
+                        // 收起时：居中显示「打开侧栏」按钮。
+                        if (!open)
+                          Center(
+                            child: Material(
+                              color: const Color(0xFFF4F4F5),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(12),
+                                onTap: () => _setSidebarOpen(true),
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 12),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.view_sidebar_outlined,
+                                        color: NarrChatTheme.textSecondary,
+                                        size: 20,
+                                      ),
+                                      SizedBox(height: 6),
+                                      Text(
+                                        '打开侧栏',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: NarrChatTheme.textSecondary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        // 侧栏：value=1 时在槽位内原位（可见），value=0 时滑出右侧（裁剪隐藏）。
+                        // 固定 key：避免条件按钮增删导致元素重建、丢失动画。
+                        ClipRect(
+                          key: const Key('sidebar_panel_clip'),
+                          child: SlideTransition(
+                            key: const Key('sidebar_panel_slide'),
+                            position: Tween<Offset>(
+                              begin: const Offset(1, 0),
+                              end: Offset.zero,
+                            ).animate(_sidebarAnim),
+                            child: Material(elevation: 12, child: sidebar),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ),
-              if (!_sidebarOpen)
-                Positioned(
-                  right: 12,
-                  bottom: 110,
-                  child: FloatingActionButton.small(
-                    heroTag: 'sidebar_open_wide',
-                    onPressed: () => setState(() => _sidebarOpen = true),
-                    tooltip: '打开右侧栏',
-                    child: const Icon(Icons.view_sidebar_outlined),
-                  ),
-                ),
-            ],
+                ],
+              );
+            },
           );
         }
 
@@ -405,6 +469,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             AnimatedPositioned(
+              // 固定 key：避免遮罩/FAB 条件渲染导致元素索引变化而重建、丢失动画。
+              key: const Key('right_sidebar_drawer'),
               duration: const Duration(milliseconds: 260),
               curve: Curves.easeOutCubic,
               top: 0,
@@ -518,13 +584,8 @@ class _ChatScreenState extends State<ChatScreen> {
             color: Colors.white,
             child: chatRounds.isEmpty && !showPending
                 ? _buildEmptyState(context, bookProvider.currentBook)
-                // 全屏可滚动；滚动条置于最右侧（紧贴右边栏）。
-                : Scrollbar(
-                    controller: _scrollController,
-                    thumbVisibility: true,
-                    radius: const Radius.circular(4),
-                    child: messagesList,
-                  ),
+                // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
+                : messagesList,
           ),
         ),
         _buildComposer(context),

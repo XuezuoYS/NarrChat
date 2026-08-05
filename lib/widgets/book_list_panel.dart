@@ -114,7 +114,8 @@ class BookListPanel extends StatelessWidget {
                     ),
                   )
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     itemCount: books.length,
                     itemBuilder: (context, index) {
                       final book = books[index];

@@ -98,6 +98,19 @@ class _SidebarPanelState extends State<SidebarPanel> {
     });
   }
 
+  /// 点击「完成」时调用：取消该字段待触发的防抖，立即保存。
+  void _saveFieldNow(String field, String value) {
+    final round = widget.round;
+    if (round == null) return;
+    _autoSaveTimers[field]?.cancel();
+    _autoSaveTimers.remove(field);
+    widget.onAutoSaveField(round, field, value).then((_) {
+      if (mounted) {
+        setState(() => _lastAutoSaveAt = DateTime.now());
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -120,6 +133,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
           Expanded(
             child: round == null
                 ? _buildEmpty(theme)
+                // 原生滚动条（主题已统一为常显细圆角拇指），内容长度/滚动自动跟随。
                 : ListView(
                     padding: const EdgeInsets.all(12),
                     children: [
@@ -140,6 +154,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         controller: _worldState,
                         hintText: '世界状态',
                         onChanged: (v) => _scheduleAutoSave('world_state', v),
+                        onSave: (v) => _saveFieldNow('world_state', v),
                       ),
                       const SizedBox(height: 14),
                       _sectionLabel(theme, '角色状态'),
@@ -147,6 +162,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         controller: _characterState,
                         hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
                         onChanged: (v) => _scheduleAutoSave('character_state', v),
+                        onSave: (v) => _saveFieldNow('character_state', v),
                       ),
                       const SizedBox(height: 14),
                       _sectionLabel(theme, '记忆总结'),
@@ -154,6 +170,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         controller: _memorySummary,
                         hintText: '记忆总结',
                         onChanged: (v) => _scheduleAutoSave('memory_summary', v),
+                        onSave: (v) => _saveFieldNow('memory_summary', v),
                       ),
                       const SizedBox(height: 8),
                     ],

@@ -150,6 +150,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         AnimatedPositioned(
+          // 固定 key：避免遮罩条件渲染导致元素索引变化而重建、丢失动画。
+          key: const Key('left_book_drawer'),
           duration: const Duration(milliseconds: 260),
           curve: Curves.easeOutCubic,
           top: 0,
