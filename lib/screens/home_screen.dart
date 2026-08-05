@@ -1,0 +1,174 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../models/book.dart';
+import '../providers/book_provider.dart';
+import '../theme/app_theme.dart';
+import '../widgets/book_list_panel.dart';
+import '../widgets/round_action_dialogs.dart';
+import 'api_settings_dialog.dart';
+import 'book_list_screen.dart';
+import 'book_settings_dialog.dart';
+import 'chat_screen.dart';
+import 'world_book_dialog.dart';
+
+/// 主界面：
+/// - 未选择书籍时显示书籍列表页；
+/// - 已选择书籍时：
+///   - 桌面端：左侧书籍栏 + 右侧对话界面（对话内部再自适应右侧状态栏）；
+///   - 移动端：对话界面全屏，书籍栏为从左滑出的抽屉（AppBar 汉堡按钮呼出）。
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  bool _bookDrawerOpen = false;
+
+  void _openBookDrawer() => setState(() => _bookDrawerOpen = true);
+
+  void _closeBookDrawer() => setState(() => _bookDrawerOpen = false);
+
+  Future<void> _createBook(BuildContext context) async {
+    await BookSettingsDialog.show(context);
+  }
+
+  Future<void> _editBook(BuildContext context, Book book) async {
+    await BookSettingsDialog.show(context, book: book);
+  }
+
+  Future<void> _deleteBook(BuildContext context, Book book) async {
+    final ok = await showDeleteBookConfirmDialog(context, book.title);
+    if (!ok || !context.mounted) return;
+    final provider = context.read<BookProvider>();
+    final result = await provider.deleteBook(book);
+    if (!result && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('删除失败：${provider.error}')),
+      );
+    }
+  }
+
+  Widget _buildBookPanel(BuildContext context, BookProvider provider) {
+    return BookListPanel(
+      books: provider.books,
+      currentBook: provider.currentBook,
+      onSelect: (book) => provider.selectBook(book),
+      onCreate: () => _createBook(context),
+      onEdit: (book) => _editBook(context, book),
+      onDelete: (book) => _deleteBook(context, book),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bookProvider = context.watch<BookProvider>();
+    final book = bookProvider.currentBook;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 1100;
+        return Scaffold(
+          // 品牌渐变头部：白色 NarrChat 标题在渐变上清晰可见。
+          appBar: PreferredSize(
+            preferredSize: const Size.fromHeight(kToolbarHeight),
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: NarrChatTheme.brandGradient,
+                boxShadow: [
+                  BoxShadow(
+                    color: Color(0x336C4DF6),
+                    blurRadius: 12,
+                    offset: Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: AppBar(
+                leading: (book != null && !wide)
+                    ? IconButton(
+                        icon: const Icon(Icons.menu),
+                        tooltip: '书籍列表',
+                        onPressed: _openBookDrawer,
+                      )
+                    : null,
+                title: const Text('NarrChat'),
+                actions: [
+                  if (book != null) ...[
+                    IconButton(
+                      icon: const Icon(Icons.menu_book_outlined),
+                      tooltip: '世界书',
+                      onPressed: () => WorldBookDialog.show(context),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.settings_outlined),
+                      tooltip: '书籍设置',
+                      onPressed: () => BookSettingsDialog.show(context, book: book),
+                    ),
+                  ],
+                  IconButton(
+                    icon: const Icon(Icons.key_outlined),
+                    tooltip: 'AI 接口设置',
+                    onPressed: () => ApiSettingsDialog.show(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          body: book == null
+              ? const BookListScreen()
+              : wide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          width: 260,
+                          child: _buildBookPanel(context, bookProvider),
+                        ),
+                        const VerticalDivider(width: 1),
+                        Expanded(
+                          child: ChatScreen(key: ValueKey(book.id)),
+                        ),
+                      ],
+                    )
+                  : _buildMobileLayout(context, bookProvider),
+        );
+      },
+    );
+  }
+
+  /// 移动端：对话全屏 + 左滑书籍抽屉。
+  Widget _buildMobileLayout(BuildContext context, BookProvider provider) {
+    final book = provider.currentBook;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ChatScreen(key: ValueKey(book?.id)),
+        ),
+        if (_bookDrawerOpen)
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: _closeBookDrawer,
+              child: Container(color: Colors.black26),
+            ),
+          ),
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          top: 0,
+          bottom: 0,
+          left: _bookDrawerOpen ? 0 : -280,
+          width: 280,
+          child: Material(
+            elevation: 12,
+            child: SafeArea(
+              right: false,
+              child: _buildBookPanel(context, provider),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}

@@ -1,0 +1,105 @@
+# ==================== 通用 ====================
+*.class
+*.log
+*.pyc
+*.swp
+*.tmp
+*.bak
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# 凭据 / 敏感信息（切勿提交）
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+id_rsa
+id_ed25519
+
+# ==================== IDE ====================
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code（如需提交 .vscode 下的 launch/tasks 配置，可取消注释并按需保留）
+#.vscode/
+
+# ==================== Flutter / Dart / Pub ====================
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication 相关
+app.*.symbols
+
+# Obfuscation 相关
+app.*.map.json
+
+# 本地构建产物
+*.apk
+*.aab
+*.ipa
+
+# ==================== Android ====================
+/android/app/debug
+/android/app/profile
+/android/app/release
+android/.gradle/
+android/build/
+android/local.properties
+android/key.properties
+android/app/src/debug/
+android/app/src/profile/
+android/app/build/
+
+# ==================== Windows 桌面端 ====================
+/windows/flutter/ephemeral/
+/windows/flutter/generated_plugin_registrant.cc
+/windows/flutter/generated_plugin_registrant.h
+/windows/flutter/generated_plugins.cmake
+/windows/runner/Debug/
+/windows/runner/Profile/
+/windows/runner/Release/
+*.user
+*.userosscache
+*.sln.docstates
+
+# ==================== macOS / iOS ====================
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/flutter_build/
+**/ios/Flutter/ios_plugin_registrant.dart
+**/ios/Flutter/.dart_tool/
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter.xcworkspace/xcshareddata/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcworkspace
+xcuserdata/
