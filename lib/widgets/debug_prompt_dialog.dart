@@ -6,28 +6,32 @@ import 'package:flutter/services.dart';
 /// 本轮调试信息对话框。
 ///
 /// 展示实际发给 AI 的**完整请求 JSON**（含 system / 历史 user/assistant / 当前 user
-/// 的 messages 数组与全部参数），以及 AI 返回的原始文本（未经过 `##` 标题解析）。
-/// 仅保留最新一轮的调试数据，用于排查问题。
+/// 的 messages 数组与全部参数）、AI 返回的原始文本（未经过 `##` 标题解析），
+/// 以及思考内容（未开启思考时为「（无）」）。仅保留最新一轮的调试数据。
 class DebugPromptDialog extends StatelessWidget {
   final String requestBody;
   final String rawResponse;
+  final String rawReasoning;
 
   const DebugPromptDialog({
     super.key,
     required this.requestBody,
     required this.rawResponse,
+    this.rawReasoning = '',
   });
 
   static Future<void> show(
     BuildContext context, {
     required String requestBody,
     required String rawResponse,
+    String rawReasoning = '',
   }) {
     return showDialog<void>(
       context: context,
       builder: (_) => DebugPromptDialog(
         requestBody: requestBody,
         rawResponse: rawResponse,
+        rawReasoning: rawReasoning,
       ),
     );
   }
@@ -58,7 +62,7 @@ class DebugPromptDialog extends StatelessWidget {
         width: 720,
         height: 540,
         child: DefaultTabController(
-          length: 2,
+          length: 3,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -66,6 +70,7 @@ class DebugPromptDialog extends StatelessWidget {
                 tabs: [
                   Tab(text: '请求 JSON'),
                   Tab(text: 'AI 原始返回'),
+                  Tab(text: '思考内容'),
                 ],
               ),
               const SizedBox(height: 8),
@@ -81,6 +86,13 @@ class DebugPromptDialog extends StatelessWidget {
                       title: 'AI 原始返回（未解析）',
                       text: rawResponse,
                       hint: 'AI 返回的完整原文，未经 ## 标题解析。',
+                    ),
+                    _DebugSection(
+                      title: '思考内容（reasoning_content）',
+                      text: rawReasoning.trim().isEmpty
+                          ? '（无）'
+                          : rawReasoning,
+                      hint: '未开启思考模式时，这里会显示（无）。',
                     ),
                   ],
                 ),

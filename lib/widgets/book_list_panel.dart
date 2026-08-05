@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/book.dart';
+import '../theme/app_theme.dart';
 
 /// 左侧书籍列表栏。
 ///
@@ -29,43 +30,68 @@ class BookListPanel extends StatelessWidget {
     final theme = Theme.of(context);
     // 使用 Material 提供正确的 Material 祖先，确保 ListTile 选中背景可见。
     return Material(
-      color: theme.colorScheme.surfaceContainerLow,
+      color: Colors.white,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 顶部标题
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 8, 10),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(5),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.library_books_outlined,
-                    size: 16,
-                    color: theme.colorScheme.primary,
+                const Text(
+                  '书籍',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: NarrChatTheme.textPrimary,
                   ),
                 ),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                    '书籍',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                const Spacer(),
+                Text(
+                  '${books.length} 本',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: NarrChatTheme.textSecondary,
                   ),
-                ),
-                IconButton(
-                  onPressed: onCreate,
-                  icon: const Icon(Icons.add),
-                  tooltip: '新建书籍',
-                  visualDensity: VisualDensity.compact,
                 ),
               ],
             ),
           ),
-          Divider(height: 1, color: theme.colorScheme.outlineVariant),
+          // “新建书籍”按钮（模仿 DeepSeek「开始新对话」）
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+            child: Material(
+              color: theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                onTap: onCreate,
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.add,
+                        size: 18,
+                        color: NarrChatTheme.textPrimary,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        '新建书籍',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: NarrChatTheme.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Divider(height: 1, color: NarrChatTheme.divider),
           Expanded(
             child: books.isEmpty
                 ? Center(
@@ -73,13 +99,13 @@ class BookListPanel extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.menu_book_outlined,
-                            size: 40, color: theme.colorScheme.outlineVariant),
+                            size: 36, color: theme.colorScheme.outlineVariant),
                         const SizedBox(height: 8),
                         Text(
-                          '暂无书籍\n点击右上角 + 新建',
+                          '暂无书籍，点击上方「新建书籍」创建',
                           textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: theme.colorScheme.outline,
+                          style: const TextStyle(
+                            color: NarrChatTheme.textSecondary,
                             fontSize: 13,
                             height: 1.5,
                           ),
@@ -88,28 +114,27 @@ class BookListPanel extends StatelessWidget {
                     ),
                   )
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     itemCount: books.length,
                     itemBuilder: (context, index) {
                       final book = books[index];
                       final selected = currentBook?.id == book.id;
                       return Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.only(bottom: 2),
                         child: ListTile(
                           selected: selected,
-                          selectedTileColor:
-                              theme.colorScheme.primaryContainer.withValues(alpha: 0.45),
+                          selectedTileColor: theme.colorScheme.surfaceContainer,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(10),
                           ),
                           contentPadding:
-                              const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                              const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
                           leading: Icon(
                             Icons.menu_book,
-                            size: 20,
+                            size: 18,
                             color: selected
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.outline,
+                                ? NarrChatTheme.primary
+                                : NarrChatTheme.textSecondary,
                           ),
                           title: Text(
                             book.title,
@@ -118,6 +143,9 @@ class BookListPanel extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 14,
                               fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                              color: selected
+                                  ? NarrChatTheme.textPrimary
+                                  : NarrChatTheme.textPrimary,
                             ),
                           ),
                           subtitle: Text(

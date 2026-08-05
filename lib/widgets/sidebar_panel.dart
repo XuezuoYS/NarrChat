@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/round.dart';
+import '../theme/app_theme.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
 
@@ -26,12 +27,16 @@ class SidebarPanel extends StatefulWidget {
   final Future<void> Function(Round round, String field, String value) onAutoSaveField;
   final VoidCallback onBackToCurrent;
 
+  /// 顶栏“收起”按钮回调（为空则不显示该按钮）。
+  final VoidCallback? onClose;
+
   const SidebarPanel({
     super.key,
     required this.round,
     required this.isHistoryView,
     required this.onAutoSaveField,
     required this.onBackToCurrent,
+    this.onClose,
   });
 
   @override
@@ -101,10 +106,10 @@ class _SidebarPanelState extends State<SidebarPanel> {
 
     return Container(
       decoration: BoxDecoration(
-        color: history ? Colors.grey.shade100 : theme.colorScheme.surface,
+        color: history ? const Color(0xFFFFFBFB) : Colors.white,
         border: history
-            ? Border.all(color: theme.colorScheme.error, width: 1.5)
-            : Border.all(color: theme.colorScheme.outlineVariant),
+            ? Border.all(color: theme.colorScheme.error.withValues(alpha: 0.5))
+            : Border.all(color: NarrChatTheme.divider),
         borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
       ),
       child: Column(
@@ -204,24 +209,20 @@ class _SidebarPanelState extends State<SidebarPanel> {
     final round = widget.round;
     return Container(
       decoration: BoxDecoration(
-        gradient: history
-            ? null
-            : const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF6C4DF6), Color(0xFF9A5CF2)],
-              ),
-        color: history
-            ? theme.colorScheme.errorContainer.withValues(alpha: 0.35)
-            : null,
+        color: history ? const Color(0xFFFDF0F0) : Colors.white,
+        border: Border(
+          bottom: BorderSide(color: NarrChatTheme.divider),
+        ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
         children: [
           Icon(
             history ? Icons.history : Icons.radio_button_checked,
-            size: 18,
-            color: history ? theme.colorScheme.error : Colors.white,
+            size: 17,
+            color: history
+                ? theme.colorScheme.error
+                : NarrChatTheme.primary,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -231,8 +232,10 @@ class _SidebarPanelState extends State<SidebarPanel> {
                   : '当前轮次（第 ${round?.roundIndex ?? 0} 轮）',
               style: TextStyle(
                 fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: history ? theme.colorScheme.error : Colors.white,
+                fontWeight: FontWeight.w700,
+                color: history
+                    ? theme.colorScheme.error
+                    : NarrChatTheme.textPrimary,
               ),
             ),
           ),
@@ -240,6 +243,13 @@ class _SidebarPanelState extends State<SidebarPanel> {
             TextButton(
               onPressed: widget.onBackToCurrent,
               child: const Text('回到当前'),
+            ),
+          if (widget.onClose != null)
+            IconButton(
+              onPressed: widget.onClose,
+              icon: const Icon(Icons.close, size: 18),
+              tooltip: '收起侧边栏',
+              visualDensity: VisualDensity.compact,
             ),
         ],
       ),

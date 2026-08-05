@@ -52,15 +52,17 @@ class RoundProvider extends ChangeNotifier {
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 
-  // 调试数据：仅保留最新一轮发出的完整请求 JSON 与 AI 原始返回。
+  // 调试数据：仅保留最新一轮发出的完整请求 JSON、AI 原始返回与思考内容。
   int? _debugRoundId;
   String _debugRequestBody = '';
   String _debugRawResponse = '';
+  String _debugRawReasoning = '';
 
   /// 调试数据所属轮次 id（null 表示暂无）。
   int? get debugRoundId => _debugRoundId;
   String get debugRequestBody => _debugRequestBody;
   String get debugRawResponse => _debugRawResponse;
+  String get debugRawReasoning => _debugRawReasoning;
 
   /// 加载指定书籍的全部轮次（按 round_index 升序）。
   ///
@@ -72,6 +74,7 @@ class RoundProvider extends ChangeNotifier {
       _debugRoundId = null;
       _debugRequestBody = '';
       _debugRawResponse = '';
+      _debugRawReasoning = '';
     }
     _bookId = bookId;
     try {
@@ -192,9 +195,10 @@ class RoundProvider extends ChangeNotifier {
         createdAt: DateTime.now(),
       );
       await _dao.insertRound(newRound);
-      // 仅保留最新一轮的调试数据（完整请求 JSON 与 AI 原始返回）。
+      // 仅保留最新一轮的调试数据（完整请求 JSON、AI 原始返回与思考内容）。
       _debugRoundId = newRound.id;
       _debugRawResponse = result.content;
+      _debugRawReasoning = result.reasoningContent;
       await loadRounds(b.id!);
       return true;
     } catch (e) {

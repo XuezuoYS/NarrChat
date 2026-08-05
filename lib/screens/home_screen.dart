@@ -71,19 +71,15 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 1100;
         return Scaffold(
-          // 品牌渐变头部：白色 NarrChat 标题在渐变上清晰可见。
+          // 极简白色顶部：细底边 + 品牌 Logo（模仿 DeepSeek 顶部）。
           appBar: PreferredSize(
             preferredSize: const Size.fromHeight(kToolbarHeight),
             child: Container(
               decoration: const BoxDecoration(
-                gradient: NarrChatTheme.brandGradient,
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0x336C4DF6),
-                    blurRadius: 12,
-                    offset: Offset(0, 3),
-                  ),
-                ],
+                color: Colors.white,
+                border: Border(
+                  bottom: BorderSide(color: NarrChatTheme.divider),
+                ),
               ),
               child: AppBar(
                 leading: (book != null && !wide)
@@ -93,7 +89,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: _openBookDrawer,
                       )
                     : null,
-                title: const Text('NarrChat'),
+                title: const _BrandTitle(),
                 actions: [
                   if (book != null) ...[
                     IconButton(
@@ -102,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       onPressed: () => WorldBookDialog.show(context),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.settings_outlined),
+                      icon: const Icon(Icons.tune_outlined),
                       tooltip: '书籍设置',
                       onPressed: () => BookSettingsDialog.show(context, book: book),
                     ),
@@ -166,6 +162,41 @@ class _HomeScreenState extends State<HomeScreen> {
               right: false,
               child: _buildBookPanel(context, provider),
             ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 顶部品牌标题：渐变 Logo 方块 + 「NarrChat」文字（模仿 DeepSeek 头部）。
+class _BrandTitle extends StatelessWidget {
+  const _BrandTitle();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            gradient: NarrChatTheme.brandGradient,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(
+            Icons.auto_awesome,
+            size: 16,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(width: 10),
+        const Text(
+          'NarrChat',
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+            color: NarrChatTheme.textPrimary,
           ),
         ),
       ],

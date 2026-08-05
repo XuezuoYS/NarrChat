@@ -8,6 +8,7 @@ import '../providers/book_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../theme/app_theme.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/debug_prompt_dialog.dart';
@@ -34,6 +35,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool _showTempPrompts = false;
   bool _drawerOpen = false;
+
+  /// 宽屏下右侧栏是否展开（带开合动画）。
+  bool _sidebarOpen = true;
 
   @override
   void initState() {
@@ -103,7 +107,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final rounds = context.read<RoundProvider>().rounds;
     final latest = rounds.isEmpty ? null : rounds.last;
     context.read<SidebarProvider>().showRound(round, latest);
-    if (!_isWide && !_drawerOpen) {
+    if (_isWide) {
+      // 宽屏：若右侧栏已收起则带动画打开。
+      if (!_sidebarOpen) {
+        setState(() => _sidebarOpen = true);
+      }
+    } else if (!_drawerOpen) {
       setState(() => _drawerOpen = true);
     }
   }
@@ -124,6 +133,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context,
       requestBody: rp.debugRequestBody,
       rawResponse: rp.debugRawResponse,
+      rawReasoning: rp.debugRawReasoning,
     );
   }
 
@@ -337,17 +347,47 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 900;
         final chat = _buildChatArea(context);
-        final sidebar = _buildSidebar(context);
+        final sidebar = _buildSidebar(
+          context,
+          onClose: wide
+              ? () => setState(() => _sidebarOpen = false)
+              : () => setState(() => _drawerOpen = false),
+        );
 
         if (wide) {
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          return Stack(
             children: [
-              Expanded(child: chat),
-              SizedBox(
-                width: 380,
-                child: sidebar,
+              // 聊天区：右缘用动画 Padding 让位给侧栏（保留空间，绝不覆盖对话区）。
+              AnimatedPadding(
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                padding: EdgeInsets.only(right: _sidebarOpen ? 380 : 0),
+                child: RepaintBoundary(child: chat),
               ),
+              // 侧栏：固定 380 宽，从右缘滑入/滑出（AnimatedSlide，不挤压、不覆盖聊天区）。
+              Align(
+                alignment: Alignment.centerRight,
+                child: AnimatedSlide(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOutCubic,
+                  offset: _sidebarOpen ? Offset.zero : const Offset(1, 0),
+                  child: SizedBox(
+                    width: 380,
+                    child: Material(elevation: 12, child: sidebar),
+                  ),
+                ),
+              ),
+              if (!_sidebarOpen)
+                Positioned(
+                  right: 12,
+                  bottom: 110,
+                  child: FloatingActionButton.small(
+                    heroTag: 'sidebar_open_wide',
+                    onPressed: () => setState(() => _sidebarOpen = true),
+                    tooltip: '打开右侧栏',
+                    child: const Icon(Icons.view_sidebar_outlined),
+                  ),
+                ),
             ],
           );
         }
@@ -406,71 +446,84 @@ class _ChatScreenState extends State<ChatScreen> {
     final isStreaming = roundProvider.isStreaming;
     final showPending = isSending || isStreaming;
 
+    // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
+    // 每条消息在内部居中限宽（视觉上限制在 760 内）；
+    // 左右留 20px 边距，避免内容在窄窗口下贴边（滚动条在最右，不计入边距）。
+    final messagesList = ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+      itemCount: chatRounds.length * 2 + (showPending ? 1 : 0),
+      itemBuilder: (context, index) {
+        Widget item;
+        if (showPending && index == chatRounds.length * 2) {
+          item = isStreaming
+              ? _StreamingBubble(
+                  content: roundProvider.streamingContent,
+                  reasoning: roundProvider.streamingReasoning,
+                )
+              : const _TypingBubble();
+        } else {
+          final round = chatRounds[index ~/ 2];
+          final isAi = index.isOdd;
+          // 调试数据仅保留最新一轮：只有最新 AI 气泡提供「调试」入口。
+          final isLatest =
+              chatRounds.isNotEmpty && round.id == chatRounds.last.id;
+          if (!isAi) {
+            item = Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: ChatBubble(
+                isUser: true,
+                text: round.userInput,
+                onContextMenu: (pos) =>
+                    _onBubbleContextMenu(round, isAi, pos),
+              ),
+            );
+          } else {
+            item = Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: ChatBubble(
+                isUser: false,
+                text: round.aiNarrative.isEmpty
+                    ? '（AI 未返回剧情正文）'
+                    : round.aiNarrative,
+                recommendedAction: round.recommendedAction,
+                onContextMenu: (pos) =>
+                    _onBubbleContextMenu(round, isAi, pos),
+                footer: AiBubbleActions(
+                  round: round,
+                  onViewSidebar: () => _onViewSidebar(round),
+                  onDelete: () => _handleDelete(round),
+                  onRefresh: () => _handleReAsk(round),
+                  onViewDebug: isLatest ? _showDebugDialog : null,
+                ),
+              ),
+            );
+          }
+        }
+        // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: item,
+          ),
+        );
+      },
+    );
+
     return Column(
       children: [
         Expanded(
           child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Theme.of(context).colorScheme.surfaceContainerLowest,
-                  const Color(0xFFF7F5FB),
-                ],
-              ),
-            ),
+            // 与各边栏一致的纯白背景。
+            color: Colors.white,
             child: chatRounds.isEmpty && !showPending
                 ? _buildEmptyState(context, bookProvider.currentBook)
-                : ListView.builder(
+                // 全屏可滚动；滚动条置于最右侧（紧贴右边栏）。
+                : Scrollbar(
                     controller: _scrollController,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: chatRounds.length * 2 + (showPending ? 1 : 0),
-                    itemBuilder: (context, index) {
-                      if (showPending && index == chatRounds.length * 2) {
-                        return isStreaming
-                            ? _StreamingBubble(
-                                content: roundProvider.streamingContent,
-                                reasoning: roundProvider.streamingReasoning,
-                              )
-                            : const _TypingBubble();
-                      }
-                      final round = chatRounds[index ~/ 2];
-                      final isAi = index.isOdd;
-                      // 调试数据仅保留最新一轮：只有最新 AI 气泡提供「调试」入口。
-                      final isLatest =
-                          chatRounds.isNotEmpty && round.id == chatRounds.last.id;
-                      if (!isAi) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: ChatBubble(
-                            isUser: true,
-                            text: round.userInput,
-                            onContextMenu: (pos) =>
-                                _onBubbleContextMenu(round, isAi, pos),
-                          ),
-                        );
-                      }
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 20),
-                        child: ChatBubble(
-                          isUser: false,
-                          text: round.aiNarrative.isEmpty
-                              ? '（AI 未返回剧情正文）'
-                              : round.aiNarrative,
-                          recommendedAction: round.recommendedAction,
-                          onContextMenu: (pos) =>
-                              _onBubbleContextMenu(round, isAi, pos),
-                          footer: AiBubbleActions(
-                            round: round,
-                            onViewSidebar: () => _onViewSidebar(round),
-                            onDelete: () => _handleDelete(round),
-                            onRefresh: () => _handleReAsk(round),
-                            onViewDebug: isLatest ? _showDebugDialog : null,
-                          ),
-                        ),
-                      );
-                    },
+                    thumbVisibility: true,
+                    radius: const Radius.circular(4),
+                    child: messagesList,
                   ),
           ),
         ),
@@ -479,175 +532,241 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// 空状态：DeepSeek 风格问候 + 建议指令卡片。
   Widget _buildEmptyState(BuildContext context, Book? book) {
-    final theme = Theme.of(context);
+    final suggestions = [
+      ('✍️ 写出开篇', '请以引人入胜的方式，写出本故事的开篇。'),
+      ('🎬 推进剧情', '请继续推进剧情，让情节更加精彩。'),
+      ('⚡ 制造转折', '请为本轮剧情安排一个意想不到的转折。'),
+      ('🔍 检查一致性', '请检查当前剧情与世界设定、角色状态是否一致，如有冲突请指出。'),
+    ];
     return Center(
-      child: Container(
-        margin: const EdgeInsets.all(32),
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface.withValues(alpha: 0.85),
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 16,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    theme.colorScheme.primary.withValues(alpha: 0.15),
-                    theme.colorScheme.tertiary.withValues(alpha: 0.15),
-                  ],
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      gradient: NarrChatTheme.brandGradient,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: const Icon(Icons.auto_awesome,
+                        size: 19, color: Colors.white),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'NarrChat',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: NarrChatTheme.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text(
+                book == null ? '你好，我是 NarrChat，你的专属剧情创作引擎' : '《${book.title}》的创作，从这里开始',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: NarrChatTheme.textPrimary,
+                  height: 1.5,
                 ),
               ),
-              child: Icon(
-                Icons.auto_stories_outlined,
-                size: 36,
-                color: theme.colorScheme.primary,
+              const SizedBox(height: 8),
+              const Text(
+                '先在右侧「第 0 轮」侧边栏设定世界状态与角色状态，\n再输入行动或对话指令，开始推进剧情。',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: NarrChatTheme.textSecondary,
+                  height: 1.6,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              book == null ? '尚未选择书籍' : '《${book.title}》的创作从这里开始',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '建议先在右侧「第 0 轮」侧边栏填写世界状态与角色状态，\n再输入剧情指令开始创作',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: theme.colorScheme.outline,
-                fontSize: 13,
-                height: 1.5,
+              const SizedBox(height: 24),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final s in suggestions)
+                    Material(
+                      color: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: const BorderSide(color: NarrChatTheme.divider),
+                      ),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => _inputController.text = s.$2,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          child: Text(
+                            s.$1,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: NarrChatTheme.textPrimary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
+  /// 输入区：DeepSeek 风格——居中圆角输入框 + 圆形发送按钮 + 底部提示。
   Widget _buildComposer(BuildContext context) {
     final roundProvider = context.watch<RoundProvider>();
     final isSending = roundProvider.isSending;
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 12,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
+    final composerColumn = ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 本轮临时指令开关
-          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextButton.icon(
-                onPressed: () => setState(() => _showTempPrompts = !_showTempPrompts),
-                icon: Icon(
-                  _showTempPrompts ? Icons.expand_less : Icons.tune,
-                  size: 16,
-                ),
-                label: const Text('本轮临时指令'),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  textStyle: const TextStyle(fontSize: 12),
-                ),
+              // 本轮临时指令开关（类似 DeepSeek 的功能开关行）
+              Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: () =>
+                        setState(() => _showTempPrompts = !_showTempPrompts),
+                    icon: Icon(
+                      _showTempPrompts ? Icons.expand_less : Icons.tune,
+                      size: 16,
+                    ),
+                    label: const Text('本轮临时指令'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-          if (_showTempPrompts) ...[
-            TextField(
-              controller: _tempPreController,
-              minLines: 1,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: '本轮临时前置词',
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _tempPostController,
-              minLines: 1,
-              maxLines: 3,
-              decoration: const InputDecoration(
-                labelText: '本轮临时后置词',
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _inputController,
+              if (_showTempPrompts) ...[
+                TextField(
+                  controller: _tempPreController,
                   minLines: 1,
-                  maxLines: 4,
+                  maxLines: 3,
                   decoration: const InputDecoration(
-                    hintText: '输入你的行动或对话…',
+                    labelText: '本轮临时前置词',
                     isDense: true,
                   ),
-                  onSubmitted: (_) => _send(),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _tempPostController,
+                  minLines: 1,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: '本轮临时后置词',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              // 圆角输入容器 + 发送按钮
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: NarrChatTheme.divider),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _inputController,
+                        minLines: 1,
+                        maxLines: 5,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          height: 1.5,
+                          color: NarrChatTheme.textPrimary,
+                        ),
+                        decoration: const InputDecoration(
+                          hintText: '输入你的行动或对话…',
+                          hintStyle: TextStyle(color: Color(0xFF9CA1A9)),
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          filled: false,
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        ),
+                        onSubmitted: (_) => _send(),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8, bottom: 8),
+                      child: SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: IconButton.filled(
+                          onPressed: isSending ? null : _send,
+                          tooltip: '发送',
+                          style: IconButton.styleFrom(
+                            backgroundColor: NarrChatTheme.primary,
+                            disabledBackgroundColor:
+                                const Color(0xFFD3D5DA),
+                          ),
+                          icon: isSending
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.arrow_upward,
+                                  size: 18, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 46,
-                height: 46,
-                child: IconButton.filled(
-                  onPressed: isSending ? null : _send,
-                  tooltip: '发送',
-                  icon: isSending
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.send),
-                ),
+              const SizedBox(height: 6),
+              const Text(
+                '内容由 AI 生成，仅供创作参考，请仔细甄别',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: NarrChatTheme.textSecondary),
               ),
             ],
-          ),
-        ],
       ),
+    );
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: NarrChatTheme.divider)),
+      ),
+      child: Center(child: composerColumn),
     );
   }
 
   // ---------------------------------------------------------------------------
   // 侧边栏
   // ---------------------------------------------------------------------------
-  Widget _buildSidebar(BuildContext context) {
+  Widget _buildSidebar(BuildContext context, {VoidCallback? onClose}) {
     final roundProvider = context.watch<RoundProvider>();
     final sidebarProvider = context.watch<SidebarProvider>();
     final rounds = roundProvider.rounds;
@@ -664,6 +783,7 @@ class _ChatScreenState extends State<ChatScreen> {
       round: viewedRound,
       isHistoryView: sidebarProvider.isHistoryView && viewedRound != null,
       onBackToCurrent: () => context.read<SidebarProvider>().showCurrent(),
+      onClose: onClose,
       onAutoSaveField: (round, field, value) async {
         await context.read<RoundProvider>().updateRoundField(
               round.id!,
@@ -675,7 +795,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// AI 正在创作中的气泡。
+/// AI 正在创作中的指示（极简，无气泡）。
 class _TypingBubble extends StatelessWidget {
   const _TypingBubble();
 
@@ -683,34 +803,44 @@ class _TypingBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     return Align(
       alignment: Alignment.centerLeft,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.secondaryContainer.withValues(alpha: 0.45),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              gradient: NarrChatTheme.brandGradient,
+              borderRadius: BorderRadius.circular(8),
             ),
-            const SizedBox(width: 10),
-            Text(
-              'AI 正在创作…',
-              style: TextStyle(color: Theme.of(context).colorScheme.onSecondaryContainer),
+            child: const Icon(Icons.auto_awesome,
+                size: 16, color: Colors.white),
+          ),
+          const SizedBox(width: 10),
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: NarrChatTheme.primary,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          const Text(
+            'AI 正在创作…',
+            style: TextStyle(
+              color: NarrChatTheme.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
 /// AI 流式输出气泡：实时显示剧情正文；思考内容默认折叠，
-/// 通过「思考中」提示点击展开查看（内容非斜体）。
+/// 通过「思考中」提示点击展开查看（内容非斜体）。极简无气泡样式。
 class _StreamingBubble extends StatefulWidget {
   final String content;
   final String reasoning;
@@ -726,8 +856,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.78;
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
     final content = widget.content;
     final reasoning = widget.reasoning;
     final hasContent = content.isNotEmpty;
@@ -736,104 +865,121 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 560)),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.secondaryContainer.withValues(alpha: 0.45),
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(12),
-              topRight: Radius.circular(12),
-              bottomLeft: Radius.circular(12),
-              bottomRight: Radius.circular(4),
+        constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 680)),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                gradient: NarrChatTheme.brandGradient,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.auto_awesome,
+                  size: 16, color: Colors.white),
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 思考区：默认折叠，点击「思考中」展开。
-              if (hasReasoning) ...[
-                InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  onTap: () => setState(() => _reasoningExpanded = !_reasoningExpanded),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
+            const SizedBox(width: 10),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 思考区：默认折叠，点击「思考中」展开。
+                  if (hasReasoning) ...[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () =>
+                          setState(() => _reasoningExpanded = !_reasoningExpanded),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _reasoningExpanded
+                                  ? Icons.expand_more
+                                  : Icons.chevron_right,
+                              size: 16,
+                              color: NarrChatTheme.primary,
+                            ),
+                            const Icon(Icons.psychology_outlined,
+                                size: 14, color: NarrChatTheme.primary),
+                            const SizedBox(width: 4),
+                            const Text(
+                              '思考中',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: NarrChatTheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            if (!hasContent) ...[
+                              const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              const SizedBox(width: 4),
+                            ],
+                            Text(
+                              _reasoningExpanded ? '收起' : '点击查看',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: NarrChatTheme.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_reasoningExpanded) ...[
+                      const SizedBox(height: 2),
+                      SelectableText(
+                        reasoning,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          height: 1.5,
+                          color: NarrChatTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                    if (hasContent) const Divider(height: 14),
+                  ],
+                  if (hasContent)
+                    SelectableText(
+                      '$content▍',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        height: 1.65,
+                        color: NarrChatTheme.textPrimary,
+                      ),
+                    )
+                  else if (!hasReasoning)
+                    Row(
                       mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _reasoningExpanded ? Icons.expand_more : Icons.chevron_right,
-                          size: 16,
-                          color: theme.colorScheme.primary,
+                      children: const [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                        Icon(Icons.psychology_outlined,
-                            size: 14, color: theme.colorScheme.primary),
-                        const SizedBox(width: 4),
+                        SizedBox(width: 8),
                         Text(
-                          '思考中',
+                          'AI 正在创作…',
                           style: TextStyle(
-                            fontSize: 12,
-                            color: theme.colorScheme.primary,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        if (!hasContent) ...[
-                          const SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                          const SizedBox(width: 4),
-                        ],
-                        Text(
-                          _reasoningExpanded ? '收起' : '点击查看',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: theme.colorScheme.outline,
+                            color: NarrChatTheme.textSecondary,
+                            fontSize: 13,
                           ),
                         ),
                       ],
                     ),
-                  ),
-                ),
-                if (_reasoningExpanded) ...[
-                  const SizedBox(height: 2),
-                  SelectableText(
-                    reasoning,
-                    style: TextStyle(
-                      fontSize: 13,
-                      height: 1.5,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
                 ],
-                if (hasContent) const Divider(height: 14),
-              ],
-              if (hasContent)
-                SelectableText(
-                  '$content▍',
-                  style: const TextStyle(fontSize: 15, height: 1.5),
-                )
-              else if (!hasReasoning)
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'AI 正在创作…',
-                      style: TextStyle(color: theme.colorScheme.outline, fontSize: 13),
-                    ),
-                  ],
-                ),
-            ],
-          ),
+              ),
+            ),
+          ],
         ),
       ),
     );

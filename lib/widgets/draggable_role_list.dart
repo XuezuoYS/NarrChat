@@ -79,18 +79,18 @@ class _DraggableRoleListState extends State<DraggableRoleList> {
             label: const Text('添加分类'),
           ),
         ),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 300),
-          child: _categories.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text('暂无分类，请添加。', style: TextStyle(color: Colors.grey)),
-                )
-              : ReorderableListView(
-                  shrinkWrap: true,
-                  buildDefaultDragHandles: false,
-                  onReorderItem: _onReorderItem,
-                  children: [
+        // 不设内部滚动：与所在对话框的总滚动条一致（shrinkWrap + 禁自身滚动）。
+        _categories.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('暂无分类，请添加。', style: TextStyle(color: Colors.grey)),
+              )
+            : ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                buildDefaultDragHandles: false,
+                onReorderItem: _onReorderItem,
+                children: [
                     for (var i = 0; i < _categories.length; i++)
                       Container(
                         key: ValueKey('role_${i}_${_categories[i].name}'),
@@ -140,7 +140,6 @@ class _DraggableRoleListState extends State<DraggableRoleList> {
                       ),
                   ],
                 ),
-        ),
       ],
     );
   }

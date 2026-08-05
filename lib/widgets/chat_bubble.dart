@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
+import '../theme/app_theme.dart';
+
 /// 聊天气泡。
 ///
 /// 布局约定：用户气泡靠右，AI 气泡靠左。
@@ -63,7 +65,7 @@ class _ChatBubbleState extends State<ChatBubble> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.78;
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
     final showAction = !widget.isUser &&
         widget.recommendedAction != null &&
         widget.recommendedAction!.trim().isNotEmpty;
@@ -73,17 +75,18 @@ class _ChatBubbleState extends State<ChatBubble> {
       onPointerUp: (_) => _cancelLongPress(),
       onPointerCancel: (_) => _cancelLongPress(),
       child: Align(
-        // 用户靠右，AI 靠左。
+        // 用户靠右，AI 靠左（模仿 DeepSeek：无气泡、纯文本消息流）。
         alignment: widget.isUser ? Alignment.centerRight : Alignment.centerLeft,
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 560)),
+          constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 680)),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (!widget.isUser)
-                _avatar(theme, Icons.auto_awesome, const Color(0xFF7C4DFF)),
-              const SizedBox(width: 8),
+              if (!widget.isUser) ...[
+                _avatar(theme, Icons.auto_awesome, NarrChatTheme.primary),
+                const SizedBox(width: 10),
+              ],
               Flexible(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -91,83 +94,67 @@ class _ChatBubbleState extends State<ChatBubble> {
                       ? CrossAxisAlignment.end
                       : CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                      decoration: BoxDecoration(
-                        gradient: widget.isUser
-                            ? LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  theme.colorScheme.primaryContainer,
-                                  theme.colorScheme.primaryContainer
-                                      .withValues(alpha: 0.55),
-                                ],
-                              )
-                            : null,
-                        color: widget.isUser ? null : theme.colorScheme.surface,
-                        border: widget.isUser
-                            ? null
-                            : Border.all(color: theme.colorScheme.outlineVariant),
-                        borderRadius: BorderRadius.only(
-                          topLeft: const Radius.circular(16),
-                          topRight: const Radius.circular(16),
-                          bottomLeft: Radius.circular(widget.isUser ? 16 : 4),
-                          bottomRight: Radius.circular(widget.isUser ? 4 : 16),
+                    // 正文：AI 为无气泡纯文本；用户消息带浅色气泡。
+                    if (widget.isUser)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 9),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF1FF),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.04),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
+                        child: SelectableText(
+                          widget.text,
+                          // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
+                          contextMenuBuilder: (context, editableTextState) =>
+                              const SizedBox.shrink(),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            height: 1.65,
+                            color: NarrChatTheme.textPrimary,
                           ),
-                        ],
+                        ),
+                      )
+                    else
+                      SelectableText(
+                        widget.text,
+                        // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
+                        contextMenuBuilder: (context, editableTextState) =>
+                            const SizedBox.shrink(),
+                        style: const TextStyle(
+                          fontSize: 15,
+                          height: 1.65,
+                          color: NarrChatTheme.textPrimary,
+                        ),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SelectableText(
-                            widget.text,
-                            // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
-                            contextMenuBuilder:
-                                (context, editableTextState) =>
-                                    const SizedBox.shrink(),
-                            style: TextStyle(
-                              fontSize: 15,
-                              height: 1.5,
-                              color: widget.isUser
-                                  ? theme.colorScheme.onPrimaryContainer
-                                  : theme.colorScheme.onSurface,
-                            ),
-                          ),
-                          // 推荐下一步：位于气泡内部，可复制。
-                          if (showAction) ...[
-                            Padding(
-                              padding: const EdgeInsets.only(top: 10),
-                              child: Divider(
-                                height: 1,
-                                color: theme.colorScheme.outlineVariant
-                                    .withValues(alpha: 0.7),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
+                    // 推荐下一步：AI 正文下方，极简样式。
+                    if (showAction) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerLow,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
                             Row(
                               children: [
                                 Icon(
                                   Icons.flag_outlined,
-                                  size: 14,
-                                  color: theme.colorScheme.tertiary,
+                                  size: 13,
+                                  color: NarrChatTheme.primary,
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
                                   '推荐下一步',
                                   style: TextStyle(
                                     fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: theme.colorScheme.tertiary,
-                                    letterSpacing: 0.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: NarrChatTheme.primary,
                                   ),
                                 ),
                               ],
@@ -175,18 +162,19 @@ class _ChatBubbleState extends State<ChatBubble> {
                             const SizedBox(height: 4),
                             SelectableText(
                               widget.recommendedAction!,
-                              contextMenuBuilder: (context, editableTextState) =>
-                                  const SizedBox.shrink(),
-                              style: TextStyle(
+                              contextMenuBuilder:
+                                  (context, editableTextState) =>
+                                      const SizedBox.shrink(),
+                              style: const TextStyle(
                                 fontSize: 13,
                                 height: 1.5,
-                                color: theme.colorScheme.onSurfaceVariant,
+                                color: NarrChatTheme.textSecondary,
                               ),
                             ),
                           ],
-                        ],
+                        ),
                       ),
-                    ),
+                    ],
                     if (widget.footer != null) ...[
                       const SizedBox(height: 6),
                       widget.footer!,
@@ -194,9 +182,6 @@ class _ChatBubbleState extends State<ChatBubble> {
                   ],
                 ),
               ),
-              if (widget.isUser) const SizedBox(width: 8),
-              if (widget.isUser)
-                _avatar(theme, Icons.person, const Color(0xFF5C6BC0)),
             ],
           ),
         ),
@@ -206,24 +191,13 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   Widget _avatar(ThemeData theme, IconData icon, Color color) {
     return Container(
-      width: 34,
-      height: 34,
+      width: 30,
+      height: 30,
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [color.withValues(alpha: 0.85), color],
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: color.withValues(alpha: 0.25),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        gradient: NarrChatTheme.brandGradient,
+        borderRadius: BorderRadius.circular(8),
       ),
-      child: Icon(icon, size: 18, color: Colors.white),
+      child: Icon(icon, size: 16, color: Colors.white),
     );
   }
 }

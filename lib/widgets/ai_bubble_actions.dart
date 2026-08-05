@@ -39,10 +39,10 @@ class AiBubbleActions extends StatelessWidget {
           ),
           child: Text(
             '输入 Tokens: ${round.tokensIn}  ·  输出 Tokens: ${round.tokensOut}',
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 11,
-              color: theme.colorScheme.outline,
-              fontFeatures: const [FontFeature.tabularFigures()],
+              color: Color(0xFF5F6368),
+              fontFeatures: [FontFeature.tabularFigures()],
             ),
           ),
         ),
