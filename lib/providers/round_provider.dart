@@ -42,6 +42,7 @@ class RoundProvider extends ChangeNotifier {
   bool _cancelRequested = false;
   String _streamingContent = '';
   String _streamingReasoning = '';
+  String _pendingUserInput = '';
   String? _error;
   int? _bookId;
 
@@ -50,6 +51,10 @@ class RoundProvider extends ChangeNotifier {
   bool get isStreaming => _isStreaming;
   String get streamingContent => _streamingContent;
   String get streamingReasoning => _streamingReasoning;
+
+  /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
+  String get pendingUserInput => _pendingUserInput;
+
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 
@@ -127,6 +132,8 @@ class RoundProvider extends ChangeNotifier {
     _isSending = true;
     _cancelRequested = false;
     _error = null;
+    // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
+    _pendingUserInput = userInput;
     notifyListeners();
     try {
       final lastRound = latestRound;
@@ -234,6 +241,7 @@ class RoundProvider extends ChangeNotifier {
     } finally {
       _isSending = false;
       _cancelRequested = false;
+      _pendingUserInput = '';
       notifyListeners();
     }
   }

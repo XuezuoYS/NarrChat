@@ -511,6 +511,9 @@ class _ChatScreenState extends State<ChatScreen>
     final isSending = roundProvider.isSending;
     final isStreaming = roundProvider.isStreaming;
     final showPending = isSending || isStreaming;
+    // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
+    final pendingInput = roundProvider.pendingUserInput;
+    final showPendingUser = showPending && pendingInput.isNotEmpty;
 
     // 流式输出时若用户位于底部附近（未主动上翻阅读历史），自动跟随新内容，
     // 避免内容不断增长造成视口漂移、滚动条位置飘忽的“不稳定滚动”观感。
@@ -534,10 +537,22 @@ class _ChatScreenState extends State<ChatScreen>
     final messagesList = ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
-      itemCount: chatRounds.length * 2 + (showPending ? 1 : 0),
+      itemCount: chatRounds.length * 2 +
+          (showPending ? 1 : 0) +
+          (showPendingUser ? 1 : 0),
       itemBuilder: (context, index) {
         Widget item;
-        if (showPending && index == chatRounds.length * 2) {
+        // 生成中的用户气泡（未落库，紧跟历史消息之后）。
+        if (showPendingUser && index == chatRounds.length * 2) {
+          item = Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: ChatBubble(
+              isUser: true,
+              text: pendingInput,
+            ),
+          );
+        } else if (showPending &&
+            index == chatRounds.length * 2 + (showPendingUser ? 1 : 0)) {
           item = isStreaming
               ? _StreamingBubble(
                   content: roundProvider.streamingContent,
