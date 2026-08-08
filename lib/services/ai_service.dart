@@ -49,6 +49,14 @@ class AiException implements Exception {
   String toString() => message;
 }
 
+/// 用户主动中断请求时抛出的异常（与真实错误区分，不提示“请求失败”）。
+class AiCancelledException implements Exception {
+  const AiCancelledException();
+
+  @override
+  String toString() => '请求已中断';
+}
+
 /// 大模型 API 客户端（OpenAI 兼容格式：`POST {baseUrl}/chat/completions`）。
 ///
 /// 兼容 DeepSeek / OpenAI / Claude 兼容网关 / 本地 Ollama 等。
@@ -84,6 +92,8 @@ class AiService {
     bool stream = false,
     void Function(AiStreamChunk chunk)? onChunk,
     void Function(String requestBody)? onRequestBody,
+    /// 返回 true 表示用户已主动中断，流式将停止接收、非流式丢弃结果。
+    bool Function()? isCancelled,
   }) async {
     final baseUrl = apiBaseUrl.replaceAll(RegExp(r'/+$'), '');
     final uri = Uri.parse('$baseUrl/chat/completions');
@@ -123,9 +133,15 @@ class AiService {
         apiKey: apiKey,
         body: body,
         onChunk: onChunk,
+        isCancelled: isCancelled,
       );
     }
-    return _chatOnce(uri: uri, apiKey: apiKey, body: body);
+    return _chatOnce(
+      uri: uri,
+      apiKey: apiKey,
+      body: body,
+      isCancelled: isCancelled,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -135,6 +151,7 @@ class AiService {
     required Uri uri,
     required String apiKey,
     required String body,
+    bool Function()? isCancelled,
   }) async {
     late final http.Response response;
     try {
@@ -148,6 +165,10 @@ class AiService {
             body: body,
           )
           .timeout(AppConfig.requestTimeout);
+      // 用户已中断：丢弃本次结果（请求本身无法提前中止，仅不返回内容）。
+      if (isCancelled?.call() ?? false) {
+        throw const AiCancelledException();
+      }
     } on TimeoutException {
       throw const AiException('请求超时，请检查网络或稍后重试。');
     } on http.ClientException catch (e) {
@@ -190,6 +211,7 @@ class AiService {
     required String apiKey,
     required String body,
     required void Function(AiStreamChunk chunk)? onChunk,
+    bool Function()? isCancelled,
   }) async {
     late final http.StreamedResponse response;
     try {
@@ -217,6 +239,10 @@ class AiService {
     try {
       await for (final line
           in response.stream.transform(utf8.decoder).transform(const LineSplitter())) {
+        // 用户主动中断：跳出循环（取消订阅 → 中止 HTTP 连接）。
+        if (isCancelled?.call() ?? false) {
+          throw const AiCancelledException();
+        }
         final trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
         final data = trimmed.substring(5).trim();

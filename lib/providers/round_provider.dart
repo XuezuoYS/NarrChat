@@ -39,6 +39,7 @@ class RoundProvider extends ChangeNotifier {
   List<Round> _rounds = [];
   bool _isSending = false;
   bool _isStreaming = false;
+  bool _cancelRequested = false;
   String _streamingContent = '';
   String _streamingReasoning = '';
   String? _error;
@@ -51,6 +52,13 @@ class RoundProvider extends ChangeNotifier {
   String get streamingReasoning => _streamingReasoning;
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
+
+  /// 中断当前生成（流式会中止 HTTP 连接；非流式丢弃结果）。
+  void cancelGeneration() {
+    if (!_isSending) return;
+    _cancelRequested = true;
+    notifyListeners();
+  }
 
   // 调试数据：仅保留最新一轮发出的完整请求 JSON、AI 原始返回与思考内容。
   int? _debugRoundId;
@@ -117,6 +125,7 @@ class RoundProvider extends ChangeNotifier {
 
     final settings = _aiSettingsProvider;
     _isSending = true;
+    _cancelRequested = false;
     _error = null;
     notifyListeners();
     try {
@@ -173,7 +182,15 @@ class RoundProvider extends ChangeNotifier {
               }
             : null,
         onRequestBody: (json) => _debugRequestBody = json,
+        isCancelled: () => _cancelRequested,
       );
+      // 用户主动中断：丢弃部分内容，不保存本轮，也不视为错误。
+      if (_cancelRequested) {
+        _isStreaming = false;
+        _streamingContent = '';
+        _streamingReasoning = '';
+        return false;
+      }
       _isStreaming = false;
       _streamingContent = '';
       _streamingReasoning = '';
@@ -201,6 +218,13 @@ class RoundProvider extends ChangeNotifier {
       _debugRawReasoning = result.reasoningContent;
       await loadRounds(b.id!);
       return true;
+    } on AiCancelledException {
+      // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误。
+      _isStreaming = false;
+      _streamingContent = '';
+      _streamingReasoning = '';
+      _error = null;
+      return false;
     } catch (e) {
       _isStreaming = false;
       _streamingContent = '';
@@ -209,6 +233,7 @@ class RoundProvider extends ChangeNotifier {
       return false;
     } finally {
       _isSending = false;
+      _cancelRequested = false;
       notifyListeners();
     }
   }

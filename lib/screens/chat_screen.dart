@@ -116,8 +116,8 @@ class _ChatScreenState extends State<ChatScreen>
       book: book,
     );
 
-    if (!ok && mounted) {
-      // 请求失败：恢复输入并提示错误。
+    if (!ok && mounted && roundProvider.error != null) {
+      // 请求失败：恢复输入并提示错误（用户主动中断时不提示）。
       _inputController.text = input;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -810,8 +810,11 @@ class _ChatScreenState extends State<ChatScreen>
                         width: 36,
                         height: 36,
                         child: IconButton.filled(
-                          onPressed: isSending ? null : _send,
-                          tooltip: '发送',
+                          // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
+                          onPressed: isSending
+                              ? roundProvider.cancelGeneration
+                              : _send,
+                          tooltip: isSending ? '停止生成' : '发送',
                           style: IconButton.styleFrom(
                             backgroundColor: NarrChatTheme.primary,
                             disabledBackgroundColor:
