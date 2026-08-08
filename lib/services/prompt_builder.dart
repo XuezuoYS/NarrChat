@@ -15,14 +15,15 @@ class PromptBundle {
 /// - 身份锁定（破甲）：解除助手式限制，明确本任务为虚构创作，直接顺从创作。
 /// - 绝对服从 + 二级标题纪律：仅允许 6 个 `##` 区块、顺序固定，其余位置禁止 `##`。
 /// - 状态快照规则：完整复制上一轮角色/世界状态，仅修改变动项。
-/// - 书籍设定、文笔参考、角色层级、世界书条目、状态快照、记忆总结。
+/// - 书籍设定、文笔要求（内置去 AI 味）、文笔参考（用户补充，**仅存在于 system**）、
+///   角色层级、世界书条目、状态快照、记忆总结。
 ///
 /// 【User Prompt】
 /// ```
 /// 【用户本轮发送】
 ///   - 【格式要求】     （6 个二级标题、固定顺序、禁止其它 ##）
 ///   - 【用户自定义前置词】/【本轮临时前置词】
-///   - 【文笔风格要求】  （内置去AI味 + 用户补充）
+///   - 【文笔要求】     （内置去 AI 味；文笔参考段落不在本处，见 system）
 ///   - 【用户输入内容】
 ///   - 【本轮临时后置词】/【用户自定义后置词】
 ///   - 【指令执行】     （预置的增强 AI 性能与服从性的结尾）
@@ -45,7 +46,9 @@ class PromptBuilder {
     '记忆总结',
   ];
 
-  /// 内置「去 AI 味」文笔风格要求（用户可在书籍设置的「文笔参考」中补充）。
+  /// 内置「去 AI 味」文笔要求（与用户书籍设置的「文笔参考」不同：
+  /// 文笔要求是写作规则，同时注入 system 与 user 提示词；
+  /// 文笔参考是风格范例文本，仅注入 system）。
   static const String builtInWritingStyle = '''
 1. 以中文网文的自然语感写作，坚决去除“AI 腔”：禁止出现“首先/其次/最后”“总而言之”“值得注意的是”“让我们”“在这个充满……的世界里”“眼中闪过一丝复杂”等套话、空泛抒情与模板化表达。
 2. 描写要具体、有画面感：多用具体名词、动作与细节，少用抽象形容词；写“他攥紧刀柄，指节发白”，而不是“他很紧张”。
@@ -156,7 +159,9 @@ Response rules:
     buf.writeln('- 新增登场角色按所属类别格式补全属性项。');
     buf.writeln();
     buf.writeln('书籍设定：${book.baseSetting.isEmpty ? '（未设置）' : book.baseSetting}');
-    buf.writeln('文笔参考：${book.writingStyle.isEmpty ? '（未设置）' : book.writingStyle}');
+    buf.writeln('文笔要求：');
+    buf.writeln(builtInWritingStyle);
+    buf.writeln('文笔参考（风格范例，仅此处提供）：${book.writingStyle.isEmpty ? '（未设置）' : book.writingStyle}');
     buf.writeln('角色层级排序规则：${book.roleHierarchy.isEmpty ? '（未设置）' : book.roleHierarchy}');
     buf.writeln('角色类别描述格式（## 角色状态 必须按此组织每个角色的属性项）：');
     if (book.roleCategories.isEmpty) {
@@ -213,13 +218,9 @@ Response rules:
       buf.writeln(tempPrePrompt);
     }
 
-    // 文笔风格要求（内置去AI味 + 用户补充）
-    buf.writeln('【文笔风格要求】');
+    // 文笔要求（内置去 AI 味；用户补充的文笔参考段落仅在 system 中提供）
+    buf.writeln('【文笔要求】');
     buf.writeln(builtInWritingStyle);
-    if (book.writingStyle.trim().isNotEmpty) {
-      buf.writeln('用户补充的文笔要求：');
-      buf.writeln(book.writingStyle);
-    }
 
     // 用户输入内容
     buf.writeln('【用户输入内容】');

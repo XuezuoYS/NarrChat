@@ -129,10 +129,14 @@ void main() {
       expect(system, contains('禁止使用 ##'));
     });
 
-    test('系统提示词包含书籍设定/文笔/角色层级/世界书条目', () {
+    test('系统提示词包含书籍设定/文笔要求/文笔参考/角色层级/世界书条目', () {
       final system = buildBundle().systemPrompt;
       expect(system, contains('书籍设定：北域修仙世界，宗门林立。'));
-      expect(system, contains('文笔参考：用户补充：多用短句。'));
+      // 内置文笔要求注入 system。
+      expect(system, contains('文笔要求：'));
+      expect(system, contains('坚决去除“AI 腔”'));
+      // 文笔参考段落（用户补充的风格范例）仅存在于 system。
+      expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
       expect(system, contains('角色层级排序规则：主角 > 女主角 > NPC'));
       expect(system, contains('青云宗是北域第一大派。'));
     });
@@ -151,7 +155,7 @@ void main() {
       expect(user, contains('【格式要求】'));
       expect(user, contains('【用户自定义前置词】'));
       expect(user, contains('【本轮临时前置词】'));
-      expect(user, contains('【文笔风格要求】'));
+      expect(user, contains('【文笔要求】'));
       expect(user, contains('【用户输入内容】'));
       expect(user, contains('【本轮临时后置词】'));
       expect(user, contains('【用户自定义后置词】'));
@@ -176,12 +180,13 @@ void main() {
       expect(user, contains('严禁在其它任何位置使用二级标题'));
     });
 
-    test('用户提示词包含内置去AI味文笔与用户补充', () {
+    test('用户提示词包含内置去AI味文笔要求，且不含文笔参考段落', () {
       final user = buildBundle().userPrompt;
       expect(user, contains('坚决去除“AI 腔”'));
       expect(user, contains('首先/其次/最后'));
-      expect(user, contains('用户补充的文笔要求：'));
-      expect(user, contains('用户补充：多用短句。'));
+      // 文笔参考段落（用户补充的风格范例）仅存在于 system，不在 user 中重复。
+      expect(user, isNot(contains('用户补充的文笔要求：')));
+      expect(user, isNot(contains('用户补充：多用短句。')));
     });
 
     test('用户提示词各区块按规范顺序排列', () {
@@ -190,7 +195,7 @@ void main() {
         '【用户本轮发送】',
         '【格式要求】',
         '【用户自定义前置词】',
-        '【文笔风格要求】',
+        '【文笔要求】',
         '【用户输入内容】',
         '【用户自定义后置词】',
         '【指令执行】',
