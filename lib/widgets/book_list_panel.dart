@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/book.dart';
 import '../theme/app_theme.dart';
+import 'app_menu.dart';
 
 /// 左侧书籍列表栏。
 ///
@@ -166,8 +167,21 @@ class BookListPanel extends StatelessWidget {
                               }
                             },
                             itemBuilder: (_) => const [
-                              PopupMenuItem(value: 'edit', child: Text('编辑')),
-                              PopupMenuItem(value: 'delete', child: Text('删除')),
+                              PopupMenuItem(
+                                value: 'edit',
+                                child: AppMenuAction(
+                                  icon: Icons.edit_outlined,
+                                  label: '编辑',
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: AppMenuAction(
+                                  icon: Icons.delete_outline,
+                                  label: '删除',
+                                  color: Color(0xFFE5484D),
+                                ),
+                              ),
                             ],
                           ),
                           onTap: () => onSelect(book),

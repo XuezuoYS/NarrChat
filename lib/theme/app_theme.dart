@@ -38,6 +38,12 @@ class NarrChatTheme {
   /// 细分割线色。
   static const Color divider = Color(0xFFE8E8EA);
 
+  /// 弹出菜单圆角半径（右键/长按菜单与下拉菜单共用，便于统一调整）。
+  static const double menuRadius = 12;
+
+  /// 下拉菜单固定宽度（宽屏下避免菜单与输入框同宽）。
+  static const double dropdownMenuWidth = 220;
+
   static ThemeData get light {
     final scheme = ColorScheme.fromSeed(
       seedColor: primary,
@@ -126,11 +132,13 @@ class NarrChatTheme {
           color: textPrimary,
         ),
       ),
-      // —— 右键/长按弹出菜单：明显圆角 ——
+      // —— 右键/长按弹出菜单：明显圆角（与下拉菜单共用同一圆角常量） ——
       popupMenuTheme: PopupMenuThemeData(
         color: Colors.white,
         elevation: 3,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(NarrChatTheme.menuRadius),
+        ),
       ),
       // —— 卡片 ——
       cardTheme: CardThemeData(

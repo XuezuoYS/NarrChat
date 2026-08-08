@@ -10,6 +10,7 @@ import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ai_bubble_actions.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
@@ -173,16 +174,16 @@ class _ChatScreenState extends State<ChatScreen>
       if (isAi) ...[
         const PopupMenuItem(
           value: 'edit',
-          child: _MenuAction(icon: Icons.edit_outlined, label: '编辑正文'),
+          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑正文'),
         ),
       ] else ...[
         const PopupMenuItem(
           value: 'editInput',
-          child: _MenuAction(icon: Icons.edit_outlined, label: '编辑输入'),
+          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑输入'),
         ),
         const PopupMenuItem(
           value: 'editReask',
-          child: _MenuAction(
+          child: AppMenuAction(
             icon: Icons.edit_note,
             label: '修改并重新提问',
           ),
@@ -190,28 +191,28 @@ class _ChatScreenState extends State<ChatScreen>
       ],
       PopupMenuItem(
         value: 'copy',
-        child: _MenuAction(
+        child: AppMenuAction(
           icon: Icons.copy_outlined,
           label: isAi ? '复制正文' : '复制内容',
         ),
       ),
       const PopupMenuItem(
         value: 'reask',
-        child: _MenuAction(icon: Icons.replay, label: '重新提问'),
+        child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
       ),
       if (isAi) ...[
         const PopupMenuItem(
           value: 'sidebar',
-          child: _MenuAction(icon: Icons.view_sidebar_outlined, label: '查看侧边栏'),
+          child: AppMenuAction(icon: Icons.view_sidebar_outlined, label: '查看侧边栏'),
         ),
         if (isLatest)
           const PopupMenuItem(
             value: 'debug',
-            child: _MenuAction(icon: Icons.bug_report_outlined, label: '调试'),
+            child: AppMenuAction(icon: Icons.bug_report_outlined, label: '调试'),
           ),
         const PopupMenuItem(
           value: 'delete',
-          child: _MenuAction(
+          child: AppMenuAction(
             icon: Icons.delete_outline,
             label: '删除本轮',
             color: Color(0xFFE5484D),
@@ -220,14 +221,9 @@ class _ChatScreenState extends State<ChatScreen>
       ],
     ];
 
-    showMenu<String>(
+    showAppMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy,
-        position.dx,
-        position.dy,
-      ),
+      position: position,
       items: items,
     ).then((value) {
       if (value == null || !mounted) return;
@@ -1091,27 +1087,6 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// 上下文菜单项（图标 + 文字）。
-class _MenuAction extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color? color;
-
-  const _MenuAction({required this.icon, required this.label, this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    final fg = color ?? Theme.of(context).colorScheme.onSurface;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: fg),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(fontSize: 13, color: fg)),
-      ],
     );
   }
 }

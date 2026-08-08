@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../config/app_config.dart';
 import '../providers/ai_settings_provider.dart';
 import '../theme/app_theme.dart';
+import 'app_menu.dart';
 
 /// AI 接口设置表单（可嵌入全窗口设置页）。
 ///
@@ -163,7 +164,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         ),
         const SizedBox(height: 12),
         // 模型
-        _DropdownField<String>(
+        AppDropdown<String>(
           label: '模型名称',
           value: _customModelMode ? '__custom__' : _model,
           items: [
@@ -255,7 +256,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         ),
         if (_thinking) ...[
           const SizedBox(height: 4),
-          _DropdownField<String>(
+          AppDropdown<String>(
             label: '推理强度（reasoning_effort）',
             value: _reasoningEffort,
             items: [
@@ -284,53 +285,6 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// 统一样式的下拉字段。
-///
-/// 输入框外观与其它表单字段一致（圆角描边 + 标签），下拉菜单固定宽度并带圆角。
-/// 注：该 Flutter 版本（3.44.8）的 `DropdownButtonFormField` 不提供 `menuWidth`
-/// 参数（下拉菜单宽度默认等于输入框宽度，宽屏下会非常宽），因此改用
-/// `InputDecorator + DropdownButton` 组合以获得完整控制。
-class _DropdownField<T> extends StatelessWidget {
-  final String label;
-  final T? value;
-  final List<DropdownMenuItem<T>> items;
-  final ValueChanged<T?> onChanged;
-
-  const _DropdownField({
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InputDecorator(
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        isDense: true,
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          isExpanded: true,
-          // 固定菜单宽度，避免宽屏下菜单与输入框同宽。
-          menuWidth: 220,
-          // 圆角菜单，与右键/长按弹出菜单一致。
-          borderRadius: BorderRadius.circular(12),
-          style: const TextStyle(
-            fontSize: 14,
-            color: NarrChatTheme.textPrimary,
-          ),
-          items: items,
-          onChanged: onChanged,
-        ),
-      ),
     );
   }
 }
