@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+
 /// 一条记忆条目：轮数 + 日期 + 概括内容（三者绑定在一条内）。
 class MemoryEntry {
   final int round;
@@ -313,7 +315,7 @@ class _MemorySummaryEditorState extends State<MemorySummaryEditor> {
                     Icon(
                       Icons.schedule,
                       size: 12,
-                      color: theme.colorScheme.outline,
+                      color: NarrChatTheme.textSecondary,
                     ),
                     const SizedBox(width: 4),
                     Expanded(
@@ -321,7 +323,8 @@ class _MemorySummaryEditorState extends State<MemorySummaryEditor> {
                         e.date.isEmpty ? '（未标注日期）' : e.date,
                         style: TextStyle(
                           fontSize: 11,
-                          color: theme.colorScheme.outline,
+                          fontWeight: FontWeight.w500,
+                          color: NarrChatTheme.textSecondary,
                         ),
                       ),
                     ),
