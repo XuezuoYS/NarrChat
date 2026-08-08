@@ -24,7 +24,8 @@ void main() {
     aiNarrative: '剑光如虹，劈开云雾。',
     worldState: '- 地点：青云宗后山\n- 灵气：浓郁',
     characterState: '## 女主角\n### 苏清月\n- 心情：担忧',
-    memorySummary: '主角在宗门大比中获胜。',
+    memorySummary:
+        '- 第1轮｜日期：第一天 清晨｜主角初入青云宗，拜入门下。\n- 第2轮｜日期：第三天 午时｜主角在宗门大比中获胜，苏清月担忧其伤势。',
     currentTime: '第三天 午时',
   );
   final bundle = const PromptBuilder().build(

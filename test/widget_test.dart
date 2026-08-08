@@ -158,10 +158,10 @@ void main() {
       expect(system, contains('## 当前时间 必须沿用其格式'));
     });
 
-    test('用户提示词包含完整结构（格式/前置/文笔/输入/后置/服从结尾）', () {
+    test('用户提示词包含完整结构（格式/记忆格式/前置/文笔/输入/后置/服从结尾）', () {
       final user = buildBundle().userPrompt;
-      expect(user, contains('【用户本轮发送】'));
       expect(user, contains('【格式要求】'));
+      expect(user, contains('【记忆总结格式】'));
       expect(user, contains('【用户自定义前置词】'));
       expect(user, contains('【本轮临时前置词】'));
       expect(user, contains('【文笔要求】'));
@@ -187,6 +187,23 @@ void main() {
         contains('剧情演绎 → 推荐行动 → 当前时间 → 世界状态 → 角色状态 → 记忆总结'),
       );
       expect(user, contains('严禁在其它任何位置使用二级标题'));
+    });
+
+    test('系统提示词包含记忆总结格式强制规则（轮数/日期/概括绑定一条）', () {
+      final system = buildBundle().systemPrompt;
+      expect(system, contains('【记忆总结格式】'));
+      expect(system, contains('- 第N轮｜日期：该轮当前时间｜概括内容'));
+      expect(system, contains('绑定在一条内'));
+      expect(system, contains('从第 1 轮到本轮'));
+      expect(system, contains('不得使用真实日期'));
+      expect(system, contains('不得删除任何轮次条目'));
+    });
+
+    test('用户提示词包含记忆总结格式提醒', () {
+      final user = buildBundle().userPrompt;
+      expect(user, contains('【记忆总结格式】'));
+      expect(user, contains('- 第N轮｜日期：xxx｜概括内容'));
+      expect(user, contains('从第 1 轮至本轮每轮一条'));
     });
 
     test('用户提示词包含内置去AI味文笔要求，且不含文笔参考段落', () {

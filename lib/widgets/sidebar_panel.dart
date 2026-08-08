@@ -6,6 +6,7 @@ import '../models/round.dart';
 import '../theme/app_theme.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
+import 'memory_summary_editor.dart';
 
 /// 侧边栏面板。
 ///
@@ -165,8 +166,12 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         onSave: (v) => _saveFieldNow('character_state', v),
                       ),
                       const SizedBox(height: 14),
-                      _sectionLabel(theme, '记忆总结'),
-                      MarkdownField(
+                      _sectionLabel(
+                        theme,
+                        '记忆总结',
+                        subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
+                      ),
+                      MemorySummaryEditor(
                         controller: _memorySummary,
                         hintText: '记忆总结',
                         onChanged: (v) => _scheduleAutoSave('memory_summary', v),
@@ -286,26 +291,45 @@ class _SidebarPanelState extends State<SidebarPanel> {
     );
   }
 
-  Widget _sectionLabel(ThemeData theme, String label) {
+  Widget _sectionLabel(ThemeData theme, String label, {String? subtitle}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             width: 3,
             height: 14,
+            margin: const EdgeInsets.only(top: 2),
             decoration: BoxDecoration(
               color: theme.colorScheme.primary,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              color: theme.colorScheme.onSurface,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 1),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ],
