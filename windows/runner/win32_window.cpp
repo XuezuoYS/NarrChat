@@ -153,6 +153,33 @@ bool Win32Window::Show() {
   return ShowWindow(window_handle_, SW_SHOWNORMAL);
 }
 
+void Win32Window::CenterOnScreen() {
+  if (!window_handle_) {
+    return;
+  }
+  // Align the window to the center of its current monitor's work area
+  // (physical pixels; DPI awareness is already active at this point).
+  HMONITOR monitor =
+      ::MonitorFromWindow(window_handle_, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (!::GetMonitorInfoW(monitor, &info)) {
+    return;
+  }
+  RECT rect{};
+  if (!::GetWindowRect(window_handle_, &rect)) {
+    return;
+  }
+  const LONG window_width = rect.right - rect.left;
+  const LONG window_height = rect.bottom - rect.top;
+  const LONG work_width = info.rcWork.right - info.rcWork.left;
+  const LONG work_height = info.rcWork.bottom - info.rcWork.top;
+  const LONG x = info.rcWork.left + (work_width - window_width) / 2;
+  const LONG y = info.rcWork.top + (work_height - window_height) / 2;
+  ::SetWindowPos(window_handle_, nullptr, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 // static
 LRESULT CALLBACK Win32Window::WndProc(HWND const window,
                                       UINT const message,

@@ -30,6 +30,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (!window.Create(L"NarrChat", origin, size)) {
     return EXIT_FAILURE;
   }
+  // Center the window on screen at startup.
+  window.CenterOnScreen();
   window.SetQuitOnClose(true);
 
   ::MSG msg;
