@@ -12,6 +12,7 @@ import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/markdown_field.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
 import 'package:provider/provider.dart';
 
@@ -70,6 +71,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     const book = Book(id: 1, title: '测试书');
+    final roundProvider = RoundProvider(dao: _MockRoundDao());
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -79,9 +81,7 @@ void main() {
           ChangeNotifierProvider(
             create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
           ),
-          ChangeNotifierProvider(
-            create: (_) => RoundProvider(dao: _MockRoundDao()),
-          ),
+          ChangeNotifierProvider(create: (_) => roundProvider),
           ChangeNotifierProvider(create: (_) => SidebarProvider()),
         ],
         child: MaterialApp(
@@ -90,6 +90,10 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    // 测试环境中 ChatScreen 的 post-frame 回调执行时书籍可能尚未就绪，
+    // 导致 loadRounds 未触发、侧边栏为空态；这里显式加载（第零轮）以保证有内容。
+    await roundProvider.loadRounds(1);
     await tester.pumpAndSettle();
   }
 
@@ -162,5 +166,23 @@ void main() {
       tester.getTopLeft(find.byType(SidebarPanel)).dx,
       closeTo(600 - drawerWidth, 1),
     );
+  });
+
+  testWidgets('点击子模块标题栏可折叠/展开（世界状态）', (tester) async {
+    await pumpWideChat(tester);
+    // 「世界状态」标题栏位于视口顶部附近，无需滚动即可见。
+    expect(find.text('世界状态'), findsOneWidget);
+    expect(find.byType(MarkdownField), findsOneWidget);
+    // 折叠：点击标题栏。
+    await tester.tap(find.text('世界状态'));
+    await tester.pumpAndSettle();
+    // 折叠后：编辑器消失，标题栏出现「已折叠」提示。
+    expect(find.byType(MarkdownField), findsNothing);
+    expect(find.text('已折叠'), findsOneWidget);
+    // 再次点击展开。
+    await tester.tap(find.text('世界状态'));
+    await tester.pumpAndSettle();
+    expect(find.byType(MarkdownField), findsOneWidget);
+    expect(find.text('已折叠'), findsNothing);
   });
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'editable_field_state.dart';
 
 /// 一条记忆条目：轮数 + 日期 + 概括内容（三者绑定在一条内）。
 class MemoryEntry {
@@ -60,6 +61,9 @@ class MemorySummaryEditor extends StatefulWidget {
   final String? hintText;
   final bool readOnly;
 
+  /// 是否显示内部工具栏（含「编辑/完成」按钮）。
+  final bool showToolbar;
+
   /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
   final ValueChanged<String>? onChanged;
 
@@ -71,15 +75,17 @@ class MemorySummaryEditor extends StatefulWidget {
     required this.controller,
     this.hintText,
     this.readOnly = false,
+    this.showToolbar = true,
     this.onChanged,
     this.onSave,
   });
 
   @override
-  State<MemorySummaryEditor> createState() => _MemorySummaryEditorState();
+  State<MemorySummaryEditor> createState() => MemorySummaryEditorState();
 }
 
-class _MemorySummaryEditorState extends State<MemorySummaryEditor> {
+class MemorySummaryEditorState extends State<MemorySummaryEditor>
+    implements EditableFieldState {
   bool _editMode = false;
   late final TextEditingController _editController;
 
@@ -131,6 +137,16 @@ class _MemorySummaryEditorState extends State<MemorySummaryEditor> {
     setState(() {});
   }
 
+  // —— EditableFieldState（供侧边栏模块标题栏驱动） ——
+  @override
+  bool get isEditing => _editMode;
+
+  @override
+  void enterEdit() => _enterEdit();
+
+  @override
+  void save() => _exitEdit(save: true);
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -144,8 +160,7 @@ class _MemorySummaryEditorState extends State<MemorySummaryEditor> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildHeader(theme),
-          const Divider(height: 1),
+          if (widget.showToolbar) ...[_buildHeader(theme), const Divider(height: 1)],
           if (_editMode) _buildEdit(theme) else _buildView(theme),
         ],
       ),

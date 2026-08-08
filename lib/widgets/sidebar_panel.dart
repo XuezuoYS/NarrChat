@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../theme/app_theme.dart';
+import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
 import 'memory_summary_editor.dart';
@@ -16,6 +17,8 @@ import 'memory_summary_editor.dart';
 ///   `current_time` 以可编辑文本形式显示；
 ///   `character_state` 使用 [MarkdownCollapsibleEditor] 折叠组件（含“一键展开”）。
 ///   （`recommended_action` 不在侧边栏编辑，展示于对话区 AI 气泡正文下方。）
+/// - 可折叠子模块：每个大区块（当前时间/世界状态/角色状态/记忆总结）都有吸顶标题栏，
+///   滚动到下方时标题栏固定在视口顶部；点击标题栏可折叠/展开该区块内容。
 /// - 实时保存：每个区块编辑时，内容变化后会经过短暂防抖自动写回数据库
 ///   （通过 [onAutoSaveField]），无需手动点击即可持久化；
 ///   底部显示自动保存状态提示条。
@@ -53,6 +56,14 @@ class _SidebarPanelState extends State<SidebarPanel> {
       TextEditingController(text: widget.round?.memorySummary ?? '');
   late final TextEditingController _currentTime =
       TextEditingController(text: widget.round?.currentTime ?? '');
+
+  /// 各子模块的折叠状态（key = 字段名；默认展开）。
+  final Map<String, bool> _collapsed = {};
+
+  /// 各编辑器的 GlobalKey，供吸顶标题栏的【编辑】/【保存】按钮驱动（见 [EditableFieldState]）。
+  final GlobalKey _worldStateKey = GlobalKey();
+  final GlobalKey _characterStateKey = GlobalKey();
+  final GlobalKey _memorySummaryKey = GlobalKey();
 
   // —— 实时自动保存（防抖） ——
   static const Duration _debounce = Duration(milliseconds: 700);
@@ -112,6 +123,19 @@ class _SidebarPanelState extends State<SidebarPanel> {
     });
   }
 
+  /// 标题栏【编辑】：若模块已折叠则先展开，再让对应编辑器进入编辑模式。
+  void _enterEditModule(String collapseKey, GlobalKey editorKey) {
+    setState(() => _collapsed[collapseKey] = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      (editorKey.currentState as EditableFieldState?)?.enterEdit();
+    });
+  }
+
+  /// 标题栏【保存】：让对应编辑器立即保存（退出编辑模式并触发 onSave）。
+  void _saveModule(GlobalKey editorKey) {
+    (editorKey.currentState as EditableFieldState?)?.save();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -135,49 +159,71 @@ class _SidebarPanelState extends State<SidebarPanel> {
             child: round == null
                 ? _buildEmpty(theme)
                 // 原生滚动条（主题已统一为常显细圆角拇指），内容长度/滚动自动跟随。
-                : ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      // 当前时间置顶
-                      _sectionLabel(theme, '当前时间'),
-                      TextField(
-                        controller: _currentTime,
-                        style: const TextStyle(fontSize: 14),
-                        decoration: const InputDecoration(
-                          hintText: '当前时间',
-                          isDense: true,
+                // 每个大子模块用 _buildSection 包裹（SliverMainAxisGroup 分组）：
+                // 组内标题栏吸顶，但会被钳制在本组范围，滚动时前一个标题栏
+                // 随组滚出视口、不叠层，一次只有一个标题栏固定在顶部。
+                : CustomScrollView(
+                    slivers: [
+                      _buildSection(
+                        key: 'current_time',
+                        label: '当前时间',
+                        body: TextField(
+                          controller: _currentTime,
+                          style: const TextStyle(fontSize: 14),
+                          decoration: const InputDecoration(
+                            hintText: '当前时间',
+                            isDense: true,
+                          ),
+                          onChanged: (v) =>
+                              _scheduleAutoSave('current_time', v),
                         ),
-                        onChanged: (v) => _scheduleAutoSave('current_time', v),
                       ),
-                      const SizedBox(height: 14),
-                      _sectionLabel(theme, '世界状态'),
-                      MarkdownField(
-                        controller: _worldState,
-                        hintText: '世界状态',
-                        onChanged: (v) => _scheduleAutoSave('world_state', v),
-                        onSave: (v) => _saveFieldNow('world_state', v),
+                      _buildSection(
+                        key: 'world_state',
+                        label: '世界状态',
+                        onEdit: () => _enterEditModule('world_state', _worldStateKey),
+                        onSave: () => _saveModule(_worldStateKey),
+                        body: MarkdownField(
+                          key: _worldStateKey,
+                          controller: _worldState,
+                          hintText: '世界状态',
+                          showToolbar: false,
+                          onChanged: (v) => _scheduleAutoSave('world_state', v),
+                          onSave: (v) => _saveFieldNow('world_state', v),
+                        ),
                       ),
-                      const SizedBox(height: 14),
-                      _sectionLabel(theme, '角色状态'),
-                      MarkdownCollapsibleEditor(
-                        controller: _characterState,
-                        hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
-                        onChanged: (v) => _scheduleAutoSave('character_state', v),
-                        onSave: (v) => _saveFieldNow('character_state', v),
+                      _buildSection(
+                        key: 'character_state',
+                        label: '角色状态',
+                        onEdit: () => _enterEditModule('character_state', _characterStateKey),
+                        onSave: () => _saveModule(_characterStateKey),
+                        body: MarkdownCollapsibleEditor(
+                          key: _characterStateKey,
+                          controller: _characterState,
+                          hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
+                          showToolbar: false,
+                          onChanged: (v) =>
+                              _scheduleAutoSave('character_state', v),
+                          onSave: (v) => _saveFieldNow('character_state', v),
+                        ),
                       ),
-                      const SizedBox(height: 14),
-                      _sectionLabel(
-                        theme,
-                        '记忆总结',
+                      _buildSection(
+                        key: 'memory_summary',
+                        label: '记忆总结',
                         subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
+                        onEdit: () => _enterEditModule('memory_summary', _memorySummaryKey),
+                        onSave: () => _saveModule(_memorySummaryKey),
+                        body: MemorySummaryEditor(
+                          key: _memorySummaryKey,
+                          controller: _memorySummary,
+                          hintText: '记忆总结',
+                          showToolbar: false,
+                          onChanged: (v) =>
+                              _scheduleAutoSave('memory_summary', v),
+                          onSave: (v) => _saveFieldNow('memory_summary', v),
+                        ),
                       ),
-                      MemorySummaryEditor(
-                        controller: _memorySummary,
-                        hintText: '记忆总结',
-                        onChanged: (v) => _scheduleAutoSave('memory_summary', v),
-                        onSave: (v) => _saveFieldNow('memory_summary', v),
-                      ),
-                      const SizedBox(height: 8),
+                      const SliverToBoxAdapter(child: SizedBox(height: 12)),
                     ],
                   ),
           ),
@@ -291,49 +337,209 @@ class _SidebarPanelState extends State<SidebarPanel> {
     );
   }
 
-  Widget _sectionLabel(ThemeData theme, String label, {String? subtitle}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 3,
-            height: 14,
-            margin: const EdgeInsets.only(top: 2),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary,
-              borderRadius: BorderRadius.circular(2),
+  /// 构建一个「可折叠 + 吸顶标题栏」的子模块。
+  ///
+  /// 每个子模块用 [SliverMainAxisGroup] 分组：组内的吸顶标题栏会被钳制在
+  /// 本组范围内，滚动到下一个模块时，前一个标题栏随本组滚出视口（不会
+  /// 叠层堆积），一次只有当前模块的标题栏固定在顶部。
+  /// [onEdit]/[onSave] 提供给标题栏右侧的【编辑】/【保存】按钮，作用于当前模块。
+  Widget _buildSection({
+    required String key,
+    required String label,
+    required Widget body,
+    String? subtitle,
+    VoidCallback? onEdit,
+    VoidCallback? onSave,
+  }) {
+    final collapsed = _collapsed[key] ?? false;
+    return SliverMainAxisGroup(
+      slivers: [
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: _SidebarSectionHeaderDelegate(
+            label: label,
+            subtitle: subtitle,
+            collapsed: collapsed,
+            backgroundColor: widget.isHistoryView
+                ? const Color(0xFFFFFBFB)
+                : Colors.white,
+            onToggle: () => setState(() => _collapsed[key] = !collapsed),
+            onEdit: onEdit,
+            onSave: onSave,
+          ),
+        ),
+        if (!collapsed)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: body,
             ),
           ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+      ],
+    );
+  }
+}
+
+/// 侧边栏子模块的吸顶标题栏（[SliverPersistentHeader] 的 delegate）。
+///
+/// - 固定高度，滚动时吸顶（pinned: true），内容从标题栏下方滚过；
+/// - 整个标题栏可点击：切换该子模块的折叠/展开，箭头随状态旋转；
+/// - 右侧提供当前模块的【编辑】/【保存】按钮（[onEdit]/[onSave] 非空时显示，
+///   折叠时隐藏【保存】）；
+/// - 吸顶时显示底部分割线与轻微阴影，与下方内容区分。
+class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final String label;
+  final String? subtitle;
+  final bool collapsed;
+  final Color backgroundColor;
+  final VoidCallback onToggle;
+  final VoidCallback? onEdit;
+  final VoidCallback? onSave;
+
+  _SidebarSectionHeaderDelegate({
+    required this.label,
+    required this.collapsed,
+    required this.backgroundColor,
+    required this.onToggle,
+    this.subtitle,
+    this.onEdit,
+    this.onSave,
+  });
+
+  static const double _height = 42;
+
+  @override
+  double get minExtent => _height;
+
+  @override
+  double get maxExtent => _height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    final theme = Theme.of(context);
+    final pinned = overlapsContent || shrinkOffset > 0;
+    // 局部变量以获得类型提升（公开字段无法提升为 String）。
+    final sub = subtitle;
+    return Container(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        border: Border(
+          bottom: BorderSide(
+            color: pinned ? NarrChatTheme.divider : Colors.transparent,
+          ),
+        ),
+        boxShadow: pinned
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 4,
+                  offset: const Offset(0, 1),
+                ),
+              ]
+            : null,
+      ),
+      child: InkWell(
+        onTap: onToggle,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              // 折叠/展开箭头（随状态旋转）
+              AnimatedRotation(
+                turns: collapsed ? 0 : 0.25,
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                child: const Icon(Icons.chevron_right, size: 18),
+              ),
+              const SizedBox(width: 6),
+              // 彩色竖条
+              Container(
+                width: 3,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // 标题 + 副标题
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.onSurface,
+                      ),
+                    ),
+                    if (sub != null)
+                      Text(
+                        sub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              // 折叠状态提示
+              if (collapsed)
                 Text(
-                  label,
+                  '已折叠',
                   style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.onSurface,
+                    fontSize: 11,
+                    color: theme.colorScheme.outline,
                   ),
                 ),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 1),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: theme.colorScheme.outline,
-                    ),
+              // 当前模块的【编辑】/【保存】按钮（折叠时隐藏【保存】）
+              if (onEdit != null)
+                TextButton(
+                  onPressed: onEdit,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: const TextStyle(fontSize: 12),
                   ),
-                ],
-              ],
-            ),
+                  child: const Text('编辑'),
+                ),
+              if (onSave != null && !collapsed)
+                TextButton(
+                  onPressed: onSave,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: const TextStyle(fontSize: 12),
+                  ),
+                  child: const Text('保存'),
+                ),
+            ],
           ),
-        ],
+        ),
       ),
     );
+  }
+
+  @override
+  bool shouldRebuild(covariant _SidebarSectionHeaderDelegate oldDelegate) {
+    return oldDelegate.label != label ||
+        oldDelegate.subtitle != subtitle ||
+        oldDelegate.collapsed != collapsed ||
+        oldDelegate.backgroundColor != backgroundColor ||
+        oldDelegate.onToggle != onToggle ||
+        oldDelegate.onEdit != onEdit ||
+        oldDelegate.onSave != onSave;
   }
 }

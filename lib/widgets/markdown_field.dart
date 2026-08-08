@@ -1,15 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import 'editable_field_state.dart';
+
 /// 支持 Markdown 渲染的文本编辑组件。
 ///
 /// - 默认显示 Markdown 预览；
 /// - 点击标题栏的编辑图标或双击进入原始文本编辑模式；
 /// - 与外部通过同一个 [TextEditingController] 通信，父级保存时读取 `controller.text`。
+/// - [showToolbar] 为 false 时隐藏内部工具栏（含「编辑/完成」），
+///   由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动编辑与保存。
 class MarkdownField extends StatefulWidget {
   final TextEditingController controller;
   final String? hintText;
   final bool readOnly;
+
+  /// 是否显示内部工具栏（含「编辑/完成」按钮）。
+  final bool showToolbar;
 
   /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
   final ValueChanged<String>? onChanged;
@@ -22,15 +29,16 @@ class MarkdownField extends StatefulWidget {
     required this.controller,
     this.hintText,
     this.readOnly = false,
+    this.showToolbar = true,
     this.onChanged,
     this.onSave,
   });
 
   @override
-  State<MarkdownField> createState() => _MarkdownFieldState();
+  State<MarkdownField> createState() => MarkdownFieldState();
 }
 
-class _MarkdownFieldState extends State<MarkdownField> {
+class MarkdownFieldState extends State<MarkdownField> implements EditableFieldState {
   bool _editMode = false;
   late final TextEditingController _editController;
 
@@ -82,6 +90,16 @@ class _MarkdownFieldState extends State<MarkdownField> {
     setState(() {});
   }
 
+  // —— EditableFieldState（供侧边栏模块标题栏驱动） ——
+  @override
+  bool get isEditing => _editMode;
+
+  @override
+  void enterEdit() => _enterEdit();
+
+  @override
+  void save() => _exitEdit(save: true);
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -95,40 +113,7 @@ class _MarkdownFieldState extends State<MarkdownField> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // 标题栏
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 4, 4, 0),
-            child: Row(
-              children: [
-                Icon(
-                  _editMode ? Icons.edit_note : Icons.visibility_outlined,
-                  size: 14,
-                  color: theme.colorScheme.outline,
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    _editMode ? '原始文本编辑' : 'Markdown 预览 · 点击右侧按钮编辑',
-                    style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
-                  ),
-                ),
-                if (!widget.readOnly)
-                  TextButton.icon(
-                    onPressed: _editMode ? () => _exitEdit(save: true) : _enterEdit,
-                    icon: Icon(
-                      _editMode ? Icons.check : Icons.edit_outlined,
-                      size: 14,
-                    ),
-                    label: Text(_editMode ? '完成' : '编辑'),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
+          if (widget.showToolbar) ...[_buildToolbar(theme), const Divider(height: 1)],
           // 内容区
           _editMode
               ? Padding(
@@ -170,6 +155,41 @@ class _MarkdownFieldState extends State<MarkdownField> {
                         ),
                       ),
                     ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolbar(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 4, 0),
+      child: Row(
+        children: [
+          Icon(
+            _editMode ? Icons.edit_note : Icons.visibility_outlined,
+            size: 14,
+            color: theme.colorScheme.outline,
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              _editMode ? '原始文本编辑' : 'Markdown 预览 · 点击右侧按钮编辑',
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
+            ),
+          ),
+          if (!widget.readOnly)
+            TextButton.icon(
+              onPressed: _editMode ? () => _exitEdit(save: true) : _enterEdit,
+              icon: Icon(
+                _editMode ? Icons.check : Icons.edit_outlined,
+                size: 14,
+              ),
+              label: Text(_editMode ? '完成' : '编辑'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                textStyle: const TextStyle(fontSize: 11),
+              ),
+            ),
         ],
       ),
     );

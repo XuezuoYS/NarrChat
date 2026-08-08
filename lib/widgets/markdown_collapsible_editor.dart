@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import 'editable_field_state.dart';
+
 /// Markdown 文档树节点。
 class MarkdownNode {
   final int level;
@@ -31,6 +33,11 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
   final String? hintText;
   final bool readOnly;
 
+  /// 是否显示视图模式工具栏中的说明文字与「编辑」按钮。
+  /// 为 false 时仅保留「一键展开/全部折叠」控件，
+  /// 「编辑/保存」由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动。
+  final bool showToolbar;
+
   /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
   final ValueChanged<String>? onChanged;
 
@@ -42,16 +49,18 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
     required this.controller,
     this.hintText,
     this.readOnly = false,
+    this.showToolbar = true,
     this.onChanged,
     this.onSave,
   });
 
   @override
   State<MarkdownCollapsibleEditor> createState() =>
-      _MarkdownCollapsibleEditorState();
+      MarkdownCollapsibleEditorState();
 }
 
-class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
+class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
+    implements EditableFieldState {
   bool _editMode = false;
   late final TextEditingController _editController;
 
@@ -115,6 +124,22 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
   void _setAllExpanded(bool expand) {
     setState(() => _allExpanded = expand);
   }
+
+  // —— EditableFieldState（供侧边栏模块标题栏驱动） ——
+  @override
+  bool get isEditing => _editMode;
+
+  @override
+  void enterEdit() => _enterEdit();
+
+  @override
+  void save() => _exitEdit(save: true);
+
+  /// 是否处于「一键展开 / 全部折叠」中的展开态。
+  bool get allExpanded => _allExpanded;
+
+  /// 一键展开 / 全部折叠所有人物卡片（供外部驱动）。
+  void setAllExpanded(bool expand) => _setAllExpanded(expand);
 
   @override
   Widget build(BuildContext context) {
@@ -205,24 +230,27 @@ class _MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Row(
                 children: [
-                  const Icon(Icons.account_tree_outlined, size: 14, color: Colors.grey),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      '按人物折叠 · 双击进入原始文本编辑',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                    ),
-                  ),
-                  if (!widget.readOnly)
-                    TextButton.icon(
-                      onPressed: _enterEdit,
-                      icon: const Icon(Icons.edit_outlined, size: 14),
-                      label: const Text('编辑'),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        textStyle: const TextStyle(fontSize: 11),
+                  if (widget.showToolbar) ...[
+                    const Icon(Icons.account_tree_outlined, size: 14, color: Colors.grey),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '按人物折叠 · 双击进入原始文本编辑',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                       ),
                     ),
+                    if (!widget.readOnly)
+                      TextButton.icon(
+                        onPressed: _enterEdit,
+                        icon: const Icon(Icons.edit_outlined, size: 14),
+                        label: const Text('编辑'),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                  ],
+                  if (!widget.showToolbar) const Spacer(),
                   // 一键展开 / 全部折叠
                   TextButton.icon(
                     onPressed: widget.readOnly
