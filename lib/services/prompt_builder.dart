@@ -210,7 +210,7 @@ Response rules:
     // 交替消息原生传入（见 buildHistoryMessages），避免把前文压进本轮提问。
 
     // —— 用户本轮发送 ——
-    buf.writeln('【用户本轮发送】');
+    // buf.writeln('【用户本轮发送】');
 
     // 格式要求
     buf.writeln('【格式要求】本次输出必须严格遵循系统指令中的 6 个二级标题（##）区块，顺序为：${sectionOrder.join(' → ')}；严禁在其它任何位置使用二级标题（##）。');
