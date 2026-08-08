@@ -90,6 +90,8 @@ class AppDropdown<T> extends StatelessWidget {
         child: DropdownButton<T>(
           value: value,
           isExpanded: true,
+          // 与相邻输入框等高（dense 模式下按钮高度 32，否则默认 48 会明显偏高）。
+          isDense: true,
           // 固定菜单宽度，避免宽屏下菜单与输入框同宽。
           menuWidth: NarrChatTheme.dropdownMenuWidth,
           // 圆角菜单，与右键/长按菜单共用同一圆角常量。
