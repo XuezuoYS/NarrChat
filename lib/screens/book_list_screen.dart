@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../widgets/round_action_dialogs.dart';
-import 'book_settings_dialog.dart';
+import 'book_settings_screen.dart';
 
 /// 书籍列表页（无书籍时的欢迎/创建入口，以及 AppBar 中的快速切换列表）。
 class BookListScreen extends StatelessWidget {
@@ -64,7 +64,7 @@ class BookListScreen extends StatelessWidget {
                                 icon: const Icon(Icons.edit_outlined, size: 20),
                                 tooltip: '编辑',
                                 onPressed: () =>
-                                    BookSettingsDialog.show(context, book: book),
+                                    BookSettingsScreen.open(context, book: book),
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete_outline, size: 20),
@@ -81,7 +81,7 @@ class BookListScreen extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(16),
               child: FilledButton.icon(
-                onPressed: () => BookSettingsDialog.show(context),
+                onPressed: () => BookSettingsScreen.open(context),
                 icon: const Icon(Icons.add),
                 label: const Text('新建书籍'),
               ),

@@ -13,7 +13,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
 
   Database? _database;
 
@@ -52,6 +52,12 @@ class DatabaseHelper {
             "ALTER TABLE books ADD COLUMN role_hierarchy_detail TEXT DEFAULT ''",
           );
         }
+        if (oldVersion < 4) {
+          // 新增文笔要求描述列（区别于文笔参考段落 writing_style）。
+          await db.execute(
+            "ALTER TABLE books ADD COLUMN writing_requirements TEXT DEFAULT ''",
+          );
+        }
       },
     );
   }
@@ -63,6 +69,7 @@ class DatabaseHelper {
         title TEXT NOT NULL,
         category TEXT DEFAULT '',
         base_setting TEXT DEFAULT '',
+        writing_requirements TEXT DEFAULT '',
         writing_style TEXT DEFAULT '',
         global_pre_prompt TEXT DEFAULT '',
         global_post_prompt TEXT DEFAULT '',

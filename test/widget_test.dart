@@ -17,6 +17,7 @@ const _book = Book(
   title: '测试书',
   category: '玄幻',
   baseSetting: '北域修仙世界，宗门林立。',
+  writingRequirements: '本书文笔要求：多用对话推进。',
   writingStyle: '用户补充：多用短句。',
   globalPrePrompt: '用户前置词：保持悬念。',
   globalPostPrompt: '用户后置词：留下钩子。',
@@ -184,8 +185,21 @@ void main() {
       final user = buildBundle().userPrompt;
       expect(user, contains('坚决去除“AI 腔”'));
       expect(user, contains('首先/其次/最后'));
+      // 本书文笔要求描述注入 user 提示词。
+      expect(user, contains('本书文笔要求：多用对话推进。'));
       // 文笔参考段落（用户补充的风格范例）仅存在于 system，不在 user 中重复。
       expect(user, isNot(contains('用户补充的文笔要求：')));
+      expect(user, isNot(contains('用户补充：多用短句。')));
+    });
+
+    test('本书文笔要求描述同时注入 system 与 user，文笔参考仅 system', () {
+      final system = buildBundle().systemPrompt;
+      final user = buildBundle().userPrompt;
+      // 文笔要求描述（写作规则）→ system 与 user 均包含。
+      expect(system, contains('本书文笔要求：多用对话推进。'));
+      expect(user, contains('本书文笔要求：多用对话推进。'));
+      // 文笔参考段落（风格范例）→ 仅 system。
+      expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
       expect(user, isNot(contains('用户补充：多用短句。')));
     });
 

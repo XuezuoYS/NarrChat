@@ -161,6 +161,10 @@ Response rules:
     buf.writeln('书籍设定：${book.baseSetting.isEmpty ? '（未设置）' : book.baseSetting}');
     buf.writeln('文笔要求：');
     buf.writeln(builtInWritingStyle);
+    if (book.writingRequirements.trim().isNotEmpty) {
+      buf.writeln('本书文笔要求：');
+      buf.writeln(book.writingRequirements);
+    }
     buf.writeln('文笔参考（风格范例，仅此处提供）：${book.writingStyle.isEmpty ? '（未设置）' : book.writingStyle}');
     buf.writeln('角色层级排序规则：${book.roleHierarchy.isEmpty ? '（未设置）' : book.roleHierarchy}');
     buf.writeln('角色类别描述格式（## 角色状态 必须按此组织每个角色的属性项）：');
@@ -218,9 +222,13 @@ Response rules:
       buf.writeln(tempPrePrompt);
     }
 
-    // 文笔要求（内置去 AI 味；用户补充的文笔参考段落仅在 system 中提供）
+    // 文笔要求（内置去 AI 味 + 本书文笔要求描述；用户补充的文笔参考段落仅在 system 中提供）
     buf.writeln('【文笔要求】');
     buf.writeln(builtInWritingStyle);
+    if (book.writingRequirements.trim().isNotEmpty) {
+      buf.writeln('本书文笔要求：');
+      buf.writeln(book.writingRequirements);
+    }
 
     // 用户输入内容
     buf.writeln('【用户输入内容】');

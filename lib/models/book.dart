@@ -7,6 +7,11 @@ class Book {
   final String title;
   final String category;
   final String baseSetting;
+
+  /// 文笔要求描述（写作规则/风格要求，区别于 [writingStyle] 文笔参考段落）。
+  final String writingRequirements;
+
+  /// 文笔参考段落（风格范例文本，仅注入 system）。
   final String writingStyle;
   final String globalPrePrompt;
   final String globalPostPrompt;
@@ -21,6 +26,7 @@ class Book {
     required this.title,
     this.category = '',
     this.baseSetting = '',
+    this.writingRequirements = '',
     this.writingStyle = '',
     this.globalPrePrompt = '',
     this.globalPostPrompt = '',
@@ -35,6 +41,7 @@ class Book {
       title: (map['title'] as String?) ?? '',
       category: (map['category'] as String?) ?? '',
       baseSetting: (map['base_setting'] as String?) ?? '',
+      writingRequirements: (map['writing_requirements'] as String?) ?? '',
       writingStyle: (map['writing_style'] as String?) ?? '',
       globalPrePrompt: (map['global_pre_prompt'] as String?) ?? '',
       globalPostPrompt: (map['global_post_prompt'] as String?) ?? '',
@@ -51,6 +58,7 @@ class Book {
       'title': title,
       'category': category,
       'base_setting': baseSetting,
+      'writing_requirements': writingRequirements,
       'writing_style': writingStyle,
       'global_pre_prompt': globalPrePrompt,
       'global_post_prompt': globalPostPrompt,
@@ -65,6 +73,7 @@ class Book {
     String? title,
     String? category,
     String? baseSetting,
+    String? writingRequirements,
     String? writingStyle,
     String? globalPrePrompt,
     String? globalPostPrompt,
@@ -77,6 +86,7 @@ class Book {
       title: title ?? this.title,
       category: category ?? this.category,
       baseSetting: baseSetting ?? this.baseSetting,
+      writingRequirements: writingRequirements ?? this.writingRequirements,
       writingStyle: writingStyle ?? this.writingStyle,
       globalPrePrompt: globalPrePrompt ?? this.globalPrePrompt,
       globalPostPrompt: globalPostPrompt ?? this.globalPostPrompt,

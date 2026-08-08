@@ -6,10 +6,10 @@ import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/book_list_panel.dart';
 import '../widgets/round_action_dialogs.dart';
-import 'api_settings_dialog.dart';
 import 'book_list_screen.dart';
-import 'book_settings_dialog.dart';
+import 'book_settings_screen.dart';
 import 'chat_screen.dart';
+import 'settings_screen.dart';
 import 'world_book_dialog.dart';
 
 /// 主界面：
@@ -32,11 +32,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void _closeBookDrawer() => setState(() => _bookDrawerOpen = false);
 
   Future<void> _createBook(BuildContext context) async {
-    await BookSettingsDialog.show(context);
+    await BookSettingsScreen.open(context);
   }
 
   Future<void> _editBook(BuildContext context, Book book) async {
-    await BookSettingsDialog.show(context, book: book);
+    await BookSettingsScreen.open(context, book: book);
   }
 
   Future<void> _deleteBook(BuildContext context, Book book) async {
@@ -98,15 +98,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       onPressed: () => WorldBookDialog.show(context),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.tune_outlined),
+                      icon: const Icon(Icons.book_outlined),
                       tooltip: '书籍设置',
-                      onPressed: () => BookSettingsDialog.show(context, book: book),
+                      onPressed: () =>
+                          BookSettingsScreen.open(context, book: book),
                     ),
                   ],
                   IconButton(
-                    icon: const Icon(Icons.key_outlined),
-                    tooltip: 'AI 接口设置',
-                    onPressed: () => ApiSettingsDialog.show(context),
+                    icon: const Icon(Icons.settings_outlined),
+                    tooltip: '设置',
+                    onPressed: () => SettingsScreen.open(context),
                   ),
                 ],
               ),
