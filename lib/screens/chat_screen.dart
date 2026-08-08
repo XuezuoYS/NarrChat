@@ -719,6 +719,7 @@ class _ChatScreenState extends State<ChatScreen>
             children: [
               // 本轮临时指令开关（类似 DeepSeek 的功能开关行）
               Row(
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
                   TextButton.icon(
                     onPressed: () =>
@@ -728,6 +729,19 @@ class _ChatScreenState extends State<ChatScreen>
                       size: 16,
                     ),
                     label: const Text('本轮临时指令'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  // 滚动到底部
+                  TextButton.icon(
+                    onPressed: _scrollToBottom,
+                    icon: const Icon(
+                      Icons.vertical_align_bottom,
+                      size: 16,
+                    ),
+                    label: const Text('滚动到底部'),
                     style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                       textStyle: const TextStyle(fontSize: 12),
