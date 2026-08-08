@@ -35,6 +35,7 @@ const _lastRound = Round(
   worldState: '- 地点：青云宗\n- 天气：晴',
   characterState: '## 女主角\n### 苏清月\n- 心情：平静',
   memorySummary: '主角初入宗门。',
+  currentTime: '第三天 午时',
 );
 
 void main() {
@@ -150,6 +151,13 @@ void main() {
       expect(system, contains('主角初入宗门。'));
     });
 
+    test('系统提示词包含上轮时间并要求沿用其格式', () {
+      final system = buildBundle().systemPrompt;
+      expect(system, contains('上轮时间'));
+      expect(system, contains('第三天 午时'));
+      expect(system, contains('## 当前时间 必须沿用其格式'));
+    });
+
     test('用户提示词包含完整结构（格式/前置/文笔/输入/后置/服从结尾）', () {
       final user = buildBundle().userPrompt;
       expect(user, contains('【用户本轮发送】'));
@@ -231,6 +239,24 @@ void main() {
       expect(user, contains('临时后置：结束在悬念处。'));
       expect(user, contains('用户前置词：保持悬念。'));
       expect(user, contains('用户后置词：留下钩子。'));
+    });
+
+    test('用户提示词包含上轮时间并要求符合其格式', () {
+      final user = buildBundle().userPrompt;
+      expect(user, contains('【上轮时间】'));
+      expect(user, contains('第三天 午时'));
+      expect(user, contains('必须沿用此格式'));
+      expect(user, contains('不得随意改变格式'));
+    });
+
+    test('无上一轮时用户提示词声明由 AI 依据背景设定确定时间格式', () {
+      final user = builder.build(
+        book: _book,
+        userInput: '我走向主殿，想要拜见掌门。',
+      ).userPrompt;
+      expect(user, contains('【上轮时间】'));
+      expect(user, contains('初始轮次'));
+      expect(user, contains('依据书籍背景设定自行确定'));
     });
 
     test('历史轮次按 API 要求组装为 user/assistant 交替 messages', () {

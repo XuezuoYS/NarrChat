@@ -107,6 +107,7 @@ Response rules:
       ),
       userPrompt: _buildUser(
         book: book,
+        lastRound: lastRound,
         userInput: userInput,
         tempPrePrompt: tempPrePrompt,
         tempPostPrompt: tempPostPrompt,
@@ -183,6 +184,7 @@ Response rules:
     if (lastRound != null) {
       final n = lastRound.roundIndex;
       buf.writeln('第 $n 轮状态快照（必须被完整复制到输出的 ## 角色状态 和 ## 世界状态 中，仅修改变动项）：');
+      buf.writeln('上轮时间（## 当前时间 必须沿用其格式，仅按剧情推进更新时间内容）：${lastRound.currentTime.isEmpty ? '（空）' : lastRound.currentTime}');
       buf.writeln('【角色状态】');
       buf.writeln(lastRound.characterState.isEmpty ? '（空）' : lastRound.characterState);
       buf.writeln('【世界状态】');
@@ -197,6 +199,7 @@ Response rules:
 
   String _buildUser({
     required Book book,
+    required Round? lastRound,
     required String userInput,
     required String tempPrePrompt,
     required String tempPostPrompt,
@@ -220,6 +223,13 @@ Response rules:
     if (tempPrePrompt.trim().isNotEmpty) {
       buf.writeln('【本轮临时前置词】');
       buf.writeln(tempPrePrompt);
+    }
+
+    // 上轮时间（作为前置词注入，显式声明 ## 当前时间 必须符合其格式）
+    if (lastRound != null && lastRound.currentTime.trim().isNotEmpty) {
+      buf.writeln('【上轮时间】${lastRound.currentTime.trim()}（## 当前时间 必须沿用此格式，仅按剧情推进更新时间内容，不得随意改变格式）');
+    } else {
+      buf.writeln('【上轮时间】（本轮为初始轮次，无上轮时间；## 当前时间 的格式请依据书籍背景设定自行确定，并保持前后一致）');
     }
 
     // 文笔要求（内置去 AI 味 + 本书文笔要求描述；用户补充的文笔参考段落仅在 system 中提供）

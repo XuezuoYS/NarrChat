@@ -25,6 +25,7 @@ void main() {
     worldState: '- 地点：青云宗后山\n- 灵气：浓郁',
     characterState: '## 女主角\n### 苏清月\n- 心情：担忧',
     memorySummary: '主角在宗门大比中获胜。',
+    currentTime: '第三天 午时',
   );
   final bundle = const PromptBuilder().build(
     book: book,
