@@ -2,42 +2,38 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/world_book_entry.dart';
-import '../providers/book_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../theme/app_theme.dart';
 
-/// 世界书管理对话框。
+/// 世界书管理面板（作为书籍设置的一个子模块）。
 ///
 /// 世界书条目由「关键词 + 注入内容」组成：发送剧情指令时，
 /// App 会扫描本轮输入与最近历史轮次，命中关键词的条目内容将注入 System Prompt。
 /// 支持新增、编辑、启用/停用与删除。
-class WorldBookDialog extends StatefulWidget {
-  const WorldBookDialog({super.key});
+class WorldBookPanel extends StatefulWidget {
+  /// 所属书籍 ID；为 null 表示新建书籍尚未保存（此时仅显示提示）。
+  final int? bookId;
 
-  static Future<void> show(BuildContext context) {
-    return showDialog<void>(
-      context: context,
-      builder: (_) => const WorldBookDialog(),
-    );
-  }
+  const WorldBookPanel({super.key, this.bookId});
 
   @override
-  State<WorldBookDialog> createState() => _WorldBookDialogState();
+  State<WorldBookPanel> createState() => _WorldBookPanelState();
 }
 
-class _WorldBookDialogState extends State<WorldBookDialog> {
+class _WorldBookPanelState extends State<WorldBookPanel> {
   final TextEditingController _keywordController = TextEditingController();
   final TextEditingController _contentController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    // 进入对话框时加载当前书籍的世界书条目。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final book = context.read<BookProvider>().currentBook;
-      if (book != null) {
-        context.read<WorldBookProvider>().loadEntries(book.id!);
-      }
-    });
+    final bookId = widget.bookId;
+    if (bookId != null) {
+      // 进入时加载该书籍的世界书条目。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        context.read<WorldBookProvider>().loadEntries(bookId);
+      });
+    }
   }
 
   @override
@@ -92,116 +88,165 @@ class _WorldBookDialogState extends State<WorldBookDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final worldBookProvider = context.watch<WorldBookProvider>();
-    final entries = worldBookProvider.entries;
-
-    return AlertDialog(
-      title: Row(
+    final bookId = widget.bookId;
+    if (bookId == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(Icons.menu_book_outlined,
-              size: 22, color: theme.colorScheme.primary),
-          const SizedBox(width: 8),
-          const Text('世界书'),
-        ],
-      ),
-      content: SizedBox(
-        width: 560,
-        height: 520,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 新增条目表单
-            TextField(
-              controller: _keywordController,
-              decoration: const InputDecoration(
-                labelText: '触发关键词',
-                hintText: '多个关键词用逗号/顿号分隔，如：青云宗, 苏清月',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
+          const Text(
+            '世界书',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: NarrChatTheme.textPrimary,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _contentController,
-              minLines: 2,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: '注入内容（命中后写入 System Prompt）',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '关键词命中后自动注入 System Prompt。',
+            style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F7F8),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NarrChatTheme.divider),
             ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                onPressed: _addEntry,
-                icon: const Icon(Icons.add),
-                label: const Text('添加条目'),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
+            child: Row(
               children: [
-                Text(
-                  '条目（${entries.length}）',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: theme.colorScheme.outline,
+                Icon(Icons.menu_book_outlined,
+                    size: 28, color: NarrChatTheme.textSecondary),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    '保存新建书籍后，即可在此管理本书的世界书条目。',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: NarrChatTheme.textSecondary,
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            const Divider(height: 1),
-            Expanded(
-              child: entries.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.menu_book_outlined,
-                              size: 40, color: Colors.grey.shade400),
-                          const SizedBox(height: 8),
-                          Text(
-                            '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.grey.shade600),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      itemCount: entries.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final entry = entries[index];
-                        return _EntryTile(
-                          entry: entry,
-                          onToggle: (v) async {
-                            await worldBookProvider.updateEntry(
-                              entry.copyWith(isActive: v),
-                            );
-                          },
-                          onEdit: () => _editEntry(entry),
-                          onDelete: () async {
-                            await worldBookProvider.removeEntry(entry.id!);
-                          },
-                        );
-                      },
-                    ),
+          ),
+        ],
+      );
+    }
+
+    final theme = Theme.of(context);
+    final worldBookProvider = context.watch<WorldBookProvider>();
+    final entries = worldBookProvider.entries;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          '世界书',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: NarrChatTheme.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '关键词命中后自动注入 System Prompt。',
+          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+        ),
+        const SizedBox(height: 20),
+        // 新增条目表单
+        TextField(
+          controller: _keywordController,
+          decoration: const InputDecoration(
+            labelText: '触发关键词',
+            hintText: '多个关键词用逗号/顿号分隔，如：青云宗, 苏清月',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _contentController,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            labelText: '注入内容（命中后写入 System Prompt）',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton.icon(
+            onPressed: _addEntry,
+            icon: const Icon(Icons.add),
+            label: const Text('添加条目'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Text(
+              '条目（${entries.length}）',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.outline,
+              ),
             ),
           ],
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
+        const SizedBox(height: 4),
+        const Divider(height: 1),
+        const SizedBox(height: 4),
+        if (entries.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F7F8),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NarrChatTheme.divider),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.menu_book_outlined,
+                    size: 40, color: Colors.grey.shade400),
+                const SizedBox(height: 8),
+                Text(
+                  '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+                ),
+              ],
+            ),
+          )
+        else
+          // 面板内嵌于外层滚动区，列表自身不滚动。
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            itemCount: entries.length,
+            separatorBuilder: (_, _) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final entry = entries[index];
+              return _EntryTile(
+                entry: entry,
+                onToggle: (v) async {
+                  await worldBookProvider.updateEntry(
+                    entry.copyWith(isActive: v),
+                  );
+                },
+                onEdit: () => _editEntry(entry),
+                onDelete: () async {
+                  await worldBookProvider.removeEntry(entry.id!);
+                },
+              );
+            },
+          ),
       ],
     );
   }

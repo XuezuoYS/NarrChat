@@ -10,6 +10,7 @@ import '../widgets/coming_soon_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/settings_shell.dart';
+import '../widgets/world_book_panel.dart';
 
 /// 全窗口书籍设置界面（新建 / 编辑书籍）。
 ///
@@ -126,6 +127,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         SettingsNavItem(icon: Icons.menu_book_outlined, label: '书籍概览'),
         SettingsNavItem(icon: Icons.category_outlined, label: '角色类别与描述格式'),
         SettingsNavItem(icon: Icons.public_outlined, label: '基础设定'),
+        SettingsNavItem(icon: Icons.menu_book_outlined, label: '世界书'),
         SettingsNavItem(icon: Icons.format_quote_outlined, label: '文笔参考段落'),
         SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
       ],
@@ -146,6 +148,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           case 2:
             return _buildBaseSetting(context);
           case 3:
+            return WorldBookPanel(bookId: widget.book?.id);
+          case 4:
             return _buildWritingStyle(context);
           default:
             return const ComingSoonPanel(

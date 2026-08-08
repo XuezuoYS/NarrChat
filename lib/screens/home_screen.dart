@@ -10,7 +10,6 @@ import 'book_list_screen.dart';
 import 'book_settings_screen.dart';
 import 'chat_screen.dart';
 import 'settings_screen.dart';
-import 'world_book_dialog.dart';
 
 /// 主界面：
 /// - 未选择书籍时显示书籍列表页；
@@ -92,11 +91,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: const _BrandTitle(),
                 actions: [
                   if (book != null) ...[
-                    IconButton(
-                      icon: const Icon(Icons.menu_book_outlined),
-                      tooltip: '世界书',
-                      onPressed: () => WorldBookDialog.show(context),
-                    ),
                     IconButton(
                       icon: const Icon(Icons.book_outlined),
                       tooltip: '书籍设置',
