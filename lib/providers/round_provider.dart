@@ -9,6 +9,7 @@ import '../services/ai_service.dart';
 import '../services/prompt_builder.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
+import 'mod_provider.dart';
 import 'world_book_provider.dart';
 
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
@@ -20,6 +21,7 @@ class RoundProvider extends ChangeNotifier {
     WorldBookScanner? worldBookScanner,
     AiSettingsProvider? aiSettingsProvider,
     WorldBookProvider? worldBookProvider,
+    ModProvider? modProvider,
   })  : _dao = dao ?? RoundDao(),
         _aiService = aiService ?? AiService(),
         _promptBuilder = promptBuilder ?? const PromptBuilder(),
@@ -27,7 +29,9 @@ class RoundProvider extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _aiSettingsProvider = aiSettingsProvider,
         // ignore: prefer_initializing_formals
-        _worldBookProvider = worldBookProvider;
+        _worldBookProvider = worldBookProvider,
+        // ignore: prefer_initializing_formals
+        _modProvider = modProvider;
 
   final RoundDao _dao;
   final AiService _aiService;
@@ -35,6 +39,7 @@ class RoundProvider extends ChangeNotifier {
   final WorldBookScanner _worldBookScanner;
   final AiSettingsProvider? _aiSettingsProvider;
   final WorldBookProvider? _worldBookProvider;
+  final ModProvider? _modProvider;
 
   List<Round> _rounds = [];
   bool _isSending = false;
@@ -143,6 +148,15 @@ class RoundProvider extends ChangeNotifier {
         historyRounds: recentRounds,
         entries: _worldBookProvider?.activeEntries ?? const [],
       );
+      // 本书启用的 Mod：实时解析并置入前置词/后置词/系统提示词/世界书
+      //（Mod 世界书条目与书籍世界书一致：关键词命中才注入，留空则恒定生效）。
+      final modsBundle = _modProvider == null
+          ? null
+          : await _modProvider.resolveModsBundle(
+              bookId: b.id!,
+              userInput: userInput,
+              historyRounds: recentRounds,
+            );
       final prompts = _promptBuilder.build(
         book: b,
         lastRound: lastRound,
@@ -150,6 +164,7 @@ class RoundProvider extends ChangeNotifier {
         tempPrePrompt: tempPrePrompt,
         tempPostPrompt: tempPostPrompt,
         worldBookEntries: worldBookEntries,
+        mods: modsBundle,
       );
 
       // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，

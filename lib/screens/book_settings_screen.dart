@@ -6,7 +6,7 @@ import '../models/role_category.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/constants.dart';
-import '../widgets/coming_soon_panel.dart';
+import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/settings_shell.dart';
@@ -14,12 +14,13 @@ import '../widgets/world_book_panel.dart';
 
 /// 全窗口书籍设置界面（新建 / 编辑书籍）。
 ///
-/// 5 个子模块：
+/// 6 个子模块：
 /// - 书籍概览：书名、分类、文笔要求描述（区别于文笔参考段落）、历史轮次数、全局前后置词；
 /// - 角色类别与描述格式：可拖拽排序、增删、为每类设定描述格式；
 /// - 基础设定：世界观等不会变更的设定；
+/// - 世界书：关键词命中后自动注入 System Prompt；
 /// - 文笔参考段落：风格范例文本（仅注入 system）；
-/// - Mod 管理：暂未开发，显示「未来开发」占位。
+/// - Mod 管理：启用/禁用 Mod 并调整置入顺序。
 class BookSettingsScreen extends StatefulWidget {
   final Book? book;
 
@@ -152,11 +153,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           case 4:
             return _buildWritingStyle(context);
           default:
-            return const ComingSoonPanel(
-              icon: Icons.extension_outlined,
-              title: 'Mod 管理',
-              description: '为本书安装与管理扩展 Mod，添加额外创作能力。',
-            );
+            return BookModPanel(bookId: widget.book?.id);
         }
       },
     );

@@ -14,7 +14,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 4;
+  static const int _dbVersion = 5;
 
   Database? _database;
 
@@ -41,6 +41,8 @@ class DatabaseHelper {
         await _createBooksTable(db);
         await _createRoundsTable(db);
         await _createWorldBookTable(db);
+        await _createModsTable(db);
+        await _createBookModsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -57,6 +59,11 @@ class DatabaseHelper {
           await db.execute(
             "ALTER TABLE books ADD COLUMN writing_requirements TEXT DEFAULT ''",
           );
+        }
+        if (oldVersion < 5) {
+          // Mod 功能：mods（用户自定义 Mod）+ book_mods（书籍启用与顺序）。
+          await _createModsTable(db);
+          await _createBookModsTable(db);
         }
       },
     );
@@ -118,6 +125,40 @@ class DatabaseHelper {
     ''');
     await db.execute(
       'CREATE INDEX idx_world_book_book_id ON world_book_entries (book_id)',
+    );
+  }
+
+  Future<void> _createModsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE mods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        pre_prompt TEXT DEFAULT '',
+        post_prompt TEXT DEFAULT '',
+        system_prompt TEXT DEFAULT '',
+        world_book TEXT DEFAULT '',
+        created_at DATETIME,
+        updated_at DATETIME
+      )
+    ''');
+  }
+
+  Future<void> _createBookModsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE book_mods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        preset_key TEXT,
+        mod_id INTEGER,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE,
+        FOREIGN KEY (mod_id) REFERENCES mods (id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_book_mods_book_id ON book_mods (book_id)',
     );
   }
 

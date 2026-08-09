@@ -1,4 +1,5 @@
 import '../models/book.dart';
+import '../models/mod.dart';
 import '../models/round.dart';
 
 /// Prompt 组装结果。
@@ -98,12 +99,14 @@ Response rules:
     String tempPrePrompt = '',
     String tempPostPrompt = '',
     String worldBookEntries = '',
+    ModsBundle? mods,
   }) {
     return PromptBundle(
       systemPrompt: _buildSystem(
         book: book,
         lastRound: lastRound,
         worldBookEntries: worldBookEntries,
+        mods: mods,
       ),
       userPrompt: _buildUser(
         book: book,
@@ -111,6 +114,7 @@ Response rules:
         userInput: userInput,
         tempPrePrompt: tempPrePrompt,
         tempPostPrompt: tempPostPrompt,
+        mods: mods,
       ),
     );
   }
@@ -136,6 +140,7 @@ Response rules:
     required Book book,
     required Round? lastRound,
     required String worldBookEntries,
+    required ModsBundle? mods,
   }) {
     final buf = StringBuffer();
     buf.writeln(sexPrompt);
@@ -177,9 +182,19 @@ Response rules:
         buf.writeln(c.format.trim().isEmpty ? '（未设置格式）' : c.format.trim());
       }
     }
+    // Mod 系统提示词（本书启用的 Mod 自动置入，恒定生效）。
+    if (mods != null && mods.systemPrompts.trim().isNotEmpty) {
+      buf.writeln('Mod 系统提示词：');
+      buf.writeln(mods.systemPrompts.trim());
+    }
     buf.writeln(
       '精确匹配触发的世界书条目：${worldBookEntries.trim().isEmpty ? '（无）' : worldBookEntries}',
     );
+    // Mod 世界书注入（与用户自行填写世界书效果一致，恒定生效、无需关键词命中）。
+    if (mods != null && mods.worldBooks.trim().isNotEmpty) {
+      buf.writeln('Mod 世界书注入：');
+      buf.writeln(mods.worldBooks.trim());
+    }
     buf.writeln();
     if (lastRound != null) {
       final n = lastRound.roundIndex;
@@ -211,6 +226,7 @@ Response rules:
     required String userInput,
     required String tempPrePrompt,
     required String tempPostPrompt,
+    required ModsBundle? mods,
   }) {
     final buf = StringBuffer();
 
@@ -224,10 +240,14 @@ Response rules:
     buf.writeln('【格式要求】本次输出必须严格遵循系统指令中的 6 个二级标题（##）区块，顺序为：${sectionOrder.join(' → ')}；严禁在其它任何位置使用二级标题（##）。');
     buf.writeln('【记忆总结格式】## 记忆总结 必须按「- 第N轮｜日期：xxx｜概括内容」逐轮输出：每条一行，轮数、日期、概括内容三者绑定在一条内；从第 1 轮至本轮每轮一条，日期一律使用该轮 ## 当前时间（详见系统指令【记忆总结格式】）。');
 
-    // 用户自定义前置词 + 本轮临时前置词
+    // 用户自定义前置词 + Mod 前置词（按置入顺序）+ 本轮临时前置词
     if (book.globalPrePrompt.trim().isNotEmpty) {
       buf.writeln('【用户自定义前置词】');
       buf.writeln(book.globalPrePrompt);
+    }
+    if (mods != null && mods.prePrompts.trim().isNotEmpty) {
+      buf.writeln('【Mod 前置词】');
+      buf.writeln(mods.prePrompts.trim());
     }
     if (tempPrePrompt.trim().isNotEmpty) {
       buf.writeln('【本轮临时前置词】');
@@ -253,7 +273,7 @@ Response rules:
     buf.writeln('【用户输入内容】');
     buf.writeln(userInput);
 
-    // 后置词（本轮临时 + 用户自定义）
+    // 后置词（本轮临时 + 用户自定义 + Mod 后置词按置入顺序）
     if (tempPostPrompt.trim().isNotEmpty) {
       buf.writeln('【本轮临时后置词】');
       buf.writeln(tempPostPrompt);
@@ -261,6 +281,10 @@ Response rules:
     if (book.globalPostPrompt.trim().isNotEmpty) {
       buf.writeln('【用户自定义后置词】');
       buf.writeln(book.globalPostPrompt);
+    }
+    if (mods != null && mods.postPrompts.trim().isNotEmpty) {
+      buf.writeln('【Mod 后置词】');
+      buf.writeln(mods.postPrompts.trim());
     }
 
     // 预置的增强 AI 性能与服从性的后置词结尾

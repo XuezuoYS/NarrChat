@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
 import 'providers/book_provider.dart';
+import 'providers/mod_provider.dart';
 import 'providers/round_provider.dart';
 import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
@@ -60,16 +61,19 @@ class NarrChatApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final worldBookProvider = WorldBookProvider();
+    final modProvider = ModProvider()..loadUserMods();
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: aiSettingsProvider),
         ChangeNotifierProvider.value(value: uiSettingsProvider),
         ChangeNotifierProvider(create: (_) => BookProvider()..loadBooks()),
         ChangeNotifierProvider.value(value: worldBookProvider),
+        ChangeNotifierProvider.value(value: modProvider),
         ChangeNotifierProvider(
           create: (_) => RoundProvider(
             aiSettingsProvider: aiSettingsProvider,
             worldBookProvider: worldBookProvider,
+            modProvider: modProvider,
           ),
         ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
