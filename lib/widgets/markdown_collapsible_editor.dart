@@ -98,9 +98,11 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
 
   void _enterEdit() {
     if (widget.readOnly) return;
+    // 先同步文本（此时 _editMode 仍为 false，不会触发多余的 onChanged），
+    // 再进入编辑模式，避免进入编辑时触发一次无意义的防抖自动保存。
+    _editController.text = widget.controller.text;
     setState(() {
       _editMode = true;
-      _editController.text = widget.controller.text;
     });
   }
 

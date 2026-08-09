@@ -138,6 +138,9 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         TextField(
           controller: _apiKey,
           obscureText: _obscureKey,
+          // 敏感密钥：禁用输入法联想/自动更正。
+          enableSuggestions: false,
+          autocorrect: false,
           decoration: InputDecoration(
             labelText: 'API Key',
             hintText: 'sk-…（保存至系统安全存储）',

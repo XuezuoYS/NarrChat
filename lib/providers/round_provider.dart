@@ -52,6 +52,12 @@ class RoundProvider extends ChangeNotifier {
   final CloudSyncProvider? _cloudSyncProvider;
 
   List<Round> _rounds = [];
+
+  /// 缓存的不可变轮次视图：仅当 [_rounds] 重新赋值时更新。
+  /// UI 用 `context.select` 按引用比较该视图，避免流式输出时
+  /// 轮次未变化却随每次 chunk 触发侧栏等无关组件重建。
+  List<Round> _roundsView = const [];
+
   bool _isSending = false;
   bool _isStreaming = false;
   bool _cancelRequested = false;
@@ -61,7 +67,7 @@ class RoundProvider extends ChangeNotifier {
   String? _error;
   int? _bookId;
 
-  List<Round> get rounds => List.unmodifiable(_rounds);
+  List<Round> get rounds => _roundsView;
   bool get isSending => _isSending;
   bool get isStreaming => _isStreaming;
   String get streamingContent => _streamingContent;
@@ -92,6 +98,12 @@ class RoundProvider extends ChangeNotifier {
   String get debugRawResponse => _debugRawResponse;
   String get debugRawReasoning => _debugRawReasoning;
 
+  /// 更新轮次列表并刷新缓存的不可变视图。
+  void _setRounds(List<Round> rounds) {
+    _rounds = rounds;
+    _roundsView = List.unmodifiable(rounds);
+  }
+
   /// 加载指定书籍的全部轮次（按 round_index 升序）。
   ///
   /// 若书籍尚无任何轮次，自动创建「第零轮」（round_index = 0），
@@ -106,12 +118,12 @@ class RoundProvider extends ChangeNotifier {
     }
     _bookId = bookId;
     try {
-      _rounds = await _dao.getRoundsByBook(bookId);
+      _setRounds(await _dao.getRoundsByBook(bookId));
       if (_rounds.isEmpty) {
         await _dao.insertRound(
           Round(bookId: bookId, roundIndex: 0, createdAt: DateTime.now()),
         );
-        _rounds = await _dao.getRoundsByBook(bookId);
+        _setRounds(await _dao.getRoundsByBook(bookId));
       }
     } catch (e) {
       _error = e.toString();
@@ -128,7 +140,7 @@ class RoundProvider extends ChangeNotifier {
     if (id == null) return;
     final exists = await _bookDao.getBookById(id) != null;
     if (!exists) {
-      _rounds = [];
+      _setRounds([]);
       notifyListeners();
       return;
     }
@@ -359,8 +371,8 @@ class RoundProvider extends ChangeNotifier {
 
   /// 侧边栏实时保存：将单个字段（数据库列名）写回并重新加载。
   ///
-  /// 仅允许白名单内的字段，防止误写。
-  Future<void> updateRoundField(int roundId, String field, String value) async {
+  /// 仅允许白名单内的字段，防止误写；返回是否保存成功。
+  Future<bool> updateRoundField(int roundId, String field, String value) async {
     const allowed = {
       RoundField.worldState,
       RoundField.characterState,
@@ -369,15 +381,17 @@ class RoundProvider extends ChangeNotifier {
       RoundField.aiNarrative,
       RoundField.userInput,
     };
-    if (!allowed.contains(field)) return;
+    if (!allowed.contains(field)) return false;
     try {
       await _dao.updateRoundFields(roundId, {field: value});
       if (_bookId != null) {
         await loadRounds(_bookId!);
       }
+      return true;
     } catch (e) {
       _error = e.toString();
       notifyListeners();
+      return false;
     }
   }
 

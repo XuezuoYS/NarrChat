@@ -105,7 +105,30 @@ class _BookModPanelState extends State<BookModPanel> {
     );
   }
 
+  /// 是否正在保存（防止快速连续操作并发整体替换 book_mods）。
+  bool _saving = false;
+
+  /// 保存进行中又发生了新操作：置位后待当前保存完成再补一次，保证最终落库一致。
+  bool _saveQueued = false;
+
   Future<void> _save() async {
+    if (_saving) {
+      _saveQueued = true;
+      return;
+    }
+    _saving = true;
+    try {
+      await _doSave();
+    } finally {
+      _saving = false;
+    }
+    if (_saveQueued) {
+      _saveQueued = false;
+      await _save();
+    }
+  }
+
+  Future<void> _doSave() async {
     final bookId = widget.bookId;
     if (bookId == null) return;
     final configs = <BookModConfig>[

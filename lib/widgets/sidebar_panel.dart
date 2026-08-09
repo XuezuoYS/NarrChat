@@ -29,7 +29,8 @@ import 'memory_summary_editor.dart';
 class SidebarPanel extends StatefulWidget {
   final Round? round;
   final bool isHistoryView;
-  final Future<void> Function(Round round, String field, String value) onAutoSaveField;
+  /// 自动保存回调；返回是否保存成功（成功才更新「已自动保存于」状态）。
+  final Future<bool> Function(Round round, String field, String value) onAutoSaveField;
   final VoidCallback onBackToCurrent;
 
   /// 顶栏“收起”按钮回调（为空则不显示该按钮）。
@@ -74,8 +75,13 @@ class _SidebarPanelState extends State<SidebarPanel> {
   @override
   void didUpdateWidget(covariant SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 保险起见：若轮次 id 变化（正常情况下因 ValueKey 不会走到这里）则重置内容。
+    // 保险起见：若轮次 id 变化（正常情况下因 ValueKey 不会走到这里）则重置内容，
+    // 并取消所有待触发的防抖保存，避免把旧轮次的值写回旧轮次。
     if (oldWidget.round?.id != widget.round?.id) {
+      for (final t in _autoSaveTimers.values) {
+        t.cancel();
+      }
+      _autoSaveTimers.clear();
       _worldState.text = widget.round?.worldState ?? '';
       _characterState.text = widget.round?.characterState ?? '';
       _memorySummary.text = widget.round?.memorySummary ?? '';
@@ -103,8 +109,9 @@ class _SidebarPanelState extends State<SidebarPanel> {
     _autoSaveTimers[field]?.cancel();
     _autoSaveTimers[field] = Timer(_debounce, () {
       _autoSaveTimers.remove(field);
-      widget.onAutoSaveField(round, field, value).then((_) {
-        if (mounted) {
+      widget.onAutoSaveField(round, field, value).then((ok) {
+        // 仅保存成功时更新「已自动保存于」时间，失败不误导用户。
+        if (mounted && ok) {
           setState(() => _lastAutoSaveAt = DateTime.now());
         }
       });
@@ -117,8 +124,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
     if (round == null) return;
     _autoSaveTimers[field]?.cancel();
     _autoSaveTimers.remove(field);
-    widget.onAutoSaveField(round, field, value).then((_) {
-      if (mounted) {
+    widget.onAutoSaveField(round, field, value).then((ok) {
+      if (mounted && ok) {
         setState(() => _lastAutoSaveAt = DateTime.now());
       }
     });

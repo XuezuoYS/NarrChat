@@ -238,7 +238,13 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     var skipped = 0;
     final provider = context.read<ModProvider>();
     for (final item in items) {
-      final mod = Mod.fromJson(item);
+      Mod? mod;
+      try {
+        mod = Mod.fromJson(item);
+      } catch (_) {
+        // 单个条目字段类型非法（如 name 为数字）时跳过，不中断整体导入。
+        mod = null;
+      }
       if (mod == null) {
         skipped++;
         continue;
@@ -764,10 +770,13 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
                           _multiline(_prePrompt, '发送请求时自动置入「前置词」区'),
                           _multiline(_postPrompt, '发送请求时自动置入「后置词」区'),
                           _multiline(_systemPrompt, '自动追加到 System Prompt'),
-                          _ModWorldBookEditor(
-                            initialEntries: _worldBookEntries,
-                            readOnly: _readOnly,
-                            onChanged: (entries) => _worldBookEntries = entries,
+                          // 世界书条目可能较多，需可滚动（与「基本信息」Tab 一致）。
+                          SingleChildScrollView(
+                            child: _ModWorldBookEditor(
+                              initialEntries: _worldBookEntries,
+                              readOnly: _readOnly,
+                              onChanged: (entries) => _worldBookEntries = entries,
+                            ),
                           ),
                         ],
                       ),

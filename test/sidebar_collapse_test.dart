@@ -26,7 +26,7 @@ void main() {
                 currentTime: '第三天 午时',
               ),
               isHistoryView: false,
-              onAutoSaveField: (r, f, v) async {},
+              onAutoSaveField: (r, f, v) async => true,
               onBackToCurrent: () {},
             ),
           ),
@@ -118,7 +118,7 @@ void main() {
             child: SidebarPanel(
               round: Round(bookId: 1, roundIndex: 1, characterState: sb.toString()),
               isHistoryView: false,
-              onAutoSaveField: (r, f, v) async {},
+              onAutoSaveField: (r, f, v) async => true,
               onBackToCurrent: () {},
             ),
           ),

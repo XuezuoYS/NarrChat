@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/cloud_sync_provider.dart';
@@ -125,10 +126,15 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       _cleanupTemp(tempPath);
       return;
     }
-    final ok = mode == _DownloadApplyMode.replace
-        ? await provider.applyReplace(tempPath)
-        : await provider.applyMerge(tempPath);
-    _cleanupTemp(tempPath);
+    bool ok;
+    try {
+      ok = mode == _DownloadApplyMode.replace
+          ? await provider.applyReplace(tempPath)
+          : await provider.applyMerge(tempPath);
+    } finally {
+      // 无论成功失败都清理临时备份文件，避免残留占用磁盘。
+      _cleanupTemp(tempPath);
+    }
     if (!mounted) return;
     if (ok) {
       if (mode == _DownloadApplyMode.merge) {
@@ -215,6 +221,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
               child: TextField(
                 controller: _password,
                 obscureText: _obscurePassword,
+                // 密码框：禁用输入法联想/自动更正，避免敏感信息被记录。
+                enableSuggestions: false,
+                autocorrect: false,
                 decoration: InputDecoration(
                   labelText: '登录密码',
                   hintText: '（保存至系统安全存储）',
@@ -266,11 +275,15 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
               child: TextField(
                 controller: _keepVersions,
                 keyboardType: TextInputType.number,
+                // 仅允许数字且最多 2 位（1~99），与保存时的范围校验一致。
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                maxLength: 2,
                 decoration: const InputDecoration(
                   labelText: '保留历史版本',
                   hintText: '5',
                   border: OutlineInputBorder(),
                   isDense: true,
+                  counterText: '',
                 ),
               ),
             ),

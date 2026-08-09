@@ -39,6 +39,9 @@ class _ChatScreenState extends State<ChatScreen>
   bool _showTempPrompts = false;
   bool _drawerOpen = false;
 
+  /// 自动跟随滚动是否已在本帧注册 postFrame 回调（防止同帧多次 rebuild 重复 jumpTo）。
+  bool _autoFollowPending = false;
+
   /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
   late final AnimationController _sidebarController;
   late final Animation<double> _sidebarAnim;
@@ -74,6 +77,8 @@ class _ChatScreenState extends State<ChatScreen>
       _sidebarController.forward();
     } else if (!open && _sidebarController.value > 0) {
       _sidebarController.reverse();
+    } else {
+      return; // 目标状态已是当前状态，无需刷新。
     }
     // 刷新「打开侧栏」按钮等随状态变化的 UI。
     setState(() {});
@@ -527,11 +532,14 @@ class _ChatScreenState extends State<ChatScreen>
 
     // 流式输出时若用户位于底部附近（未主动上翻阅读历史），自动跟随新内容，
     // 避免内容不断增长造成视口漂移、滚动条位置飘忽的“不稳定滚动”观感。
-    // 仅在帧末执行 jumpTo（非动画），不会与用户手动滚动/动画滚动冲突。
-    if (showPending && _scrollController.hasClients) {
+    // 仅在帧末执行 jumpTo（非动画），不会与用户手动滚动/动画滚动冲突；
+    // _autoFollowPending 保证同一帧内多次 rebuild 只注册一次回调。
+    if (showPending && !_autoFollowPending && _scrollController.hasClients) {
       final pos = _scrollController.position;
       if (pos.pixels >= pos.maxScrollExtent - 80.0) {
+        _autoFollowPending = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          _autoFollowPending = false;
           if (_scrollController.hasClients) {
             _scrollController.jumpTo(
               _scrollController.position.maxScrollExtent,
@@ -880,9 +888,9 @@ class _ChatScreenState extends State<ChatScreen>
   // 侧边栏
   // ---------------------------------------------------------------------------
   Widget _buildSidebar(BuildContext context, {VoidCallback? onClose}) {
-    final roundProvider = context.watch<RoundProvider>();
+    // 仅订阅轮次列表：流式输出时轮次未变化，侧栏不会随每个 chunk 重建。
+    final rounds = context.select<RoundProvider, List<Round>>((p) => p.rounds);
     final sidebarProvider = context.watch<SidebarProvider>();
-    final rounds = roundProvider.rounds;
     final latest = rounds.isEmpty ? null : rounds.last;
 
     final viewedRound = sidebarProvider.isHistoryView
@@ -897,13 +905,12 @@ class _ChatScreenState extends State<ChatScreen>
       isHistoryView: sidebarProvider.isHistoryView && viewedRound != null,
       onBackToCurrent: () => context.read<SidebarProvider>().showCurrent(),
       onClose: onClose,
-      onAutoSaveField: (round, field, value) async {
-        await context.read<RoundProvider>().updateRoundField(
-              round.id!,
-              field,
-              value,
-            );
-      },
+      onAutoSaveField: (round, field, value) =>
+          context.read<RoundProvider>().updateRoundField(
+                round.id!,
+                field,
+                value,
+              ),
     );
   }
 }
