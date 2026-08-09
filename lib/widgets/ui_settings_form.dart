@@ -61,35 +61,89 @@ class _UiSettingsFormState extends State<UiSettingsForm> {
   }
 
   /// 主题模式设置：跟随系统（默认）/ 亮色 / 暗色。
+  ///
+  /// 窄屏时 SegmentedButton 独占一行并撑满宽度，避免挤压左侧文字描述；
+  /// 宽屏保持 ListTile 横向布局。
   Widget _buildThemeSetting(BuildContext context, UiSettingsProvider ui) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: const Icon(Icons.brightness_6_outlined),
-      title: const Text('主题'),
-      subtitle: const Text('跟随系统（默认）：随系统亮暗自动切换'),
-      trailing: SegmentedButton<AppThemeMode>(
-        segments: const [
-          ButtonSegment(
-            value: AppThemeMode.system,
-            icon: Icon(Icons.brightness_auto_outlined, size: 16),
-            label: Text('跟随系统'),
-          ),
-          ButtonSegment(
-            value: AppThemeMode.light,
-            icon: Icon(Icons.light_mode_outlined, size: 16),
-            label: Text('亮色'),
-          ),
-          ButtonSegment(
-            value: AppThemeMode.dark,
-            icon: Icon(Icons.dark_mode_outlined, size: 16),
-            label: Text('暗色'),
-          ),
-        ],
-        selected: {ui.themeMode},
-        showSelectedIcon: false,
-        onSelectionChanged: (selection) =>
-            ui.setThemeMode(selection.first),
-      ),
+    final colors = context.narrColors;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 560;
+        final segmented = SegmentedButton<AppThemeMode>(
+          segments: narrow
+              ? const [
+                  ButtonSegment(
+                    value: AppThemeMode.system,
+                    label: Text('跟随系统'),
+                  ),
+                  ButtonSegment(value: AppThemeMode.light, label: Text('亮色')),
+                  ButtonSegment(value: AppThemeMode.dark, label: Text('暗色')),
+                ]
+              : const [
+                  ButtonSegment(
+                    value: AppThemeMode.system,
+                    icon: Icon(Icons.brightness_auto_outlined, size: 16),
+                    label: Text('跟随系统'),
+                  ),
+                  ButtonSegment(
+                    value: AppThemeMode.light,
+                    icon: Icon(Icons.light_mode_outlined, size: 16),
+                    label: Text('亮色'),
+                  ),
+                  ButtonSegment(
+                    value: AppThemeMode.dark,
+                    icon: Icon(Icons.dark_mode_outlined, size: 16),
+                    label: Text('暗色'),
+                  ),
+                ],
+          selected: {ui.themeMode},
+          showSelectedIcon: false,
+          onSelectionChanged: (selection) => ui.setThemeMode(selection.first),
+        );
+
+        if (narrow) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.brightness_6_outlined,
+                    size: 24,
+                    color: colors.textSecondary,
+                  ),
+                  const SizedBox(width: 16),
+                  Text(
+                    '主题',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 40),
+                child: Text(
+                  '跟随系统（默认）：随系统亮暗自动切换',
+                  style: TextStyle(fontSize: 12, color: colors.textSecondary),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(width: double.infinity, child: segmented),
+            ],
+          );
+        }
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.brightness_6_outlined),
+          title: const Text('主题'),
+          subtitle: const Text('跟随系统（默认）：随系统亮暗自动切换'),
+          trailing: segmented,
+        );
+      },
     );
   }
 
