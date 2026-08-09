@@ -402,13 +402,11 @@ void main() {
       expect(Constants.defaultRoleHierarchy, [
         '主角',
         '女主角',
-        '次要女主角',
-        '其它重要人物',
         'NPC',
       ]);
       expect(
         Constants.joinRoleHierarchy(Constants.defaultRoleHierarchy),
-        '主角 > 女主角 > 次要女主角 > 其它重要人物 > NPC',
+        '主角 > 女主角 > NPC',
       );
     });
 
@@ -419,8 +417,8 @@ void main() {
     });
 
     test('空值回退默认', () {
-      expect(Constants.splitRoleHierarchy(null).length, 5);
-      expect(Constants.splitRoleHierarchy('').length, 5);
+      expect(Constants.splitRoleHierarchy(null).length, 3);
+      expect(Constants.splitRoleHierarchy('').length, 3);
     });
 
     test('角色类别编解码互逆且保留名称与格式', () {
@@ -439,9 +437,9 @@ void main() {
     });
 
     test('角色类别空值或非法 JSON 回退默认', () {
-      expect(Constants.decodeRoleCategories(null).length, 5);
-      expect(Constants.decodeRoleCategories('').length, 5);
-      expect(Constants.decodeRoleCategories('not a json').length, 5);
+      expect(Constants.decodeRoleCategories(null).length, 3);
+      expect(Constants.decodeRoleCategories('').length, 3);
+      expect(Constants.decodeRoleCategories('not a json').length, 3);
     });
   });
 

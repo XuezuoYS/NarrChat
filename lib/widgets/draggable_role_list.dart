@@ -215,7 +215,7 @@ class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
               maxLines: 10,
               decoration: const InputDecoration(
                 labelText: '详细描述格式（每行一个属性项）',
-                hintText: '如：\n- 姓名：\n- 修为：\n- 心性：',
+                hintText: '如：\n- 姓名：\n- 当前状态：',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),

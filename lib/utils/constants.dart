@@ -10,8 +10,6 @@ class Constants {
   static const List<String> defaultRoleHierarchy = [
     '主角',
     '女主角',
-    '次要女主角',
-    '其它重要人物',
     'NPC',
   ];
 
@@ -19,23 +17,15 @@ class Constants {
   static const List<RoleCategory> defaultRoleCategories = [
     RoleCategory(
       name: '主角',
-      format: '- 姓名：\n- 修为：\n- 心性：\n- 目标：\n- 当前状态：',
+      format: '- 姓名：\n- 当前状态：',
     ),
     RoleCategory(
       name: '女主角',
-      format: '- 姓名：\n- 修为：\n- 心性：\n- 立场：\n- 当前状态：',
-    ),
-    RoleCategory(
-      name: '次要女主角',
-      format: '- 姓名：\n- 修为：\n- 与主角关系：\n- 当前状态：',
-    ),
-    RoleCategory(
-      name: '其它重要人物',
-      format: '- 姓名：\n- 身份：\n- 与主角关系：\n- 当前状态：',
+      format: '- 姓名：\n- 当前状态：',
     ),
     RoleCategory(
       name: 'NPC',
-      format: '- 姓名：\n- 身份：\n- 当前状态：',
+      format: '- 姓名：\n- 当前状态：',
     ),
   ];
 

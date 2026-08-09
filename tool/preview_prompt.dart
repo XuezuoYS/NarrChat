@@ -14,7 +14,7 @@ void main() {
     globalPrePrompt: '保持悬念，不要提前揭露真相。',
     globalPostPrompt: '本轮结束时留下新的钩子。',
     historyRounds: 3,
-    roleHierarchy: '主角 > 女主角 > 次要女主角 > NPC',
+    roleHierarchy: '主角 > 女主角 > NPC',
     roleCategories: Constants.defaultRoleCategories,
   );
   const lastRound = Round(
