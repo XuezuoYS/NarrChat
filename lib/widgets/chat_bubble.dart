@@ -32,7 +32,14 @@ class ChatBubble extends StatefulWidget {
 }
 
 class _ChatBubbleState extends State<ChatBubble> {
+  /// 长按判定计时器（触屏）。
   Timer? _longPressTimer;
+
+  /// 手指按下时的位置；用于判断滑动时是否已离开长按范围。
+  Offset? _downPosition;
+
+  /// 手指移动超过该距离即视为「滑动」，取消长按（与 kTouchSlop 一致）。
+  static const double _moveSlop = 18.0;
 
   @override
   void dispose() {
@@ -46,6 +53,7 @@ class _ChatBubbleState extends State<ChatBubble> {
     final isMouse = event.kind == PointerDeviceKind.mouse;
     final isRightClick = isMouse && event.buttons == kSecondaryMouseButton;
     _longPressTimer?.cancel();
+    _downPosition = event.position;
     if (isRightClick) {
       callback(event.position);
       return;
@@ -58,8 +66,18 @@ class _ChatBubbleState extends State<ChatBubble> {
     }
   }
 
+  void _handlePointerMove(PointerMoveEvent event) {
+    final down = _downPosition;
+    if (down == null) return;
+    // 手指移动超过阈值即视为滚动/拖动，取消长按，避免上下滑动时误弹菜单。
+    if ((event.position - down).distance > _moveSlop) {
+      _cancelLongPress();
+    }
+  }
+
   void _cancelLongPress() {
     _longPressTimer?.cancel();
+    _downPosition = null;
   }
 
   @override
@@ -72,6 +90,7 @@ class _ChatBubbleState extends State<ChatBubble> {
 
     return Listener(
       onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
       onPointerUp: (_) => _cancelLongPress(),
       onPointerCancel: (_) => _cancelLongPress(),
       child: Align(
