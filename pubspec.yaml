@@ -68,6 +68,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # 版本号管理文件（「关于」面板与 build_release.bat 均读取此文件）。
+  assets:
+    - release.yaml
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

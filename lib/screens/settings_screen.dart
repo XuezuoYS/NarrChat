@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/release_info.dart';
 import '../widgets/api_settings_form.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
@@ -55,8 +56,21 @@ class SettingsScreen extends StatelessWidget {
 }
 
 /// 「关于」面板：应用基本信息。
-class _AboutPanel extends StatelessWidget {
+class _AboutPanel extends StatefulWidget {
   const _AboutPanel();
+
+  @override
+  State<_AboutPanel> createState() => _AboutPanelState();
+}
+
+class _AboutPanelState extends State<_AboutPanel> {
+  late Future<String> _versionFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _versionFuture = ReleaseInfo.version();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -102,9 +116,12 @@ class _AboutPanel extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            const _AboutRow(label: '版本', value: '1.0.0'),
-            const _AboutRow(label: '模型', value: 'DeepSeek V4（OpenAI 兼容）'),
-            const _AboutRow(label: '平台', value: 'Android / Windows'),
+            FutureBuilder<String>(
+              future: _versionFuture,
+              builder: (context, snapshot) {
+                return _AboutRow(label: '版本', value: snapshot.data ?? '…');
+              },
+            ),
             const SizedBox(height: 12),
             Text(
               '本软件仅供创作参考，生成内容请仔细甄别。',

@@ -1,0 +1,11 @@
+# NarrChat 版本号管理文件（版本号唯一来源）
+#
+# 修改此文件后：
+#  - 「关于」面板会显示 version 字段；
+#  - build_release.bat 会用 version 命名 APK，并用 build 作为 Android versionCode。
+#  - 建议同时保持 pubspec.yaml 的 version 字段与此处一致。
+#
+# version: 语义化版本号（显示用，如 1.2.3）
+# build:   构建号（Android versionCode，每次发布递增）
+version: 1.0.0
+build: 1
