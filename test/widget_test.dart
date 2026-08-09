@@ -134,9 +134,10 @@ void main() {
     test('系统提示词包含书籍设定/文笔要求/文笔参考/角色层级/世界书条目', () {
       final system = buildBundle().systemPrompt;
       expect(system, contains('书籍设定：北域修仙世界，宗门林立。'));
-      // 内置文笔要求注入 system。
+      // 内置去 AI 味文笔要求已迁移到预置 Mod（web_novel_style），
+      // 内置提示词仅注入「文笔要求」区与本书文笔要求描述。
       expect(system, contains('文笔要求：'));
-      expect(system, contains('坚决去除“AI 腔”'));
+      expect(system, contains('本书文笔要求：多用对话推进。'));
       // 文笔参考段落（用户补充的风格范例）仅存在于 system。
       expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
       expect(system, contains('角色层级排序规则：主角 > 女主角 > NPC'));
@@ -162,12 +163,13 @@ void main() {
       final user = buildBundle().userPrompt;
       expect(user, contains('【格式要求】'));
       expect(user, contains('【记忆总结格式】'));
-      expect(user, contains('【用户自定义前置词】'));
-      expect(user, contains('【本轮临时前置词】'));
+      // 前置词/后置词区不带标签直接内联（用户自定义 + 本轮临时）。
+      expect(user, contains('用户前置词：保持悬念。'));
+      expect(user, contains('临时前置：渲染紧张气氛。'));
       expect(user, contains('【文笔要求】'));
       expect(user, contains('【用户输入内容】'));
-      expect(user, contains('【本轮临时后置词】'));
-      expect(user, contains('【用户自定义后置词】'));
+      expect(user, contains('临时后置：结束在悬念处。'));
+      expect(user, contains('用户后置词：留下钩子。'));
       expect(user, contains('【指令执行】'));
     });
 
@@ -206,14 +208,13 @@ void main() {
       expect(user, contains('从第 1 轮至本轮每轮一条'));
     });
 
-    test('用户提示词包含内置去AI味文笔要求，且不含文笔参考段落', () {
+    test('用户提示词包含本书文笔要求描述，且不含文笔参考段落', () {
       final user = buildBundle().userPrompt;
-      expect(user, contains('坚决去除“AI 腔”'));
-      expect(user, contains('首先/其次/最后'));
+      // 内置去 AI 味文笔要求已迁移到预置 Mod，不再注入内置 prompt。
+      expect(user, contains('【文笔要求】'));
       // 本书文笔要求描述注入 user 提示词。
       expect(user, contains('本书文笔要求：多用对话推进。'));
       // 文笔参考段落（用户补充的风格范例）仅存在于 system，不在 user 中重复。
-      expect(user, isNot(contains('用户补充的文笔要求：')));
       expect(user, isNot(contains('用户补充：多用短句。')));
     });
 
@@ -231,12 +232,11 @@ void main() {
     test('用户提示词各区块按规范顺序排列', () {
       final user = buildBundle().userPrompt;
       final markers = [
-        '【用户本轮发送】',
         '【格式要求】',
-        '【用户自定义前置词】',
-        '【文笔要求】',
+        '【记忆总结格式】',
+        '用户前置词：保持悬念。',
         '【用户输入内容】',
-        '【用户自定义后置词】',
+        '用户后置词：留下钩子。',
         '【指令执行】',
       ];
       final positions = markers.map(user.indexOf).toList();

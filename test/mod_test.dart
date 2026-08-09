@@ -292,16 +292,13 @@ void main() {
         mods: mods,
       );
 
-      // System：Mod 系统提示词 + Mod 世界书注入
-      expect(prompts.systemPrompt, contains('Mod 系统提示词：'));
+      // System：Mod 系统提示词直接内联；Mod 世界书注入到「世界书追加」区。
       expect(prompts.systemPrompt, contains('MOD_SYS'));
-      expect(prompts.systemPrompt, contains('Mod 世界书注入：'));
+      expect(prompts.systemPrompt, contains('世界书追加：'));
       expect(prompts.systemPrompt, contains('MOD_WB'));
 
-      // User：前置词区与后置词区
-      expect(prompts.userPrompt, contains('【Mod 前置词】'));
+      // User：前置词区与后置词区直接内联（无标签）。
       expect(prompts.userPrompt, contains('MOD_PRE'));
-      expect(prompts.userPrompt, contains('【Mod 后置词】'));
       expect(prompts.userPrompt, contains('MOD_POST'));
 
       // 顺序：用户自定义前置词在 Mod 前置词之前；用户自定义后置词在 Mod 后置词之前
@@ -316,30 +313,24 @@ void main() {
       );
     });
 
-    test('未启用 Mod（bundle 为空）时不注入 Mod 区块', () {
-      final prompts = const PromptBuilder().build(
+    test('未启用或空内容 Mod 不注入任何内容', () {
+      final noMods = const PromptBuilder().build(
         book: book,
         lastRound: lastRound,
         userInput: '输入',
       );
-      expect(prompts.systemPrompt, isNot(contains('Mod 系统提示词')));
-      expect(prompts.systemPrompt, isNot(contains('Mod 世界书注入')));
-      expect(prompts.userPrompt, isNot(contains('【Mod 前置词】')));
-      expect(prompts.userPrompt, isNot(contains('【Mod 后置词】')));
-    });
-
-    test('空内容的 Mod 区块不输出', () {
-      const mods = ModsBundle(prePrompts: '', postPrompts: '', systemPrompts: '', worldBooks: '');
-      final prompts = const PromptBuilder().build(
+      final emptyBundle = const PromptBuilder().build(
         book: book,
         lastRound: lastRound,
         userInput: '输入',
-        mods: mods,
+        mods: ModsBundle.empty,
       );
-      expect(prompts.systemPrompt, isNot(contains('Mod 系统提示词')));
-      expect(prompts.systemPrompt, isNot(contains('Mod 世界书注入')));
-      expect(prompts.userPrompt, isNot(contains('【Mod 前置词】')));
-      expect(prompts.userPrompt, isNot(contains('【Mod 后置词】')));
+      for (final prompts in [noMods, emptyBundle]) {
+        expect(prompts.systemPrompt, isNot(contains('MOD_SYS')));
+        expect(prompts.systemPrompt, isNot(contains('MOD_WB')));
+        expect(prompts.userPrompt, isNot(contains('MOD_PRE')));
+        expect(prompts.userPrompt, isNot(contains('MOD_POST')));
+      }
     });
   });
 }
