@@ -16,6 +16,7 @@ import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
 import 'services/system_fonts_service.dart';
 import 'theme/app_theme.dart';
+import 'widgets/ime_caret_sync.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -109,27 +110,31 @@ class NarrChatApp extends StatelessWidget {
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
       child: Consumer<UiSettingsProvider>(
         builder: (context, ui, _) {
-          return MaterialApp(
-            title: 'NarrChat',
-            debugShowCheckedModeBanner: false,
-            // 云同步自动上传等后台操作通过此 key 弹出全局 SnackBar 提示。
-            scaffoldMessengerKey: CloudSyncProvider.messengerKey,
-            theme: NarrChatTheme.lightWithFont(ui.fontFamily),
-            darkTheme: NarrChatTheme.darkWithFont(ui.fontFamily),
-            // 主题模式：跟随系统（默认）/ 亮色 / 暗色。
-            themeMode: ui.themeMode == AppThemeMode.system
-                ? ThemeMode.system
-                : ui.themeMode == AppThemeMode.dark
-                    ? ThemeMode.dark
-                    : ThemeMode.light,
-            locale: const Locale('zh', 'CN'),
-            supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
-            localizationsDelegates: const [
-              GlobalMaterialLocalizations.delegate,
-              GlobalWidgetsLocalizations.delegate,
-              GlobalCupertinoLocalizations.delegate,
-            ],
-            home: const HomeScreen(),
+          // 包裹整个应用：在 Windows 上修复长文本编辑框滚动后
+          // 输入法候选窗跑偏（不跟随光标）的问题（见 ImeCaretSync）。
+          return ImeCaretSync(
+            child: MaterialApp(
+              title: 'NarrChat',
+              debugShowCheckedModeBanner: false,
+              // 云同步自动上传等后台操作通过此 key 弹出全局 SnackBar 提示。
+              scaffoldMessengerKey: CloudSyncProvider.messengerKey,
+              theme: NarrChatTheme.lightWithFont(ui.fontFamily),
+              darkTheme: NarrChatTheme.darkWithFont(ui.fontFamily),
+              // 主题模式：跟随系统（默认）/ 亮色 / 暗色。
+              themeMode: ui.themeMode == AppThemeMode.system
+                  ? ThemeMode.system
+                  : ui.themeMode == AppThemeMode.dark
+                      ? ThemeMode.dark
+                      : ThemeMode.light,
+              locale: const Locale('zh', 'CN'),
+              supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+              localizationsDelegates: const [
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              home: const HomeScreen(),
+            ),
           );
         },
       ),
