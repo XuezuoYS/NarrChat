@@ -11,17 +11,38 @@ class PresetMods {
     Mod(
       presetKey: 'web_novel_style',
       name: '默认网文语感强化',
-      description: '强化中文网文的语感与节奏，抑制“AI 腔”，让正文更贴近网文读者的阅读习惯。',
+      description: '强化中文网文的语感与节奏，让正文更贴近现代此类别下网文读者的阅读习惯。',
       prePrompt: '你需要以中文网文作者的语感与节奏推进剧情，对话贴合人物身份；避免书面语腔调与模板化表达。',
-      postPrompt: '不要在段落结尾强行升华或说教。',
+      postPrompt: '不要在段落结尾强行升华或说教，人物行动应符合逻辑、不浮夸、不多动。',
       systemPrompt: '''
 # 核心文笔要求
-- 正文必须读起来像一名熟练的中文网文作者所写——多用短句与动作细节推进，少用空泛形容词；每段聚焦一个画面；对话口语化且贴合人物性格；禁止“AI 腔”套话。
+- 正文必须读起来像一名熟练的中文网文作者所写，多聚焦于动作细节推进，少用空泛形容词；每段聚焦一个画面；对话口语化且贴合人物性格；禁止“AI 腔”套话。
+- 语言流畅自然，节奏急缓有序，尽可能少地避免为了简洁平快等原因而用单字词语替换双字词语导致的阅读不畅的问题
 - 输出前需自行检查是否符合文笔要求。
 - 禁止滥用排比、比喻等 AI 常见滥用的修辞手法。
 - 禁止过度描写。
 ### 注意：若历史轮次中的文本违背了核心文笔要求，则以此轮开始遵循。
-
+''',
+    ),
+    Mod(
+      presetKey: 'high_ai_style_ban',
+      name: '强度更高的针对性去除AI味',
+      description: '直接对 AI 的用词和手法进行针对性限制，一般能有效的大幅降低 AI 味，但可能会影响正常表达',
+      postPrompt: '''
+# high 高强约束：
+- 严格禁止出现以下内容：
+  - 形容描写：沙哑、沙一类的对语气、腔调、声音的描写
+  - 修辞手法：排比、比喻
+  - 连词：不是……而是……，不是……是……
+- 违反此块规定，将扣除大量分数，导致不及格
+''',
+      systemPrompt: '''
+# High Constraint:
+- Strictly prohibited from including the following:
+  - Descriptive language: descriptions such as "hoarse", "raspy" regarding tone, intonation, and sound
+  - Rhetorical devices: parallelism, metaphor
+  - Conjunctions: "not... but...", "not... but..."
+- Violation of this section's rules will result in a significant deduction of points, leading to failure.
 ''',
     ),
     Mod(
