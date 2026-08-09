@@ -4,20 +4,22 @@ import '../theme/app_theme.dart';
 import '../widgets/api_settings_form.dart';
 import '../widgets/coming_soon_panel.dart';
 import '../widgets/settings_shell.dart';
+import '../widgets/ui_settings_form.dart';
 
 /// 全窗口设置界面。
 ///
 /// 5 个子模块：
 /// - API 设置：完整可用的接口参数配置；
-/// - UI 设置 / Mod 管理 / 云同步：暂未开发，显示「未来开发」占位；
+/// - UI 设置：全局字体等界面偏好；
+/// - Mod 管理 / 云同步：暂未开发，显示「未来开发」占位；
 /// - 关于：应用信息。
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   static Future<void> open(BuildContext context) {
-    return Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
+    return Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
   }
 
   @override
@@ -37,11 +39,7 @@ class SettingsScreen extends StatelessWidget {
           case 0:
             return const ApiSettingsForm();
           case 1:
-            return const ComingSoonPanel(
-              icon: Icons.palette_outlined,
-              title: 'UI 设置',
-              description: '自定义主题、字体大小、气泡样式等界面选项。',
-            );
+            return const UiSettingsForm();
           case 2:
             return const ComingSoonPanel(
               icon: Icons.extension_outlined,
@@ -86,8 +84,11 @@ class _AboutPanel extends StatelessWidget {
                 gradient: NarrChatTheme.brandGradient,
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: const Icon(Icons.auto_awesome,
-                  size: 28, color: Colors.white),
+              child: const Icon(
+                Icons.auto_awesome,
+                size: 28,
+                color: Colors.white,
+              ),
             ),
             const SizedBox(height: 14),
             const Text(
@@ -113,7 +114,10 @@ class _AboutPanel extends StatelessWidget {
             const SizedBox(height: 12),
             const Text(
               '本软件仅供创作参考，生成内容请仔细甄别。',
-              style: TextStyle(fontSize: 11, color: NarrChatTheme.textSecondary),
+              style: TextStyle(
+                fontSize: 11,
+                color: NarrChatTheme.textSecondary,
+              ),
             ),
           ],
         ),

@@ -44,25 +44,34 @@ class NarrChatTheme {
   /// 下拉菜单固定宽度（宽屏下避免菜单与输入框同宽）。
   static const double dropdownMenuWidth = 220;
 
-  static ThemeData get light {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: primary,
-      brightness: Brightness.light,
-    ).copyWith(
-      primary: primary,
-      secondary: accent,
-      surface: Colors.white,
-      surfaceContainerLowest: Colors.white,
-      surfaceContainerLow: const Color(0xFFFAFAFB),
-      surfaceContainer: const Color(0xFFF4F4F5),
-      surfaceContainerHighest: const Color(0xFFECECEE),
-      error: const Color(0xFFE5484D),
-      outline: const Color(0xFFD3D5DA),
-      outlineVariant: const Color(0xFFE8E8EA),
-    );
+  /// 默认浅色主题（跟随系统默认字体）。
+  static ThemeData get light => lightWithFont(null);
+
+  /// 生成浅色主题；[fontFamily] 非空时作为全局字体族
+  /// （需先经 SystemFontsService 加载注册，否则回退系统默认字体）。
+  static ThemeData lightWithFont(String? fontFamily) {
+    final scheme =
+        ColorScheme.fromSeed(
+          seedColor: primary,
+          brightness: Brightness.light,
+        ).copyWith(
+          primary: primary,
+          secondary: accent,
+          surface: Colors.white,
+          surfaceContainerLowest: Colors.white,
+          surfaceContainerLow: const Color(0xFFFAFAFB),
+          surfaceContainer: const Color(0xFFF4F4F5),
+          surfaceContainerHighest: const Color(0xFFECECEE),
+          error: const Color(0xFFE5484D),
+          outline: const Color(0xFFD3D5DA),
+          outlineVariant: const Color(0xFFE8E8EA),
+        );
 
     return ThemeData(
       useMaterial3: true,
+      fontFamily: (fontFamily == null || fontFamily.isEmpty)
+          ? null
+          : fontFamily,
       colorScheme: scheme,
       scaffoldBackgroundColor: background,
       // —— AppBar：极简白，深色前景 ——
@@ -84,7 +93,10 @@ class NarrChatTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0xFFF7F7F8),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 12,
+        ),
         hintStyle: const TextStyle(color: Color(0xFF9CA1A9)),
         labelStyle: const TextStyle(color: Color(0xFF8A8F98)),
         border: OutlineInputBorder(
@@ -105,7 +117,9 @@ class NarrChatTheme {
         style: FilledButton.styleFrom(
           backgroundColor: primary,
           foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
           textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
         ),
@@ -118,9 +132,7 @@ class NarrChatTheme {
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(
-          foregroundColor: textPrimary,
-        ),
+        style: IconButton.styleFrom(foregroundColor: textPrimary),
       ),
       // —— 对话框 ——
       dialogTheme: DialogThemeData(
@@ -154,10 +166,7 @@ class NarrChatTheme {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
       // —— 分割线 ——
-      dividerTheme: DividerThemeData(
-        thickness: 1,
-        color: divider,
-      ),
+      dividerTheme: DividerThemeData(thickness: 1, color: divider),
       // —— 列表 ——
       listTileTheme: ListTileThemeData(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -176,8 +185,9 @@ class NarrChatTheme {
       // —— Switch ——
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith(
-          (states) =>
-              states.contains(WidgetState.selected) ? Colors.white : scheme.outline,
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.white
+              : scheme.outline,
         ),
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
@@ -197,4 +207,3 @@ class NarrChatTheme {
     );
   }
 }
-
