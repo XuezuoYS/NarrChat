@@ -17,6 +17,30 @@ import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
 
+/// 宽屏（桌面端）断点：宽度 ≥ 此值时使用左右双栏布局。
+const double _kWideBreakpoint = 900;
+
+/// 右侧栏固定宽度。
+const double _kSidebarWidth = 380;
+
+/// 消息与输入框的最大内容宽度。
+const double _kContentMaxWidth = 760;
+
+/// 流式自动跟随滚动：距底部小于该距离视为「位于底部」。
+const double _kAutoScrollThreshold = 80;
+
+/// 右侧栏开合动画时长。
+const Duration _kSidebarAnimDuration = Duration(milliseconds: 300);
+
+/// 移动端抽屉动画时长。
+const Duration _kDrawerAnimDuration = Duration(milliseconds: 260);
+
+/// 侧栏开合进度阈值（进度大于该值视为展开）。
+const double _kSidebarOpenThreshold = 0.5;
+
+/// 移动端悬浮按钮距底部距离。
+const double _kFabBottom = 110;
+
 /// 对话界面（书籍已选定后显示）。
 ///
 /// - 桌面端（宽屏）：左右两栏布局，左侧主对话区，右侧侧边栏。
@@ -46,15 +70,15 @@ class _ChatScreenState extends State<ChatScreen>
   late final AnimationController _sidebarController;
   late final Animation<double> _sidebarAnim;
 
-  /// 右侧栏是否展开（以动画进度 0.5 为界）。
-  bool get _sidebarOpen => _sidebarController.value > 0.5;
+  /// 右侧栏是否展开（以动画进度阈值 [_kSidebarOpenThreshold] 为界）。
+  bool get _sidebarOpen => _sidebarController.value > _kSidebarOpenThreshold;
 
   @override
   void initState() {
     super.initState();
     _sidebarController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 300),
+      duration: _kSidebarAnimDuration,
       value: 1, // 默认展开（不依赖入场动画，避免初始隐藏导致“空白”观感）。
     );
     _sidebarAnim = CurvedAnimation(
@@ -187,56 +211,7 @@ class _ChatScreenState extends State<ChatScreen>
     final chatRounds = rp.rounds.where((r) => r.roundIndex > 0).toList();
     final isLatest = chatRounds.isNotEmpty && round.id == chatRounds.last.id;
 
-    final items = <PopupMenuEntry<String>>[
-      if (isAi) ...[
-        const PopupMenuItem(
-          value: 'edit',
-          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑正文'),
-        ),
-      ] else ...[
-        const PopupMenuItem(
-          value: 'editInput',
-          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑输入'),
-        ),
-        const PopupMenuItem(
-          value: 'editReask',
-          child: AppMenuAction(
-            icon: Icons.edit_note,
-            label: '修改并重新提问',
-          ),
-        ),
-      ],
-      PopupMenuItem(
-        value: 'copy',
-        child: AppMenuAction(
-          icon: Icons.copy_outlined,
-          label: isAi ? '复制正文' : '复制内容',
-        ),
-      ),
-      const PopupMenuItem(
-        value: 'reask',
-        child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
-      ),
-      if (isAi) ...[
-        const PopupMenuItem(
-          value: 'sidebar',
-          child: AppMenuAction(icon: Icons.view_sidebar_outlined, label: '查看侧边栏'),
-        ),
-        if (isLatest)
-          const PopupMenuItem(
-            value: 'debug',
-            child: AppMenuAction(icon: Icons.bug_report_outlined, label: '调试'),
-          ),
-        const PopupMenuItem(
-          value: 'delete',
-          child: AppMenuAction(
-            icon: Icons.delete_outline,
-            label: '删除本轮',
-            color: Color(0xFFE5484D),
-          ),
-        ),
-      ],
-    ];
+    final items = _buildMenuItems(round, isAi, isLatest);
 
     showAppMenu<String>(
       context: context,
@@ -273,6 +248,64 @@ class _ChatScreenState extends State<ChatScreen>
           _handleDelete(round);
       }
     });
+  }
+
+  /// 构建气泡上下文菜单项（AI / 用户气泡的入口差异集中于此）。
+  List<PopupMenuEntry<String>> _buildMenuItems(
+    Round round,
+    bool isAi,
+    bool isLatest,
+  ) {
+    return <PopupMenuEntry<String>>[
+      if (isAi) ...[
+        const PopupMenuItem(
+          value: 'edit',
+          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑正文'),
+        ),
+      ] else ...[
+        const PopupMenuItem(
+          value: 'editInput',
+          child: AppMenuAction(icon: Icons.edit_outlined, label: '编辑输入'),
+        ),
+        const PopupMenuItem(
+          value: 'editReask',
+          child: AppMenuAction(icon: Icons.edit_note, label: '修改并重新提问'),
+        ),
+      ],
+      PopupMenuItem(
+        value: 'copy',
+        child: AppMenuAction(
+          icon: Icons.copy_outlined,
+          label: isAi ? '复制正文' : '复制内容',
+        ),
+      ),
+      const PopupMenuItem(
+        value: 'reask',
+        child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
+      ),
+      if (isAi) ...[
+        const PopupMenuItem(
+          value: 'sidebar',
+          child: AppMenuAction(
+            icon: Icons.view_sidebar_outlined,
+            label: '查看侧边栏',
+          ),
+        ),
+        if (isLatest)
+          const PopupMenuItem(
+            value: 'debug',
+            child: AppMenuAction(icon: Icons.bug_report_outlined, label: '调试'),
+          ),
+        const PopupMenuItem(
+          value: 'delete',
+          child: AppMenuAction(
+            icon: Icons.delete_outline,
+            label: '删除本轮',
+            color: Color(0xFFE5484D),
+          ),
+        ),
+      ],
+    ];
   }
 
   /// 复制气泡内容到剪贴板。
@@ -377,14 +410,14 @@ class _ChatScreenState extends State<ChatScreen>
 
   bool get _isWide {
     final size = MediaQuery.sizeOf(context);
-    return size.width >= 900;
+    return size.width >= _kWideBreakpoint;
   }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 900;
+        final wide = constraints.maxWidth >= _kWideBreakpoint;
         final chat = _buildChatArea(context);
         final sidebar = _buildSidebar(
           context,
@@ -392,125 +425,130 @@ class _ChatScreenState extends State<ChatScreen>
               ? () => _setSidebarOpen(false)
               : () => setState(() => _drawerOpen = false),
         );
+        return wide
+            ? _buildWideLayout(context, chat, sidebar)
+            : _buildMobileLayout(context, chat, sidebar);
+      },
+    );
+  }
 
-        if (wide) {
-          // 关键设计：聊天区宽度固定（W-380）永不重排 → 滚动条不乱飞、动画不卡顿；
-          // 右侧栏独占固定 380 槽位，用 SlideTransition 从右缘滑入/滑出（不覆盖、不空白）。
-          // 用 AnimatedBuilder 逐帧驱动，使「打开侧栏」按钮随动画进度正确显隐。
-          return AnimatedBuilder(
-            animation: _sidebarController,
-            builder: (context, _) {
-              final open = _sidebarOpen;
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+  /// 宽屏布局：聊天区 + 右侧栏固定槽位（带开合动画）。
+  Widget _buildWideLayout(BuildContext context, Widget chat, Widget sidebar) {
+    // 关键设计：聊天区宽度固定（W-380）永不重排 → 滚动条不乱飞、动画不卡顿；
+    // 右侧栏独占固定槽位，用 SlideTransition 从右缘滑入/滑出（不覆盖、不空白）。
+    // 用 AnimatedBuilder 逐帧驱动，使「打开侧栏」按钮随动画进度正确显隐。
+    return AnimatedBuilder(
+      animation: _sidebarController,
+      builder: (context, _) {
+        final open = _sidebarOpen;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 聊天区：固定宽度，绝不因侧栏开合而重排。
+            Expanded(child: chat),
+            // 右侧栏固定槽位。
+            SizedBox(
+              width: _kSidebarWidth,
+              child: Stack(
                 children: [
-                  // 聊天区：固定宽度，绝不因侧栏开合而重排。
-                  Expanded(child: chat),
-                  // 右侧栏固定槽位（380px）。
-                  SizedBox(
-                    width: 380,
-                    child: Stack(
-                      children: [
-                        // 收起时：居中显示「打开侧栏」按钮。
-                        if (!open)
-                          Center(
-                            child: Material(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainer,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(12),
-                                onTap: () => _setSidebarOpen(true),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 12),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.view_sidebar_outlined,
-                                        color: context.narrColors.textSecondary,
-                                        size: 20,
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        '打开侧栏',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: context.narrColors.textSecondary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        // 侧栏：value=1 时在槽位内原位（可见），value=0 时滑出右侧（裁剪隐藏）。
-                        // 固定 key：避免条件按钮增删导致元素重建、丢失动画。
-                        ClipRect(
-                          key: const Key('sidebar_panel_clip'),
-                          child: SlideTransition(
-                            key: const Key('sidebar_panel_slide'),
-                            position: Tween<Offset>(
-                              begin: const Offset(1, 0),
-                              end: Offset.zero,
-                            ).animate(_sidebarAnim),
-                            child: Material(elevation: 12, child: sidebar),
-                          ),
-                        ),
-                      ],
+                  // 收起时：居中显示「打开侧栏」按钮。
+                  if (!open) _buildOpenSidebarButton(context),
+                  // 侧栏：value=1 时在槽位内原位（可见），value=0 时滑出右侧（裁剪隐藏）。
+                  // 固定 key：避免条件按钮增删导致元素重建、丢失动画。
+                  ClipRect(
+                    key: const Key('sidebar_panel_clip'),
+                    child: SlideTransition(
+                      key: const Key('sidebar_panel_slide'),
+                      position: Tween<Offset>(
+                        begin: const Offset(1, 0),
+                        end: Offset.zero,
+                      ).animate(_sidebarAnim),
+                      child: Material(elevation: 12, child: sidebar),
                     ),
                   ),
                 ],
-              );
-            },
-          );
-        }
-
-        // 移动端：抽屉布局。
-        final drawerWidth = constraints.maxWidth * 0.88;
-        return Stack(
-          children: [
-            chat,
-            if (_drawerOpen)
-              Positioned.fill(
-                child: GestureDetector(
-                  onTap: () => setState(() => _drawerOpen = false),
-                  child: Container(color: Colors.black26),
-                ),
-              ),
-            AnimatedPositioned(
-              // 固定 key：避免遮罩/FAB 条件渲染导致元素索引变化而重建、丢失动画。
-              key: const Key('right_sidebar_drawer'),
-              duration: const Duration(milliseconds: 260),
-              curve: Curves.easeOutCubic,
-              top: 0,
-              bottom: 0,
-              right: _drawerOpen ? 0 : -drawerWidth,
-              width: drawerWidth,
-              child: Material(
-                elevation: 12,
-                child: sidebar,
               ),
             ),
-            if (!_drawerOpen)
-              Positioned(
-                right: 16,
-                bottom: 110,
-                child: FloatingActionButton.small(
-                  heroTag: 'sidebar_fab',
-                  onPressed: () => setState(() => _drawerOpen = true),
-                  tooltip: '打开状态侧边栏',
-                  child: const Icon(Icons.view_sidebar_outlined),
-                ),
-              ),
           ],
         );
       },
+    );
+  }
+
+  /// 收起状态下的「打开侧栏」按钮。
+  Widget _buildOpenSidebarButton(BuildContext context) {
+    return Center(
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainer,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => _setSidebarOpen(true),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.view_sidebar_outlined,
+                  color: context.narrColors.textSecondary,
+                  size: 20,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '打开侧栏',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: context.narrColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 移动端布局：主对话区全屏 + 右侧抽屉（动画滑入/滑出）+ 悬浮按钮。
+  Widget _buildMobileLayout(BuildContext context, Widget chat, Widget sidebar) {
+    final drawerWidth = MediaQuery.sizeOf(context).width * 0.88;
+    return Stack(
+      children: [
+        chat,
+        if (_drawerOpen)
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => setState(() => _drawerOpen = false),
+              child: Container(color: Colors.black26),
+            ),
+          ),
+        AnimatedPositioned(
+          // 固定 key：避免遮罩/FAB 条件渲染导致元素索引变化而重建、丢失动画。
+          key: const Key('right_sidebar_drawer'),
+          duration: _kDrawerAnimDuration,
+          curve: Curves.easeOutCubic,
+          top: 0,
+          bottom: 0,
+          right: _drawerOpen ? 0 : -drawerWidth,
+          width: drawerWidth,
+          child: Material(
+            elevation: 12,
+            child: sidebar,
+          ),
+        ),
+        if (!_drawerOpen)
+          Positioned(
+            right: 16,
+            bottom: _kFabBottom,
+            child: FloatingActionButton.small(
+              heroTag: 'sidebar_fab',
+              onPressed: () => setState(() => _drawerOpen = true),
+              tooltip: '打开状态侧边栏',
+              child: const Icon(Icons.view_sidebar_outlined),
+            ),
+          ),
+      ],
     );
   }
 
@@ -536,7 +574,7 @@ class _ChatScreenState extends State<ChatScreen>
     // _autoFollowPending 保证同一帧内多次 rebuild 只注册一次回调。
     if (showPending && !_autoFollowPending && _scrollController.hasClients) {
       final pos = _scrollController.position;
-      if (pos.pixels >= pos.maxScrollExtent - 80.0) {
+      if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
         _autoFollowPending = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _autoFollowPending = false;
@@ -618,7 +656,7 @@ class _ChatScreenState extends State<ChatScreen>
         // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
         return Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
+            constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
             child: item,
           ),
         );
@@ -731,146 +769,29 @@ class _ChatScreenState extends State<ChatScreen>
     final isSending = roundProvider.isSending;
 
     final composerColumn = ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 760),
+      constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
       child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 本轮临时指令开关（类似 DeepSeek 的功能开关行）
-              Row(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
-                  TextButton.icon(
-                    onPressed: () =>
-                        setState(() => _showTempPrompts = !_showTempPrompts),
-                    icon: Icon(
-                      _showTempPrompts ? Icons.expand_less : Icons.tune,
-                      size: 16,
-                    ),
-                    label: const Text('本轮临时指令'),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  // 滚动到底部
-                  TextButton.icon(
-                    onPressed: _scrollToBottom,
-                    icon: const Icon(
-                      Icons.vertical_align_bottom,
-                      size: 16,
-                    ),
-                    label: const Text('滚动到底部'),
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-              if (_showTempPrompts) ...[
-                TextField(
-                  controller: _tempPreController,
-                  minLines: 1,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: '本轮临时前置词',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _tempPostController,
-                  minLines: 1,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: '本轮临时后置词',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-              // 圆角输入容器 + 发送按钮
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: context.narrColors.divider),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _inputController,
-                        minLines: 1,
-                        maxLines: 5,
-                        style: TextStyle(
-                          fontSize: 15,
-                          height: 1.5,
-                          color: context.narrColors.textPrimary,
-                        ),
-                        decoration: InputDecoration(
-                          hintText: '输入你的行动或对话…',
-                          hintStyle: TextStyle(
-                            color: context.narrColors.placeholder,
-                          ),
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          filled: false,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 12,
-                          ),
-                        ),
-                        onSubmitted: (_) => _send(),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8, bottom: 8),
-                      child: SizedBox(
-                        width: 36,
-                        height: 36,
-                        child: IconButton.filled(
-                          // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
-                          onPressed: isSending
-                              ? roundProvider.cancelGeneration
-                              : _send,
-                          tooltip: isSending ? '停止生成' : '发送',
-                          style: IconButton.styleFrom(
-                            backgroundColor: NarrChatTheme.primary,
-                            disabledBackgroundColor: Theme.of(context)
-                                .colorScheme
-                                .outline,
-                          ),
-                          icon: isSending
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(Icons.arrow_upward,
-                                  size: 18, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '内容由 AI 生成，仅供创作参考，请仔细甄别',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: context.narrColors.textSecondary,
-                ),
-              ),
-            ],
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildComposerToolbar(),
+          if (_showTempPrompts) ...[
+            _buildTempPromptField(_tempPreController, '本轮临时前置词'),
+            const SizedBox(height: 8),
+            _buildTempPromptField(_tempPostController, '本轮临时后置词'),
+            const SizedBox(height: 8),
+          ],
+          _buildInputRow(context, roundProvider, isSending),
+          const SizedBox(height: 6),
+          Text(
+            '内容由 AI 生成，仅供创作参考，请仔细甄别',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 11,
+              color: context.narrColors.textSecondary,
+            ),
+          ),
+        ],
       ),
     );
 
@@ -881,6 +802,120 @@ class _ChatScreenState extends State<ChatScreen>
         border: Border(top: BorderSide(color: context.narrColors.divider)),
       ),
       child: Center(child: composerColumn),
+    );
+  }
+
+  /// 输入区工具栏：本轮临时指令开关 + 滚动到底部。
+  Widget _buildComposerToolbar() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.start,
+      children: [
+        TextButton.icon(
+          onPressed: () =>
+              setState(() => _showTempPrompts = !_showTempPrompts),
+          icon: Icon(_showTempPrompts ? Icons.expand_less : Icons.tune, size: 16),
+          label: const Text('本轮临时指令'),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            textStyle: const TextStyle(fontSize: 12),
+          ),
+        ),
+        // 滚动到底部
+        TextButton.icon(
+          onPressed: _scrollToBottom,
+          icon: const Icon(Icons.vertical_align_bottom, size: 16),
+          label: const Text('滚动到底部'),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            textStyle: const TextStyle(fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 单个本轮临时指令输入框。
+  Widget _buildTempPromptField(TextEditingController controller, String label) {
+    return TextField(
+      controller: controller,
+      minLines: 1,
+      maxLines: 3,
+      decoration: InputDecoration(labelText: label, isDense: true),
+    );
+  }
+
+  /// 主输入行：圆角输入容器 + 圆形发送/停止按钮。
+  Widget _buildInputRow(
+    BuildContext context,
+    RoundProvider roundProvider,
+    bool isSending,
+  ) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: context.narrColors.divider),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _inputController,
+              minLines: 1,
+              maxLines: 5,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                color: context.narrColors.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: '输入你的行动或对话…',
+                hintStyle: TextStyle(color: context.narrColors.placeholder),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                filled: false,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+              ),
+              onSubmitted: (_) => _send(),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8, bottom: 8),
+            child: SizedBox(
+              width: 36,
+              height: 36,
+              child: IconButton.filled(
+                // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
+                onPressed: isSending ? roundProvider.cancelGeneration : _send,
+                tooltip: isSending ? '停止生成' : '发送',
+                style: IconButton.styleFrom(
+                  backgroundColor: NarrChatTheme.primary,
+                  disabledBackgroundColor: Theme.of(context).colorScheme.outline,
+                ),
+                icon: isSending
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.arrow_upward,
+                        size: 18,
+                        color: Colors.white,
+                      ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

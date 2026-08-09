@@ -25,6 +25,9 @@ class BookModPanel extends StatefulWidget {
   State<BookModPanel> createState() => _BookModPanelState();
 }
 
+/// 书籍 Mod 面板的选项卡。
+enum _BookModsTab { enabled, disabled }
+
 class _BookModPanelState extends State<BookModPanel> {
   /// 已启用（按置入顺序，自上而下）。
   List<BookModConfig> _enabled = [];
@@ -35,8 +38,8 @@ class _BookModPanelState extends State<BookModPanel> {
   Map<String, Mod> _modByRef = {};
   bool _loaded = false;
 
-  /// 0 = 已启用（默认），1 = 未启用。
-  int _tab = 0;
+  /// 当前选项卡（默认「已启用」）。
+  _BookModsTab _tab = _BookModsTab.enabled;
 
   @override
   void initState() {
@@ -257,15 +260,15 @@ class _BookModPanelState extends State<BookModPanel> {
           ),
         ),
         const SizedBox(height: 12),
-        SegmentedButton<int>(
+        SegmentedButton<_BookModsTab>(
           segments: [
             ButtonSegment(
-              value: 0,
+              value: _BookModsTab.enabled,
               icon: const Icon(Icons.check_circle_outline, size: 16),
               label: Text('已启用（${_enabled.length}）'),
             ),
             ButtonSegment(
-              value: 1,
+              value: _BookModsTab.disabled,
               icon: const Icon(Icons.remove_circle_outline, size: 16),
               label: Text('未启用（${_disabled.length}）'),
             ),
@@ -279,7 +282,7 @@ class _BookModPanelState extends State<BookModPanel> {
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),
           )
-        else if (_tab == 0)
+        else if (_tab == _BookModsTab.enabled)
           _buildEnabledList()
         else
           _buildDisabledList(),

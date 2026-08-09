@@ -11,6 +11,15 @@ import 'book_settings_screen.dart';
 import 'chat_screen.dart';
 import 'settings_screen.dart';
 
+/// 宽屏（桌面端）断点：宽度 ≥ 此值时显示左侧书籍栏。
+const double _kWideBreakpoint = 1100;
+
+/// 桌面端左侧书籍栏宽度。
+const double _kBookPanelWidth = 260;
+
+/// 移动端书籍抽屉宽度。
+const double _kBookDrawerWidth = 280;
+
 /// 主界面：
 /// - 未选择书籍时显示书籍列表页；
 /// - 已选择书籍时：
@@ -48,7 +57,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 1100;
+        final wide = constraints.maxWidth >= _kWideBreakpoint;
         return Scaffold(
           // 极简白色顶部：细底边 + 品牌 Logo（模仿 DeepSeek 顶部）。
           appBar: PreferredSize(
@@ -94,7 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         SizedBox(
-                          width: 260,
+                          width: _kBookPanelWidth,
                           child: _buildBookPanel(context, bookProvider),
                         ),
                         const VerticalDivider(width: 1),
@@ -131,8 +140,8 @@ class _HomeScreenState extends State<HomeScreen> {
           curve: Curves.easeOutCubic,
           top: 0,
           bottom: 0,
-          left: _bookDrawerOpen ? 0 : -280,
-          width: 280,
+          left: _bookDrawerOpen ? 0 : -_kBookDrawerWidth,
+          width: _kBookDrawerWidth,
           child: Material(
             elevation: 12,
             child: SafeArea(

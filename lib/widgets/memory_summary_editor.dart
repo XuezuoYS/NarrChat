@@ -49,8 +49,8 @@ List<MemoryEntry> parseMemoryEntries(String text) {
 
 /// 「记忆总结」专用编辑组件。
 ///
-/// 与 [MarkdownField] 接口一致（同一个 [TextEditingController]、防抖自动保存
-/// 回调 [onChanged]、点击「完成」立即保存 [onSave]），但视图模式按「轮数 / 日期 /
+/// 与 [MarkdownField] 接口一致（外部传入 [controller]、防抖自动保存回调
+/// [onChanged]、点击「完成」立即保存 [onSave]），但视图模式按「轮数 / 日期 /
 /// 概括内容」绑定为一条的条目卡片渲染（而非通用 Markdown 预览）：
 ///
 /// - 每条记忆 = 一个卡片：左侧「第N轮」徽标，下方日期 + 概括内容；

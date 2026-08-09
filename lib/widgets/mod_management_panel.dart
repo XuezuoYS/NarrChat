@@ -24,9 +24,12 @@ class ModManagementPanel extends StatefulWidget {
   State<ModManagementPanel> createState() => _ModManagementPanelState();
 }
 
+/// Mod 管理面板的选项卡。
+enum _ModsTab { preset, mine }
+
 class _ModManagementPanelState extends State<ModManagementPanel> {
-  // 默认打开「我的 Mod」（自定义）选项卡，1 = 我的 Mod，0 = 预置 Mod。
-  int _tab = 1;
+  // 默认打开「我的 Mod」选项卡。
+  _ModsTab _tab = _ModsTab.mine;
 
   @override
   void initState() {
@@ -295,15 +298,15 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           ),
         ),
         const SizedBox(height: 16),
-        SegmentedButton<int>(
+        SegmentedButton<_ModsTab>(
           segments: [
             ButtonSegment(
-              value: 0,
+              value: _ModsTab.preset,
               icon: const Icon(Icons.extension_outlined, size: 16),
               label: Text('预置 Mod（${provider.presetMods.length}）'),
             ),
             ButtonSegment(
-              value: 1,
+              value: _ModsTab.mine,
               icon: const Icon(Icons.person_outline, size: 16),
               label: Text('我的 Mod（${provider.userMods.length}）'),
             ),
@@ -312,7 +315,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           onSelectionChanged: (s) => setState(() => _tab = s.first),
         ),
         const SizedBox(height: 12),
-        if (_tab == 0)
+        if (_tab == _ModsTab.preset)
           _buildPresetList(provider.presetMods)
         else
           _buildUserList(provider.userMods),

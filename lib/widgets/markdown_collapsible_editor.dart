@@ -219,7 +219,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   // ---------------------------------------------------------------------------
   Widget _buildViewMode(BuildContext context) {
     final raw = widget.controller.text;
-    final roots = _buildTree(raw);
+    final roots = _cachedBuildTree(raw);
     final displayRoots = _pickDisplayRoots(roots);
     // 人物层级 = 最深的标题层级（每个人物是一个折叠卡片）。
     final personLevel = _maxLevel(displayRoots);
@@ -383,6 +383,23 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   // 树构建与展示根级选择
   // ---------------------------------------------------------------------------
 
+  /// 标题行解析正则（静态复用，避免每次调用重建）。
+  static final RegExp _headingRegex = RegExp(r'^(#{1,6})\s*(.+)$');
+
+  /// 缓存已解析的树：以文本为键，避免视图模式每次 build 全量解析长文本。
+  String? _parsedRaw;
+  List<MarkdownNode>? _parsedRoots;
+
+  /// 按文本缓存 [_buildTree] 的结果。
+  List<MarkdownNode> _cachedBuildTree(String raw) {
+    if (_parsedRaw == raw) {
+      return _parsedRoots ?? const [];
+    }
+    _parsedRaw = raw;
+    _parsedRoots = _buildTree(raw);
+    return _parsedRoots!;
+  }
+
   /// 解析原始文本为标题树；标题前的杂散内容被忽略。
   List<MarkdownNode> _buildTree(String raw) {
     final roots = <MarkdownNode>[];
@@ -436,7 +453,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   /// 解析一行是否为标题，返回 (层级, 标题文本)；非标题返回 null。
   static (int, String)? _parseHeading(String line) {
     final trimmed = line.trimLeft();
-    final match = RegExp(r'^(#{1,6})\s*(.+)$').firstMatch(trimmed);
+    final match = _headingRegex.firstMatch(trimmed);
     if (match == null) return null;
     final hashes = match.group(1)!;
     final text = match.group(2)!.trim();

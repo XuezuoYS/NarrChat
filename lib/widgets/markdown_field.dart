@@ -7,7 +7,8 @@ import 'editable_field_state.dart';
 ///
 /// - 默认显示 Markdown 预览；
 /// - 点击标题栏的编辑图标或双击进入原始文本编辑模式；
-/// - 与外部通过同一个 [TextEditingController] 通信，父级保存时读取 `controller.text`。
+/// - 编辑模式使用内部独立的 [TextEditingController]，进入/退出编辑时与外部
+///   [controller] 双向同步；父级保存时读取 `controller.text`。
 /// - [showToolbar] 为 false 时隐藏内部工具栏（含「编辑/完成」），
 ///   由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动编辑与保存。
 class MarkdownField extends StatefulWidget {

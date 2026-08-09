@@ -56,41 +56,7 @@ class NarrChatTheme {
   static ThemeData _build(Brightness brightness, String? fontFamily) {
     final isDark = brightness == Brightness.dark;
     final colors = isDark ? NarrChatColors.dark : NarrChatColors.light;
-
-    final scheme =
-        ColorScheme.fromSeed(
-          seedColor: primary,
-          brightness: brightness,
-        ).copyWith(
-          primary: primary,
-          secondary: accent,
-          surface: colors.surface,
-          surfaceContainerLowest: isDark
-              ? const Color(0xFF17181A)
-              : Colors.white,
-          surfaceContainerLow: isDark
-              ? const Color(0xFF242528)
-              : const Color(0xFFFAFAFB),
-          surfaceContainer: isDark
-              ? const Color(0xFF2A2B2F)
-              : const Color(0xFFF4F4F5),
-          surfaceContainerHighest: isDark
-              ? const Color(0xFF303238)
-              : const Color(0xFFECECEE),
-          onSurface: isDark
-              ? const Color(0xFFE8E8EA)
-              : const Color(0xFF1F1F1F),
-          onSurfaceVariant: isDark
-              ? const Color(0xFFA2A6AD)
-              : const Color(0xFF5F6368),
-          error: const Color(0xFFE5484D),
-          outline: isDark
-              ? const Color(0xFF5B5E66)
-              : const Color(0xFFD3D5DA),
-          outlineVariant: isDark
-              ? const Color(0xFF2C2E33)
-              : const Color(0xFFE8E8EA),
-        );
+    final scheme = _buildColorScheme(brightness, colors);
 
     return ThemeData(
       useMaterial3: true,
@@ -102,46 +68,8 @@ class NarrChatTheme {
       scaffoldBackgroundColor: colors.background,
       // 供 context.narrColors 读取的自适应配色。
       extensions: [colors],
-      // —— AppBar：浅色为极简白；深色为深灰，前景随主题 ——
-      appBarTheme: AppBarTheme(
-        backgroundColor: colors.surface,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        centerTitle: false,
-        foregroundColor: colors.textPrimary,
-        iconTheme: IconThemeData(color: colors.textPrimary),
-        titleTextStyle: TextStyle(
-          fontSize: 17,
-          fontWeight: FontWeight.w700,
-          color: colors.textPrimary,
-          letterSpacing: 0,
-        ),
-      ),
-      // —— 输入框：浅灰填充 + 细边框 ——
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: isDark
-            ? const Color(0xFF242528)
-            : const Color(0xFFF7F7F8),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
-        hintStyle: TextStyle(color: colors.placeholder),
-        labelStyle: TextStyle(color: colors.textSecondary),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: colors.divider),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: colors.divider),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primary, width: 1.4),
-        ),
-      ),
+      appBarTheme: _appBarTheme(colors),
+      inputDecorationTheme: _inputDecorationTheme(isDark, scheme, colors),
       // —— 按钮 ——
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
@@ -188,15 +116,7 @@ class NarrChatTheme {
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-      // —— SnackBar ——
-      snackBarTheme: SnackBarThemeData(
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: isDark
-            ? const Color(0xFF3A3C42)
-            : const Color(0xFF2A2A2A),
-        contentTextStyle: const TextStyle(color: Colors.white),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
+      snackBarTheme: _snackBarTheme(isDark),
       // —— 分割线 ——
       dividerTheme: DividerThemeData(thickness: 1, color: colors.divider),
       // —— 列表 ——
@@ -230,17 +150,119 @@ class NarrChatTheme {
               : scheme.surfaceContainerHighest,
         ),
       ),
-      // —— 滚动条：原生实现，仅滚动时显示（细圆角拇指，无轨道），
-      //    避免常显滚动条在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感 ——
-      scrollbarTheme: ScrollbarThemeData(
-        thumbVisibility: const WidgetStatePropertyAll(false),
-        thickness: const WidgetStatePropertyAll(6),
-        radius: const Radius.circular(3),
-        thumbColor: WidgetStatePropertyAll(
-          isDark ? const Color(0xFF4A4D54) : const Color(0xFFB9BDC7),
-        ),
-        trackVisibility: const WidgetStatePropertyAll(false),
+      scrollbarTheme: _scrollbarTheme(isDark),
+    );
+  }
+
+  /// 构建 ColorScheme（品牌色 + 自适应表面色）。
+  static ColorScheme _buildColorScheme(
+    Brightness brightness,
+    NarrChatColors colors,
+  ) {
+    return ColorScheme.fromSeed(
+      seedColor: primary,
+      brightness: brightness,
+    ).copyWith(
+      primary: primary,
+      secondary: accent,
+      surface: colors.surface,
+      surfaceContainerLowest: brightness == Brightness.dark
+          ? const Color(0xFF17181A)
+          : Colors.white,
+      surfaceContainerLow: brightness == Brightness.dark
+          ? const Color(0xFF242528)
+          : const Color(0xFFFAFAFB),
+      surfaceContainer: brightness == Brightness.dark
+          ? const Color(0xFF2A2B2F)
+          : const Color(0xFFF4F4F5),
+      surfaceContainerHighest: brightness == Brightness.dark
+          ? const Color(0xFF303238)
+          : const Color(0xFFECECEE),
+      onSurface: brightness == Brightness.dark
+          ? const Color(0xFFE8E8EA)
+          : const Color(0xFF1F1F1F),
+      onSurfaceVariant: brightness == Brightness.dark
+          ? const Color(0xFFA2A6AD)
+          : const Color(0xFF5F6368),
+      error: const Color(0xFFE5484D),
+      outline: brightness == Brightness.dark
+          ? const Color(0xFF5B5E66)
+          : const Color(0xFFD3D5DA),
+      outlineVariant: brightness == Brightness.dark
+          ? const Color(0xFF2C2E33)
+          : const Color(0xFFE8E8EA),
+    );
+  }
+
+  /// AppBar 主题：浅色为极简白；深色为深灰，前景随主题。
+  static AppBarTheme _appBarTheme(NarrChatColors colors) {
+    return AppBarTheme(
+      backgroundColor: colors.surface,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      centerTitle: false,
+      foregroundColor: colors.textPrimary,
+      iconTheme: IconThemeData(color: colors.textPrimary),
+      titleTextStyle: TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w700,
+        color: colors.textPrimary,
+        letterSpacing: 0,
       ),
+    );
+  }
+
+  /// 输入框主题：浅灰填充 + 细边框。
+  ///
+  /// 填充色直接引用既有配色（浅色 = background，深色 = surfaceContainerLow），
+  /// 避免与配色中的十六进制值重复硬编码。
+  static InputDecorationTheme _inputDecorationTheme(
+    bool isDark,
+    ColorScheme scheme,
+    NarrChatColors colors,
+  ) {
+    return InputDecorationTheme(
+      filled: true,
+      fillColor: isDark ? scheme.surfaceContainerLow : colors.background,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      hintStyle: TextStyle(color: colors.placeholder),
+      labelStyle: TextStyle(color: colors.textSecondary),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: colors.divider),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: colors.divider),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: primary, width: 1.4),
+      ),
+    );
+  }
+
+  /// SnackBar 主题。
+  static SnackBarThemeData _snackBarTheme(bool isDark) {
+    return SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: isDark ? const Color(0xFF3A3C42) : const Color(0xFF2A2A2A),
+      contentTextStyle: const TextStyle(color: Colors.white),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    );
+  }
+
+  /// 滚动条主题：原生实现，仅滚动时显示（细圆角拇指，无轨道），
+  /// 避免常显滚动条在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
+  static ScrollbarThemeData _scrollbarTheme(bool isDark) {
+    return ScrollbarThemeData(
+      thumbVisibility: const WidgetStatePropertyAll(false),
+      thickness: const WidgetStatePropertyAll(6),
+      radius: const Radius.circular(3),
+      thumbColor: WidgetStatePropertyAll(
+        isDark ? const Color(0xFF4A4D54) : const Color(0xFFB9BDC7),
+      ),
+      trackVisibility: const WidgetStatePropertyAll(false),
     );
   }
 }
