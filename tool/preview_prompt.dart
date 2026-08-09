@@ -32,8 +32,6 @@ void main() {
     book: book,
     lastRound: lastRound,
     userInput: '我收剑而立，看向山门方向。',
-    tempPrePrompt: '强调主角处境危险。',
-    tempPostPrompt: '在剑拔弩张处停止。',
     worldBookEntries: '青云宗是北域第一大派，护山大阵每十年开启一次。',
   );
   // ignore: avoid_print

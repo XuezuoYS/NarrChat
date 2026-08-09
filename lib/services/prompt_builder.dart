@@ -23,10 +23,10 @@ class PromptBundle {
 /// ```
 /// 【用户本轮发送】
 ///   - 【格式要求】     （6 个二级标题、固定顺序、禁止其它 ##）
-///   - 【用户自定义前置词】/【本轮临时前置词】
+///   - 【用户自定义前置词】
 ///   - 【文笔要求】     （内置去 AI 味；文笔参考段落不在本处，见 system）
 ///   - 【用户输入内容】
-///   - 【本轮临时后置词】/【用户自定义后置词】
+///   - 【用户自定义后置词】
 ///   - 【指令执行】     （预置的增强 AI 性能与服从性的结尾）
 /// ```
 /// 历史轮次不写入 Prompt 文本，而是按 API 要求以 `messages` 数组中的
@@ -57,8 +57,6 @@ class PromptBuilder {
     required Book book,
     Round? lastRound,
     required String userInput,
-    String tempPrePrompt = '',
-    String tempPostPrompt = '',
     String worldBookEntries = '',
     ModsBundle? mods,
   }) {
@@ -73,8 +71,6 @@ class PromptBuilder {
         book: book,
         lastRound: lastRound,
         userInput: userInput,
-        tempPrePrompt: tempPrePrompt,
-        tempPostPrompt: tempPostPrompt,
         mods: mods,
       ),
     );
@@ -187,8 +183,6 @@ class PromptBuilder {
     required Book book,
     required Round? lastRound,
     required String userInput,
-    required String tempPrePrompt,
-    required String tempPostPrompt,
     required ModsBundle? mods,
   }) {
     final buf = StringBuffer();
@@ -203,16 +197,13 @@ class PromptBuilder {
     buf.writeln('【格式要求】本次输出必须严格遵循系统指令中的 6 个二级标题（##）区块，顺序为：${sectionOrder.join(' → ')}；严禁在其它任何位置使用二级标题（##）。');
     buf.writeln('【记忆总结格式】## 记忆总结 必须按「- 第N轮｜日期：xxx｜概括内容」逐轮输出：每条一行，轮数、日期、概括内容三者绑定在一条内；从第 1 轮至本轮每轮一条，日期一律使用该轮 ## 当前时间（详见系统指令【记忆总结格式】）。');
 
-    // 用户自定义前置词 + Mod 前置词（按置入顺序）+ 本轮临时前置词
+    // 用户自定义前置词 + Mod 前置词（按置入顺序）
     buf.writeln('==========');
     if (book.globalPrePrompt.trim().isNotEmpty) {
       buf.writeln(book.globalPrePrompt);
     }
     if (mods != null && mods.prePrompts.trim().isNotEmpty) {
       buf.writeln(mods.prePrompts.trim());
-    }
-    if (tempPrePrompt.trim().isNotEmpty) {
-      buf.writeln(tempPrePrompt);
     }
     buf.writeln('==========');
 
@@ -235,10 +226,7 @@ class PromptBuilder {
     buf.writeln(userInput);
     buf.writeln('==========');
 
-    // 后置词（本轮临时 + 用户自定义 + Mod 后置词按置入顺序）
-    if (tempPostPrompt.trim().isNotEmpty) {
-      buf.writeln(tempPostPrompt);
-    }
+    // 后置词（用户自定义 + Mod 后置词按置入顺序）
     if (book.globalPostPrompt.trim().isNotEmpty) {
       buf.writeln(book.globalPostPrompt);
     }

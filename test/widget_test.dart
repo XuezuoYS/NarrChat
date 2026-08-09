@@ -86,8 +86,6 @@ void main() {
           book: _book,
           lastRound: _lastRound,
           userInput: '我走向主殿，想要拜见掌门。',
-          tempPrePrompt: '临时前置：渲染紧张气氛。',
-          tempPostPrompt: '临时后置：结束在悬念处。',
           worldBookEntries: '青云宗是北域第一大派。',
         );
 
@@ -163,12 +161,10 @@ void main() {
       final user = buildBundle().userPrompt;
       expect(user, contains('【格式要求】'));
       expect(user, contains('【记忆总结格式】'));
-      // 前置词/后置词区不带标签直接内联（用户自定义 + 本轮临时）。
+      // 前置词/后置词区不带标签直接内联（用户自定义）。
       expect(user, contains('用户前置词：保持悬念。'));
-      expect(user, contains('临时前置：渲染紧张气氛。'));
       expect(user, contains('【文笔要求】'));
       expect(user, contains('【用户输入内容】'));
-      expect(user, contains('临时后置：结束在悬念处。'));
       expect(user, contains('用户后置词：留下钩子。'));
       expect(user, contains('【指令执行】'));
     });
@@ -249,11 +245,9 @@ void main() {
       }
     });
 
-    test('用户输入与临时前后置词被正确注入', () {
+    test('用户输入与前后置词被正确注入', () {
       final user = buildBundle().userPrompt;
       expect(user, contains('我走向主殿，想要拜见掌门。'));
-      expect(user, contains('临时前置：渲染紧张气氛。'));
-      expect(user, contains('临时后置：结束在悬念处。'));
       expect(user, contains('用户前置词：保持悬念。'));
       expect(user, contains('用户后置词：留下钩子。'));
     });

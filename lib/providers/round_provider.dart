@@ -156,8 +156,6 @@ class RoundProvider extends ChangeNotifier {
   /// 返回是否成功。失败时通过 [error] 暴露原因，且不写入任何数据。
   Future<bool> sendRound({
     required String userInput,
-    String tempPrePrompt = '',
-    String tempPostPrompt = '',
     Book? book,
   }) async {
     final b = book;
@@ -199,8 +197,6 @@ class RoundProvider extends ChangeNotifier {
         book: b,
         lastRound: lastRound,
         userInput: userInput,
-        tempPrePrompt: tempPrePrompt,
-        tempPostPrompt: tempPostPrompt,
         worldBookEntries: worldBookEntries,
         mods: modsBundle,
       );

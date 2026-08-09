@@ -57,11 +57,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen>
     with SingleTickerProviderStateMixin {
   final TextEditingController _inputController = TextEditingController();
-  final TextEditingController _tempPreController = TextEditingController();
-  final TextEditingController _tempPostController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  bool _showTempPrompts = false;
   bool _drawerOpen = false;
 
   /// 自动跟随滚动是否已在本帧注册 postFrame 回调（防止同帧多次 rebuild 重复 jumpTo）。
@@ -116,8 +113,6 @@ class _ChatScreenState extends State<ChatScreen>
   void dispose() {
     _sidebarController.dispose();
     _inputController.dispose();
-    _tempPreController.dispose();
-    _tempPostController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -169,8 +164,6 @@ class _ChatScreenState extends State<ChatScreen>
 
     final ok = await roundProvider.sendRound(
       userInput: input,
-      tempPrePrompt: _tempPreController.text,
-      tempPostPrompt: _tempPostController.text,
       book: book,
     );
 
@@ -183,15 +176,6 @@ class _ChatScreenState extends State<ChatScreen>
           duration: const Duration(seconds: 4),
         ),
       );
-    }
-    // 本轮临时指令仅生效一次：发送成功后清空，避免持续注入到后续轮次。
-    if (ok) {
-      if (_tempPreController.text.trim().isNotEmpty) {
-        _tempPreController.clear();
-      }
-      if (_tempPostController.text.trim().isNotEmpty) {
-        _tempPostController.clear();
-      }
     }
     _scrollToBottom();
   }
@@ -813,12 +797,6 @@ class _ChatScreenState extends State<ChatScreen>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildComposerToolbar(),
-          if (_showTempPrompts) ...[
-            _buildTempPromptField(_tempPreController, '本轮临时前置词'),
-            const SizedBox(height: 8),
-            _buildTempPromptField(_tempPostController, '本轮临时后置词'),
-            const SizedBox(height: 8),
-          ],
           _buildInputRow(context, roundProvider, isSending),
           const SizedBox(height: 6),
           Text(
@@ -843,21 +821,11 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 输入区工具栏：本轮临时指令开关 + 滚动到底部。
+  /// 输入区工具栏：滚动到底部。
   Widget _buildComposerToolbar() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.start,
       children: [
-        TextButton.icon(
-          onPressed: () =>
-              setState(() => _showTempPrompts = !_showTempPrompts),
-          icon: Icon(_showTempPrompts ? Icons.expand_less : Icons.tune, size: 16),
-          label: const Text('本轮临时指令'),
-          style: TextButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            textStyle: const TextStyle(fontSize: 12),
-          ),
-        ),
         // 滚动到底部
         TextButton.icon(
           onPressed: _scrollToBottom,
@@ -869,16 +837,6 @@ class _ChatScreenState extends State<ChatScreen>
           ),
         ),
       ],
-    );
-  }
-
-  /// 单个本轮临时指令输入框。
-  Widget _buildTempPromptField(TextEditingController controller, String label) {
-    return TextField(
-      controller: controller,
-      minLines: 1,
-      maxLines: 3,
-      decoration: InputDecoration(labelText: label, isDense: true),
     );
   }
 
