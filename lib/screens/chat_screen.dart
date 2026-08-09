@@ -532,9 +532,13 @@ class _ChatScreenState extends State<ChatScreen>
           bottom: 0,
           right: _drawerOpen ? 0 : -drawerWidth,
           width: drawerWidth,
-          child: Material(
-            elevation: 12,
-            child: sidebar,
+          // ClipRect 把 Material 的阴影裁剪在抽屉边界内：
+          // 收起滑出屏幕后阴影不再投射到屏幕边缘内。
+          child: ClipRect(
+            child: Material(
+              elevation: 12,
+              child: sidebar,
+            ),
           ),
         ),
         if (!_drawerOpen)

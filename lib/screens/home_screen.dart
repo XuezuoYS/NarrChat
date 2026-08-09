@@ -142,11 +142,15 @@ class _HomeScreenState extends State<HomeScreen> {
           bottom: 0,
           left: _bookDrawerOpen ? 0 : -_kBookDrawerWidth,
           width: _kBookDrawerWidth,
-          child: Material(
-            elevation: 12,
-            child: SafeArea(
-              right: false,
-              child: _buildBookPanel(context, provider),
+          // ClipRect 把 Material 的阴影裁剪在抽屉边界内：
+          // 收起滑出屏幕后阴影不再投射到屏幕边缘内。
+          child: ClipRect(
+            child: Material(
+              elevation: 12,
+              child: SafeArea(
+                right: false,
+                child: _buildBookPanel(context, provider),
+              ),
             ),
           ),
         ),
