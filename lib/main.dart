@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
 import 'providers/book_provider.dart';
+import 'providers/cloud_sync_provider.dart';
 import 'providers/mod_provider.dart';
 import 'providers/round_provider.dart';
 import 'providers/sidebar_provider.dart';
@@ -40,10 +41,34 @@ Future<void> main() async {
       }
     }),
   );
+  // 云同步（WebDAV）设置：密码从安全存储读取，其余从本地 JSON 读取。
+  final cloudSyncProvider = CloudSyncProvider()..load();
+  // 业务数据 Provider：在 main 中创建以注册云同步恢复后的刷新回调。
+  final bookProvider = BookProvider()..loadBooks();
+  final worldBookProvider = WorldBookProvider();
+  final modProvider = ModProvider()..loadUserMods();
+  final roundProvider = RoundProvider(
+    aiSettingsProvider: aiSettingsProvider,
+    worldBookProvider: worldBookProvider,
+    modProvider: modProvider,
+    cloudSyncProvider: cloudSyncProvider,
+  );
+  // 云同步下载（替换/合并）完成后，重载本地内存态数据。
+  cloudSyncProvider.onDataRestored = () async {
+    await bookProvider.loadBooks();
+    await modProvider.loadUserMods();
+    await worldBookProvider.reloadCurrent();
+    await roundProvider.reloadCurrent();
+  };
   runApp(
     NarrChatApp(
       aiSettingsProvider: aiSettingsProvider,
       uiSettingsProvider: uiSettingsProvider,
+      cloudSyncProvider: cloudSyncProvider,
+      bookProvider: bookProvider,
+      worldBookProvider: worldBookProvider,
+      modProvider: modProvider,
+      roundProvider: roundProvider,
     ),
   );
 }
@@ -51,31 +76,34 @@ Future<void> main() async {
 class NarrChatApp extends StatelessWidget {
   final AiSettingsProvider aiSettingsProvider;
   final UiSettingsProvider uiSettingsProvider;
+  final CloudSyncProvider cloudSyncProvider;
+  final BookProvider bookProvider;
+  final WorldBookProvider worldBookProvider;
+  final ModProvider modProvider;
+  final RoundProvider roundProvider;
 
   const NarrChatApp({
     super.key,
     required this.aiSettingsProvider,
     required this.uiSettingsProvider,
+    required this.cloudSyncProvider,
+    required this.bookProvider,
+    required this.worldBookProvider,
+    required this.modProvider,
+    required this.roundProvider,
   });
 
   @override
   Widget build(BuildContext context) {
-    final worldBookProvider = WorldBookProvider();
-    final modProvider = ModProvider()..loadUserMods();
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: aiSettingsProvider),
         ChangeNotifierProvider.value(value: uiSettingsProvider),
-        ChangeNotifierProvider(create: (_) => BookProvider()..loadBooks()),
+        ChangeNotifierProvider.value(value: cloudSyncProvider),
+        ChangeNotifierProvider.value(value: bookProvider),
         ChangeNotifierProvider.value(value: worldBookProvider),
         ChangeNotifierProvider.value(value: modProvider),
-        ChangeNotifierProvider(
-          create: (_) => RoundProvider(
-            aiSettingsProvider: aiSettingsProvider,
-            worldBookProvider: worldBookProvider,
-            modProvider: modProvider,
-          ),
-        ),
+        ChangeNotifierProvider.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
@@ -84,6 +112,8 @@ class NarrChatApp extends StatelessWidget {
           return MaterialApp(
             title: 'NarrChat',
             debugShowCheckedModeBanner: false,
+            // 云同步自动上传等后台操作通过此 key 弹出全局 SnackBar 提示。
+            scaffoldMessengerKey: CloudSyncProvider.messengerKey,
             theme: NarrChatTheme.lightWithFont(ui.fontFamily),
             darkTheme: NarrChatTheme.darkWithFont(ui.fontFamily),
             // 主题模式：跟随系统（默认）/ 亮色 / 暗色。

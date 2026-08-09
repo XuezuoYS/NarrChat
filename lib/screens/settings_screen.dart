@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../widgets/api_settings_form.dart';
-import '../widgets/coming_soon_panel.dart';
+import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/ui_settings_form.dart';
@@ -13,7 +13,7 @@ import '../widgets/ui_settings_form.dart';
 /// - API 设置：完整可用的接口参数配置；
 /// - UI 设置：全局字体等界面偏好；
 /// - Mod 管理：查看预置 Mod，创建/编辑/导出/导入自定义 Mod；
-/// - 云同步：暂未开发，显示「未来开发」占位；
+/// - 云同步：WebDAV 云端备份 / 恢复；
 /// - 关于：应用信息。
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -45,11 +45,7 @@ class SettingsScreen extends StatelessWidget {
           case 2:
             return const ModManagementPanel();
           case 3:
-            return const ComingSoonPanel(
-              icon: Icons.cloud_outlined,
-              title: '云同步',
-              description: '将书籍、角色设定与剧情进度同步到云端。',
-            );
+            return const CloudSyncPanel();
           default:
             return const _AboutPanel();
         }

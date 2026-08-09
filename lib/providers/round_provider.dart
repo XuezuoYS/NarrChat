@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../config/app_config.dart';
+import '../database/book_dao.dart';
 import '../database/round_dao.dart';
 import '../models/book.dart';
 import '../models/round.dart';
@@ -9,6 +12,7 @@ import '../services/ai_service.dart';
 import '../services/prompt_builder.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
+import 'cloud_sync_provider.dart';
 import 'mod_provider.dart';
 import 'world_book_provider.dart';
 
@@ -22,7 +26,9 @@ class RoundProvider extends ChangeNotifier {
     AiSettingsProvider? aiSettingsProvider,
     WorldBookProvider? worldBookProvider,
     ModProvider? modProvider,
+    CloudSyncProvider? cloudSyncProvider,
   })  : _dao = dao ?? RoundDao(),
+        _bookDao = BookDao(),
         _aiService = aiService ?? AiService(),
         _promptBuilder = promptBuilder ?? const PromptBuilder(),
         _worldBookScanner = worldBookScanner ?? const WorldBookScanner(),
@@ -31,15 +37,19 @@ class RoundProvider extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _worldBookProvider = worldBookProvider,
         // ignore: prefer_initializing_formals
-        _modProvider = modProvider;
+        _modProvider = modProvider,
+        // ignore: prefer_initializing_formals
+        _cloudSyncProvider = cloudSyncProvider;
 
   final RoundDao _dao;
+  final BookDao _bookDao;
   final AiService _aiService;
   final PromptBuilder _promptBuilder;
   final WorldBookScanner _worldBookScanner;
   final AiSettingsProvider? _aiSettingsProvider;
   final WorldBookProvider? _worldBookProvider;
   final ModProvider? _modProvider;
+  final CloudSyncProvider? _cloudSyncProvider;
 
   List<Round> _rounds = [];
   bool _isSending = false;
@@ -107,6 +117,22 @@ class RoundProvider extends ChangeNotifier {
       _error = e.toString();
     }
     notifyListeners();
+  }
+
+  /// 重新加载当前书籍的轮次（云同步恢复数据后调用）。
+  ///
+  /// 云同步「删除并恢复」后，当前书籍可能已被覆盖删除：
+  /// 先确认书籍仍存在，避免对已删除书籍误建「第零轮」触发外键错误。
+  Future<void> reloadCurrent() async {
+    final id = _bookId;
+    if (id == null) return;
+    final exists = await _bookDao.getBookById(id) != null;
+    if (!exists) {
+      _rounds = [];
+      notifyListeners();
+      return;
+    }
+    await loadRounds(id);
   }
 
   /// 发送新一轮：
@@ -239,6 +265,12 @@ class RoundProvider extends ChangeNotifier {
       _debugRawResponse = result.content;
       _debugRawReasoning = result.reasoningContent;
       await loadRounds(b.id!);
+      // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
+      // 不阻塞本轮返回；上传失败也不影响本轮结果。
+      final cloud = _cloudSyncProvider;
+      if (cloud != null && cloud.autoUpload && cloud.isConfigured) {
+        unawaited(cloud.upload(auto: true));
+      }
       return true;
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误。

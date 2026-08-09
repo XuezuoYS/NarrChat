@@ -31,6 +31,13 @@ class WorldBookProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 重新加载当前书籍的世界书条目（云同步恢复数据后调用）。
+  Future<void> reloadCurrent() async {
+    final id = _bookId;
+    if (id == null) return;
+    await loadEntries(id);
+  }
+
   Future<bool> addEntry({
     required String keyword,
     required String content,
