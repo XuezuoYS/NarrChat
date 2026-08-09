@@ -454,82 +454,155 @@ class _ModTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
-      child: ListTile(
-        dense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        leading: Icon(
-          Icons.extension_outlined,
-          color: mod.isPreset
-              ? const Color(0xFF7B3FE4)
-              : NarrChatTheme.primary,
-        ),
-        title: Row(
-          children: [
-            Flexible(
-              child: Text(
-                mod.name.isEmpty ? '（未命名）' : mod.name,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                overflow: TextOverflow.ellipsis,
+      // 窄屏（竖版）时操作按钮独立成行，标题与简介独占整行，避免被挤压。
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 520) {
+            return _buildNarrow(context);
+          }
+          return _buildWide(context, theme);
+        },
+      ),
+    );
+  }
+
+  /// 宽屏布局：标题/简介与操作按钮同行（按钮在右侧）。
+  Widget _buildWide(BuildContext context, ThemeData theme) {
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      leading: Icon(Icons.extension_outlined, color: _accentColor),
+      title: _buildTitle(),
+      subtitle: _buildSubtitle(context),
+      trailing: _buildActions(),
+    );
+  }
+
+  /// 窄屏（竖版）布局：操作按钮移到第二行。
+  Widget _buildNarrow(BuildContext context) {
+    final colors = context.narrColors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(Icons.extension_outlined, size: 20, color: _accentColor),
               ),
-            ),
-            const SizedBox(width: 8),
-            _Badge(
-              text: mod.isPreset ? '预置' : '自定义',
-              color: mod.isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary,
-            ),
-          ],
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (mod.description.trim().isNotEmpty)
-              Text(
-                mod.description.trim(),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: context.narrColors.textSecondary,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildTitle(),
+                    const SizedBox(height: 2),
+                    if (mod.description.trim().isNotEmpty)
+                      Text(
+                        mod.description.trim(),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.textSecondary,
+                          height: 1.4,
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: Text(
+                        _fieldsSummary,
+                        style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            Text(
-              _fieldsSummary,
-              style: TextStyle(
-                fontSize: 11,
-                color: context.narrColors.textSecondary,
-              ),
-            ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.visibility_outlined, size: 20),
-              tooltip: '查看',
-              onPressed: onView,
-            ),
-            if (onEdit != null)
-              IconButton(
-                icon: const Icon(Icons.edit_outlined, size: 20),
-                tooltip: '编辑',
-                onPressed: onEdit,
-              ),
-            if (onExport != null)
-              IconButton(
-                icon: const Icon(Icons.ios_share, size: 20),
-                tooltip: '导出',
-                onPressed: onExport,
-              ),
-            if (onDelete != null)
-              IconButton(
-                icon: const Icon(Icons.delete_outline, size: 20),
-                tooltip: '删除',
-                onPressed: onDelete,
-              ),
-          ],
-        ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _buildActions(),
+          ),
+        ],
       ),
+    );
+  }
+
+  Color get _accentColor =>
+      mod.isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary;
+
+  /// 标题行：名称 + 类型徽标。
+  Widget _buildTitle() {
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            mod.name.isEmpty ? '（未命名）' : mod.name,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const SizedBox(width: 8),
+        _Badge(text: mod.isPreset ? '预置' : '自定义', color: _accentColor),
+      ],
+    );
+  }
+
+  /// 副标题：简介 + 内容段摘要。
+  Widget _buildSubtitle(BuildContext context) {
+    final colors = context.narrColors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (mod.description.trim().isNotEmpty)
+          Text(
+            mod.description.trim(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: colors.textSecondary),
+          ),
+        Text(
+          _fieldsSummary,
+          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+        ),
+      ],
+    );
+  }
+
+  /// 操作按钮行（查看/编辑/导出/删除）。
+  Widget _buildActions() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.visibility_outlined, size: 20),
+          tooltip: '查看',
+          onPressed: onView,
+        ),
+        if (onEdit != null)
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            tooltip: '编辑',
+            onPressed: onEdit,
+          ),
+        if (onExport != null)
+          IconButton(
+            icon: const Icon(Icons.ios_share, size: 20),
+            tooltip: '导出',
+            onPressed: onExport,
+          ),
+        if (onDelete != null)
+          IconButton(
+            icon: const Icon(Icons.delete_outline, size: 20),
+            tooltip: '删除',
+            onPressed: onDelete,
+          ),
+      ],
     );
   }
 }

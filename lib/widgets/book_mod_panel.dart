@@ -426,60 +426,136 @@ class _BookModTile extends StatelessWidget {
       ),
       child: Opacity(
         opacity: config.isEnabled ? 1 : 0.6,
-        child: ListTile(
-          dense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          leading: Switch(
-            value: config.isEnabled,
-            onChanged: onToggle,
-          ),
-          title: Row(
+        // 窄屏（竖版）时拖动柄移到第二行，标题与简介独占整行，避免被挤压。
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 520) {
+              return _buildNarrow(context, name, description, isPreset);
+            }
+            return _buildWide(context, theme, name, description, isPreset);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 宽屏布局：开关 + 标题/简介 + 拖动柄同行。
+  Widget _buildWide(
+    BuildContext context,
+    ThemeData theme,
+    String name,
+    String description,
+    bool isPreset,
+  ) {
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      leading: Switch(
+        value: config.isEnabled,
+        onChanged: onToggle,
+      ),
+      title: _buildTitle(name, isPreset),
+      subtitle: Text(
+        description,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 12,
+          color: context.narrColors.textSecondary,
+        ),
+      ),
+      trailing: showDragHandle ? _buildDragHandle() : null,
+    );
+  }
+
+  /// 窄屏（竖版）布局：拖动柄移到第二行。
+  Widget _buildNarrow(
+    BuildContext context,
+    String name,
+    String description,
+    bool isPreset,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Column(
+        children: [
+          Row(
             children: [
-              Flexible(
-                child: Text(
-                  name,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                  overflow: TextOverflow.ellipsis,
-                ),
+              Switch(
+                value: config.isEnabled,
+                onChanged: onToggle,
               ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: (isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary)
-                      .withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  isPreset ? '预置' : '自定义',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary,
-                  ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildTitle(name, isPreset),
+                    const SizedBox(height: 2),
+                    Text(
+                      description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: context.narrColors.textSecondary,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          subtitle: Text(
-            description,
-            maxLines: 1,
+          if (showDragHandle)
+            Align(
+              alignment: Alignment.centerRight,
+              child: _buildDragHandle(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 标题行：名称 + 类型徽标。
+  Widget _buildTitle(String name, bool isPreset) {
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            name,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: (isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary)
+                .withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(
+            isPreset ? '预置' : '自定义',
             style: TextStyle(
-              fontSize: 12,
-              color: context.narrColors.textSecondary,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary,
             ),
           ),
-          trailing: showDragHandle
-              ? ReorderableDragStartListener(
-                  index: index,
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.drag_handle, size: 20),
-                  ),
-                )
-              : null,
         ),
+      ],
+    );
+  }
+
+  /// 拖动排序手柄。
+  Widget _buildDragHandle() {
+    return ReorderableDragStartListener(
+      index: index,
+      child: const Padding(
+        padding: EdgeInsets.all(4),
+        child: Icon(Icons.drag_handle, size: 20),
       ),
     );
   }
