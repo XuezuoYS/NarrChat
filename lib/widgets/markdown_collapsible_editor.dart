@@ -377,24 +377,6 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     );
   }
 
-  /// 将内容行按空行分组为段落（保持列表、段落等 Markdown 结构）。
-  List<List<String>> _groupParagraphs(List<String> lines) {
-    final result = <List<String>>[];
-    var current = <String>[];
-    for (final line in lines) {
-      if (line.trim().isEmpty) {
-        if (current.isNotEmpty) {
-          result.add(current);
-          current = [];
-        }
-      } else {
-        current.add(line);
-      }
-    }
-    if (current.isNotEmpty) result.add(current);
-    return result;
-  }
-
   // ---------------------------------------------------------------------------
   // 树构建与展示根级选择
   // ---------------------------------------------------------------------------
@@ -697,21 +679,24 @@ class _PersonCardState extends State<_PersonCard>
     );
   }
 
-  /// 将内容行按空行分组为段落（保持列表、段落等 Markdown 结构）。
-  List<List<String>> _groupParagraphs(List<String> lines) {
-    final result = <List<String>>[];
-    var current = <String>[];
-    for (final line in lines) {
-      if (line.trim().isEmpty) {
-        if (current.isNotEmpty) {
-          result.add(current);
-          current = [];
-        }
-      } else {
-        current.add(line);
+}
+
+/// 将内容行按空行分组为段落（保持列表、段落等 Markdown 结构）。
+///
+/// [MarkdownCollapsibleEditorState] 与 [_PersonCardState] 共用，避免重复定义。
+List<List<String>> _groupParagraphs(List<String> lines) {
+  final result = <List<String>>[];
+  var current = <String>[];
+  for (final line in lines) {
+    if (line.trim().isEmpty) {
+      if (current.isNotEmpty) {
+        result.add(current);
+        current = [];
       }
+    } else {
+      current.add(line);
     }
-    if (current.isNotEmpty) result.add(current);
-    return result;
   }
+  if (current.isNotEmpty) result.add(current);
+  return result;
 }

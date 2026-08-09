@@ -100,3 +100,18 @@ class Round {
     );
   }
 }
+
+/// `rounds` 表可被侧边栏编辑的字段名（数据库列名）。
+///
+/// [SidebarPanel] 与 [RoundProvider.updateRoundField] 白名单共用，
+/// 避免 UI / Provider / 数据库三处字符串漂移。
+class RoundField {
+  RoundField._();
+
+  static const String worldState = 'world_state';
+  static const String characterState = 'character_state';
+  static const String memorySummary = 'memory_summary';
+  static const String currentTime = 'current_time';
+  static const String aiNarrative = 'ai_narrative';
+  static const String userInput = 'user_input';
+}

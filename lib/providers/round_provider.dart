@@ -362,12 +362,12 @@ class RoundProvider extends ChangeNotifier {
   /// 仅允许白名单内的字段，防止误写。
   Future<void> updateRoundField(int roundId, String field, String value) async {
     const allowed = {
-      'world_state',
-      'character_state',
-      'memory_summary',
-      'current_time',
-      'ai_narrative',
-      'user_input',
+      RoundField.worldState,
+      RoundField.characterState,
+      RoundField.memorySummary,
+      RoundField.currentTime,
+      RoundField.aiNarrative,
+      RoundField.userInput,
     };
     if (!allowed.contains(field)) return;
     try {

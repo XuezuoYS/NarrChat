@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../widgets/api_settings_form.dart';
+import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
 import '../widgets/settings_shell.dart';
@@ -85,19 +86,7 @@ class _AboutPanelState extends State<_AboutPanel> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                gradient: NarrChatTheme.brandGradient,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Icon(
-                Icons.auto_awesome,
-                size: 28,
-                color: Colors.white,
-              ),
-            ),
+            const BrandLogo(size: 56, iconSize: 28, radius: 16),
             const SizedBox(height: 14),
             Text(
               'NarrChat',

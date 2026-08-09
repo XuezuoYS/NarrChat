@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
 import '../theme/app_theme.dart';
+import 'brand_logo.dart';
 
 /// 聊天气泡。
 ///
@@ -103,7 +104,7 @@ class _ChatBubbleState extends State<ChatBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (!widget.isUser) ...[
-                _avatar(theme, Icons.auto_awesome, NarrChatTheme.primary),
+                const BrandLogo(size: 30, iconSize: 16),
                 const SizedBox(width: 10),
               ],
               Flexible(
@@ -208,16 +209,5 @@ class _ChatBubbleState extends State<ChatBubble> {
     );
   }
 
-  Widget _avatar(ThemeData theme, IconData icon, Color color) {
-    return Container(
-      width: 30,
-      height: 30,
-      decoration: BoxDecoration(
-        gradient: NarrChatTheme.brandGradient,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Icon(icon, size: 16, color: Colors.white),
-    );
-  }
 }
 

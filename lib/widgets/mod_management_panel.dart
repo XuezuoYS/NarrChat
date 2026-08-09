@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
+import 'app_empty_hint.dart';
+import 'type_badge.dart';
 
 /// 全局设置页的「Mod 管理」面板。
 ///
@@ -326,7 +328,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
         ),
         const SizedBox(height: 8),
         if (mods.isEmpty)
-          const _EmptyHint(text: '暂无预置 Mod')
+          const AppEmptyHint(icon: Icons.extension_outlined, text: '暂无预置 Mod')
         else
           for (final mod in mods)
             _ModTile(
@@ -368,7 +370,10 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
         ),
         const SizedBox(height: 8),
         if (mods.isEmpty)
-          const _EmptyHint(text: '暂无自定义 Mod，点击「新建」创建，或「导入」分享来的 JSON。')
+          const AppEmptyHint(
+            icon: Icons.extension_outlined,
+            text: '暂无自定义 Mod，点击「新建」创建，或「导入」分享来的 JSON。',
+          )
         else
           for (final mod in mods)
             _ModTile(
@@ -383,39 +388,6 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
   }
 }
 
-class _EmptyHint extends StatelessWidget {
-  final String text;
-
-  const _EmptyHint({required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.divider),
-      ),
-      child: Column(
-        children: [
-          Icon(
-            Icons.extension_outlined,
-            size: 40,
-            color: Theme.of(context).colorScheme.outlineVariant,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: colors.textSecondary, height: 1.5),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// 单条 Mod 卡片。
 class _ModTile extends StatelessWidget {
@@ -548,7 +520,7 @@ class _ModTile extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        _Badge(text: mod.isPreset ? '预置' : '自定义', color: _accentColor),
+        TypeBadge(text: mod.isPreset ? '预置' : '自定义', color: _accentColor),
       ],
     );
   }
@@ -607,31 +579,6 @@ class _ModTile extends StatelessWidget {
   }
 }
 
-class _Badge extends StatelessWidget {
-  final String text;
-  final Color color;
-
-  const _Badge({required this.text, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 10,
-          color: color,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
 
 /// 新建/编辑/查看 Mod 对话框返回的数据。
 class _ModFormData {

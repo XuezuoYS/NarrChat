@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/round_action_dialogs.dart';
+import '../widgets/book_actions.dart';
 import 'book_settings_screen.dart';
 
 /// 书籍列表页（无书籍时的欢迎/创建入口，以及 AppBar 中的快速切换列表）。
@@ -76,7 +75,7 @@ class BookListScreen extends StatelessWidget {
                               IconButton(
                                 icon: const Icon(Icons.delete_outline, size: 20),
                                 tooltip: '删除',
-                                onPressed: () => _deleteBook(context, book),
+                                onPressed: () => deleteBookWithConfirm(context, book),
                               ),
                             ],
                           ),
@@ -99,15 +98,4 @@ class BookListScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _deleteBook(BuildContext context, Book book) async {
-    final ok = await showDeleteBookConfirmDialog(context, book.title);
-    if (!ok || !context.mounted) return;
-    final provider = context.read<BookProvider>();
-    final result = await provider.deleteBook(book);
-    if (!result && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('删除失败：${provider.error}')),
-      );
-    }
-  }
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../theme/app_theme.dart';
+import '../utils/formats.dart';
 import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
@@ -167,7 +168,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                 : CustomScrollView(
                     slivers: [
                       _buildSection(
-                        key: 'current_time',
+                        key: RoundField.currentTime,
                         label: '当前时间',
                         body: TextField(
                           controller: _currentTime,
@@ -177,27 +178,27 @@ class _SidebarPanelState extends State<SidebarPanel> {
                             isDense: true,
                           ),
                           onChanged: (v) =>
-                              _scheduleAutoSave('current_time', v),
+                              _scheduleAutoSave(RoundField.currentTime, v),
                         ),
                       ),
                       _buildSection(
-                        key: 'world_state',
+                        key: RoundField.worldState,
                         label: '世界状态',
-                        onEdit: () => _enterEditModule('world_state', _worldStateKey),
+                        onEdit: () => _enterEditModule(RoundField.worldState, _worldStateKey),
                         onSave: () => _saveModule(_worldStateKey),
                         body: MarkdownField(
                           key: _worldStateKey,
                           controller: _worldState,
                           hintText: '世界状态',
                           showToolbar: false,
-                          onChanged: (v) => _scheduleAutoSave('world_state', v),
-                          onSave: (v) => _saveFieldNow('world_state', v),
+                          onChanged: (v) => _scheduleAutoSave(RoundField.worldState, v),
+                          onSave: (v) => _saveFieldNow(RoundField.worldState, v),
                         ),
                       ),
                       _buildSection(
-                        key: 'character_state',
+                        key: RoundField.characterState,
                         label: '角色状态',
-                        onEdit: () => _enterEditModule('character_state', _characterStateKey),
+                        onEdit: () => _enterEditModule(RoundField.characterState, _characterStateKey),
                         onSave: () => _saveModule(_characterStateKey),
                         body: MarkdownCollapsibleEditor(
                           key: _characterStateKey,
@@ -205,15 +206,15 @@ class _SidebarPanelState extends State<SidebarPanel> {
                           hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
                           showToolbar: false,
                           onChanged: (v) =>
-                              _scheduleAutoSave('character_state', v),
-                          onSave: (v) => _saveFieldNow('character_state', v),
+                              _scheduleAutoSave(RoundField.characterState, v),
+                          onSave: (v) => _saveFieldNow(RoundField.characterState, v),
                         ),
                       ),
                       _buildSection(
-                        key: 'memory_summary',
+                        key: RoundField.memorySummary,
                         label: '记忆总结',
                         subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
-                        onEdit: () => _enterEditModule('memory_summary', _memorySummaryKey),
+                        onEdit: () => _enterEditModule(RoundField.memorySummary, _memorySummaryKey),
                         onSave: () => _saveModule(_memorySummaryKey),
                         body: MemorySummaryEditor(
                           key: _memorySummaryKey,
@@ -221,8 +222,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
                           hintText: '记忆总结',
                           showToolbar: false,
                           onChanged: (v) =>
-                              _scheduleAutoSave('memory_summary', v),
-                          onSave: (v) => _saveFieldNow('memory_summary', v),
+                              _scheduleAutoSave(RoundField.memorySummary, v),
+                          onSave: (v) => _saveFieldNow(RoundField.memorySummary, v),
                         ),
                       ),
                       const SliverToBoxAdapter(child: SizedBox(height: 12)),
@@ -257,7 +258,9 @@ class _SidebarPanelState extends State<SidebarPanel> {
           ),
           const SizedBox(width: 4),
           Text(
-            hasSaved ? '已自动保存于 ${_formatTime(lastSaved)}' : '编辑各区块后自动保存',
+            hasSaved
+                ? '已自动保存于 ${Formats.formatTimeOfDay(lastSaved)}'
+                : '编辑各区块后自动保存',
             style: TextStyle(
               fontSize: 11,
               color: hasSaved
@@ -268,11 +271,6 @@ class _SidebarPanelState extends State<SidebarPanel> {
         ],
       ),
     );
-  }
-
-  String _formatTime(DateTime t) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
   }
 
   Widget _buildTopBar(ThemeData theme, bool history) {

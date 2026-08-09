@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/formats.dart';
 
 /// 云同步（WebDAV）设置面板。
 ///
@@ -409,7 +410,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                         ),
                       ),
                       Text(
-                        _formatBackupMeta(file),
+                        Formats.formatBackupMeta(
+                          modified: file.lastModified,
+                          size: file.size,
+                        ),
                         style: TextStyle(
                           fontSize: 11,
                           color: colors.textSecondary,
@@ -431,31 +435,6 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
   }
 
-  String _formatBackupMeta(WebDavFile file) {
-    final parts = <String>[];
-    final modified = file.lastModified;
-    if (modified != null) {
-      final t = modified.toLocal();
-      final ts =
-          '${t.year}-${_two(t.month)}-${_two(t.day)} '
-          '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
-      parts.add(ts);
-    }
-    if (file.size > 0) parts.add(_formatSize(file.size));
-    return parts.join(' · ');
-  }
-
-  static String _two(int n) => n.toString().padLeft(2, '0');
-
-  static String _formatSize(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    if (bytes >= 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
-    return '$bytes B';
-  }
 }
 
 enum _DownloadApplyMode { replace, merge }
@@ -469,17 +448,10 @@ class _DownloadApplyDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    final meta = <String>[];
-    final modified = file.lastModified;
-    if (modified != null) {
-      final t = modified.toLocal();
-      meta.add(
-        '${t.year}-${_two(t.month)}-${_two(t.day)} '
-        '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}',
-      );
-    }
-    if (file.size > 0) meta.add(_formatSize(file.size));
-    final metaText = meta.join(' · ');
+    final metaText = Formats.formatBackupMeta(
+      modified: file.lastModified,
+      size: file.size,
+    );
 
     return AlertDialog(
       title: const Text('恢复备份'),
@@ -545,17 +517,6 @@ class _DownloadApplyDialog extends StatelessWidget {
     );
   }
 
-  static String _two(int n) => n.toString().padLeft(2, '0');
-
-  static String _formatSize(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    if (bytes >= 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
-    return '$bytes B';
-  }
 }
 
 class _OptionTile extends StatelessWidget {

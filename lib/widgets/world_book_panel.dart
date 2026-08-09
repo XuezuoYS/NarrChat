@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/world_book_entry.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
+import 'app_empty_hint.dart';
 
 /// 世界书管理面板（作为书籍设置的一个子模块）。
 ///
@@ -212,31 +213,9 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
         const Divider(height: 1),
         const SizedBox(height: 4),
         if (entries.isEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-            decoration: BoxDecoration(
-              color: context.narrColors.background,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: context.narrColors.divider),
-            ),
-            child: Column(
-              children: [
-                Icon(
-                  Icons.menu_book_outlined,
-                  size: 40,
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: context.narrColors.textSecondary,
-                    height: 1.5,
-                  ),
-                ),
-              ],
-            ),
+          const AppEmptyHint(
+            icon: Icons.menu_book_outlined,
+            text: '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
           )
         else
           // 面板内嵌于外层滚动区，列表自身不滚动。

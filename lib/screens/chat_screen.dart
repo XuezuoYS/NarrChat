@@ -11,6 +11,7 @@ import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
+import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
@@ -634,6 +635,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 空状态：DeepSeek 风格问候 + 建议指令卡片。
+  /// ChatScreen 直接使用时（如测试）首帧可能尚无当前书籍，故 [book] 可空。
   Widget _buildEmptyState(BuildContext context, Book? book) {
     final suggestions = [
       ('✍️ 写出开篇', '请以引人入胜的方式，写出本故事的开篇。'),
@@ -650,32 +652,17 @@ class _ChatScreenState extends State<ChatScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      gradient: NarrChatTheme.brandGradient,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: const Icon(Icons.auto_awesome,
-                        size: 19, color: Colors.white),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'NarrChat',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: context.narrColors.textPrimary,
-                    ),
-                  ),
-                ],
+              const BrandLogo(
+                size: 34,
+                iconSize: 19,
+                title: 'NarrChat',
+                titleSize: 20,
               ),
               const SizedBox(height: 20),
               Text(
-                book == null ? '你好，我是 NarrChat，你的专属剧情创作引擎' : '《${book.title}》的创作，从这里开始',
+                book == null
+                    ? '你好，我是 NarrChat，你的专属剧情创作引擎'
+                    : '《${book.title}》的创作，从这里开始',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -932,16 +919,7 @@ class _TypingBubble extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              gradient: NarrChatTheme.brandGradient,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.auto_awesome,
-                size: 16, color: Colors.white),
-          ),
+          const BrandLogo(size: 30, iconSize: 16),
           const SizedBox(width: 10),
           const SizedBox(
             width: 14,
@@ -996,16 +974,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                gradient: NarrChatTheme.brandGradient,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.auto_awesome,
-                  size: 16, color: Colors.white),
-            ),
+            const BrandLogo(size: 30, iconSize: 16),
             const SizedBox(width: 10),
             Flexible(
               child: Column(

@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/book_actions.dart';
 import '../widgets/book_list_panel.dart';
-import '../widgets/round_action_dialogs.dart';
+import '../widgets/brand_logo.dart';
 import 'book_list_screen.dart';
 import 'book_settings_screen.dart';
 import 'chat_screen.dart';
@@ -30,34 +30,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _closeBookDrawer() => setState(() => _bookDrawerOpen = false);
 
-  Future<void> _createBook(BuildContext context) async {
-    await BookSettingsScreen.open(context);
-  }
-
-  Future<void> _editBook(BuildContext context, Book book) async {
-    await BookSettingsScreen.open(context, book: book);
-  }
-
-  Future<void> _deleteBook(BuildContext context, Book book) async {
-    final ok = await showDeleteBookConfirmDialog(context, book.title);
-    if (!ok || !context.mounted) return;
-    final provider = context.read<BookProvider>();
-    final result = await provider.deleteBook(book);
-    if (!result && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('删除失败：${provider.error}')),
-      );
-    }
-  }
-
   Widget _buildBookPanel(BuildContext context, BookProvider provider) {
     return BookListPanel(
       books: provider.books,
       currentBook: provider.currentBook,
       onSelect: (book) => provider.selectBook(book),
-      onCreate: () => _createBook(context),
-      onEdit: (book) => _editBook(context, book),
-      onDelete: (book) => _deleteBook(context, book),
+      onCreate: () => BookSettingsScreen.open(context),
+      onEdit: (book) => BookSettingsScreen.open(context, book: book),
+      onDelete: (book) => deleteBookWithConfirm(context, book),
     );
   }
 
@@ -88,7 +68,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: _openBookDrawer,
                       )
                     : null,
-                title: const _BrandTitle(),
+                title: const BrandLogo(title: 'NarrChat'),
                 actions: [
                   if (book != null) ...[
                     IconButton(
@@ -159,41 +139,6 @@ class _HomeScreenState extends State<HomeScreen> {
               right: false,
               child: _buildBookPanel(context, provider),
             ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// 顶部品牌标题：渐变 Logo 方块 + 「NarrChat」文字（模仿 DeepSeek 头部）。
-class _BrandTitle extends StatelessWidget {
-  const _BrandTitle();
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            gradient: NarrChatTheme.brandGradient,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: const Icon(
-            Icons.auto_awesome,
-            size: 16,
-            color: Colors.white,
-          ),
-        ),
-        const SizedBox(width: 10),
-        Text(
-          'NarrChat',
-          style: TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w700,
-            color: context.narrColors.textPrimary,
           ),
         ),
       ],

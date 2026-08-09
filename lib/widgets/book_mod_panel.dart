@@ -5,6 +5,8 @@ import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/pinyin_sort.dart';
+import 'app_empty_hint.dart';
+import 'type_badge.dart';
 
 /// 书籍设置页的「Mod 管理」面板。
 ///
@@ -211,8 +213,6 @@ class _BookModPanelState extends State<BookModPanel> {
       );
     }
 
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -257,17 +257,17 @@ class _BookModPanelState extends State<BookModPanel> {
             child: Center(child: CircularProgressIndicator()),
           )
         else if (_tab == 0)
-          _buildEnabledList(theme)
+          _buildEnabledList()
         else
-          _buildDisabledList(theme),
+          _buildDisabledList(),
       ],
     );
   }
 
   /// 「已启用」列表：支持拖动排序（自上而下）。
-  Widget _buildEnabledList(ThemeData theme) {
+  Widget _buildEnabledList() {
     if (_enabled.isEmpty) {
-      return _emptyHint(
+      return const AppEmptyHint(
         icon: Icons.check_circle_outline,
         text: '暂无启用中的 Mod\n可在「未启用」标签中打开开关以启用',
       );
@@ -306,9 +306,9 @@ class _BookModPanelState extends State<BookModPanel> {
   }
 
   /// 「未启用」列表：按名称拼音 a~z 排序，不可拖动。
-  Widget _buildDisabledList(ThemeData theme) {
+  Widget _buildDisabledList() {
     if (_disabled.isEmpty) {
-      return _emptyHint(
+      return const AppEmptyHint(
         icon: Icons.remove_circle_outline,
         text: '暂无未启用的 Mod\n可在「已启用」标签中关闭开关以停用',
       );
@@ -337,34 +337,6 @@ class _BookModPanelState extends State<BookModPanel> {
     );
   }
 
-  Widget _emptyHint({required IconData icon, required String text}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-      decoration: BoxDecoration(
-        color: context.narrColors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: context.narrColors.divider),
-      ),
-      child: Column(
-        children: [
-          Icon(
-            icon,
-            size: 40,
-            color: Theme.of(context).colorScheme.outlineVariant,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: context.narrColors.textSecondary,
-              height: 1.5,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 /// 单条书籍 Mod 配置（启用开关 + 名称/简介 + 可选的拖动柄）。
@@ -529,21 +501,9 @@ class _BookModTile extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: (isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary)
-                .withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Text(
-            isPreset ? '预置' : '自定义',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary,
-            ),
-          ),
+        TypeBadge(
+          text: isPreset ? '预置' : '自定义',
+          color: isPreset ? const Color(0xFF7B3FE4) : NarrChatTheme.primary,
         ),
       ],
     );
