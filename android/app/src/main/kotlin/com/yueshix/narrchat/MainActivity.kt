@@ -1,4 +1,4 @@
-package com.narrchat.narrchat
+package com.yueshix.narrchat
 
 import io.flutter.embedding.android.FlutterActivity
 
