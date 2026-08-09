@@ -469,13 +469,13 @@ class _ModTile extends StatelessWidget {
                 mod.description.trim(),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+                style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
               ),
             Text(
               _fieldsSummary,
               style: TextStyle(
                 fontSize: 11,
-                color: theme.colorScheme.outline.withValues(alpha: 0.8),
+                color: NarrChatTheme.textSecondary,
               ),
             ),
           ],

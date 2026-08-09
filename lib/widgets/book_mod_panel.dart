@@ -267,7 +267,7 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         Text(
           '置入顺序（自上而下）：拖动右侧手柄调整',
-          style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
         ),
         const SizedBox(height: 8),
         // 不设内部滚动：与所在设置页的总滚动条一致。
@@ -305,7 +305,7 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         Text(
           '按名称拼音 a~z 排序',
-          style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
         ),
         const SizedBox(height: 8),
         for (var i = 0; i < _disabled.length; i++)
@@ -442,7 +442,7 @@ class _BookModTile extends StatelessWidget {
             description,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
+            style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
           ),
           trailing: showDragHandle
               ? ReorderableDragStartListener(
