@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -66,6 +67,9 @@ class _ChatScreenState extends State<ChatScreen>
   /// 自动跟随滚动是否已在本帧注册 postFrame 回调（防止同帧多次 rebuild 重复 jumpTo）。
   bool _autoFollowPending = false;
 
+  /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
+  bool _userScrolledAway = false;
+
   /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
   late final AnimationController _sidebarController;
   late final Animation<double> _sidebarAnim;
@@ -130,6 +134,25 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
+  /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复。
+  bool _onChatScrollNotification(ScrollNotification notification) {
+    if (notification is UserScrollNotification) {
+      if (notification.direction == ScrollDirection.reverse) {
+        // 用户上翻（offset 减小，向历史/顶部方向）→ 已离开底部，暂停自动跟随。
+        _userScrolledAway = true;
+      } else if (notification.direction == ScrollDirection.idle &&
+          _userScrolledAway &&
+          _scrollController.hasClients) {
+        // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随。
+        final pos = _scrollController.position;
+        if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
+          _userScrolledAway = false;
+        }
+      }
+    }
+    return false;
+  }
+
   Future<void> _send() async {
     final input = _inputController.text.trim();
     if (input.isEmpty) return;
@@ -140,6 +163,8 @@ class _ChatScreenState extends State<ChatScreen>
     if (roundProvider.isSending) return;
 
     _inputController.clear();
+    // 发送新消息时恢复自动跟随（用户重新回到最新内容）。
+    _userScrolledAway = false;
     _scrollToBottom();
 
     final ok = await roundProvider.sendRound(
@@ -578,7 +603,12 @@ class _ChatScreenState extends State<ChatScreen>
     // _autoFollowPending 保证同一帧内多次 rebuild 只注册一次回调。
     if (showPending && !_autoFollowPending && _scrollController.hasClients) {
       final pos = _scrollController.position;
-      if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
+      // 用户正在主动拖拽/惯性滚动，或已手动上翻阅读历史时，不强制拉回底部
+      // （避免流式输出期间触屏滑动被 jumpTo 一直拽回底部）。
+      final userScrolling = pos.isScrollingNotifier.value;
+      if (!userScrolling &&
+          !_userScrolledAway &&
+          pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
         _autoFollowPending = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _autoFollowPending = false;
@@ -594,7 +624,10 @@ class _ChatScreenState extends State<ChatScreen>
     // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
     // 左右留 20px 边距，避免内容在窄窗口下贴边（滚动条在最右，不计入边距）。
-    final messagesList = ListView.builder(
+    // 外层监听用户主动滚动：上翻/滑动时暂停自动跟随，避免触屏滑动被拉回底部。
+    final messagesList = NotificationListener<ScrollNotification>(
+      onNotification: _onChatScrollNotification,
+      child: ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
       itemCount: chatRounds.length * 2 +
@@ -665,6 +698,7 @@ class _ChatScreenState extends State<ChatScreen>
           ),
         );
       },
+      ),
     );
 
     return Column(
