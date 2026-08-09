@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
@@ -21,9 +20,9 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('数据库初始化失败: $e');
   }
-  // 初始化偏好设置，并创建 AI 设置 Provider（API Key 从安全存储读取）。
-  final prefs = await SharedPreferences.getInstance();
-  final aiSettingsProvider = AiSettingsProvider(prefs)..load();
+  // 创建 AI 设置 Provider：API Key 从安全存储（系统密钥库）读取，
+  // 其余设置从本地 JSON 配置文件（local_config/app_settings.json）读取。
+  final aiSettingsProvider = AiSettingsProvider()..load();
   runApp(NarrChatApp(aiSettingsProvider: aiSettingsProvider));
 }
 

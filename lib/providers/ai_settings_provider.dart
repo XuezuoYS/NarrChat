@@ -1,31 +1,32 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../models/ai_settings.dart';
+import '../services/local_config_service.dart';
 
 /// AI 接口设置状态管理。
 ///
-/// 安全存储策略（符合业界本地安全存储标准）：
+/// 本地存储策略（符合 AGENTS.md 数据结构规范）：
 /// - **API Key**：写入 `flutter_secure_storage`
-///   （Android 使用 Keystore/加密存储，Windows 使用 DPAPI/凭据管理器）；
-/// - 其余设置（Base URL、模型、温度、思考、流式）：写入 `shared_preferences`。
+///   （Android 使用 Keystore/加密存储，Windows 使用 DPAPI/凭据管理器），禁止明文落盘；
+/// - 其余设置（Base URL、模型、温度、思考、流式）：写入本地明文 JSON 配置文件
+///   `local_config/app_settings.json`（[LocalConfigService]），不进入云存储。
 class AiSettingsProvider extends ChangeNotifier {
-  AiSettingsProvider(this._prefs);
-
-  final SharedPreferences _prefs;
+  AiSettingsProvider();
 
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   static const String _keyApiKey = 'ai_api_key';
-  static const String _keyBaseUrl = 'ai_base_url';
-  static const String _keyModel = 'ai_model';
-  static const String _keyTemperature = 'ai_temperature';
-  static const String _keyThinking = 'ai_thinking';
-  static const String _keyReasoningEffort = 'ai_reasoning_effort';
-  static const String _keyMaxTokens = 'ai_max_tokens';
-  static const String _keyStreaming = 'ai_streaming';
+
+  /// 本地 JSON 配置文件中的键名（camelCase）。
+  static const String _keyBaseUrl = 'baseUrl';
+  static const String _keyModel = 'model';
+  static const String _keyTemperature = 'temperature';
+  static const String _keyThinking = 'thinking';
+  static const String _keyReasoningEffort = 'reasoningEffort';
+  static const String _keyMaxTokens = 'maxTokens';
+  static const String _keyStreaming = 'streaming';
 
   String _apiKey = AppConfig.defaultApiKeyEffective;
   String _baseUrl = AppConfig.defaultApiBaseUrlEffective;
@@ -54,30 +55,36 @@ class AiSettingsProvider extends ChangeNotifier {
   bool get hasApiKey => _apiKey.trim().isNotEmpty;
 
   AiSettings get settings => AiSettings(
-        apiBaseUrl: _baseUrl,
-        apiKey: _apiKey,
-        model: _model,
-        temperature: _temperature,
-        thinking: _thinking,
-        reasoningEffort: _reasoningEffort,
-        maxTokens: _maxTokens,
-        streaming: _streaming,
-      );
+    apiBaseUrl: _baseUrl,
+    apiKey: _apiKey,
+    model: _model,
+    temperature: _temperature,
+    thinking: _thinking,
+    reasoningEffort: _reasoningEffort,
+    maxTokens: _maxTokens,
+    streaming: _streaming,
+  );
 
-  /// 从安全存储与偏好设置中加载设置。
+  /// 从安全存储与本地 JSON 配置文件中加载设置。
   Future<void> load() async {
     _isLoading = true;
     try {
       final storedKey = await _secureStorage.read(key: _keyApiKey);
-      _apiKey = (storedKey ?? '').isNotEmpty ? storedKey! : AppConfig.defaultApiKeyEffective;
-      _baseUrl = _prefs.getString(_keyBaseUrl) ?? AppConfig.defaultApiBaseUrlEffective;
-      _model = _prefs.getString(_keyModel) ?? AppConfig.defaultModelNameEffective;
-      _temperature = _prefs.getDouble(_keyTemperature) ?? 1.0;
-      _thinking = _prefs.getBool(_keyThinking) ?? false;
+      _apiKey = (storedKey ?? '').isNotEmpty
+          ? storedKey!
+          : AppConfig.defaultApiKeyEffective;
+      final cfg = await LocalConfigService.read();
+      _baseUrl =
+          (cfg[_keyBaseUrl] as String?) ?? AppConfig.defaultApiBaseUrlEffective;
+      _model =
+          (cfg[_keyModel] as String?) ?? AppConfig.defaultModelNameEffective;
+      _temperature = (cfg[_keyTemperature] as num?)?.toDouble() ?? 1.0;
+      _thinking = (cfg[_keyThinking] as bool?) ?? false;
       _reasoningEffort =
-          _prefs.getString(_keyReasoningEffort) ?? AppConfig.defaultReasoningEffort;
-      _maxTokens = _prefs.getInt(_keyMaxTokens);
-      _streaming = _prefs.getBool(_keyStreaming) ?? true;
+          (cfg[_keyReasoningEffort] as String?) ??
+          AppConfig.defaultReasoningEffort;
+      _maxTokens = (cfg[_keyMaxTokens] as num?)?.toInt();
+      _streaming = (cfg[_keyStreaming] as bool?) ?? true;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -86,7 +93,7 @@ class AiSettingsProvider extends ChangeNotifier {
     }
   }
 
-  /// 保存设置。API Key 写入安全存储，其余写入偏好设置。
+  /// 保存设置。API Key 写入安全存储，其余写入本地 JSON 配置文件。
   Future<bool> save({
     required String apiKey,
     required String baseUrl,
@@ -106,17 +113,16 @@ class AiSettingsProvider extends ChangeNotifier {
       } else {
         await _secureStorage.delete(key: _keyApiKey);
       }
-      await _prefs.setString(_keyBaseUrl, trimmedBaseUrl);
-      await _prefs.setString(_keyModel, trimmedModel);
-      await _prefs.setDouble(_keyTemperature, temperature);
-      await _prefs.setBool(_keyThinking, thinking);
-      await _prefs.setString(_keyReasoningEffort, reasoningEffort);
-      if (maxTokens != null && maxTokens > 0) {
-        await _prefs.setInt(_keyMaxTokens, maxTokens);
-      } else {
-        await _prefs.remove(_keyMaxTokens);
-      }
-      await _prefs.setBool(_keyStreaming, streaming);
+      // 局部合并写入，避免覆盖文件中未来的其他本地配置（如 UI 设置）。
+      await LocalConfigService.update({
+        _keyBaseUrl: trimmedBaseUrl,
+        _keyModel: trimmedModel,
+        _keyTemperature: temperature,
+        _keyThinking: thinking,
+        _keyReasoningEffort: reasoningEffort,
+        if (maxTokens != null && maxTokens > 0) _keyMaxTokens: maxTokens,
+        _keyStreaming: streaming,
+      });
 
       _apiKey = trimmedKey;
       _baseUrl = trimmedBaseUrl;

@@ -1,8 +1,9 @@
 /// 应用全局配置。
 ///
 /// API Key 与 Base URL 的默认值写在此处；运行时实际值由
-/// [AiSettingsProvider] 从安全存储（flutter_secure_storage）与偏好设置中读取，
-/// 并可在「AI 接口设置」对话框中修改。也支持通过 `--dart-define` 覆盖默认值，例如：
+/// [AiSettingsProvider] 从安全存储（flutter_secure_storage）与本地 JSON 配置文件
+/// （local_config/app_settings.json）中读取，并可在「AI 接口设置」对话框中修改。
+/// 也支持通过 `--dart-define` 覆盖默认值，例如：
 /// ```bash
 /// flutter run --dart-define=NARRCHAT_API_KEY=sk-xxx \
 ///             --dart-define=NARRCHAT_API_BASE_URL=https://api.deepseek.com \

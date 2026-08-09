@@ -1,13 +1,14 @@
 import 'dart:io';
 
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import '../services/app_paths.dart';
 
 /// 数据库访问入口（单例）。
 ///
 /// - Android/iOS：使用 sqflite 原生插件；
 /// - Windows/Linux/macOS：自动切换到 sqflite_common_ffi（基于 sqlite3 的 FFI 实现）。
+/// - 数据库位于 `<文档目录>/NarrChat/user_data/narrchat.db`（用户数据，可云同步）。
 class DatabaseHelper {
   DatabaseHelper._();
 
@@ -29,8 +30,7 @@ class DatabaseHelper {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }
-    final documentsDir = await getApplicationDocumentsDirectory();
-    final dbPath = p.join(documentsDir.path, 'narrchat.db');
+    final dbPath = await AppPaths.userDatabasePath();
     return openDatabase(
       dbPath,
       version: _dbVersion,
