@@ -81,9 +81,12 @@ class _DraggableRoleListState extends State<DraggableRoleList> {
         ),
         // 不设内部滚动：与所在对话框的总滚动条一致（shrinkWrap + 禁自身滚动）。
         _categories.isEmpty
-            ? const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('暂无分类，请添加。', style: TextStyle(color: Colors.grey)),
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '暂无分类，请添加。',
+                  style: TextStyle(color: theme.colorScheme.outline),
+                ),
               )
             : ReorderableListView(
                 shrinkWrap: true,

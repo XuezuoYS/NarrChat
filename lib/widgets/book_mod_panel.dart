@@ -163,38 +163,44 @@ class _BookModPanelState extends State<BookModPanel> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
+          Text(
             'Mod 管理',
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w700,
-              color: NarrChatTheme.textPrimary,
+              color: context.narrColors.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             '启用 Mod 后自动置入前置词、后置词、系统提示词与世界书。',
-            style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+            style: TextStyle(
+              fontSize: 12,
+              color: context.narrColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F7F8),
+              color: context.narrColors.background,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NarrChatTheme.divider),
+              border: Border.all(color: context.narrColors.divider),
             ),
             child: Row(
               children: [
-                Icon(Icons.extension_outlined,
-                    size: 28, color: NarrChatTheme.textSecondary),
+                Icon(
+                  Icons.extension_outlined,
+                  size: 28,
+                  color: context.narrColors.textSecondary,
+                ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Text(
                     '保存新建书籍后，即可在此为本书启用 Mod 并调整置入顺序。',
                     style: TextStyle(
                       fontSize: 13,
-                      color: NarrChatTheme.textSecondary,
+                      color: context.narrColors.textSecondary,
                     ),
                   ),
                 ),
@@ -210,18 +216,22 @@ class _BookModPanelState extends State<BookModPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
+        Text(
           'Mod 管理',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: context.narrColors.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary, height: 1.5),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+            height: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         SegmentedButton<int>(
@@ -267,7 +277,10 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         Text(
           '置入顺序（自上而下）：拖动右侧手柄调整',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
         const SizedBox(height: 8),
         // 不设内部滚动：与所在设置页的总滚动条一致。
@@ -305,7 +318,10 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         Text(
           '按名称拼音 a~z 排序',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
         const SizedBox(height: 8),
         for (var i = 0; i < _disabled.length; i++)
@@ -325,18 +341,25 @@ class _BookModPanelState extends State<BookModPanel> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F7F8),
+        color: context.narrColors.background,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: NarrChatTheme.divider),
+        border: Border.all(color: context.narrColors.divider),
       ),
       child: Column(
         children: [
-          Icon(icon, size: 40, color: Colors.grey.shade400),
+          Icon(
+            icon,
+            size: 40,
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
           const SizedBox(height: 8),
           Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+            style: TextStyle(
+              color: context.narrColors.textSecondary,
+              height: 1.5,
+            ),
           ),
         ],
       ),
@@ -442,7 +465,10 @@ class _BookModTile extends StatelessWidget {
             description,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+            style: TextStyle(
+              fontSize: 12,
+              color: context.narrColors.textSecondary,
+            ),
           ),
           trailing: showDragHandle
               ? ReorderableDragStartListener(

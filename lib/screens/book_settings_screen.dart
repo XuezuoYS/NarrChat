@@ -160,21 +160,22 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   }
 
   Widget _sectionHeader(String title, String subtitle) {
+    final colors = context.narrColors;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: colors.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
         Text(
           subtitle,
-          style: const TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         const SizedBox(height: 20),
       ],

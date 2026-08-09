@@ -31,7 +31,7 @@ class BookListPanel extends StatelessWidget {
     final theme = Theme.of(context);
     // 使用 Material 提供正确的 Material 祖先，确保 ListTile 选中背景可见。
     return Material(
-      color: Colors.white,
+      color: context.narrColors.surface,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -40,20 +40,20 @@ class BookListPanel extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Row(
               children: [
-                const Text(
+                Text(
                   '书籍',
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
-                    color: NarrChatTheme.textPrimary,
+                    color: context.narrColors.textPrimary,
                   ),
                 ),
                 const Spacer(),
                 Text(
                   '${books.length} 本',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
-                    color: NarrChatTheme.textSecondary,
+                    color: context.narrColors.textSecondary,
                   ),
                 ),
               ],
@@ -75,15 +75,15 @@ class BookListPanel extends StatelessWidget {
                       Icon(
                         Icons.add,
                         size: 18,
-                        color: NarrChatTheme.textPrimary,
+                        color: context.narrColors.textPrimary,
                       ),
                       const SizedBox(width: 8),
-                      const Text(
+                      Text(
                         '新建书籍',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
-                          color: NarrChatTheme.textPrimary,
+                          color: context.narrColors.textPrimary,
                         ),
                       ),
                     ],
@@ -92,7 +92,7 @@ class BookListPanel extends StatelessWidget {
               ),
             ),
           ),
-          Divider(height: 1, color: NarrChatTheme.divider),
+          Divider(height: 1, color: context.narrColors.divider),
           Expanded(
             child: books.isEmpty
                 ? Center(
@@ -105,8 +105,8 @@ class BookListPanel extends StatelessWidget {
                         Text(
                           '暂无书籍，点击上方「新建书籍」创建',
                           textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: NarrChatTheme.textSecondary,
+                          style: TextStyle(
+                            color: context.narrColors.textSecondary,
                             fontSize: 13,
                             height: 1.5,
                           ),
@@ -136,7 +136,7 @@ class BookListPanel extends StatelessWidget {
                             size: 18,
                             color: selected
                                 ? NarrChatTheme.primary
-                                : NarrChatTheme.textSecondary,
+                                : context.narrColors.textSecondary,
                           ),
                           title: Text(
                             book.title,
@@ -144,10 +144,10 @@ class BookListPanel extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 14,
-                              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                              color: selected
-                                  ? NarrChatTheme.textPrimary
-                                  : NarrChatTheme.textPrimary,
+                              fontWeight: selected
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                              color: context.narrColors.textPrimary,
                             ),
                           ),
                           subtitle: Text(

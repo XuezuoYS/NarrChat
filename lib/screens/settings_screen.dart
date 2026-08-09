@@ -68,9 +68,9 @@ class _AboutPanel extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 36),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F7F8),
+          color: context.narrColors.background,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: NarrChatTheme.divider),
+          border: Border.all(color: context.narrColors.divider),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -89,20 +89,20 @@ class _AboutPanel extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
-            const Text(
+            Text(
               'NarrChat',
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w700,
-                color: NarrChatTheme.textPrimary,
+                color: context.narrColors.textPrimary,
               ),
             ),
             const SizedBox(height: 4),
-            const Text(
+            Text(
               '你的 AI 叙事交互引擎',
               style: TextStyle(
                 fontSize: 13,
-                color: NarrChatTheme.textSecondary,
+                color: context.narrColors.textSecondary,
               ),
             ),
             const SizedBox(height: 16),
@@ -110,11 +110,11 @@ class _AboutPanel extends StatelessWidget {
             const _AboutRow(label: '模型', value: 'DeepSeek V4（OpenAI 兼容）'),
             const _AboutRow(label: '平台', value: 'Android / Windows'),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               '本软件仅供创作参考，生成内容请仔细甄别。',
               style: TextStyle(
                 fontSize: 11,
-                color: NarrChatTheme.textSecondary,
+                color: context.narrColors.textSecondary,
               ),
             ),
           ],
@@ -139,17 +139,17 @@ class _AboutRow extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: NarrChatTheme.textSecondary,
+              color: context.narrColors.textSecondary,
             ),
           ),
           const SizedBox(width: 12),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: NarrChatTheme.textPrimary,
+              color: context.narrColors.textPrimary,
             ),
           ),
         ],

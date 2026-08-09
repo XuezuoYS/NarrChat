@@ -126,13 +126,12 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '配置大模型接口参数，遵循 DeepSeek 官方格式（OpenAI 兼容）。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(fontSize: 12, color: context.narrColors.textSecondary),
         ),
         const SizedBox(height: 20),
         // API Key（安全存储）

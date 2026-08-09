@@ -39,8 +39,9 @@ class _SettingsShellState extends State<SettingsShell> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.narrColors;
     return Scaffold(
-      backgroundColor: NarrChatTheme.background,
+      backgroundColor: colors.background,
       appBar: AppBar(
         titleSpacing: 0,
         title: Row(
@@ -77,7 +78,7 @@ class _SettingsShellState extends State<SettingsShell> {
               children: [
                 Container(
                   width: 220,
-                  color: Colors.white,
+                  color: colors.surface,
                   child: ListView(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     children: [
@@ -99,7 +100,7 @@ class _SettingsShellState extends State<SettingsShell> {
           return Column(
             children: [
               Container(
-                color: Colors.white,
+                color: colors.surface,
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -115,7 +116,7 @@ class _SettingsShellState extends State<SettingsShell> {
                             size: 16,
                             color: i == _index
                                 ? NarrChatTheme.primary
-                                : NarrChatTheme.textSecondary,
+                                : colors.textSecondary,
                           ),
                           label: Text(widget.navItems[i].label),
                           onSelected: (_) => setState(() => _index = i),
@@ -136,7 +137,7 @@ class _SettingsShellState extends State<SettingsShell> {
 
   Widget _buildContent(BuildContext context) {
     return Container(
-      color: Colors.white,
+      color: context.narrColors.surface,
       alignment: Alignment.topCenter,
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -163,24 +164,25 @@ class _NavTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.narrColors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       child: ListTile(
         dense: true,
         selected: selected,
-        selectedTileColor: const Color(0xFFEEF0FF),
+        selectedTileColor: NarrChatTheme.primary.withValues(alpha: 0.12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         leading: Icon(
           item.icon,
           size: 20,
-          color: selected ? NarrChatTheme.primary : NarrChatTheme.textSecondary,
+          color: selected ? NarrChatTheme.primary : colors.textSecondary,
         ),
         title: Text(
           item.label,
           style: TextStyle(
             fontSize: 14,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? NarrChatTheme.primary : NarrChatTheme.textPrimary,
+            color: selected ? NarrChatTheme.primary : colors.textPrimary,
           ),
         ),
         onTap: onTap,

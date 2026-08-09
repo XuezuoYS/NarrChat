@@ -330,7 +330,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
                     Icon(
                       Icons.schedule,
                       size: 12,
-                      color: NarrChatTheme.textSecondary,
+                      color: context.narrColors.textSecondary,
                     ),
                     const SizedBox(width: 4),
                     Expanded(
@@ -339,7 +339,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w500,
-                          color: NarrChatTheme.textSecondary,
+                          color: context.narrColors.textSecondary,
                         ),
                       ),
                     ),

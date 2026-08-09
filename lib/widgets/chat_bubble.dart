@@ -100,7 +100,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 14, vertical: 9),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFEEF1FF),
+                          color: context.narrColors.userBubble,
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: SelectableText(
@@ -108,10 +108,10 @@ class _ChatBubbleState extends State<ChatBubble> {
                           // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
                           contextMenuBuilder: (context, editableTextState) =>
                               const SizedBox.shrink(),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 15,
                             height: 1.65,
-                            color: NarrChatTheme.textPrimary,
+                            color: context.narrColors.textPrimary,
                           ),
                         ),
                       )
@@ -121,10 +121,10 @@ class _ChatBubbleState extends State<ChatBubble> {
                         // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
                         contextMenuBuilder: (context, editableTextState) =>
                             const SizedBox.shrink(),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 15,
                           height: 1.65,
-                          color: NarrChatTheme.textPrimary,
+                          color: context.narrColors.textPrimary,
                         ),
                       ),
                     // 推荐下一步：AI 正文下方，极简样式。
@@ -165,10 +165,10 @@ class _ChatBubbleState extends State<ChatBubble> {
                               contextMenuBuilder:
                                   (context, editableTextState) =>
                                       const SizedBox.shrink(),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 13,
                                 height: 1.5,
-                                color: NarrChatTheme.textSecondary,
+                                color: context.narrColors.textSecondary,
                               ),
                             ),
                           ],

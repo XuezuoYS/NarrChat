@@ -78,13 +78,20 @@ class NarrChatApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
       ],
-      // 监听 UI 设置变化，动态重建主题（含全局字体）。
+      // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
       child: Consumer<UiSettingsProvider>(
         builder: (context, ui, _) {
           return MaterialApp(
             title: 'NarrChat',
             debugShowCheckedModeBanner: false,
             theme: NarrChatTheme.lightWithFont(ui.fontFamily),
+            darkTheme: NarrChatTheme.darkWithFont(ui.fontFamily),
+            // 主题模式：跟随系统（默认）/ 亮色 / 暗色。
+            themeMode: ui.themeMode == AppThemeMode.system
+                ? ThemeMode.system
+                : ui.themeMode == AppThemeMode.dark
+                    ? ThemeMode.dark
+                    : ThemeMode.light,
             locale: const Locale('zh', 'CN'),
             supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
             localizationsDelegates: const [

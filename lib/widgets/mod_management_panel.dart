@@ -120,18 +120,21 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 '复制以下 JSON 文本即可分享或导入到其他设备：',
-                style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: ctx.narrColors.textSecondary,
+                ),
               ),
               const SizedBox(height: 10),
               Container(
                 constraints: const BoxConstraints(maxHeight: 320),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF7F7F8),
+                  color: ctx.narrColors.background,
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: NarrChatTheme.divider),
+                  border: Border.all(color: ctx.narrColors.divider),
                 ),
                 child: SingleChildScrollView(
                   child: SelectableText(
@@ -266,18 +269,22 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
+        Text(
           'Mod 管理',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: context.narrColors.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           'Mod 是对前置词、后置词、系统提示词与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary, height: 1.5),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+            height: 1.5,
+          ),
         ),
         const SizedBox(height: 16),
         SegmentedButton<int>(
@@ -310,9 +317,12 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
+        Text(
           '预置 Mod 为应用内置，仅可查看、不可修改。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
         const SizedBox(height: 8),
         if (mods.isEmpty)
@@ -334,10 +344,13 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
       children: [
         Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Text(
                 '自定义 Mod 可查看、编辑、导出与导入。',
-                style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: context.narrColors.textSecondary,
+                ),
               ),
             ),
             OutlinedButton.icon(
@@ -377,21 +390,26 @@ class _EmptyHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.narrColors;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F7F8),
+        color: colors.background,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: NarrChatTheme.divider),
+        border: Border.all(color: colors.divider),
       ),
       child: Column(
         children: [
-          Icon(Icons.extension_outlined, size: 40, color: Colors.grey.shade400),
+          Icon(
+            Icons.extension_outlined,
+            size: 40,
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
           const SizedBox(height: 8),
           Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+            style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
         ],
       ),
@@ -469,13 +487,16 @@ class _ModTile extends StatelessWidget {
                 mod.description.trim(),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: context.narrColors.textSecondary,
+                ),
               ),
             Text(
               _fieldsSummary,
               style: TextStyle(
                 fontSize: 11,
-                color: NarrChatTheme.textSecondary,
+                color: context.narrColors.textSecondary,
               ),
             ),
           ],
@@ -659,10 +680,10 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
-                      color: NarrChatTheme.textPrimary,
+                      color: context.narrColors.textPrimary,
                     ),
                   ),
                 ),
@@ -832,19 +853,25 @@ class _ModWorldBookEditorState extends State<_ModWorldBookEditor> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F7F8),
+              color: context.narrColors.background,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NarrChatTheme.divider),
+              border: Border.all(color: context.narrColors.divider),
             ),
             child: Column(
               children: [
-                Icon(Icons.menu_book_outlined,
-                    size: 40, color: Colors.grey.shade400),
+                Icon(
+                  Icons.menu_book_outlined,
+                  size: 40,
+                  color: theme.colorScheme.outlineVariant,
+                ),
                 const SizedBox(height: 8),
                 Text(
                   '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+                  style: TextStyle(
+                    color: context.narrColors.textSecondary,
+                    height: 1.5,
+                  ),
                 ),
               ],
             ),
@@ -865,7 +892,7 @@ class _ModWorldBookEditorState extends State<_ModWorldBookEditor> {
                   size: 20,
                   color: isConstant
                       ? NarrChatTheme.primary
-                      : NarrChatTheme.textSecondary,
+                      : context.narrColors.textSecondary,
                 ),
                 title: Text(
                   isConstant ? '（恒定生效）' : entry.keyword,

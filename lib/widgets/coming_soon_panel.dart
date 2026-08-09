@@ -17,25 +17,26 @@ class ComingSoonPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.narrColors;
     return Center(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 32),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F7F8),
+          color: colors.background,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: NarrChatTheme.divider),
+          border: Border.all(color: colors.divider),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 40, color: NarrChatTheme.textSecondary),
+            Icon(icon, size: 40, color: colors.textSecondary),
             const SizedBox(height: 12),
             Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
-                color: NarrChatTheme.textPrimary,
+                color: colors.textPrimary,
               ),
             ),
             const SizedBox(height: 8),
@@ -50,9 +51,9 @@ class ComingSoonPanel extends StatelessWidget {
             Text(
               description,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                color: NarrChatTheme.textSecondary,
+                color: colors.textSecondary,
                 height: 1.5,
               ),
             ),

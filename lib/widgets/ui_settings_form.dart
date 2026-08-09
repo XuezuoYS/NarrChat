@@ -34,26 +34,62 @@ class _UiSettingsFormState extends State<UiSettingsForm> {
   @override
   Widget build(BuildContext context) {
     final ui = context.watch<UiSettingsProvider>();
+    final colors = context.narrColors;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
+        Text(
           'UI 设置',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: colors.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '界面显示偏好，保存到本地配置文件（不参与云同步）。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         const SizedBox(height: 20),
+        _buildThemeSetting(context, ui),
+        const SizedBox(height: 4),
         _buildFontSetting(context, ui),
       ],
+    );
+  }
+
+  /// 主题模式设置：跟随系统（默认）/ 亮色 / 暗色。
+  Widget _buildThemeSetting(BuildContext context, UiSettingsProvider ui) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.brightness_6_outlined),
+      title: const Text('主题'),
+      subtitle: const Text('跟随系统（默认）：随系统亮暗自动切换'),
+      trailing: SegmentedButton<AppThemeMode>(
+        segments: const [
+          ButtonSegment(
+            value: AppThemeMode.system,
+            icon: Icon(Icons.brightness_auto_outlined, size: 16),
+            label: Text('跟随系统'),
+          ),
+          ButtonSegment(
+            value: AppThemeMode.light,
+            icon: Icon(Icons.light_mode_outlined, size: 16),
+            label: Text('亮色'),
+          ),
+          ButtonSegment(
+            value: AppThemeMode.dark,
+            icon: Icon(Icons.dark_mode_outlined, size: 16),
+            label: Text('暗色'),
+          ),
+        ],
+        selected: {ui.themeMode},
+        showSelectedIcon: false,
+        onSelectionChanged: (selection) =>
+            ui.setThemeMode(selection.first),
+      ),
     );
   }
 
@@ -87,6 +123,7 @@ class _UiSettingsFormState extends State<UiSettingsForm> {
         currentFont != null && currentFont.displayName != currentFont.familyName
         ? currentFont.familyName
         : null;
+    final colors = context.narrColors;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(Icons.font_download_outlined),
@@ -95,9 +132,7 @@ class _UiSettingsFormState extends State<UiSettingsForm> {
         secondary == null ? display : '$display（$secondary）',
         style: TextStyle(
           fontFamily: current.isEmpty ? null : current,
-          color: current.isEmpty
-              ? NarrChatTheme.textSecondary
-              : NarrChatTheme.textPrimary,
+          color: current.isEmpty ? colors.textSecondary : colors.textPrimary,
         ),
       ),
       trailing: const Icon(Icons.chevron_right, size: 20),

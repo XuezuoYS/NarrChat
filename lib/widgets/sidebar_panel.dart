@@ -144,10 +144,12 @@ class _SidebarPanelState extends State<SidebarPanel> {
 
     return Container(
       decoration: BoxDecoration(
-        color: history ? const Color(0xFFFFFBFB) : Colors.white,
+        color: history
+            ? context.narrColors.historyBackground
+            : context.narrColors.surface,
         border: history
             ? Border.all(color: theme.colorScheme.error.withValues(alpha: 0.5))
-            : Border.all(color: NarrChatTheme.divider),
+            : Border.all(color: context.narrColors.divider),
         borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
       ),
       child: Column(
@@ -277,9 +279,11 @@ class _SidebarPanelState extends State<SidebarPanel> {
     final round = widget.round;
     return Container(
       decoration: BoxDecoration(
-        color: history ? const Color(0xFFFDF0F0) : Colors.white,
+        color: history
+            ? context.narrColors.historyHeader
+            : context.narrColors.surface,
         border: Border(
-          bottom: BorderSide(color: NarrChatTheme.divider),
+          bottom: BorderSide(color: context.narrColors.divider),
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -303,7 +307,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                 fontWeight: FontWeight.w700,
                 color: history
                     ? theme.colorScheme.error
-                    : NarrChatTheme.textPrimary,
+                    : context.narrColors.textPrimary,
               ),
             ),
           ),
@@ -361,8 +365,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
             subtitle: subtitle,
             collapsed: collapsed,
             backgroundColor: widget.isHistoryView
-                ? const Color(0xFFFFFBFB)
-                : Colors.white,
+                ? context.narrColors.historyBackground
+                : context.narrColors.surface,
             onToggle: () => setState(() => _collapsed[key] = !collapsed),
             onEdit: onEdit,
             onSave: onSave,
@@ -429,7 +433,7 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
         color: backgroundColor,
         border: Border(
           bottom: BorderSide(
-            color: pinned ? NarrChatTheme.divider : Colors.transparent,
+            color: pinned ? context.narrColors.divider : Colors.transparent,
           ),
         ),
         boxShadow: pinned

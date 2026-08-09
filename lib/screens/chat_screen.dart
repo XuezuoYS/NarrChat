@@ -398,30 +398,32 @@ class _ChatScreenState extends State<ChatScreen>
                         if (!open)
                           Center(
                             child: Material(
-                              color: const Color(0xFFF4F4F5),
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainer,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(12),
                                 onTap: () => _setSidebarOpen(true),
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
                                       horizontal: 16, vertical: 12),
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Icon(
                                         Icons.view_sidebar_outlined,
-                                        color: NarrChatTheme.textSecondary,
+                                        color: context.narrColors.textSecondary,
                                         size: 20,
                                       ),
-                                      SizedBox(height: 6),
+                                      const SizedBox(height: 6),
                                       Text(
                                         '打开侧栏',
                                         style: TextStyle(
                                           fontSize: 11,
-                                          color: NarrChatTheme.textSecondary,
+                                          color: context.narrColors.textSecondary,
                                         ),
                                       ),
                                     ],
@@ -607,8 +609,8 @@ class _ChatScreenState extends State<ChatScreen>
       children: [
         Expanded(
           child: Container(
-            // 与各边栏一致的纯白背景。
-            color: Colors.white,
+            // 与各边栏一致的内容表面背景。
+            color: context.narrColors.surface,
             child: chatRounds.isEmpty && !showPending
                 ? _buildEmptyState(context, bookProvider.currentBook)
                 // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
@@ -650,12 +652,12 @@ class _ChatScreenState extends State<ChatScreen>
                         size: 19, color: Colors.white),
                   ),
                   const SizedBox(width: 10),
-                  const Text(
+                  Text(
                     'NarrChat',
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w700,
-                      color: NarrChatTheme.textPrimary,
+                      color: context.narrColors.textPrimary,
                     ),
                   ),
                 ],
@@ -663,19 +665,19 @@ class _ChatScreenState extends State<ChatScreen>
               const SizedBox(height: 20),
               Text(
                 book == null ? '你好，我是 NarrChat，你的专属剧情创作引擎' : '《${book.title}》的创作，从这里开始',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: NarrChatTheme.textPrimary,
+                  color: context.narrColors.textPrimary,
                   height: 1.5,
                 ),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 '先在右侧「第 0 轮」侧边栏设定世界状态与角色状态，\n再输入行动或对话指令，开始推进剧情。',
                 style: TextStyle(
                   fontSize: 13,
-                  color: NarrChatTheme.textSecondary,
+                  color: context.narrColors.textSecondary,
                   height: 1.6,
                 ),
               ),
@@ -686,10 +688,10 @@ class _ChatScreenState extends State<ChatScreen>
                 children: [
                   for (final s in suggestions)
                     Material(
-                      color: Colors.white,
+                      color: context.narrColors.surface,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
-                        side: const BorderSide(color: NarrChatTheme.divider),
+                        side: BorderSide(color: context.narrColors.divider),
                       ),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(12),
@@ -699,10 +701,10 @@ class _ChatScreenState extends State<ChatScreen>
                               horizontal: 14, vertical: 10),
                           child: Text(
                             s.$1,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w500,
-                              color: NarrChatTheme.textPrimary,
+                              color: context.narrColors.textPrimary,
                             ),
                           ),
                         ),
@@ -787,7 +789,7 @@ class _ChatScreenState extends State<ChatScreen>
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: NarrChatTheme.divider),
+                  border: Border.all(color: context.narrColors.divider),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -797,20 +799,24 @@ class _ChatScreenState extends State<ChatScreen>
                         controller: _inputController,
                         minLines: 1,
                         maxLines: 5,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 15,
                           height: 1.5,
-                          color: NarrChatTheme.textPrimary,
+                          color: context.narrColors.textPrimary,
                         ),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           hintText: '输入你的行动或对话…',
-                          hintStyle: TextStyle(color: Color(0xFF9CA1A9)),
+                          hintStyle: TextStyle(
+                            color: context.narrColors.placeholder,
+                          ),
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
                           filled: false,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
                         ),
                         onSubmitted: (_) => _send(),
                       ),
@@ -828,8 +834,9 @@ class _ChatScreenState extends State<ChatScreen>
                           tooltip: isSending ? '停止生成' : '发送',
                           style: IconButton.styleFrom(
                             backgroundColor: NarrChatTheme.primary,
-                            disabledBackgroundColor:
-                                const Color(0xFFD3D5DA),
+                            disabledBackgroundColor: Theme.of(context)
+                                .colorScheme
+                                .outline,
                           ),
                           icon: isSending
                               ? const SizedBox(
@@ -849,10 +856,13 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 '内容由 AI 生成，仅供创作参考，请仔细甄别',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: NarrChatTheme.textSecondary),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: context.narrColors.textSecondary,
+                ),
               ),
             ],
       ),
@@ -860,9 +870,9 @@ class _ChatScreenState extends State<ChatScreen>
 
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: NarrChatTheme.divider)),
+      decoration: BoxDecoration(
+        color: context.narrColors.surface,
+        border: Border(top: BorderSide(color: context.narrColors.divider)),
       ),
       child: Center(child: composerColumn),
     );
@@ -931,10 +941,10 @@ class _TypingBubble extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          const Text(
+          Text(
             'AI 正在创作…',
             style: TextStyle(
-              color: NarrChatTheme.textSecondary,
+              color: context.narrColors.textSecondary,
               fontSize: 13,
             ),
           ),
@@ -1031,9 +1041,9 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                             ],
                             Text(
                               _reasoningExpanded ? '收起' : '点击查看',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 11,
-                                color: NarrChatTheme.textSecondary,
+                                color: context.narrColors.textSecondary,
                               ),
                             ),
                           ],
@@ -1044,10 +1054,10 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                       const SizedBox(height: 2),
                       SelectableText(
                         reasoning,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           height: 1.5,
-                          color: NarrChatTheme.textSecondary,
+                          color: context.narrColors.textSecondary,
                         ),
                       ),
                     ],
@@ -1056,26 +1066,26 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                   if (hasContent)
                     SelectableText(
                       '$content▍',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 15,
                         height: 1.65,
-                        color: NarrChatTheme.textPrimary,
+                        color: context.narrColors.textPrimary,
                       ),
                     )
                   else if (!hasReasoning)
                     Row(
                       mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        SizedBox(
+                      children: [
+                        const SizedBox(
                           width: 12,
                           height: 12,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                        SizedBox(width: 8),
+                        const SizedBox(width: 8),
                         Text(
                           'AI 正在创作…',
                           style: TextStyle(
-                            color: NarrChatTheme.textSecondary,
+                            color: context.narrColors.textSecondary,
                             fontSize: 13,
                           ),
                         ),

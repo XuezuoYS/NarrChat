@@ -96,9 +96,9 @@ class AppDropdown<T> extends StatelessWidget {
           menuWidth: NarrChatTheme.dropdownMenuWidth,
           // 圆角菜单，与右键/长按菜单共用同一圆角常量。
           borderRadius: BorderRadius.circular(NarrChatTheme.menuRadius),
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 14,
-            color: NarrChatTheme.textPrimary,
+            color: context.narrColors.textPrimary,
           ),
           items: items,
           onChanged: onChanged,

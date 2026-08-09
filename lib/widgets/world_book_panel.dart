@@ -93,38 +93,44 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
+          Text(
             '世界书',
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w700,
-              color: NarrChatTheme.textPrimary,
+              color: context.narrColors.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             '关键词命中后自动注入 System Prompt。',
-            style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+            style: TextStyle(
+              fontSize: 12,
+              color: context.narrColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F7F8),
+              color: context.narrColors.background,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NarrChatTheme.divider),
+              border: Border.all(color: context.narrColors.divider),
             ),
             child: Row(
               children: [
-                Icon(Icons.menu_book_outlined,
-                    size: 28, color: NarrChatTheme.textSecondary),
+                Icon(
+                  Icons.menu_book_outlined,
+                  size: 28,
+                  color: context.narrColors.textSecondary,
+                ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Text(
                     '保存新建书籍后，即可在此管理本书的世界书条目。',
                     style: TextStyle(
                       fontSize: 13,
-                      color: NarrChatTheme.textSecondary,
+                      color: context.narrColors.textSecondary,
                     ),
                   ),
                 ),
@@ -142,18 +148,21 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
+        Text(
           '世界书',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: context.narrColors.textPrimary,
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '关键词命中后自动注入 System Prompt。',
-          style: TextStyle(fontSize: 12, color: NarrChatTheme.textSecondary),
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
         const SizedBox(height: 20),
         // 新增条目表单
@@ -206,19 +215,25 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F7F8),
+              color: context.narrColors.background,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NarrChatTheme.divider),
+              border: Border.all(color: context.narrColors.divider),
             ),
             child: Column(
               children: [
-                Icon(Icons.menu_book_outlined,
-                    size: 40, color: Colors.grey.shade400),
+                Icon(
+                  Icons.menu_book_outlined,
+                  size: 40,
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
                 const SizedBox(height: 8),
                 Text(
                   '暂无世界书条目\n添加关键词与内容，剧情输入命中关键词时将自动注入',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+                  style: TextStyle(
+                    color: context.narrColors.textSecondary,
+                    height: 1.5,
+                  ),
                 ),
               ],
             ),

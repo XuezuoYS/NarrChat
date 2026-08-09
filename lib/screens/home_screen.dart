@@ -74,10 +74,10 @@ class _HomeScreenState extends State<HomeScreen> {
           appBar: PreferredSize(
             preferredSize: const Size.fromHeight(kToolbarHeight),
             child: Container(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.narrColors.surface,
                 border: Border(
-                  bottom: BorderSide(color: NarrChatTheme.divider),
+                  bottom: BorderSide(color: context.narrColors.divider),
                 ),
               ),
               child: AppBar(
@@ -188,12 +188,12 @@ class _BrandTitle extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        const Text(
+        Text(
           'NarrChat',
           style: TextStyle(
             fontSize: 17,
             fontWeight: FontWeight.w700,
-            color: NarrChatTheme.textPrimary,
+            color: context.narrColors.textPrimary,
           ),
         ),
       ],

@@ -162,12 +162,19 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
               children: [
-                const Icon(Icons.edit_note, size: 16, color: Colors.grey),
+                Icon(
+                  Icons.edit_note,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
                 const SizedBox(width: 4),
-                const Expanded(
+                Expanded(
                   child: Text(
                     '原始文本编辑',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                 ),
                 TextButton(
@@ -220,7 +227,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
       behavior: HitTestBehavior.opaque,
       child: Container(
         decoration: BoxDecoration(
-          border: Border.all(color: Colors.grey.shade300),
+          border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Column(
@@ -231,12 +238,19 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
               child: Row(
                 children: [
                   if (widget.showToolbar) ...[
-                    const Icon(Icons.account_tree_outlined, size: 14, color: Colors.grey),
+                    Icon(
+                      Icons.account_tree_outlined,
+                      size: 14,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         '按人物折叠 · 双击进入原始文本编辑',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
                       ),
                     ),
                     if (!widget.readOnly)
@@ -274,7 +288,10 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
                 padding: const EdgeInsets.all(12),
                 child: Text(
                   '（暂无内容）',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.outline,
+                    fontSize: 12,
+                  ),
                 ),
               )
             else
@@ -608,10 +625,10 @@ class _PersonCardState extends State<_PersonCard>
                     Expanded(
                       child: Text(
                         node.heading,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
-                          color: Color(0xFF1F1B2E),
+                          color: theme.colorScheme.onSurface,
                         ),
                       ),
                     ),
@@ -665,10 +682,10 @@ class _PersonCardState extends State<_PersonCard>
                   padding: const EdgeInsets.only(top: 2),
                   child: Text(
                     '${'#' * child.level} ${child.heading}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: Color(0xFF3A3550),
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ),

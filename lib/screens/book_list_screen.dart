@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/book.dart';
 import '../providers/book_provider.dart';
+import '../theme/app_theme.dart';
 import '../widgets/round_action_dialogs.dart';
 import 'book_settings_screen.dart';
 
@@ -21,7 +22,11 @@ class BookListScreen extends StatelessWidget {
         child: Column(
           children: [
             const SizedBox(height: 24),
-            Icon(Icons.auto_stories_outlined, size: 56, color: Colors.deepPurple.shade200),
+            Icon(
+              Icons.auto_stories_outlined,
+              size: 56,
+              color: NarrChatTheme.primary.withValues(alpha: 0.35),
+            ),
             const SizedBox(height: 8),
             const Text(
               'NarrChat',
@@ -30,7 +35,7 @@ class BookListScreen extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               '你的 AI 叙事交互引擎',
-              style: TextStyle(color: Colors.grey.shade600),
+              style: TextStyle(color: context.narrColors.textSecondary),
             ),
             const SizedBox(height: 24),
             Expanded(
@@ -38,7 +43,7 @@ class BookListScreen extends StatelessWidget {
                   ? Center(
                       child: Text(
                         '还没有书籍，点击下方“新建书籍”开始创作',
-                        style: TextStyle(color: Colors.grey.shade600),
+                        style: TextStyle(color: context.narrColors.textSecondary),
                       ),
                     )
                   : ListView.separated(
@@ -51,7 +56,9 @@ class BookListScreen extends StatelessWidget {
                         return ListTile(
                           leading: Icon(
                             Icons.menu_book,
-                            color: selected ? Colors.deepPurple : Colors.grey,
+                            color: selected
+                                ? NarrChatTheme.primary
+                                : context.narrColors.textSecondary,
                           ),
                           title: Text(book.title),
                           subtitle: Text(
