@@ -105,11 +105,13 @@ class _ChatScreenState extends State<ChatScreen>
     if (input.isEmpty) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
+    final roundProvider = context.read<RoundProvider>();
+    // 生成期间防重复提交（输入框 onSubmitted 回车也可能触发 _send）。
+    if (roundProvider.isSending) return;
 
     _inputController.clear();
     _scrollToBottom();
 
-    final roundProvider = context.read<RoundProvider>();
     final ok = await roundProvider.sendRound(
       userInput: input,
       tempPrePrompt: _tempPreController.text,
@@ -126,6 +128,15 @@ class _ChatScreenState extends State<ChatScreen>
           duration: const Duration(seconds: 4),
         ),
       );
+    }
+    // 本轮临时指令仅生效一次：发送成功后清空，避免持续注入到后续轮次。
+    if (ok) {
+      if (_tempPreController.text.trim().isNotEmpty) {
+        _tempPreController.clear();
+      }
+      if (_tempPostController.text.trim().isNotEmpty) {
+        _tempPostController.clear();
+      }
     }
     _scrollToBottom();
   }
@@ -317,9 +328,9 @@ class _ChatScreenState extends State<ChatScreen>
     await _showEditTextDialog(
       title: '修改并重新提问（第 ${round.roundIndex} 轮）',
       initial: round.userInput,
+      // 仅记录修改后的文本；落库由 editAndReAsk 统一处理，避免重复写库。
       onSave: (text) async {
         edited = text;
-        await context.read<RoundProvider>().updateUserInput(round.id!, text);
       },
     );
     if (edited == null || !mounted) return;
