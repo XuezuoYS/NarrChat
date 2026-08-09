@@ -6,6 +6,7 @@ import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/pinyin_sort.dart';
 import 'app_empty_hint.dart';
+import 'responsive_builder.dart';
 import 'type_badge.dart';
 
 /// 书籍设置页的「Mod 管理」面板。
@@ -425,12 +426,11 @@ class _BookModTile extends StatelessWidget {
       child: Opacity(
         opacity: config.isEnabled ? 1 : 0.6,
         // 窄屏（竖版）时拖动柄移到第二行，标题与简介独占整行，避免被挤压。
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            if (constraints.maxWidth < 520) {
-              return _buildNarrow(context, name, description, isPreset);
-            }
-            return _buildWide(context, theme, name, description, isPreset);
+        child: ResponsiveBuilder(
+          builder: (context, isWide) {
+            return isWide
+                ? _buildWide(context, theme, name, description, isPreset)
+                : _buildNarrow(context, name, description, isPreset);
           },
         ),
       ),

@@ -8,6 +8,7 @@ import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
 import 'app_empty_hint.dart';
+import 'responsive_builder.dart';
 import 'type_badge.dart';
 
 /// 全局设置页的「Mod 管理」面板。
@@ -436,12 +437,9 @@ class _ModTile extends StatelessWidget {
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       // 窄屏（竖版）时操作按钮独立成行，标题与简介独占整行，避免被挤压。
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          if (constraints.maxWidth < 520) {
-            return _buildNarrow(context);
-          }
-          return _buildWide(context, theme);
+      child: ResponsiveBuilder(
+        builder: (context, isWide) {
+          return isWide ? _buildWide(context, theme) : _buildNarrow(context);
         },
       ),
     );
