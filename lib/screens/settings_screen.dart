@@ -86,7 +86,7 @@ class _AboutPanelState extends State<_AboutPanel> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const BrandLogo(size: 56, iconSize: 28, radius: 16),
+            const BrandLogo(size: 56),
             const SizedBox(height: 14),
             Text(
               'NarrChat',

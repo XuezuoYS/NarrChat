@@ -799,7 +799,6 @@ class _ChatScreenState extends State<ChatScreen>
             children: [
               const BrandLogo(
                 size: 34,
-                iconSize: 19,
                 title: 'NarrChat',
                 titleSize: 20,
               ),
@@ -1037,7 +1036,7 @@ class _TypingBubble extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const BrandLogo(size: 30, iconSize: 16),
+          const BrandLogo(size: 30),
           const SizedBox(width: 10),
           const SizedBox(
             width: 14,
@@ -1092,7 +1091,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const BrandLogo(size: 30, iconSize: 16),
+            const BrandLogo(size: 30),
             const SizedBox(width: 10),
             Flexible(
               child: Column(

@@ -5,6 +5,8 @@
 //   - Android：android/app/src/main/res/mipmap-*/ic_launcher.png（各密度）
 //     （Android 由系统启动器统一裁切形状，保持正方形源图即可）
 //   - Windows：windows/runner/resources/app_icon.ico（多尺寸，自动裁切透明圆角）
+//   - UI 品牌 Logo：assets/app_icon_rounded.png（与 ICO 同源同圆角的单张 PNG，
+//     供 Flutter Image.asset 加载，用于左上角 Logo / AI 头像等）
 //
 // 用法（在项目根目录执行）：
 //   dart run icon/generate_icons.dart
@@ -28,6 +30,9 @@ const Map<String, int> _kAndroidDensities = {
 
 /// Windows ICO 包含的尺寸（encodeIco 默认按这些尺寸输出多分辨率图标）。
 const List<int> _kWindowsIconSizes = [16, 24, 32, 48, 64, 128, 256];
+
+/// UI 品牌 Logo 资源边长（px）。渲染尺寸 ≤56px，256px 足够，且与 ICO 最大尺寸一致。
+const int _kBrandLogoSize = 256;
 
 void main() {
   final root = _findProjectRoot();
@@ -66,9 +71,12 @@ void main() {
 
   _generateAndroidIcons(root, square);
   _generateWindowsIco(root, square);
+  _generateRoundedPngAsset(root, square);
 
   stdout.writeln('');
-  stdout.writeln('完成：Android mipmap 与 Windows app_icon.ico 已生成。');
+  stdout.writeln(
+    '完成：Android mipmap、Windows app_icon.ico 与 UI 品牌 Logo 均已生成。',
+  );
   stdout.writeln('再次生成：替换 icon/source_icon.png 后重跑本脚本即可。');
 }
 
@@ -182,5 +190,28 @@ void _generateWindowsIco(Directory root, img.Image square) {
   file.writeAsBytesSync(ico);
   stdout.writeln(
     '[Windows] 多尺寸 ICO（${_kWindowsIconSizes.join('/')}）→ ${file.path}',
+  );
+}
+
+/// 生成 UI 品牌 Logo 资源（圆角 PNG）：供 Flutter Image.asset 加载。
+///
+/// 与 Windows ICO 使用相同的圆角（[_applyRoundedCorners]，radiusFraction 0.22），
+/// 保证 UI 中的左上角 Logo / AI 头像等与应用图标视觉一致。
+void _generateRoundedPngAsset(Directory root, img.Image square) {
+  final resized = img.copyResize(
+    square,
+    width: _kBrandLogoSize,
+    height: _kBrandLogoSize,
+    interpolation: img.Interpolation.cubic,
+  );
+  final rounded = _applyRoundedCorners(resized);
+  final file = File(
+    '${root.path}${Platform.pathSeparator}assets'
+    '${Platform.pathSeparator}app_icon_rounded.png',
+  );
+  file.parent.createSync(recursive: true);
+  file.writeAsBytesSync(img.encodePng(rounded));
+  stdout.writeln(
+    '[UI] 品牌 Logo $_kBrandLogoSize×$_kBrandLogoSize px → ${file.path}',
   );
 }

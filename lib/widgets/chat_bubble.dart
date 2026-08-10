@@ -104,7 +104,7 @@ class _ChatBubbleState extends State<ChatBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (!widget.isUser) ...[
-                const BrandLogo(size: 30, iconSize: 16),
+                const BrandLogo(size: 30),
                 const SizedBox(width: 10),
               ],
               Flexible(

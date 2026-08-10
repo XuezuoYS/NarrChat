@@ -74,6 +74,8 @@ flutter:
   # 版本号管理文件（「关于」面板与 build_release.bat 均读取此文件）。
   assets:
     - release.yaml
+    # UI 品牌 Logo（左上角 / AI 头像等，由 icon/generate_icons.dart 生成）。
+    - assets/app_icon_rounded.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
