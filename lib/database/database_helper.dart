@@ -14,7 +14,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 5;
+  static const int _dbVersion = 8;
 
   Database? _database;
 
@@ -65,7 +65,70 @@ class DatabaseHelper {
           await _createModsTable(db);
           await _createBookModsTable(db);
         }
+        if (oldVersion < 6) {
+          // 历史中间版本曾在 rounds 表加入失败列（未发布），此处先补列以便后续重建。
+          await db.execute(
+            'ALTER TABLE rounds ADD COLUMN is_truncated INTEGER NOT NULL DEFAULT 0',
+          );
+        }
+        if (oldVersion < 7) {
+          await db.execute(
+            "ALTER TABLE rounds ADD COLUMN error_message TEXT DEFAULT ''",
+          );
+        }
+        if (oldVersion < 8) {
+          // 失败处理重构：失败条目从 rounds 轮次行迁移为 books 上的独立条目。
+          // 1) 重建 rounds 表，移除 v6/v7 引入的失败列（保持 schema 干净）；
+          // 2) books 表新增失败条目两列。
+          await _rebuildRoundsTable(db);
+          await db.execute(
+            "ALTER TABLE books ADD COLUMN failed_user_input TEXT DEFAULT ''",
+          );
+          await db.execute(
+            "ALTER TABLE books ADD COLUMN failed_error_message TEXT DEFAULT ''",
+          );
+        }
       },
+    );
+  }
+
+  /// 重建 `rounds` 表：移除历史中间版本（v6/v7）加入的失败列，
+  /// 保留全部数据、主键、外键与索引（无其他表引用 rounds，FK 安全）。
+  Future<void> _rebuildRoundsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE rounds_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        round_index INTEGER NOT NULL,
+        user_input TEXT DEFAULT '',
+        ai_narrative TEXT DEFAULT '',
+        world_state TEXT DEFAULT '',
+        character_state TEXT DEFAULT '',
+        memory_summary TEXT DEFAULT '',
+        current_time TEXT DEFAULT '',
+        recommended_action TEXT DEFAULT '',
+        tokens_in INTEGER NOT NULL DEFAULT 0,
+        tokens_out INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME,
+        FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      INSERT INTO rounds_new (
+        id, book_id, round_index, user_input, ai_narrative, world_state,
+        character_state, memory_summary, current_time, recommended_action,
+        tokens_in, tokens_out, created_at
+      )
+      SELECT
+        id, book_id, round_index, user_input, ai_narrative, world_state,
+        character_state, memory_summary, current_time, recommended_action,
+        tokens_in, tokens_out, created_at
+      FROM rounds
+    ''');
+    await db.execute('DROP TABLE rounds');
+    await db.execute('ALTER TABLE rounds_new RENAME TO rounds');
+    await db.execute(
+      'CREATE INDEX idx_rounds_book_index ON rounds (book_id, round_index)',
     );
   }
 
@@ -82,7 +145,9 @@ class DatabaseHelper {
         global_post_prompt TEXT DEFAULT '',
         history_rounds INTEGER NOT NULL DEFAULT 1,
         role_hierarchy TEXT DEFAULT '',
-        role_hierarchy_detail TEXT DEFAULT ''
+        role_hierarchy_detail TEXT DEFAULT '',
+        failed_user_input TEXT DEFAULT '',
+        failed_error_message TEXT DEFAULT ''
       )
     ''');
   }

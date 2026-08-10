@@ -6,6 +6,7 @@ import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
 import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/book_provider.dart';
@@ -23,6 +24,13 @@ class _MockBookDao extends BookDao {
   _MockBookDao(this.books);
   @override
   Future<List<Book>> getAllBooks() async => books;
+  FailedAttempt _failed = const FailedAttempt();
+  @override
+  Future<FailedAttempt> getFailedAttempt(int bookId) async => _failed;
+  @override
+  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
+    _failed = attempt;
+  }
 }
 
 class _MockRoundDao extends RoundDao {
@@ -157,14 +165,15 @@ void main() {
 
     final dao = _MockRoundDao();
     await seedRounds(dao);
-    final roundProvider = RoundProvider(dao: dao, aiService: ai);
+    final bookDao = _MockBookDao([book]);
+    final roundProvider = RoundProvider(dao: dao, aiService: ai, bookDao: bookDao);
     await roundProvider.loadRounds(1);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider(
-            create: (_) => BookProvider(dao: _MockBookDao([book]))..loadBooks(),
+            create: (_) => BookProvider(dao: bookDao)..loadBooks(),
           ),
           ChangeNotifierProvider(
             create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),

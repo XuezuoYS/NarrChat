@@ -1,10 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
 
 import '../theme/app_theme.dart';
 import 'brand_logo.dart';
+import 'bubble_pointer_listener.dart';
 
 /// 聊天气泡。
 ///
@@ -12,7 +10,7 @@ import 'brand_logo.dart';
 /// - [recommendedAction]：AI 气泡正文下方的「推荐下一步」，位于气泡内部且可复制。
 /// - [footer]：气泡下方操作区（Token 用量、查看侧边栏、刷新、调试、删除等）。
 /// - [onContextMenu]：右键（桌面）或长按（触屏）时回调，传入全局坐标用于弹出菜单。
-class ChatBubble extends StatefulWidget {
+class ChatBubble extends StatelessWidget {
   final bool isUser;
   final String text;
   final String? recommendedAction;
@@ -29,93 +27,37 @@ class ChatBubble extends StatefulWidget {
   });
 
   @override
-  State<ChatBubble> createState() => _ChatBubbleState();
-}
-
-class _ChatBubbleState extends State<ChatBubble> {
-  /// 长按判定计时器（触屏）。
-  Timer? _longPressTimer;
-
-  /// 手指按下时的位置；用于判断滑动时是否已离开长按范围。
-  Offset? _downPosition;
-
-  /// 手指移动超过该距离即视为「滑动」，取消长按（与 kTouchSlop 一致）。
-  static const double _moveSlop = 18.0;
-
-  @override
-  void dispose() {
-    _longPressTimer?.cancel();
-    super.dispose();
-  }
-
-  void _handlePointerDown(PointerDownEvent event) {
-    final callback = widget.onContextMenu;
-    if (callback == null) return;
-    final isMouse = event.kind == PointerDeviceKind.mouse;
-    final isRightClick = isMouse && event.buttons == kSecondaryMouseButton;
-    _longPressTimer?.cancel();
-    _downPosition = event.position;
-    if (isRightClick) {
-      callback(event.position);
-      return;
-    }
-    // 触屏：长按触发上下文菜单。
-    if (!isMouse) {
-      _longPressTimer = Timer(const Duration(milliseconds: 500), () {
-        if (mounted) callback(event.position);
-      });
-    }
-  }
-
-  void _handlePointerMove(PointerMoveEvent event) {
-    final down = _downPosition;
-    if (down == null) return;
-    // 手指移动超过阈值即视为滚动/拖动，取消长按，避免上下滑动时误弹菜单。
-    if ((event.position - down).distance > _moveSlop) {
-      _cancelLongPress();
-    }
-  }
-
-  void _cancelLongPress() {
-    _longPressTimer?.cancel();
-    _downPosition = null;
-  }
-
-  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
-    final showAction = !widget.isUser &&
-        widget.recommendedAction != null &&
-        widget.recommendedAction!.trim().isNotEmpty;
+    final showAction = !isUser &&
+        recommendedAction != null &&
+        recommendedAction!.trim().isNotEmpty;
 
-    return Listener(
-      onPointerDown: _handlePointerDown,
-      onPointerMove: _handlePointerMove,
-      onPointerUp: (_) => _cancelLongPress(),
-      onPointerCancel: (_) => _cancelLongPress(),
+    return BubblePointerListener(
+      onContextMenu: onContextMenu,
       child: Align(
         // 用户靠右，AI 靠左（模仿 DeepSeek：无气泡、纯文本消息流）。
-        alignment: widget.isUser ? Alignment.centerRight : Alignment.centerLeft,
+        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 680)),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (!widget.isUser) ...[
+              if (!isUser) ...[
                 const BrandLogo(size: 30),
                 const SizedBox(width: 10),
               ],
               Flexible(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: widget.isUser
+                  crossAxisAlignment: isUser
                       ? CrossAxisAlignment.end
                       : CrossAxisAlignment.start,
                   children: [
                     // 正文：AI 为无气泡纯文本；用户消息带浅色气泡。
-                    if (widget.isUser)
+                    if (isUser)
                       Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 14, vertical: 9),
@@ -124,7 +66,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: SelectableText(
-                          widget.text,
+                          text,
                           // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
                           contextMenuBuilder: (context, editableTextState) =>
                               const SizedBox.shrink(),
@@ -137,7 +79,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                       )
                     else
                       SelectableText(
-                        widget.text,
+                        text,
                         // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
                         contextMenuBuilder: (context, editableTextState) =>
                             const SizedBox.shrink(),
@@ -181,7 +123,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                             ),
                             const SizedBox(height: 4),
                             SelectableText(
-                              widget.recommendedAction!,
+                              recommendedAction!,
                               contextMenuBuilder:
                                   (context, editableTextState) =>
                                       const SizedBox.shrink(),
@@ -195,9 +137,9 @@ class _ChatBubbleState extends State<ChatBubble> {
                         ),
                       ),
                     ],
-                    if (widget.footer != null) ...[
+                    if (footer != null) ...[
                       const SizedBox(height: 6),
-                      widget.footer!,
+                      footer!,
                     ],
                   ],
                 ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/round.dart';
+import 'action_button.dart';
 
 /// AI 气泡底部控件：
 /// - Token 用量（只读文本）
@@ -53,23 +54,23 @@ class AiBubbleActions extends StatelessWidget {
           alignment: WrapAlignment.start,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            _ActionButton(
+            ActionButton(
               icon: Icons.view_sidebar_outlined,
               label: '查看侧边栏',
               onPressed: onViewSidebar,
             ),
-            _ActionButton(
+            ActionButton(
               icon: Icons.refresh,
               label: '刷新本轮',
               onPressed: onRefresh,
             ),
             if (onViewDebug != null)
-              _ActionButton(
+              ActionButton(
                 icon: Icons.bug_report_outlined,
                 label: '调试',
                 onPressed: onViewDebug!,
               ),
-            _ActionButton(
+            ActionButton(
               icon: Icons.delete_outline,
               label: '删除本轮',
               color: theme.colorScheme.error,
@@ -78,48 +79,6 @@ class AiBubbleActions extends StatelessWidget {
           ],
         ),
       ],
-    );
-  }
-}
-
-/// 小号操作按钮。
-class _ActionButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-  final Color? color;
-
-  const _ActionButton({
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-    this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final fg = color ?? theme.colorScheme.onSurfaceVariant;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onPressed,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 14, color: fg),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: TextStyle(fontSize: 12, color: fg),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

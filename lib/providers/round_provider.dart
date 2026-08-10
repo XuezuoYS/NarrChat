@@ -6,6 +6,7 @@ import '../config/app_config.dart';
 import '../database/book_dao.dart';
 import '../database/round_dao.dart';
 import '../models/book.dart';
+import '../models/failed_attempt.dart';
 import '../models/round.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
@@ -20,6 +21,7 @@ import 'world_book_provider.dart';
 class RoundProvider extends ChangeNotifier {
   RoundProvider({
     RoundDao? dao,
+    BookDao? bookDao,
     AiService? aiService,
     PromptBuilder? promptBuilder,
     WorldBookScanner? worldBookScanner,
@@ -28,7 +30,7 @@ class RoundProvider extends ChangeNotifier {
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
   })  : _dao = dao ?? RoundDao(),
-        _bookDao = BookDao(),
+        _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
         _promptBuilder = promptBuilder ?? const PromptBuilder(),
         _worldBookScanner = worldBookScanner ?? const WorldBookScanner(),
@@ -67,6 +69,9 @@ class RoundProvider extends ChangeNotifier {
   String? _error;
   int? _bookId;
 
+  /// 本书的「失败条目」（最近一次未完成的生成尝试；空 = 无）。
+  FailedAttempt _failedAttempt = const FailedAttempt();
+
   List<Round> get rounds => _roundsView;
   bool get isSending => _isSending;
   bool get isStreaming => _isStreaming;
@@ -75,6 +80,18 @@ class RoundProvider extends ChangeNotifier {
 
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _pendingUserInput;
+
+  /// 本书「失败条目」：请求失败 / 用户中断的未完成尝试（空 = 无）。
+  FailedAttempt get failedAttempt => _failedAttempt;
+
+  /// 是否存在失败条目。
+  bool get hasFailureEntry => !_failedAttempt.isEmpty;
+
+  /// 失败条目的用户输入（空串 = 无）。
+  String get failedUserInput => _failedAttempt.userInput;
+
+  /// 失败条目的错误信息（空串 = 用户中断「已截断」）。
+  String get failedErrorMessage => _failedAttempt.errorMessage;
 
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
@@ -86,17 +103,33 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 调试数据：仅保留最新一轮发出的完整请求 JSON、AI 原始返回与思考内容。
+  // 调试数据：始终反映最近一次尝试（成功轮次或失败条目）。
+  // - 成功：_debugRoundId 指向最新轮次，_debugRequestBody/_debugRawResponse/
+  //   _debugRawReasoning 对应其请求与返回；
+  // - 失败/中断：_failedDebugRequestBody 保留本次实际发出的请求，
+  //   轮次维度调试数据清空。
   int? _debugRoundId;
   String _debugRequestBody = '';
   String _debugRawResponse = '';
   String _debugRawReasoning = '';
+  String _failedDebugRequestBody = '';
+  String _failedDebugRawResponse = '';
+  String _failedDebugRawReasoning = '';
 
-  /// 调试数据所属轮次 id（null 表示暂无）。
+  /// 调试数据所属轮次 id（null 表示当前调试数据属于失败条目或暂无）。
   int? get debugRoundId => _debugRoundId;
   String get debugRequestBody => _debugRequestBody;
   String get debugRawResponse => _debugRawResponse;
   String get debugRawReasoning => _debugRawReasoning;
+
+  /// 失败条目实际发出的请求 JSON。
+  String get failedDebugRequestBody => _failedDebugRequestBody;
+
+  /// 失败 / 截断前已流式累积的 AI 原始输出（未解析）。
+  String get failedDebugRawResponse => _failedDebugRawResponse;
+
+  /// 失败 / 截断前已流式累积的思考内容。
+  String get failedDebugRawReasoning => _failedDebugRawReasoning;
 
   /// 更新轮次列表并刷新缓存的不可变视图。
   void _setRounds(List<Round> rounds) {
@@ -115,6 +148,9 @@ class RoundProvider extends ChangeNotifier {
       _debugRequestBody = '';
       _debugRawResponse = '';
       _debugRawReasoning = '';
+      _failedDebugRequestBody = '';
+      _failedDebugRawResponse = '';
+      _failedDebugRawReasoning = '';
     }
     _bookId = bookId;
     try {
@@ -128,7 +164,50 @@ class RoundProvider extends ChangeNotifier {
     } catch (e) {
       _error = e.toString();
     }
+    // 加载本书「失败条目」（best-effort：读取失败不影响轮次加载）。
+    await _loadFailedAttempt(bookId);
     notifyListeners();
+  }
+
+  /// 加载本书「失败条目」；读取失败时置空（不打扰用户）。
+  Future<void> _loadFailedAttempt(int bookId) async {
+    try {
+      _failedAttempt = await _bookDao.getFailedAttempt(bookId);
+    } catch (_) {
+      _failedAttempt = const FailedAttempt();
+    }
+  }
+
+  /// 写入本书「失败条目」（内存 + 数据库）；空条目即清空。返回是否成功落库。
+  Future<bool> _setFailedAttempt(int bookId, FailedAttempt attempt) async {
+    _failedAttempt = attempt;
+    notifyListeners();
+    try {
+      await _bookDao.setFailedAttempt(bookId, attempt);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 清除本书「失败条目」（UI「清除失败条目」入口）。
+  Future<void> clearFailedAttempt() async {
+    final id = _bookId;
+    if (id == null) return;
+    await _setFailedAttempt(id, const FailedAttempt());
+  }
+
+  /// 失败 / 中断时接管调试数据：保留本次实际发出的请求，以及流式中断前
+  /// 已累积的部分原始输出 / 思考内容；清空轮次维度调试数据
+  /// （最新尝试属于失败条目，不再属于任何成功轮次）。
+  /// 必须在清空 [_streamingContent] / [_streamingReasoning] 之前调用。
+  void _captureFailedDebug() {
+    _failedDebugRequestBody = _debugRequestBody;
+    _failedDebugRawResponse = _streamingContent;
+    _failedDebugRawReasoning = _streamingReasoning;
+    _debugRoundId = null;
+    _debugRawResponse = '';
+    _debugRawReasoning = '';
   }
 
   /// 重新加载当前书籍的轮次（云同步恢复数据后调用）。
@@ -148,12 +227,15 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 发送新一轮：
+  /// 0. 清空本书「失败条目」（成功则保持为空，失败则重新写入）；
   /// 1. 组装 System/User Prompt；
   /// 2. 按 AI 设置调用大模型（支持流式/思考/温度/模型）；
   /// 3. 容错解析 6 个区块；
   /// 4. 写入数据库。
   ///
-  /// 返回是否成功。失败时通过 [error] 暴露原因，且不写入任何数据。
+  /// 返回是否成功。请求失败 / 用户中断时保留用户输入到「失败条目」
+  /// （AI 输出以红色提示框占位），不再以消息提示；
+  /// 仅当失败条目落库也失败时通过 [error] 暴露原因。
   Future<bool> sendRound({
     required String userInput,
     Book? book,
@@ -177,6 +259,12 @@ class RoundProvider extends ChangeNotifier {
     _pendingUserInput = userInput;
     notifyListeners();
     try {
+      // 开始新请求：清空本书「失败条目」（失败则稍后重新写入），
+      // 旧的失败调试数据一并失效。
+      await _setFailedAttempt(b.id!, const FailedAttempt());
+      _failedDebugRequestBody = '';
+      _failedDebugRawResponse = '';
+      _failedDebugRawReasoning = '';
       final lastRound = latestRound;
       final recentRounds = _takeRecent(b.historyRounds);
       final worldBookEntries = _worldBookScanner.scan(
@@ -240,11 +328,17 @@ class RoundProvider extends ChangeNotifier {
         onRequestBody: (json) => _debugRequestBody = json,
         isCancelled: () => _cancelRequested,
       );
-      // 用户主动中断：丢弃部分内容，不保存本轮，也不视为错误。
+      // 用户主动中断：丢弃部分内容，以「已截断」失败条目保留用户输入。
+      // 先接管流式累积的部分输出/思考到失败调试，再清空流式缓冲。
       if (_cancelRequested) {
+        _captureFailedDebug();
         _isStreaming = false;
         _streamingContent = '';
         _streamingReasoning = '';
+        await _setFailedAttempt(
+          b.id!,
+          FailedAttempt(userInput: userInput),
+        );
         return false;
       }
       _isStreaming = false;
@@ -267,11 +361,15 @@ class RoundProvider extends ChangeNotifier {
         tokensOut: result.completionTokens,
         createdAt: DateTime.now(),
       );
-      await _dao.insertRound(newRound);
+      final newRoundId = await _dao.insertRound(newRound);
       // 仅保留最新一轮的调试数据（完整请求 JSON、AI 原始返回与思考内容）。
-      _debugRoundId = newRound.id;
+      // Round 不可变：insertRound 返回真实自增 id 作为调试数据归属。
+      _debugRoundId = newRoundId;
       _debugRawResponse = result.content;
       _debugRawReasoning = result.reasoningContent;
+      _failedDebugRequestBody = '';
+      _failedDebugRawResponse = '';
+      _failedDebugRawReasoning = '';
       await loadRounds(b.id!);
       // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
@@ -281,17 +379,31 @@ class RoundProvider extends ChangeNotifier {
       }
       return true;
     } on AiCancelledException {
-      // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误。
+      // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
+      // 以「已截断」失败条目保留用户输入。
+      _captureFailedDebug();
       _isStreaming = false;
       _streamingContent = '';
       _streamingReasoning = '';
       _error = null;
+      await _setFailedAttempt(
+        b.id!,
+        FailedAttempt(userInput: userInput),
+      );
       return false;
     } catch (e) {
+      // 请求失败：以「生成失败 + 原因」失败条目保留用户输入（不再弹消息提示）；
+      // 若为流式中途失败，先接管已累积的部分内容。
+      _captureFailedDebug();
       _isStreaming = false;
       _streamingContent = '';
       _streamingReasoning = '';
-      _error = e.toString();
+      final saved = await _setFailedAttempt(
+        b.id!,
+        FailedAttempt(userInput: userInput, errorMessage: e.toString()),
+      );
+      // 仅当失败条目落库也失败时才暴露原因（UI 兜底提示并恢复输入）。
+      _error = saved ? null : e.toString();
       return false;
     } finally {
       _isSending = false;

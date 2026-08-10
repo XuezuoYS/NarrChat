@@ -16,6 +16,7 @@ import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/debug_prompt_dialog.dart';
+import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
 
@@ -229,7 +230,8 @@ class _ChatScreenState extends State<ChatScreen>
     final ok = await roundProvider.sendRound(userInput: input, book: book);
 
     if (!ok && mounted && roundProvider.error != null) {
-      // 请求失败：恢复输入并提示错误（用户主动中断时不提示）。
+      // 请求失败已以「失败条目」气泡落库（用户输入 + 红框），不再弹消息提示；
+      // 仅当失败条目落库也失败时才恢复输入并提示错误兜底。
       _inputController.text = input;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -239,6 +241,54 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     _scrollToBottom();
+  }
+
+  /// 重新提问失败条目：以失败时的输入重新生成（sendRound 会先清空失败条目）。
+  Future<void> _retryFailure() async {
+    final rp = context.read<RoundProvider>();
+    final input = rp.failedUserInput;
+    if (input.isEmpty || rp.isSending) return;
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) return;
+    _userScrolledAway = false;
+    await rp.sendRound(userInput: input, book: book);
+    _scrollToBottom();
+  }
+
+  /// 修改并重新提问失败条目：编辑失败时的输入后重新生成。
+  Future<void> _editAndRetryFailure() async {
+    final rp = context.read<RoundProvider>();
+    final input = rp.failedUserInput;
+    if (input.isEmpty || rp.isSending) return;
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) return;
+    String? edited;
+    await _showEditTextDialog(
+      title: '修改并重新提问',
+      initial: input,
+      onSave: (text) async => edited = text,
+    );
+    if (edited == null || !mounted) return;
+    _userScrolledAway = false;
+    await rp.sendRound(userInput: edited!, book: book);
+    _scrollToBottom();
+  }
+
+  /// 清除失败条目。
+  Future<void> _clearFailure() async {
+    await context.read<RoundProvider>().clearFailedAttempt();
+  }
+
+  /// 查看失败条目的调试信息：实际发出的请求，以及流式中断前
+  /// 已累积的部分原始输出 / 思考内容（若存在）。
+  void _showFailedDebugDialog() {
+    final rp = context.read<RoundProvider>();
+    DebugPromptDialog.show(
+      context,
+      requestBody: rp.failedDebugRequestBody,
+      rawResponse: rp.failedDebugRawResponse,
+      rawReasoning: rp.failedDebugRawReasoning,
+    );
   }
 
   void _onViewSidebar(Round round) {
@@ -659,6 +709,9 @@ class _ChatScreenState extends State<ChatScreen>
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
     final pendingInput = roundProvider.pendingUserInput;
     final showPendingUser = showPending && pendingInput.isNotEmpty;
+    // 失败条目：空闲且存在未完成的生成尝试时展示（发送新消息时会先清空）。
+    final failureAttempt = roundProvider.failedAttempt;
+    final showFailure = !showPending && !failureAttempt.isEmpty;
 
     // 流式输出时若用户位于底部附近（未主动上翻阅读历史），自动跟随新内容，
     // 避免内容不断增长造成视口漂移、滚动条位置飘忽的“不稳定滚动”观感。
@@ -695,18 +748,35 @@ class _ChatScreenState extends State<ChatScreen>
         padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
         itemCount:
             chatRounds.length * 2 +
+            (showFailure ? 1 : 0) +
             (showPending ? 1 : 0) +
             (showPendingUser ? 1 : 0),
         itemBuilder: (context, index) {
           Widget item;
-          // 生成中的用户气泡（未落库，紧跟历史消息之后）。
-          if (showPendingUser && index == chatRounds.length * 2) {
+          // 虚拟条目起点：历史轮次之后（失败条目 → 待定用户气泡 → 流式气泡）。
+          final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
+          // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
+          if (showFailure && index == chatRounds.length * 2) {
+            item = Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: FailedAttemptBubble(
+                attempt: failureAttempt,
+                onRetry: _retryFailure,
+                onEditAndRetry: _editAndRetryFailure,
+                onClear: _clearFailure,
+                onViewDebug: roundProvider.failedDebugRequestBody.isNotEmpty
+                    ? _showFailedDebugDialog
+                    : null,
+              ),
+            );
+          } else if (showPendingUser && index == virtualBase) {
+            // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: ChatBubble(isUser: true, text: pendingInput),
             );
           } else if (showPending &&
-              index == chatRounds.length * 2 + (showPendingUser ? 1 : 0)) {
+              index == virtualBase + (showPendingUser ? 1 : 0)) {
             item = isStreaming
                 ? _StreamingBubble(
                     content: roundProvider.streamingContent,
@@ -745,7 +815,12 @@ class _ChatScreenState extends State<ChatScreen>
                     onViewSidebar: () => _onViewSidebar(round),
                     onDelete: () => _handleDelete(round),
                     onRefresh: () => _handleReAsk(round),
-                    onViewDebug: isLatest ? _showDebugDialog : null,
+                    // 调试数据仅保留最新一轮：仅当属于本轮时提供入口
+                    //（失败重试等场景下最新轮可能无对应调试数据）。
+                    onViewDebug: isLatest &&
+                            roundProvider.debugRoundId == round.id
+                        ? _showDebugDialog
+                        : null,
                   ),
                 ),
               );
@@ -768,7 +843,7 @@ class _ChatScreenState extends State<ChatScreen>
           child: Container(
             // 与各边栏一致的内容表面背景。
             color: context.narrColors.surface,
-            child: chatRounds.isEmpty && !showPending
+            child: chatRounds.isEmpty && !showPending && !showFailure
                 ? _buildEmptyState(context, bookProvider.currentBook)
                 // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
                 : messagesList,
