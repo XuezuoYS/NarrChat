@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/book_provider.dart';
@@ -35,9 +36,58 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _bookDrawerOpen = false;
 
+  /// 移动端右侧状态抽屉（ChatScreen 内）是否打开，用于协调系统返回键。
+  bool _rightDrawerOpen = false;
+
   void _openBookDrawer() => setState(() => _bookDrawerOpen = true);
 
   void _closeBookDrawer() => setState(() => _bookDrawerOpen = false);
+
+  /// 同步 ChatScreen 内右侧状态抽屉的开合状态。
+  void _onRightDrawerChanged(bool open) {
+    _rightDrawerOpen = open;
+  }
+
+  /// 系统返回键统一处理（安卓端）：
+  /// 1. 左侧书籍抽屉打开 → 先关闭抽屉；
+  /// 2. 右侧状态抽屉打开 → 由 ChatScreen 自身的 PopScope 负责关闭（此处跳过）；
+  /// 3. 均未打开 → 弹二次确认，确认后退出应用。
+  Future<void> _handleSystemBack() async {
+    if (_bookDrawerOpen) {
+      _closeBookDrawer();
+      return;
+    }
+    if (_rightDrawerOpen) {
+      return;
+    }
+    final exit = await _confirmExit();
+    if (exit && mounted) {
+      // 根路由被 PopScope 拦截（canPop=false），需绕过 Navigator 直接退出。
+      SystemNavigator.pop();
+    }
+  }
+
+  /// 退出应用二次确认对话框。
+  Future<bool> _confirmExit() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('退出 NarrChat'),
+        content: const Text('确定要退出 NarrChat 吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
 
   Widget _buildBookPanel(BuildContext context, BookProvider provider) {
     return BookListPanel(
@@ -58,61 +108,67 @@ class _HomeScreenState extends State<HomeScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= _kWideBreakpoint;
-        return Scaffold(
-          // 极简白色顶部：细底边 + 品牌 Logo（模仿 DeepSeek 顶部）。
-          appBar: PreferredSize(
-            preferredSize: const Size.fromHeight(kToolbarHeight),
-            child: Container(
-              decoration: BoxDecoration(
-                color: context.narrColors.surface,
-                border: Border(
-                  bottom: BorderSide(color: context.narrColors.divider),
+        return PopScope(
+          // 根路由统一拦截系统返回键：抽屉打开先关抽屉，否则二次确认退出。
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            _handleSystemBack();
+          },
+          child: Scaffold(
+            // 极简白色顶部：细底边 + 品牌 Logo（模仿 DeepSeek 顶部）。
+            appBar: PreferredSize(
+              preferredSize: const Size.fromHeight(kToolbarHeight),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: context.narrColors.surface,
+                  border: Border(
+                    bottom: BorderSide(color: context.narrColors.divider),
+                  ),
                 ),
-              ),
-              child: AppBar(
-                leading: (book != null && !wide)
-                    ? IconButton(
-                        icon: const Icon(Icons.menu),
-                        tooltip: '书籍列表',
-                        onPressed: _openBookDrawer,
-                      )
-                    : null,
-                title: const BrandLogo(title: 'NarrChat'),
-                actions: [
-                  if (book != null) ...[
+                child: AppBar(
+                  leading: (book != null && !wide)
+                      ? IconButton(
+                          icon: const Icon(Icons.menu),
+                          tooltip: '书籍列表',
+                          onPressed: _openBookDrawer,
+                        )
+                      : null,
+                  title: const BrandLogo(title: 'NarrChat'),
+                  actions: [
+                    if (book != null) ...[
+                      IconButton(
+                        icon: const Icon(Icons.book_outlined),
+                        tooltip: '书籍设置',
+                        onPressed: () =>
+                            BookSettingsScreen.open(context, book: book),
+                      ),
+                    ],
                     IconButton(
-                      icon: const Icon(Icons.book_outlined),
-                      tooltip: '书籍设置',
-                      onPressed: () =>
-                          BookSettingsScreen.open(context, book: book),
+                      icon: const Icon(Icons.settings_outlined),
+                      tooltip: '设置',
+                      onPressed: () => SettingsScreen.open(context),
                     ),
                   ],
-                  IconButton(
-                    icon: const Icon(Icons.settings_outlined),
-                    tooltip: '设置',
-                    onPressed: () => SettingsScreen.open(context),
-                  ),
-                ],
+                ),
               ),
             ),
+            body: book == null
+                ? const BookListScreen()
+                : wide
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(
+                        width: _kBookPanelWidth,
+                        child: _buildBookPanel(context, bookProvider),
+                      ),
+                      const VerticalDivider(width: 1),
+                      Expanded(child: ChatScreen(key: ValueKey(book.id))),
+                    ],
+                  )
+                : _buildMobileLayout(context, bookProvider),
           ),
-          body: book == null
-              ? const BookListScreen()
-              : wide
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SizedBox(
-                          width: _kBookPanelWidth,
-                          child: _buildBookPanel(context, bookProvider),
-                        ),
-                        const VerticalDivider(width: 1),
-                        Expanded(
-                          child: ChatScreen(key: ValueKey(book.id)),
-                        ),
-                      ],
-                    )
-                  : _buildMobileLayout(context, bookProvider),
         );
       },
     );
@@ -124,7 +180,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return Stack(
       children: [
         Positioned.fill(
-          child: ChatScreen(key: ValueKey(book?.id)),
+          child: ChatScreen(
+            key: ValueKey(book?.id),
+            onDrawerOpenChanged: _onRightDrawerChanged,
+          ),
         ),
         if (_bookDrawerOpen)
           Positioned.fill(

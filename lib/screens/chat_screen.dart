@@ -48,7 +48,13 @@ const double _kFabBottom = 110;
 /// - 移动端（窄屏）：主对话区全屏，侧边栏为从右向左滑出的抽屉，
 ///   通过悬浮按钮呼出。
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  const ChatScreen({super.key, this.onDrawerOpenChanged});
+
+  /// 移动端右侧状态抽屉开合状态变化回调。
+  ///
+  /// 供外层（[HomeScreen]）同步抽屉状态，以协调系统返回键行为：
+  /// 抽屉打开时先关闭抽屉，而非直接触发退出确认。
+  final ValueChanged<bool>? onDrawerOpenChanged;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -109,6 +115,20 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() {});
   }
 
+  /// 打开移动端右侧状态抽屉（带动画）。
+  void _openDrawer() {
+    if (_drawerOpen) return;
+    setState(() => _drawerOpen = true);
+    widget.onDrawerOpenChanged?.call(true);
+  }
+
+  /// 关闭移动端右侧状态抽屉。
+  void _closeDrawer() {
+    if (!_drawerOpen) return;
+    setState(() => _drawerOpen = false);
+    widget.onDrawerOpenChanged?.call(false);
+  }
+
   @override
   void dispose() {
     _sidebarController.dispose();
@@ -162,10 +182,7 @@ class _ChatScreenState extends State<ChatScreen>
     _userScrolledAway = false;
     _scrollToBottom();
 
-    final ok = await roundProvider.sendRound(
-      userInput: input,
-      book: book,
-    );
+    final ok = await roundProvider.sendRound(userInput: input, book: book);
 
     if (!ok && mounted && roundProvider.error != null) {
       // 请求失败：恢复输入并提示错误（用户主动中断时不提示）。
@@ -190,7 +207,7 @@ class _ChatScreenState extends State<ChatScreen>
         _setSidebarOpen(true);
       }
     } else if (!_drawerOpen) {
-      setState(() => _drawerOpen = true);
+      _openDrawer();
     }
   }
 
@@ -198,9 +215,9 @@ class _ChatScreenState extends State<ChatScreen>
     final choice = await showDeleteRoundDialog(context, round);
     if (choice == null || !mounted) return;
     await context.read<RoundProvider>().deleteRound(
-          round,
-          deleteFollowing: choice == DeleteRoundChoice.all,
-        );
+      round,
+      deleteFollowing: choice == DeleteRoundChoice.all,
+    );
   }
 
   /// 查看最新一轮的调试信息（发送的 Prompt 与 AI 原始返回）。
@@ -402,7 +419,11 @@ class _ChatScreenState extends State<ChatScreen>
       ),
     );
     if (confirmed != true || !mounted) return;
-    await context.read<RoundProvider>().editAndReAsk(round, edited!, book: book);
+    await context.read<RoundProvider>().editAndReAsk(
+      round,
+      edited!,
+      book: book,
+    );
     _scrollToBottom();
   }
 
@@ -424,20 +445,28 @@ class _ChatScreenState extends State<ChatScreen>
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= _kWideBreakpoint;
-        final chat = _buildChatArea(context);
-        final sidebar = _buildSidebar(
-          context,
-          onClose: wide
-              ? () => _setSidebarOpen(false)
-              : () => setState(() => _drawerOpen = false),
-        );
-        return wide
-            ? _buildWideLayout(context, chat, sidebar)
-            : _buildMobileLayout(context, chat, sidebar);
+    return PopScope(
+      // 移动端右侧状态抽屉打开时拦截系统返回：优先关闭抽屉而非退出应用。
+      canPop: !_drawerOpen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_drawerOpen) {
+          _closeDrawer();
+        }
       },
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= _kWideBreakpoint;
+          final chat = _buildChatArea(context);
+          final sidebar = _buildSidebar(
+            context,
+            onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
+          );
+          return wide
+              ? _buildWideLayout(context, chat, sidebar)
+              : _buildMobileLayout(context, chat, sidebar);
+        },
+      ),
     );
   }
 
@@ -528,7 +557,7 @@ class _ChatScreenState extends State<ChatScreen>
         if (_drawerOpen)
           Positioned.fill(
             child: GestureDetector(
-              onTap: () => setState(() => _drawerOpen = false),
+              onTap: _closeDrawer,
               child: Container(color: Colors.black26),
             ),
           ),
@@ -543,12 +572,7 @@ class _ChatScreenState extends State<ChatScreen>
           width: drawerWidth,
           // ClipRect 把 Material 的阴影裁剪在抽屉边界内：
           // 收起滑出屏幕后阴影不再投射到屏幕边缘内。
-          child: ClipRect(
-            child: Material(
-              elevation: 12,
-              child: sidebar,
-            ),
-          ),
+          child: ClipRect(child: Material(elevation: 12, child: sidebar)),
         ),
         if (!_drawerOpen)
           Positioned(
@@ -556,7 +580,7 @@ class _ChatScreenState extends State<ChatScreen>
             bottom: _kFabBottom,
             child: FloatingActionButton.small(
               heroTag: 'sidebar_fab',
-              onPressed: () => setState(() => _drawerOpen = true),
+              onPressed: _openDrawer,
               tooltip: '打开状态侧边栏',
               child: const Icon(Icons.view_sidebar_outlined),
             ),
@@ -612,76 +636,74 @@ class _ChatScreenState extends State<ChatScreen>
     final messagesList = NotificationListener<ScrollNotification>(
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
-      itemCount: chatRounds.length * 2 +
-          (showPending ? 1 : 0) +
-          (showPendingUser ? 1 : 0),
-      itemBuilder: (context, index) {
-        Widget item;
-        // 生成中的用户气泡（未落库，紧跟历史消息之后）。
-        if (showPendingUser && index == chatRounds.length * 2) {
-          item = Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: ChatBubble(
-              isUser: true,
-              text: pendingInput,
-            ),
-          );
-        } else if (showPending &&
-            index == chatRounds.length * 2 + (showPendingUser ? 1 : 0)) {
-          item = isStreaming
-              ? _StreamingBubble(
-                  content: roundProvider.streamingContent,
-                  reasoning: roundProvider.streamingReasoning,
-                )
-              : const _TypingBubble();
-        } else {
-          final round = chatRounds[index ~/ 2];
-          final isAi = index.isOdd;
-          // 调试数据仅保留最新一轮：只有最新 AI 气泡提供「调试」入口。
-          final isLatest =
-              chatRounds.isNotEmpty && round.id == chatRounds.last.id;
-          if (!isAi) {
+        controller: _scrollController,
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+        itemCount:
+            chatRounds.length * 2 +
+            (showPending ? 1 : 0) +
+            (showPendingUser ? 1 : 0),
+        itemBuilder: (context, index) {
+          Widget item;
+          // 生成中的用户气泡（未落库，紧跟历史消息之后）。
+          if (showPendingUser && index == chatRounds.length * 2) {
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: ChatBubble(
-                isUser: true,
-                text: round.userInput,
-                onContextMenu: (pos) =>
-                    _onBubbleContextMenu(round, isAi, pos),
-              ),
+              child: ChatBubble(isUser: true, text: pendingInput),
             );
+          } else if (showPending &&
+              index == chatRounds.length * 2 + (showPendingUser ? 1 : 0)) {
+            item = isStreaming
+                ? _StreamingBubble(
+                    content: roundProvider.streamingContent,
+                    reasoning: roundProvider.streamingReasoning,
+                  )
+                : const _TypingBubble();
           } else {
-            item = Padding(
-              padding: const EdgeInsets.only(bottom: 20),
-              child: ChatBubble(
-                isUser: false,
-                text: round.aiNarrative.isEmpty
-                    ? '（AI 未返回剧情正文）'
-                    : round.aiNarrative,
-                recommendedAction: round.recommendedAction,
-                onContextMenu: (pos) =>
-                    _onBubbleContextMenu(round, isAi, pos),
-                footer: AiBubbleActions(
-                  round: round,
-                  onViewSidebar: () => _onViewSidebar(round),
-                  onDelete: () => _handleDelete(round),
-                  onRefresh: () => _handleReAsk(round),
-                  onViewDebug: isLatest ? _showDebugDialog : null,
+            final round = chatRounds[index ~/ 2];
+            final isAi = index.isOdd;
+            // 调试数据仅保留最新一轮：只有最新 AI 气泡提供「调试」入口。
+            final isLatest =
+                chatRounds.isNotEmpty && round.id == chatRounds.last.id;
+            if (!isAi) {
+              item = Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: ChatBubble(
+                  isUser: true,
+                  text: round.userInput,
+                  onContextMenu: (pos) =>
+                      _onBubbleContextMenu(round, isAi, pos),
                 ),
-              ),
-            );
+              );
+            } else {
+              item = Padding(
+                padding: const EdgeInsets.only(bottom: 20),
+                child: ChatBubble(
+                  isUser: false,
+                  text: round.aiNarrative.isEmpty
+                      ? '（AI 未返回剧情正文）'
+                      : round.aiNarrative,
+                  recommendedAction: round.recommendedAction,
+                  onContextMenu: (pos) =>
+                      _onBubbleContextMenu(round, isAi, pos),
+                  footer: AiBubbleActions(
+                    round: round,
+                    onViewSidebar: () => _onViewSidebar(round),
+                    onDelete: () => _handleDelete(round),
+                    onRefresh: () => _handleReAsk(round),
+                    onViewDebug: isLatest ? _showDebugDialog : null,
+                  ),
+                ),
+              );
+            }
           }
-        }
-        // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
-        return Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
-            child: item,
-          ),
-        );
-      },
+          // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
+              child: item,
+            ),
+          );
+        },
       ),
     );
 
@@ -764,7 +786,9 @@ class _ChatScreenState extends State<ChatScreen>
                         onTap: () => _inputController.text = s.$2,
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
                           child: Text(
                             s.$1,
                             style: TextStyle(
@@ -891,7 +915,9 @@ class _ChatScreenState extends State<ChatScreen>
                 tooltip: isSending ? '停止生成' : '发送',
                 style: IconButton.styleFrom(
                   backgroundColor: NarrChatTheme.primary,
-                  disabledBackgroundColor: Theme.of(context).colorScheme.outline,
+                  disabledBackgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.outline,
                 ),
                 icon: isSending
                     ? const SizedBox(
@@ -925,9 +951,11 @@ class _ChatScreenState extends State<ChatScreen>
     final latest = rounds.isEmpty ? null : rounds.last;
 
     final viewedRound = sidebarProvider.isHistoryView
-        ? (rounds.where((r) => r.id == sidebarProvider.historyRoundId).isNotEmpty
-            ? rounds.firstWhere((r) => r.id == sidebarProvider.historyRoundId)
-            : latest)
+        ? (rounds
+                  .where((r) => r.id == sidebarProvider.historyRoundId)
+                  .isNotEmpty
+              ? rounds.firstWhere((r) => r.id == sidebarProvider.historyRoundId)
+              : latest)
         : latest;
 
     return SidebarPanel(
@@ -936,12 +964,9 @@ class _ChatScreenState extends State<ChatScreen>
       isHistoryView: sidebarProvider.isHistoryView && viewedRound != null,
       onBackToCurrent: () => context.read<SidebarProvider>().showCurrent(),
       onClose: onClose,
-      onAutoSaveField: (round, field, value) =>
-          context.read<RoundProvider>().updateRoundField(
-                round.id!,
-                field,
-                value,
-              ),
+      onAutoSaveField: (round, field, value) => context
+          .read<RoundProvider>()
+          .updateRoundField(round.id!, field, value),
     );
   }
 }
@@ -1023,8 +1048,9 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                   if (hasReasoning) ...[
                     InkWell(
                       borderRadius: BorderRadius.circular(6),
-                      onTap: () =>
-                          setState(() => _reasoningExpanded = !_reasoningExpanded),
+                      onTap: () => setState(
+                        () => _reasoningExpanded = !_reasoningExpanded,
+                      ),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 2),
                         child: Row(
@@ -1037,8 +1063,11 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                               size: 16,
                               color: NarrChatTheme.primary,
                             ),
-                            const Icon(Icons.psychology_outlined,
-                                size: 14, color: NarrChatTheme.primary),
+                            const Icon(
+                              Icons.psychology_outlined,
+                              size: 14,
+                              color: NarrChatTheme.primary,
+                            ),
                             const SizedBox(width: 4),
                             const Text(
                               '思考中',
@@ -1053,7 +1082,9 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                               const SizedBox(
                                 width: 12,
                                 height: 12,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               ),
                               const SizedBox(width: 4),
                             ],
@@ -1118,4 +1149,3 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     );
   }
 }
-
