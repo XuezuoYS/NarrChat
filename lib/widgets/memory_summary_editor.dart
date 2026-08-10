@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 
 /// 一条记忆条目：轮数 + 日期 + 概括内容（三者绑定在一条内）。
@@ -209,6 +210,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       padding: const EdgeInsets.all(8),
       child: TextField(
         controller: _editController,
+        onTapOutside: unfocusOnTapOutside,
         maxLines: null,
         minLines: 5,
         keyboardType: TextInputType.multiline,

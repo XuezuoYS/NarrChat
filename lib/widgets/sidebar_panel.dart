@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/round.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
+import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
@@ -179,6 +180,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         label: '当前时间',
                         body: TextField(
                           controller: _currentTime,
+                          onTapOutside: unfocusOnTapOutside,
                           style: const TextStyle(fontSize: 14),
                           decoration: const InputDecoration(
                             hintText: '当前时间',

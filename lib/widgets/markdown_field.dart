@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 
 /// 支持 Markdown 渲染的文本编辑组件。
@@ -123,6 +124,7 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
                   padding: const EdgeInsets.all(8),
                   child: TextField(
                     controller: _editController,
+                    onTapOutside: unfocusOnTapOutside,
                     maxLines: null,
                     minLines: 5,
                     keyboardType: TextInputType.multiline,

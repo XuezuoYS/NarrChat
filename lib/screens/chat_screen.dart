@@ -11,6 +11,7 @@ import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
@@ -454,6 +455,7 @@ class _ChatScreenState extends State<ChatScreen>
           width: 560,
           child: TextField(
             controller: controller,
+            onTapOutside: unfocusOnTapOutside,
             maxLines: null,
             minLines: 10,
             style: const TextStyle(fontSize: 13, height: 1.5),
@@ -1011,6 +1013,7 @@ class _ChatScreenState extends State<ChatScreen>
           Expanded(
             child: TextField(
               controller: _inputController,
+              onTapOutside: unfocusOnTapOutside,
               minLines: 1,
               maxLines: 5,
               style: TextStyle(

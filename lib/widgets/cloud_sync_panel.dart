@@ -8,6 +8,7 @@ import '../providers/cloud_sync_provider.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
+import '../utils/focus_utils.dart';
 
 /// 云同步（WebDAV）设置面板。
 ///
@@ -195,6 +196,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
         const SizedBox(height: 12),
         TextField(
           controller: _url,
+          onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: 'WebDAV 服务器地址',
             hintText: 'https://dav.example.com/dav/',
@@ -208,6 +210,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             Expanded(
               child: TextField(
                 controller: _username,
+                onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '登录用户名',
                   hintText: 'WebDAV 账号',
@@ -220,6 +223,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             Expanded(
               child: TextField(
                 controller: _password,
+                onTapOutside: unfocusOnTapOutside,
                 obscureText: _obscurePassword,
                 // 密码框：禁用输入法联想/自动更正，避免敏感信息被记录。
                 enableSuggestions: false,
@@ -250,6 +254,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             Expanded(
               child: TextField(
                 controller: _folder,
+                onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '存储文件夹',
                   hintText: 'narrchat',
@@ -262,6 +267,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             Expanded(
               child: TextField(
                 controller: _userName,
+                onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '备份用户名',
                   hintText: 'user',
@@ -274,6 +280,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             Expanded(
               child: TextField(
                 controller: _keepVersions,
+                onTapOutside: unfocusOnTapOutside,
                 keyboardType: TextInputType.number,
                 // 仅允许数字且最多 2 位（1~99），与保存时的范围校验一致。
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/role_category.dart';
+import '../utils/focus_utils.dart';
 
 /// 可拖拽排序的角色类别列表。
 ///
@@ -201,6 +202,7 @@ class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
           children: [
             TextField(
               controller: _name,
+              onTapOutside: unfocusOnTapOutside,
               decoration: const InputDecoration(
                 labelText: '类别名称',
                 hintText: '如：女主角',
@@ -211,6 +213,7 @@ class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
             const SizedBox(height: 12),
             TextField(
               controller: _format,
+              onTapOutside: unfocusOnTapOutside,
               minLines: 5,
               maxLines: 10,
               decoration: const InputDecoration(

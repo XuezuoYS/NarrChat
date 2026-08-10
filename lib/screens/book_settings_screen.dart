@@ -6,6 +6,7 @@ import '../models/role_category.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/constants.dart';
+import '../utils/focus_utils.dart';
 import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
@@ -186,6 +187,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       {String hint = ''}) {
     return TextField(
       controller: controller,
+      onTapOutside: unfocusOnTapOutside,
       maxLines: null,
       minLines: 4,
       keyboardType: TextInputType.multiline,
@@ -210,6 +212,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         ),
         TextField(
           controller: _title,
+          onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: '书籍标题 *',
             hintText: '如：玄幻后宫',
@@ -220,6 +223,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         const SizedBox(height: 12),
         TextField(
           controller: _category,
+          onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: '书籍总类别',
             hintText: '如：玄幻、都市、悬疑',

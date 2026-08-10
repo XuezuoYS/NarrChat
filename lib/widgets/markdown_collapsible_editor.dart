@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 
 /// Markdown 文档树节点。
@@ -194,6 +195,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             child: TextField(
               controller: _editController,
+              onTapOutside: unfocusOnTapOutside,
               maxLines: null,
               minLines: 6,
               keyboardType: TextInputType.multiline,

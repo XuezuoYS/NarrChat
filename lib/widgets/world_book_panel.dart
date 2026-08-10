@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/world_book_entry.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import 'app_empty_hint.dart';
 
 /// 世界书管理面板（作为书籍设置的一个子模块）。
@@ -169,6 +170,7 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
         // 新增条目表单
         TextField(
           controller: _keywordController,
+          onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: '触发关键词',
             hintText: '多个关键词用逗号/顿号分隔，如：青云宗, 苏清月',
@@ -179,6 +181,7 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
         const SizedBox(height: 8),
         TextField(
           controller: _contentController,
+          onTapOutside: unfocusOnTapOutside,
           minLines: 2,
           maxLines: 4,
           decoration: const InputDecoration(
@@ -375,6 +378,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
           children: [
             TextField(
               controller: _keyword,
+              onTapOutside: unfocusOnTapOutside,
               decoration: const InputDecoration(
                 labelText: '触发关键词',
                 hintText: '多个关键词用逗号/顿号分隔',
@@ -385,6 +389,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
             const SizedBox(height: 12),
             TextField(
               controller: _content,
+              onTapOutside: unfocusOnTapOutside,
               minLines: 4,
               maxLines: 8,
               decoration: const InputDecoration(

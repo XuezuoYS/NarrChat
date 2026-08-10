@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../utils/focus_utils.dart';
+
 /// 本轮调试信息对话框。
 ///
 /// 展示实际发给 AI 的**完整请求 JSON**（含 system / 历史 user/assistant / 当前 user
@@ -86,6 +88,7 @@ class _DebugPromptDialogState extends State<DebugPromptDialog> {
               // 按字符查询匹配定位
               TextField(
                 controller: _searchController,
+                onTapOutside: unfocusOnTapOutside,
                 onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
                   isDense: true,

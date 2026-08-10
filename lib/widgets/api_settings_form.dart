@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../config/app_config.dart';
 import '../providers/ai_settings_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import 'app_menu.dart';
 
 /// AI 接口设置表单（可嵌入全窗口设置页）。
@@ -137,6 +138,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         // API Key（安全存储）
         TextField(
           controller: _apiKey,
+          onTapOutside: unfocusOnTapOutside,
           obscureText: _obscureKey,
           // 敏感密钥：禁用输入法联想/自动更正。
           enableSuggestions: false,
@@ -157,6 +159,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         // Base URL
         TextField(
           controller: _baseUrl,
+          onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: 'Base URL',
             hintText: 'https://api.deepseek.com',
@@ -186,6 +189,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
           const SizedBox(height: 8),
           TextField(
             controller: _customModel,
+            onTapOutside: unfocusOnTapOutside,
             decoration: const InputDecoration(
               labelText: '自定义模型名称',
               hintText: '如 deepseek-v4-pro',
@@ -240,6 +244,7 @@ class _ApiSettingsFormState extends State<ApiSettingsForm> {
         // 最大输出 Tokens
         TextField(
           controller: _maxTokens,
+          onTapOutside: unfocusOnTapOutside,
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
             labelText: '最大输出 Tokens（留空自动）',

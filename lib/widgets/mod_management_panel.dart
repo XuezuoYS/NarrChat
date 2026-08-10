@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import 'app_empty_hint.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -190,6 +191,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           width: 520,
           child: TextField(
             controller: controller,
+            onTapOutside: unfocusOnTapOutside,
             maxLines: 10,
             minLines: 6,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
@@ -674,6 +676,7 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
   Widget _multiline(TextEditingController controller, String hint) {
     return TextField(
       controller: controller,
+      onTapOutside: unfocusOnTapOutside,
       readOnly: _readOnly,
       maxLines: null,
       minLines: 6,
@@ -744,6 +747,7 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
                               children: [
                                 TextField(
                                   controller: _name,
+                                  onTapOutside: unfocusOnTapOutside,
                                   readOnly: _readOnly,
                                   decoration: const InputDecoration(
                                     labelText: '名称 *（仅用于辨识，不发送给 AI）',
@@ -755,6 +759,7 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
                                 const SizedBox(height: 12),
                                 TextField(
                                   controller: _description,
+                                  onTapOutside: unfocusOnTapOutside,
                                   readOnly: _readOnly,
                                   maxLines: 3,
                                   minLines: 2,
@@ -1019,6 +1024,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
           children: [
             TextField(
               controller: _keyword,
+              onTapOutside: unfocusOnTapOutside,
               readOnly: widget.readOnly,
               decoration: const InputDecoration(
                 labelText: '触发关键词',
@@ -1030,6 +1036,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
             const SizedBox(height: 12),
             TextField(
               controller: _content,
+              onTapOutside: unfocusOnTapOutside,
               readOnly: widget.readOnly,
               minLines: 4,
               maxLines: 8,
