@@ -43,6 +43,24 @@ class _ImmediateClient extends http.BaseClient {
   }
 }
 
+/// 模拟 SSE 流式响应：依次返回 content / usage / [DONE] 数据行。
+class _SseClient extends http.BaseClient {
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final lines = [
+      'data: {"choices":[{"delta":{"content":"## 剧情演绎\\n"}}]}',
+      'data: {"choices":[{"delta":{"content":"剧情正文"}}]}',
+      'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":3,"completion_tokens":5}}',
+      'data: [DONE]',
+      '',
+    ];
+    return http.StreamedResponse(
+      Stream.value(utf8.encode(lines.join('\n'))),
+      200,
+    );
+  }
+}
+
 void main() {
   test('非流式：生成中停止会及时中止（无需等服务器返回正文）', () async {
     final client = _PendingBodyClient();
@@ -86,5 +104,78 @@ void main() {
     expect(result.content, contains('非流式正常正文'));
     expect(result.promptTokens, 3);
     expect(result.completionTokens, 5);
+  });
+
+  test('流式：响应体挂起时停止生成及时生效（不会永久卡住）', () async {
+    final client = _PendingBodyClient();
+    final ai = AiService(client: client);
+
+    var cancelled = false;
+    final chatFuture = ai.chat(
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'test-key',
+      systemPrompt: '系统提示',
+      userPrompt: '用户输入',
+      stream: true,
+      isCancelled: () => cancelled,
+    );
+
+    // 服务器已回响应头、正文挂起；用户点击停止生成。
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    cancelled = true;
+
+    // 100ms 轮询周期内即中止，无需等服务器返回 / 超时。
+    await expectLater(
+      chatFuture,
+      throwsA(isA<AiCancelledException>()),
+    );
+
+    await client.body.close();
+  });
+
+  test('流式：服务器挂起无数据时按请求超时兜底（不会永久卡住）', () async {
+    final client = _PendingBodyClient();
+    final ai = AiService(
+      client: client,
+      requestTimeout: const Duration(milliseconds: 200),
+    );
+
+    final chatFuture = ai.chat(
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'test-key',
+      systemPrompt: '系统提示',
+      userPrompt: '用户输入',
+      stream: true,
+      isCancelled: () => false,
+    );
+
+    await expectLater(
+      chatFuture,
+      throwsA(isA<AiException>()),
+    );
+
+    await client.body.close();
+  });
+
+  test('流式：正常路径逐块回调并返回聚合内容与 usage', () async {
+    final ai = AiService(client: _SseClient());
+    final deltas = <String>[];
+
+    final result = await ai.chat(
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'test-key',
+      systemPrompt: '系统提示',
+      userPrompt: '用户输入',
+      stream: true,
+      onChunk: (c) {
+        if (!c.done && c.contentDelta.isNotEmpty) deltas.add(c.contentDelta);
+      },
+      isCancelled: () => false,
+    );
+
+    expect(result.content, contains('剧情正文'));
+    expect(result.promptTokens, 3);
+    expect(result.completionTokens, 5);
+    expect(deltas.join(), contains('剧情正文'));
   });
 }

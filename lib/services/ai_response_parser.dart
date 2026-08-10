@@ -41,7 +41,12 @@ class ParsedAiResponse {
 /// - 某个标题缺失时，对应字段存为空字符串，绝不崩溃；
 /// - 标题前多余空白、`#` 与标题之间缺少空格（如 `##剧情演绎`）、
 ///   标题层级不是严格的 `##`（如 `#` 或 `###`）均可容忍；
-/// - 未匹配到任何已知标题的杂散内容将被丢弃。
+/// - 首个标题之后未匹配的杂散内容将被丢弃；首个标题之前的无标题内容
+///   会被保留，仅在剧情演绎缺失时作为正文兜底。
+///
+/// 剧情演绎缺失时的正文兜底（应对 AI 幻觉放弃输出 `## 剧情演绎`）：
+/// 1. 存在 `正文` 标题区块时，将其内容视为正文（优先级次之）；
+/// 2. 否则若响应开头存在「无标题直接开始生成」的内容，将其视为正文。
 class AiResponseParser {
   AiResponseParser._();
 
@@ -52,7 +57,11 @@ class AiResponseParser {
     '记忆总结',
     '当前时间',
     '推荐行动',
+    '正文',
   ];
+
+  /// 「正文」标题区块的内部标记字段名（不属于 [ParsedAiResponse] 的公开字段）。
+  static const String _bodyField = '__body__';
 
   static const Map<String, String> _sectionToField = {
     '剧情演绎': 'aiNarrative',
@@ -61,6 +70,8 @@ class AiResponseParser {
     '记忆总结': 'memorySummary',
     '当前时间': 'currentTime',
     '推荐行动': 'recommendedAction',
+    // 「正文」为内部兜底区块：仅在剧情演绎缺失时用作正文（见 [parse]）。
+    '正文': _bodyField,
   };
 
   static ParsedAiResponse parse(String raw) {
@@ -74,25 +85,43 @@ class AiResponseParser {
 
     // 当前正在写入的字段；未匹配到任何区块前为 null。
     String? currentField;
+    // 响应开头、首个标题之前的无标题内容（可能为「无标题直接开始生成的正文」）。
+    final preamble = StringBuffer();
+    // 是否已遇到第一个标题：此后内容不再计入 [preamble]。
+    var encounteredHeading = false;
 
     for (final line in raw.split('\n')) {
       final heading = _tryParseHeading(line);
       if (heading != null) {
+        encounteredHeading = true;
         final field = _matchSection(heading);
         if (field != null) {
           currentField = field;
           continue;
         }
+        // 未知标题：不重置当前区块（角色状态内部结构需原样保留），
+        // 标题行随之下沉写入当前区块；若尚未进入任何区块则继续丢弃。
       }
       if (currentField != null) {
         buffers[currentField]!.writeln(line);
+      } else if (!encounteredHeading) {
+        preamble.writeln(line);
       }
     }
 
     String fieldValue(String key) => buffers[key]!.toString().trim();
 
+    // 剧情演绎正文兜底：剧情演绎 → 正文区块 → 无标题开头内容。
+    var aiNarrative = fieldValue('aiNarrative');
+    if (aiNarrative.isEmpty) {
+      aiNarrative = fieldValue(_bodyField);
+    }
+    if (aiNarrative.isEmpty) {
+      aiNarrative = preamble.toString().trim();
+    }
+
     return ParsedAiResponse(
-      aiNarrative: fieldValue('aiNarrative'),
+      aiNarrative: aiNarrative,
       worldState: fieldValue('worldState'),
       characterState: fieldValue('characterState'),
       memorySummary: fieldValue('memorySummary'),

@@ -65,9 +65,18 @@ class AiCancelledException implements Exception {
 /// - 流式输出（SSE，`stream: true`，通过 [onChunk] 回调增量）
 /// - 自定义模型、温度
 class AiService {
-  AiService({http.Client? client}) : _client = client ?? http.Client();
+  AiService({
+    http.Client? client,
+    Duration requestTimeout = AppConfig.requestTimeout,
+  })  : _client = client ?? http.Client(),
+        // ignore: prefer_initializing_formals
+        _requestTimeout = requestTimeout;
 
   final http.Client _client;
+
+  /// 请求超时：非流式为「整段响应」限时；流式为「空闲超时」——
+  /// 超过该时长未收到任何数据行即视为超时（避免服务器挂起导致流式永久卡住）。
+  final Duration _requestTimeout;
 
   /// 发送对话请求并返回解析后的内容与 Token 用量。
   ///
@@ -225,7 +234,7 @@ class AiService {
 
       late final http.StreamedResponse response;
       try {
-        response = await _client.send(request).timeout(AppConfig.requestTimeout);
+        response = await _client.send(request).timeout(_requestTimeout);
       } on TimeoutException {
         throw const AiException('请求超时，请检查网络或稍后重试。');
       } on http.ClientException catch (e) {
@@ -266,7 +275,7 @@ class AiService {
       // 等待：响应读完（onDone）或用户中断（cancelSignal 报错）。
       // 保留原「整段响应（含正文）限时」语义。
       try {
-        await cancelSignal.future.timeout(AppConfig.requestTimeout);
+        await cancelSignal.future.timeout(_requestTimeout);
       } on TimeoutException {
         throw const AiException('请求超时，请检查网络或稍后重试。');
       }
@@ -292,7 +301,7 @@ class AiService {
         ..headers['Content-Type'] = 'application/json'
         ..headers['Authorization'] = 'Bearer $apiKey'
         ..body = body;
-      response = await _client.send(request).timeout(AppConfig.requestTimeout);
+      response = await _client.send(request).timeout(_requestTimeout);
     } on TimeoutException {
       throw const AiException('请求超时，请检查网络或稍后重试。');
     } on http.ClientException catch (e) {
@@ -309,47 +318,101 @@ class AiService {
     int promptTokens = 0;
     int completionTokens = 0;
 
-    try {
-      await for (final line
-          in response.stream.transform(utf8.decoder).transform(const LineSplitter())) {
-        // 用户主动中断：跳出循环（取消订阅 → 中止 HTTP 连接）。
-        if (isCancelled?.call() ?? false) {
-          throw const AiCancelledException();
-        }
-        final trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        final data = trimmed.substring(5).trim();
-        if (data == '[DONE]') break;
-        if (data.isEmpty) continue;
+    // 完成信号：正常读完（onDone）/ 用户中断 / 空闲超时 / 流错误。
+    final doneSignal = Completer<void>();
+    // 防止完成信号在未被 await 的异常路径上产生 unhandled error。
+    doneSignal.future.ignore();
 
-        try {
-          final json = jsonDecode(data) as Map<String, dynamic>;
-          final choices = (json['choices'] as List<dynamic>?) ?? const [];
-          if (choices.isEmpty) continue;
-          final delta = (choices.first as Map<String, dynamic>)['delta'] as Map<String, dynamic>?;
+    StreamSubscription<String>? sub;
 
-          final content = delta?['content'] as String?;
-          if (content != null && content.isNotEmpty) {
-            contentSb.write(content);
-            onChunk?.call(AiStreamChunk(contentDelta: content));
-          }
-          final reasoning = delta?['reasoning_content'] as String?;
-          if (reasoning != null && reasoning.isNotEmpty) {
-            reasoningSb.write(reasoning);
-            onChunk?.call(AiStreamChunk(reasoningDelta: reasoning));
-          }
-
-          // 部分服务商在最后一个 chunk 附带 usage
-          final usage = json['usage'] as Map<String, dynamic>?;
-          if (usage != null) {
-            promptTokens = (usage['prompt_tokens'] as num?)?.toInt() ?? promptTokens;
-            completionTokens = (usage['completion_tokens'] as num?)?.toInt() ?? completionTokens;
-          }
-        } catch (_) {
-          // 忽略无法解析的行，保证容错。
-        }
+    // 挂起保护：服务器不再发送任何数据时，仍能及时响应用户中断
+    //（await 卡在流上时无法检查 isCancelled，需轮询兜底）。
+    late final Timer poll;
+    poll = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if ((isCancelled?.call() ?? false) && !doneSignal.isCompleted) {
+        unawaited(sub?.cancel()); // 中止底层连接
+        doneSignal.completeError(const AiCancelledException());
       }
+    });
+
+    try {
+      sub = response.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          // 空闲超时：超过 [_requestTimeout] 未收到任何数据行即视为超时，
+          // 避免服务器挂起导致流式永久卡住（上游 _isSending 无法复位）。
+          .timeout(_requestTimeout)
+          .listen(
+        (line) {
+          // 每行先检查用户中断（正常流式下停止生成即时生效）。
+          if (isCancelled?.call() ?? false) {
+            if (!doneSignal.isCompleted) {
+              doneSignal.completeError(const AiCancelledException());
+            }
+            return;
+          }
+          final trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) return;
+          final data = trimmed.substring(5).trim();
+          if (data == '[DONE]') {
+            if (!doneSignal.isCompleted) doneSignal.complete();
+            return;
+          }
+          if (data.isEmpty) return;
+          try {
+            final json = jsonDecode(data) as Map<String, dynamic>;
+            final choices = (json['choices'] as List<dynamic>?) ?? const [];
+            if (choices.isEmpty) return;
+            final delta =
+                (choices.first as Map<String, dynamic>)['delta']
+                    as Map<String, dynamic>?;
+            final content = delta?['content'] as String?;
+            if (content != null && content.isNotEmpty) {
+              contentSb.write(content);
+              onChunk?.call(AiStreamChunk(contentDelta: content));
+            }
+            final reasoning = delta?['reasoning_content'] as String?;
+            if (reasoning != null && reasoning.isNotEmpty) {
+              reasoningSb.write(reasoning);
+              onChunk?.call(AiStreamChunk(reasoningDelta: reasoning));
+            }
+            // 部分服务商在最后一个 chunk 附带 usage。
+            final usage = json['usage'] as Map<String, dynamic>?;
+            if (usage != null) {
+              promptTokens =
+                  (usage['prompt_tokens'] as num?)?.toInt() ?? promptTokens;
+              completionTokens = (usage['completion_tokens'] as num?)?.toInt() ??
+                  completionTokens;
+            }
+          } catch (_) {
+            // 忽略无法解析的行，保证容错。
+          }
+        },
+        onError: (Object e, StackTrace st) {
+          if (doneSignal.isCompleted) return;
+          if (e is TimeoutException) {
+            // 空闲超时（服务器挂起）：统一转为请求超时错误。
+            doneSignal.completeError(
+              const AiException('请求超时，请检查网络或稍后重试。'),
+              st,
+            );
+          } else if (isCancelled?.call() ?? false) {
+            // 连接被取消（用户中断）中止时，流会以错误结束。
+            doneSignal.completeError(const AiCancelledException(), st);
+          } else {
+            doneSignal.completeError(e, st);
+          }
+        },
+        onDone: () {
+          if (!doneSignal.isCompleted) doneSignal.complete();
+        },
+        cancelOnError: true,
+      );
+
+      // 等待：正常读完 / 用户中断 / 空闲超时 / 流错误。
+      await doneSignal.future;
     } finally {
+      poll.cancel();
       onChunk?.call(const AiStreamChunk(done: true));
     }
 
