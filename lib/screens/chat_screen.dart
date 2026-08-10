@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -42,11 +43,17 @@ const double _kSidebarOpenThreshold = 0.5;
 /// 移动端悬浮按钮距底部距离。
 const double _kFabBottom = 110;
 
+/// 滑动手势触发速度阈值（px/s）：横向快速甩动超过该值视为一次有效滑动。
+const double _kSwipeVelocityThreshold = 200;
+
+/// 滑动手势触发距离阈值（px）：慢速长距离横向拖动超过该值同样视为有效滑动。
+const double _kSwipeMinDistance = 80;
+
 /// 对话界面（书籍已选定后显示）。
 ///
 /// - 桌面端（宽屏）：左右两栏布局，左侧主对话区，右侧侧边栏。
 /// - 移动端（窄屏）：主对话区全屏，侧边栏为从右向左滑出的抽屉，
-///   通过悬浮按钮呼出。
+///   通过悬浮按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭。
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, this.onDrawerOpenChanged});
 
@@ -66,6 +73,12 @@ class _ChatScreenState extends State<ChatScreen>
   final ScrollController _scrollController = ScrollController();
 
   bool _drawerOpen = false;
+
+  /// 当前横向拖动累计位移（用于慢速长距离滑动也能触发抽屉开合）。
+  double _swipeDistance = 0;
+
+  /// 当前指针是否为触屏（滑动开合抽屉仅对触屏生效，避免干扰桌面鼠标操作）。
+  bool _swipePointerIsTouch = false;
 
   /// 自动跟随滚动是否已在本帧注册 postFrame 回调（防止同帧多次 rebuild 重复 jumpTo）。
   bool _autoFollowPending = false;
@@ -127,6 +140,37 @@ class _ChatScreenState extends State<ChatScreen>
     if (!_drawerOpen) return;
     setState(() => _drawerOpen = false);
     widget.onDrawerOpenChanged?.call(false);
+  }
+
+  /// 包裹横向滑动手势识别（用于移动端抽屉开合）：
+  /// - [leftward] 为 true 时左滑（从右向左）触发 [onSwipe]，false 时右滑触发；
+  /// - 仅触屏指针生效；快速甩动（速度超阈值）或慢速长距离拖动（距离超阈值）均触发。
+  Widget _wrapSwipeGesture({
+    required Widget child,
+    required bool leftward,
+    required VoidCallback onSwipe,
+  }) {
+    return Listener(
+      onPointerDown: (event) =>
+          _swipePointerIsTouch = event.kind == PointerDeviceKind.touch,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragStart: (_) => _swipeDistance = 0,
+        onHorizontalDragUpdate: (details) => _swipeDistance += details.delta.dx,
+        onHorizontalDragEnd: (details) {
+          if (!_swipePointerIsTouch) return;
+          final velocity = details.primaryVelocity ?? 0;
+          final distance = _swipeDistance;
+          final triggered = leftward
+              ? velocity < -_kSwipeVelocityThreshold ||
+                    distance < -_kSwipeMinDistance
+              : velocity > _kSwipeVelocityThreshold ||
+                    distance > _kSwipeMinDistance;
+          if (triggered) onSwipe();
+        },
+        child: child,
+      ),
+    );
   }
 
   @override
@@ -553,7 +597,8 @@ class _ChatScreenState extends State<ChatScreen>
     final drawerWidth = MediaQuery.sizeOf(context).width * 0.88;
     return Stack(
       children: [
-        chat,
+        // 聊天区任意位置左滑（从右向左）打开右侧抽屉。
+        _wrapSwipeGesture(leftward: true, onSwipe: _openDrawer, child: chat),
         if (_drawerOpen)
           Positioned.fill(
             child: GestureDetector(
@@ -572,7 +617,17 @@ class _ChatScreenState extends State<ChatScreen>
           width: drawerWidth,
           // ClipRect 把 Material 的阴影裁剪在抽屉边界内：
           // 收起滑出屏幕后阴影不再投射到屏幕边缘内。
-          child: ClipRect(child: Material(elevation: 12, child: sidebar)),
+          child: ClipRect(
+            child: Material(
+              elevation: 12,
+              // 抽屉内右滑（从左向右）关闭。
+              child: _wrapSwipeGesture(
+                leftward: false,
+                onSwipe: _closeDrawer,
+                child: sidebar,
+              ),
+            ),
+          ),
         ),
         if (!_drawerOpen)
           Positioned(

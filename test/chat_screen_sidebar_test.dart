@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/book_dao.dart';
@@ -52,7 +53,10 @@ class _MockRoundDao extends RoundDao {
   }
 
   @override
-  Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async => 1;
+  Future<int> updateRoundFields(
+    int roundId,
+    Map<String, Object?> fields,
+  ) async => 1;
 
   @override
   Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {}
@@ -97,29 +101,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('宽屏：右侧栏默认展开，无「打开侧栏」按钮', (tester) async {
-    await pumpWideChat(tester);
-    expect(find.text('打开侧栏'), findsNothing);
-    // 顶栏存在收起按钮。
-    expect(find.byIcon(Icons.close), findsWidgets);
-  });
-
-  testWidgets('宽屏：点击×收起后出现「打开侧栏」，点击后展开', (tester) async {
-    await pumpWideChat(tester);
-    // 收起：点击侧栏顶栏的 ×。
-    await tester.tap(find.byIcon(Icons.close).first);
-    await tester.pump();
-    // 动画中途：× 可能已消失，但「打开侧栏」要等 value<0.5 才出现。
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('打开侧栏'), findsOneWidget);
-    // 展开：点击「打开侧栏」。
-    await tester.tap(find.text('打开侧栏'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('打开侧栏'), findsNothing);
-  });
-
-  testWidgets('窄屏：悬浮按钮呼出抽屉后按钮消失', (tester) async {
+  Future<void> pumpNarrowChat(WidgetTester tester) async {
     tester.view.physicalSize = const Size(600, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -147,6 +129,32 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+  }
+
+  testWidgets('宽屏：右侧栏默认展开，无「打开侧栏」按钮', (tester) async {
+    await pumpWideChat(tester);
+    expect(find.text('打开侧栏'), findsNothing);
+    // 顶栏存在收起按钮。
+    expect(find.byIcon(Icons.close), findsWidgets);
+  });
+
+  testWidgets('宽屏：点击×收起后出现「打开侧栏」，点击后展开', (tester) async {
+    await pumpWideChat(tester);
+    // 收起：点击侧栏顶栏的 ×。
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pump();
+    // 动画中途：× 可能已消失，但「打开侧栏」要等 value<0.5 才出现。
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('打开侧栏'), findsOneWidget);
+    // 展开：点击「打开侧栏」。
+    await tester.tap(find.text('打开侧栏'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('打开侧栏'), findsNothing);
+  });
+
+  testWidgets('窄屏：悬浮按钮呼出抽屉后按钮消失', (tester) async {
+    await pumpNarrowChat(tester);
 
     // 初始：悬浮按钮存在（抽屉关闭）。
     expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
@@ -166,6 +174,77 @@ void main() {
       tester.getTopLeft(find.byType(SidebarPanel)).dx,
       closeTo(600 - drawerWidth, 1),
     );
+  });
+
+  testWidgets('窄屏：聊天区左滑打开右侧抽屉', (tester) async {
+    await pumpNarrowChat(tester);
+
+    // 初始：抽屉关闭，悬浮按钮存在。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
+
+    // 聊天区任意位置左滑（从右向左）。
+    await tester.fling(find.byType(ChatScreen), const Offset(-300, 0), 1000);
+    await tester.pumpAndSettle();
+
+    // 抽屉打开：悬浮按钮消失，侧栏完全滑入。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    final drawerWidth = 600 * 0.88;
+    expect(
+      tester.getTopLeft(find.byType(SidebarPanel)).dx,
+      closeTo(600 - drawerWidth, 1),
+    );
+  });
+
+  testWidgets('窄屏：聊天区慢速长距离左拖也可打开抽屉', (tester) async {
+    await pumpNarrowChat(tester);
+
+    // 慢速拖动（速度低，但位移超过距离阈值）。
+    await tester.drag(find.byType(ChatScreen), const Offset(-150, 0));
+    await tester.pumpAndSettle();
+
+    // 抽屉打开：悬浮按钮消失。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+  });
+
+  testWidgets('窄屏：聊天区右滑不打开右侧抽屉', (tester) async {
+    await pumpNarrowChat(tester);
+
+    // 聊天区右滑（从左向右）。
+    await tester.fling(find.byType(ChatScreen), const Offset(300, 0), 1000);
+    await tester.pumpAndSettle();
+
+    // 抽屉保持关闭：悬浮按钮仍在。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
+  });
+
+  testWidgets('窄屏：抽屉内右滑关闭右侧抽屉', (tester) async {
+    await pumpNarrowChat(tester);
+
+    // 先通过悬浮按钮打开抽屉。
+    await tester.tap(find.byIcon(Icons.view_sidebar_outlined));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+
+    // 抽屉内右滑（从左向右）。
+    await tester.fling(find.byType(SidebarPanel), const Offset(300, 0), 1000);
+    await tester.pumpAndSettle();
+
+    // 抽屉关闭：悬浮按钮重新出现。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
+  });
+
+  testWidgets('窄屏：鼠标横向拖动不触发滑动开合', (tester) async {
+    await pumpNarrowChat(tester);
+
+    // 鼠标横向左拖：不应打开抽屉。
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: const Offset(300, 450));
+    await gesture.down(const Offset(300, 450));
+    await gesture.moveBy(const Offset(-300, 0));
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
   });
 
   testWidgets('点击子模块标题栏可折叠/展开（世界状态）', (tester) async {
