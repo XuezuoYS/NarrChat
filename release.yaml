@@ -2,10 +2,11 @@
 #
 # 修改此文件后：
 #  - 「关于」面板会显示 version 字段；
-#  - build_release.bat 会用 version 命名 APK，并用 build 作为 Android versionCode。
-#  - 建议同时保持 pubspec.yaml 的 version 字段与此处一致。
+#  - tool/build_release.dart 会用 version 命名产物，并用 build 作为 Android versionCode；
+#  - tool/build_release.dart 每次构建前会自动把 build +1，并同步 pubspec.yaml 的
+#    version 字段为 `{version}+{build}`（无需手动维护）。
 #
 # version: 语义化版本号（显示用，如 1.2.3）
 # build:   构建号（Android versionCode，每次发布递增）
 version: 1.1.3
-build: 7
+build: 13

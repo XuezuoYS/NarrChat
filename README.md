@@ -105,6 +105,48 @@ flutter build apk --debug
 > 腾讯云镜像（`https://mirrors.cloud.tencent.com/gradle/gradle-9.1.0-all.zip`），
 > 并在 `android/settings.gradle.kts`、`android/build.gradle.kts` 增加阿里云 Maven 镜像。
 
+### 发布构建（推荐）
+
+使用 `tool/build_release.dart`（Dart 版发布脚本，替代原 `build_release.bat`）：
+
+```bash
+# 交互菜单（Android / Windows / 全部 / ZIP / 设置版本号）
+dart run tool/build_release.dart
+
+# 非交互（CI 可用）
+dart run tool/build_release.dart --all
+dart run tool/build_release.dart --android
+dart run tool/build_release.dart --windows
+dart run tool/build_release.dart --zip-only        # Windows 仅 ZIP 便携包
+dart run tool/build_release.dart --no-bump         # 跳过 build 号自增
+dart run tool/build_release.dart --version 1.2.0   # 构建前设置版本号
+```
+
+脚本行为：
+
+- **自动递增 build 号**：选定构建目标后，第一步自动把 `release.yaml` 的 `build` 号 +1
+  （Android versionCode），并同步 `pubspec.yaml` 的 `version` 为 `{version}+{build}`。
+- **构建结束不自动退出**：在交互终端下，成功或失败后均提示「按回车键退出」，
+  避免双击 `build_release.bat` 时窗口一闪而过（CI / 管道输入自动跳过）。
+- **Windows 引擎缓存自愈**：若检测到
+  `windows/flutter/ephemeral/cpp_client_wrapper/*.cc` 缺失（增量构建缓存损坏时
+  MSBuild 会报 `C1083`），脚本自动清理缓存并重新构建，无需手动 `flutter clean`。
+- **产物输出**到 `build/release/`：
+  - `NarrChat-Android-arm64-{版本}-{构建}.apk`；
+  - `NarrChat-Windows-x64-{版本}-{构建}.zip`（便携包，解压即用）；
+  - `NarrChat-Windows-x64-{版本}-{构建}-setup.exe`（安装包，见下）。
+- **Windows 安装包**依赖 **Inno Setup**（免费开源）：安装
+  [Inno Setup 6](https://jrsoftware.org/isdl.php) 后脚本自动检测并生成
+  `setup.exe`；未安装时自动降级为仅产出 ZIP。安装包特性：
+  - **全中文向导**：简体中文语言文件随项目附带（`tool/inno/ChineseSimplified.isl`，
+    来自 [jrsoftware/issrc](https://github.com/jrsoftware/issrc)，Inno Setup License），
+    无需本机 Inno Setup 自带中文；
+  - 标准向导式，默认装到用户目录（免 UAC），可勾选桌面/开始菜单快捷方式，
+    自动注册卸载，升级 = 安装到同一目录覆盖原文件；
+  - **更新说明页面**：安装时展示本次更新内容（项目根目录存在
+    `UPDATE_NOTES.md` 时读取它，其次 `CHANGELOG.md`，否则使用默认文案）；
+  - **已安装时跳过目录选择**：检测到旧版本后直接进入快捷方式步骤，无需重复选择安装目录。
+
 ### 测试
 
 ```bash
