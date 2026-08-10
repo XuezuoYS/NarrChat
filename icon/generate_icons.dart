@@ -3,7 +3,8 @@
 // 从 icon/source_icon.png（任意尺寸的正方形 PNG，建议 ≥256×256，推荐 1024×1024；
 // 非正方形会自动居中裁方）自动生成：
 //   - Android：android/app/src/main/res/mipmap-*/ic_launcher.png（各密度）
-//   - Windows：windows/runner/resources/app_icon.ico（多尺寸）
+//     （Android 由系统启动器统一裁切形状，保持正方形源图即可）
+//   - Windows：windows/runner/resources/app_icon.ico（多尺寸，自动裁切透明圆角）
 //
 // 用法（在项目根目录执行）：
 //   dart run icon/generate_icons.dart
@@ -12,6 +13,7 @@
 // 替换图标：把新的 PNG 命名为 source_icon.png 放入 icon/ 目录后重跑本脚本
 // （源图过小会被放大导致模糊，建议边长 ≥256px，推荐 1024×1024）。
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:image/image.dart' as img;
 
@@ -93,6 +95,43 @@ img.Image _centerSquare(img.Image image) {
   return img.copyCrop(image, x: x, y: y, width: side, height: side);
 }
 
+/// 为 Windows 图标应用透明圆角（Android 由系统启动器统一裁切，无需处理）。
+///
+/// 用圆角矩形符号距离场（SDF）逐像素计算覆盖率：边界 1px 软过渡实现抗锯齿。
+/// [radiusFraction] 为圆角半径占边长的比例。
+img.Image _applyRoundedCorners(
+  img.Image image, {
+  double radiusFraction = 0.22,
+}) {
+  final w = image.width;
+  final h = image.height;
+  final radius = radiusFraction * w;
+  // 确保带 alpha 通道（convert 返回新图，缺失的 alpha 默认填满 255）。
+  image = image.convert(numChannels: 4);
+
+  // 圆角矩形 SDF（Inigo Quilez）：内部为负、外部为正、边界为 0。
+  final cx = (w - 1) / 2;
+  final cy = (h - 1) / 2;
+  final halfW = w / 2 - radius;
+  final halfH = h / 2 - radius;
+  for (final p in image) {
+    // 像素中心坐标（+0.5）相对图像中心。
+    final qx = (p.x + 0.5 - cx).abs() - halfW;
+    final qy = (p.y + 0.5 - cy).abs() - halfH;
+    final ax = math.max(qx, 0);
+    final ay = math.max(qy, 0);
+    final dist = math.sqrt(ax * ax + ay * ay) +
+        math.min(math.max(qx, qy), 0) -
+        radius;
+    // 距边界 0.5px 内线性过渡 → 抗锯齿；外部为 0（透明）。
+    final alpha = (0.5 - dist).clamp(0.0, 1.0);
+    if (alpha < 1.0) {
+      p.a = (p.a * alpha).round();
+    }
+  }
+  return image;
+}
+
 void _generateAndroidIcons(Directory root, img.Image square) {
   final resDir = ['android', 'app', 'src', 'main', 'res'].join(
     Platform.pathSeparator,
@@ -127,13 +166,16 @@ void _generateWindowsIco(Directory root, img.Image square) {
   file.parent.createSync(recursive: true);
   // 顶层 encodeIco 只接受单张 ≤256px 的图；用 IcoEncoder.encodeImages
   // 将各尺寸图片打包为多分辨率 ICO（PNG-in-ICO，Windows Vista+ 支持）。
+  // 每个尺寸均应用透明圆角（Windows 图标惯例；Android 不处理）。
   final images = <img.Image>[
     for (final size in _kWindowsIconSizes)
-      img.copyResize(
-        square,
-        width: size,
-        height: size,
-        interpolation: img.Interpolation.average,
+      _applyRoundedCorners(
+        img.copyResize(
+          square,
+          width: size,
+          height: size,
+          interpolation: img.Interpolation.average,
+        ),
       ),
   ];
   final ico = img.IcoEncoder().encodeImages(images);
