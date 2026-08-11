@@ -70,7 +70,7 @@ class _AboutPanelState extends State<_AboutPanel> {
   @override
   void initState() {
     super.initState();
-    _versionFuture = ReleaseInfo.version();
+    _versionFuture = ReleaseInfo.versionLabel();
   }
 
   @override
@@ -94,14 +94,6 @@ class _AboutPanelState extends State<_AboutPanel> {
                 fontSize: 20,
                 fontWeight: FontWeight.w700,
                 color: context.narrColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '你的 AI 叙事交互引擎',
-              style: TextStyle(
-                fontSize: 13,
-                color: context.narrColors.textSecondary,
               ),
             ),
             const SizedBox(height: 16),

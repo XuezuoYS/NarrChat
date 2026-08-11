@@ -10,26 +10,41 @@ class ReleaseInfo {
   /// 读取失败时的兜底版本号。
   static const String defaultVersion = '1.0.0';
 
-  static String? _version;
+  /// 读取失败时的兜底构建号。
+  static const String defaultBuild = '0';
 
-  /// 读取应用版本号（异步，带缓存）。
-  static Future<String> version() async {
-    if (_version != null) return _version!;
+  static Map<String, String>? _info;
+
+  /// 读取 `release.yaml` 中的版本信息（异步，带缓存）。
+  static Future<Map<String, String>> _load() async {
+    if (_info != null) return _info!;
     try {
       final raw = await rootBundle.loadString('release.yaml');
-      _version = _parseVersion(raw) ?? defaultVersion;
+      _info = {
+        'version': _parseField(raw, 'version') ?? defaultVersion,
+        'build': _parseField(raw, 'build') ?? defaultBuild,
+      };
     } catch (_) {
-      _version = defaultVersion;
+      _info = {'version': defaultVersion, 'build': defaultBuild};
     }
-    return _version!;
+    return _info!;
   }
 
-  /// 从 YAML 文本中提取 `version` 字段（轻量解析，避免额外依赖）。
-  static String? _parseVersion(String raw) {
+  /// 读取应用版本号，如 `1.2.3`。
+  static Future<String> version() async => (await _load())['version']!;
+
+  /// 组合显示文本，如 `1.2.3 (build.28)`。
+  static Future<String> versionLabel() async {
+    final info = await _load();
+    return '${info['version']} (build.${info['build']})';
+  }
+
+  /// 从 YAML 文本中提取指定字段（轻量解析，避免额外依赖）。
+  static String? _parseField(String raw, String field) {
     for (final line in raw.split('\n')) {
       final trimmed = line.trim();
       if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
-      final match = RegExp(r'^version\s*:\s*(\S+)').firstMatch(trimmed);
+      final match = RegExp('^$field\\s*:\\s*(\\S+)').firstMatch(trimmed);
       if (match != null) return match.group(1);
     }
     return null;
