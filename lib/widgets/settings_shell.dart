@@ -103,7 +103,10 @@ class _SettingsShellState extends State<SettingsShell> {
                 color: colors.surface,
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
                       for (var i = 0; i < widget.navItems.length; i++) ...[
@@ -167,25 +170,33 @@ class _NavTile extends StatelessWidget {
     final colors = context.narrColors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-      child: ListTile(
-        dense: true,
-        selected: selected,
-        selectedTileColor: NarrChatTheme.primary.withValues(alpha: 0.12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        leading: Icon(
-          item.icon,
-          size: 20,
-          color: selected ? NarrChatTheme.primary : colors.textSecondary,
-        ),
-        title: Text(
-          item.label,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? NarrChatTheme.primary : colors.textPrimary,
+      // 外层 Container 带背景色（ColoredBox）会遮挡 ListTile 的墨迹与选中高亮，
+      // 需用 Material 包裹，使选中背景 / 水波纹绘制在本层之上。
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: ListTile(
+          dense: true,
+          selected: selected,
+          selectedTileColor: NarrChatTheme.primary.withValues(alpha: 0.12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
           ),
+          leading: Icon(
+            item.icon,
+            size: 20,
+            color: selected ? NarrChatTheme.primary : colors.textSecondary,
+          ),
+          title: Text(
+            item.label,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+              color: selected ? NarrChatTheme.primary : colors.textPrimary,
+            ),
+          ),
+          onTap: onTap,
         ),
-        onTap: onTap,
       ),
     );
   }
