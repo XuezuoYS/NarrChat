@@ -202,7 +202,7 @@ Future<void> main(List<String> args) async {
   var bump = true;
   String? newVersion;
   while (true) {
-    final choice = await _promptMenu();
+    final choice = await _promptMenu(newVersion: newVersion);
     switch (choice) {
       case _MenuChoice.exit:
         _info('已退出。');
@@ -298,7 +298,7 @@ NarrChat 发布构建脚本
 // 交互菜单
 // ---------------------------------------------------------------------------
 
-Future<_MenuChoice> _promptMenu() async {
+Future<_MenuChoice> _promptMenu({String? newVersion}) async {
   while (true) {
     final cfg = _loadConfig();
     _print('============================================', color: _ansiCyan);
@@ -313,6 +313,10 @@ Future<_MenuChoice> _promptMenu() async {
     _print('============================================');
     _print('  产物输出目录：${_releaseDir.path}');
     _print('  当前版本：${cfg.version}  (build ${cfg.build})');
+    // 已设置新版本号时，展示构建后即将使用的版本（交互模式下 build 恒会 +1）。
+    if (newVersion != null && newVersion.isNotEmpty) {
+      _print('  构建后新版本号：$newVersion  (build ${cfg.build + 1})');
+    }
     _print('============================================');
     stdout.write('请选择 (0/1/2/3/4/5): ');
     final input = stdin.readLineSync()?.trim() ?? '';
