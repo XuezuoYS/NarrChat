@@ -20,6 +20,8 @@ import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
+import 'book_settings_screen.dart';
+import 'settings_screen.dart';
 
 /// 宽屏（桌面端）断点：宽度 ≥ 此值时使用左右双栏布局。
 const double _kWideBreakpoint = 900;
@@ -51,19 +53,15 @@ const double _kSwipeVelocityThreshold = 200;
 /// 滑动手势触发距离阈值（px）：慢速长距离横向拖动超过该值同样视为有效滑动。
 const double _kSwipeMinDistance = 80;
 
-/// 对话界面（书籍已选定后显示）。
+/// 对话界面（独立页面，由书籍列表点击进入）。
 ///
-/// - 桌面端（宽屏）：左右两栏布局，左侧主对话区，右侧侧边栏。
+/// - 自带顶栏：返回按钮 + 书名 + 书籍设置 / 全局设置入口；
+/// - 桌面端（宽屏）：左右两栏布局，左侧主对话区，右侧侧边栏；
 /// - 移动端（窄屏）：主对话区全屏，侧边栏为从右向左滑出的抽屉，
-///   通过悬浮按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭。
+///   通过悬浮按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭；
+/// - 系统返回键：右侧抽屉打开时先关抽屉，否则返回书籍列表。
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, this.onDrawerOpenChanged});
-
-  /// 移动端右侧状态抽屉开合状态变化回调。
-  ///
-  /// 供外层（[HomeScreen]）同步抽屉状态，以协调系统返回键行为：
-  /// 抽屉打开时先关闭抽屉，而非直接触发退出确认。
-  final ValueChanged<bool>? onDrawerOpenChanged;
+  const ChatScreen({super.key});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -134,14 +132,12 @@ class _ChatScreenState extends State<ChatScreen>
   void _openDrawer() {
     if (_drawerOpen) return;
     setState(() => _drawerOpen = true);
-    widget.onDrawerOpenChanged?.call(true);
   }
 
   /// 关闭移动端右侧状态抽屉。
   void _closeDrawer() {
     if (!_drawerOpen) return;
     setState(() => _drawerOpen = false);
-    widget.onDrawerOpenChanged?.call(false);
   }
 
   /// 包裹横向滑动手势识别（用于移动端抽屉开合）：
@@ -542,7 +538,7 @@ class _ChatScreenState extends State<ChatScreen>
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // 移动端右侧状态抽屉打开时拦截系统返回：优先关闭抽屉而非退出应用。
+      // 移动端右侧状态抽屉打开时拦截系统返回：优先关闭抽屉而非返回列表。
       canPop: !_drawerOpen,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
@@ -550,18 +546,70 @@ class _ChatScreenState extends State<ChatScreen>
           _closeDrawer();
         }
       },
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final wide = constraints.maxWidth >= _kWideBreakpoint;
-          final chat = _buildChatArea(context);
-          final sidebar = _buildSidebar(
-            context,
-            onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
-          );
-          return wide
-              ? _buildWideLayout(context, chat, sidebar)
-              : _buildMobileLayout(context, chat, sidebar);
-        },
+      child: Scaffold(
+        appBar: _buildAppBar(context),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= _kWideBreakpoint;
+            final chat = _buildChatArea(context);
+            final sidebar = _buildSidebar(
+              context,
+              onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
+            );
+            return wide
+                ? _buildWideLayout(context, chat, sidebar)
+                : _buildMobileLayout(context, chat, sidebar);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 对话页顶栏：返回书籍列表 + 书名 + 书籍设置 / 全局设置。
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    final book = context.watch<BookProvider>().currentBook;
+    return PreferredSize(
+      preferredSize: const Size.fromHeight(kToolbarHeight),
+      child: Container(
+        decoration: BoxDecoration(
+          color: context.narrColors.surface,
+          border: Border(
+            bottom: BorderSide(color: context.narrColors.divider),
+          ),
+        ),
+        child: AppBar(
+          // 收紧返回按钮与书名之间的间距（默认 titleSpacing=16 使箭头右侧空白偏大）。
+          titleSpacing: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: '返回书籍列表',
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
+          title: Text(
+            book?.title ?? '对话',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: context.narrColors.textPrimary,
+            ),
+          ),
+          actions: [
+            if (book != null)
+              IconButton(
+                icon: const Icon(Icons.book_outlined),
+                tooltip: '书籍设置',
+                onPressed: () =>
+                    BookSettingsScreen.open(context, book: book),
+              ),
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: '设置',
+              onPressed: () => SettingsScreen.open(context),
+            ),
+          ],
+        ),
       ),
     );
   }

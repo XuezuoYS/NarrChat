@@ -22,6 +22,8 @@ class _MockBookDao extends BookDao {
   _MockBookDao(this.books);
   @override
   Future<List<Book>> getAllBooks() async => books;
+  @override
+  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
   FailedAttempt _failed = const FailedAttempt();
   @override
   Future<FailedAttempt> getFailedAttempt(int bookId) async => _failed;
@@ -86,12 +88,6 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 左侧书籍抽屉当前左偏移（0 表示完全展开，负值表示收起）。
-  double leftDrawerOffset(WidgetTester tester) =>
-      tester.widget<AnimatedPositioned>(
-        find.byKey(const Key('left_book_drawer')),
-      ).left!;
-
   /// 右侧状态抽屉当前右偏移（0 表示完全展开，正值表示收起）。
   double rightDrawerOffset(WidgetTester tester) =>
       tester.widget<AnimatedPositioned>(
@@ -139,31 +135,26 @@ void main() {
     );
   });
 
-  testWidgets('左侧书籍抽屉打开时按返回键先关闭抽屉，不弹退出确认', (tester) async {
+  testWidgets('对话页右侧抽屉打开时按返回键先关闭抽屉，再返回书籍列表', (tester) async {
     await pumpHome(tester);
 
-    // 打开左侧书籍抽屉（AppBar 汉堡按钮）。
-    await tester.tap(find.byIcon(Icons.menu));
+    // 点击书籍进入对话页。
+    await tester.tap(find.text('测试书'));
     await tester.pumpAndSettle();
-    expect(leftDrawerOffset(tester), 0, reason: '左侧抽屉应完全展开');
-
-    // 返回：关闭抽屉，不弹退出确认。
-    await pressBack(tester);
-    expect(leftDrawerOffset(tester), lessThan(0), reason: '左侧抽屉应收起');
-    expect(find.text(exitDialogContent), findsNothing);
-  });
-
-  testWidgets('右侧状态抽屉打开时按返回键先关闭抽屉，不弹退出确认', (tester) async {
-    await pumpHome(tester);
+    expect(find.text('测试书'), findsOneWidget, reason: '应已进入对话页（AppBar 显示书名）');
 
     // 打开右侧状态抽屉（悬浮按钮）。
     await tester.tap(find.byIcon(Icons.view_sidebar_outlined));
     await tester.pumpAndSettle();
     expect(rightDrawerOffset(tester), 0, reason: '右侧抽屉应完全展开');
 
-    // 返回：关闭抽屉，不弹退出确认。
+    // 返回：先关闭抽屉，仍停留在对话页。
     await pressBack(tester);
     expect(rightDrawerOffset(tester), lessThan(0), reason: '右侧抽屉应收起');
-    expect(find.text(exitDialogContent), findsNothing);
+    expect(find.text('测试书'), findsOneWidget, reason: '关闭抽屉后仍应在对话页');
+
+    // 再返回：回到书籍列表首页。
+    await pressBack(tester);
+    expect(find.text('新建书籍'), findsOneWidget, reason: '应已返回书籍列表首页');
   });
 }

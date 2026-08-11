@@ -14,10 +14,14 @@ class BookProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
 
+  /// 每本书最近一轮对话的创建时间（首页「时间排序」用，无轮次的书不包含在内）。
+  Map<int, DateTime> _lastRoundTimes = {};
+
   List<Book> get books => List.unmodifiable(_books);
   Book? get currentBook => _currentBook;
   bool get isLoading => _isLoading;
   String? get error => _error;
+  Map<int, DateTime> get lastRoundTimes => Map.unmodifiable(_lastRoundTimes);
 
   /// 加载书籍列表；若当前书籍已被删除则自动重置，无选中时默认选第一本。
   Future<void> loadBooks() async {
@@ -26,6 +30,7 @@ class BookProvider extends ChangeNotifier {
     notifyListeners();
     try {
       _books = await _dao.getAllBooks();
+      _lastRoundTimes = await _dao.getLastRoundTimes();
       if (_currentBook != null && !_books.any((b) => b.id == _currentBook!.id)) {
         _currentBook = null;
       }
@@ -37,6 +42,16 @@ class BookProvider extends ChangeNotifier {
     } finally {
       _isLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// 刷新「最近对话时间」映射（从对话页返回首页时调用）。
+  Future<void> refreshLastRoundTimes() async {
+    try {
+      _lastRoundTimes = await _dao.getLastRoundTimes();
+      notifyListeners();
+    } catch (e) {
+      // 失败时保留旧数据，不影响列表展示。
     }
   }
 

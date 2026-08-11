@@ -24,6 +24,8 @@ class _MockBookDao extends BookDao {
   _MockBookDao(this.books);
   @override
   Future<List<Book>> getAllBooks() async => books;
+  @override
+  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
   FailedAttempt _failed = const FailedAttempt();
   @override
   Future<FailedAttempt> getFailedAttempt(int bookId) async => _failed;

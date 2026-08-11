@@ -1,101 +1,337 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/book_list_utils.dart';
+import '../utils/focus_utils.dart';
+import '../widgets/app_menu.dart';
 import '../widgets/book_actions.dart';
 import 'book_settings_screen.dart';
+import 'chat_screen.dart';
 
-/// 书籍列表页（无书籍时的欢迎/创建入口，以及 AppBar 中的快速切换列表）。
-class BookListScreen extends StatelessWidget {
+/// 首页：书籍列表。
+///
+/// - 搜索：按标题 / 分类过滤；
+/// - 排序：时间（最近对话）或 A-Z（拼音）；
+/// - 点击书籍进入对话页；列表项菜单仅提供「删除」；
+/// - 「新建书籍」打开书籍设置页（创建模式），保存后直接进入该书的对话页；
+/// - 不在列表中提供任何「进入书籍设置」的入口。
+class BookListScreen extends StatefulWidget {
   const BookListScreen({super.key});
 
   @override
+  State<BookListScreen> createState() => _BookListScreenState();
+}
+
+class _BookListScreenState extends State<BookListScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  BookSortMode _sortMode = BookSortMode.time;
+
+  @override
+  void initState() {
+    super.initState();
+    // 启动时确保最近对话时间就绪（loadBooks 通常已加载，此处兜底刷新）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<BookProvider>().refreshLastRoundTimes();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// 进入对话页；返回后刷新「最近对话时间」。
+  Future<void> _openChat(Book book) async {
+    final provider = context.read<BookProvider>();
+    provider.selectBook(book);
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ChatScreen()),
+    );
+    if (!mounted) return;
+    await provider.refreshLastRoundTimes();
+  }
+
+  /// 新建书籍：打开创建页，保存成功后进入该书的对话页。
+  Future<void> _createBook() async {
+    final saved = await BookSettingsScreen.open(context);
+    if (saved != true || !mounted) return;
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) return;
+    await _openChat(book);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final bookProvider = context.watch<BookProvider>();
-    final books = bookProvider.books;
+    final provider = context.watch<BookProvider>();
+    final filtered = filterBooks(provider.books, _searchController.text);
+    final books = sortBooks(filtered, _sortMode, provider.lastRoundTimes);
 
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 640),
+        constraints: const BoxConstraints(maxWidth: 720),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 24),
-            Icon(
-              Icons.auto_stories_outlined,
-              size: 56,
-              color: NarrChatTheme.primary.withValues(alpha: 0.35),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'NarrChat',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '你的 AI 叙事交互引擎',
-              style: TextStyle(color: context.narrColors.textSecondary),
-            ),
-            const SizedBox(height: 24),
+            _buildToolbar(context, provider.books.length),
+            const Divider(height: 1),
             Expanded(
-              child: books.isEmpty
-                  ? Center(
-                      child: Text(
-                        '还没有书籍，点击下方“新建书籍”开始创作',
-                        style: TextStyle(color: context.narrColors.textSecondary),
-                      ),
-                    )
+              child: provider.isLoading && provider.books.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : provider.books.isEmpty
+                  ? _buildWelcomeEmpty(context)
+                  : books.isEmpty
+                  ? _buildNoMatch(context)
                   : ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                       itemCount: books.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final book = books[index];
-                        final selected = bookProvider.currentBook?.id == book.id;
-                        return ListTile(
-                          leading: Icon(
-                            Icons.menu_book,
-                            color: selected
-                                ? NarrChatTheme.primary
-                                : context.narrColors.textSecondary,
-                          ),
-                          title: Text(book.title),
-                          subtitle: Text(
-                            book.category.isEmpty ? '未设置类别' : book.category,
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit_outlined, size: 20),
-                                tooltip: '编辑',
-                                onPressed: () =>
-                                    BookSettingsScreen.open(context, book: book),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline, size: 20),
-                                tooltip: '删除',
-                                onPressed: () => deleteBookWithConfirm(context, book),
-                              ),
-                            ],
-                          ),
-                          onTap: () => bookProvider.selectBook(book),
-                        );
-                      },
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) =>
+                          _buildBookTile(context, provider, books[index]),
                     ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: FilledButton.icon(
-                onPressed: () => BookSettingsScreen.open(context),
-                icon: const Icon(Icons.add),
-                label: const Text('新建书籍'),
-              ),
-            ),
+            _buildCreateButton(context),
           ],
         ),
       ),
     );
   }
 
+  /// 顶部：标题 + 搜索框 + 排序切换。
+  Widget _buildToolbar(BuildContext context, int total) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                '书籍',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: context.narrColors.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '$total 本',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _searchController,
+            onChanged: (_) => setState(() {}),
+            onTapOutside: unfocusOnTapOutside,
+            decoration: InputDecoration(
+              hintText: '搜索书籍',
+              prefixIcon: const Icon(Icons.search, size: 20),
+              suffixIcon: _searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.clear, size: 18),
+                      tooltip: '清空搜索',
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {});
+                      },
+                    ),
+              isDense: true,
+              filled: true,
+              fillColor: theme.colorScheme.surfaceContainerLow,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Text(
+                '排序',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              SegmentedButton<BookSortMode>(
+                segments: const [
+                  ButtonSegment(value: BookSortMode.time, label: Text('时间')),
+                  ButtonSegment(value: BookSortMode.az, label: Text('A-Z')),
+                ],
+                selected: {_sortMode},
+                onSelectionChanged: (s) => setState(() => _sortMode = s.first),
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: WidgetStatePropertyAll(TextStyle(fontSize: 12)),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 单个书籍项：点击进入对话；菜单仅「删除」。
+  Widget _buildBookTile(
+    BuildContext context,
+    BookProvider provider,
+    Book book,
+  ) {
+    final theme = Theme.of(context);
+    final lastTime = provider.lastRoundTimes[book.id];
+    return ListTile(
+      // 收紧「更多操作」按钮与卡片右缘的间距（M3 默认右内边距 24 使右侧空白偏大）。
+      contentPadding: const EdgeInsetsDirectional.only(start: 16, end: 8),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      tileColor: theme.colorScheme.surfaceContainerLow,
+      leading: Icon(Icons.menu_book, color: NarrChatTheme.primary, size: 20),
+      title: Text(
+        book.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: context.narrColors.textPrimary,
+        ),
+      ),
+      subtitle: Text(
+        book.category.isEmpty ? '未设置类别' : book.category,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 12),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (lastTime != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Text(
+                formatLastActivity(lastTime),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
+            tooltip: '更多操作',
+            onSelected: (value) {
+              if (value == 'delete') {
+                deleteBookWithConfirm(context, book);
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'delete',
+                child: AppMenuAction(
+                  icon: Icons.delete_outline,
+                  label: '删除',
+                  color: Color(0xFFE5484D),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      onTap: () => _openChat(book),
+    );
+  }
+
+  /// 无任何书籍时的欢迎空态。
+  Widget _buildWelcomeEmpty(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.auto_stories_outlined,
+            size: 56,
+            color: NarrChatTheme.primary.withValues(alpha: 0.35),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '还没有书籍',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              color: context.narrColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '点击下方「新建书籍」开始创作',
+            style: TextStyle(
+              fontSize: 13,
+              color: context.narrColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 搜索无结果时的空态。
+  Widget _buildNoMatch(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.search_off,
+            size: 48,
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '未找到匹配的书籍',
+            style: TextStyle(
+              fontSize: 13,
+              color: context.narrColors.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () {
+              _searchController.clear();
+              setState(() {});
+            },
+            child: const Text('清空搜索'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 底部「新建书籍」按钮。
+  Widget _buildCreateButton(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: FilledButton.icon(
+        onPressed: _createBook,
+        icon: const Icon(Icons.add),
+        label: const Text('新建书籍'),
+        style: FilledButton.styleFrom(
+          minimumSize: const Size.fromHeight(46),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
 }

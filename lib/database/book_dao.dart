@@ -19,6 +19,26 @@ class BookDao {
     return Book.fromMap(rows.first);
   }
 
+  /// 每本书最近一轮对话的创建时间（按「最近对话时间」排序用）。
+  ///
+  /// 仅包含有轮次记录的书籍；无轮次的书不在结果中，由调用方决定其排序位置。
+  Future<Map<int, DateTime>> getLastRoundTimes() async {
+    final db = await _helper.database;
+    final rows = await db.rawQuery(
+      'SELECT book_id, MAX(created_at) AS last_time '
+      'FROM rounds WHERE created_at IS NOT NULL GROUP BY book_id',
+    );
+    final result = <int, DateTime>{};
+    for (final row in rows) {
+      final bookId = row['book_id'] as int?;
+      final lastTime = row['last_time'] as String?;
+      if (bookId == null || lastTime == null) continue;
+      final time = DateTime.tryParse(lastTime);
+      if (time != null) result[bookId] = time;
+    }
+    return result;
+  }
+
   Future<int> insertBook(Book book) async {
     final db = await _helper.database;
     final map = book.toMap()..remove('id');
