@@ -152,6 +152,38 @@ class CloudSyncProvider extends ChangeNotifier {
     }
   }
 
+  /// 删除当前 WebDAV 连接：清除安全存储中的密码与本地 JSON 中的连接配置，
+  /// 恢复到未配置状态（不影响云端备份与本地数据）。
+  Future<void> disconnect() async {
+    try {
+      await _secureStorage.delete(key: _keyPassword);
+      final cfg = await LocalConfigService.read();
+      cfg
+        ..remove(_keyUrl)
+        ..remove(_keyUsername)
+        ..remove(_keyFolder)
+        ..remove(_keyKeepVersions)
+        ..remove(_keyAutoUpload)
+        ..remove(_keyUserName);
+      await LocalConfigService.write(cfg);
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return;
+    }
+    _webdavUrl = '';
+    _webdavUsername = '';
+    _webdavPassword = '';
+    _folder = defaultFolder;
+    _keepVersions = defaultKeepVersions;
+    _autoUpload = false;
+    _userName = defaultUserName;
+    _backups = [];
+    _backupsLoaded = false;
+    _error = null;
+    notifyListeners();
+  }
+
   WebDavService _buildDav() {
     final url = _webdavUrl.trim();
     if (url.isEmpty) {

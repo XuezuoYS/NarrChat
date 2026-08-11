@@ -90,6 +90,52 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     _showSnack(ok ? '设置已保存' : '保存失败：${provider.error ?? '未知错误'}');
   }
 
+  /// 删除当前 WebDAV 连接：确认后清除本地保存的连接配置并重置表单。
+  Future<void> _disconnect() async {
+    final provider = context.read<CloudSyncProvider>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除连接'),
+        content: const Text(
+          '将清除本机保存的 WebDAV 连接配置（服务器地址、用户名、密码等），'
+          '云端备份与本地书籍数据均不受影响。确定删除吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await provider.disconnect();
+    if (!mounted) return;
+    if (provider.error != null) {
+      _showSnack('删除失败：${provider.error}');
+      return;
+    }
+    // 同步清空表单并恢复默认值。
+    setState(() {
+      _url.clear();
+      _username.clear();
+      _password.clear();
+      _folder.text = CloudSyncProvider.defaultFolder;
+      _userName.text = CloudSyncProvider.defaultUserName;
+      _keepVersions.text = '${CloudSyncProvider.defaultKeepVersions}';
+      _autoUpload = false;
+    });
+    _showSnack('已删除连接');
+  }
+
   Future<void> _upload() async {
     final provider = context.read<CloudSyncProvider>();
     final ok = await provider.upload();
@@ -320,8 +366,17 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
         ),
         const SizedBox(height: 8),
         Row(
-          mainAxisAlignment: MainAxisAlignment.end,
           children: [
+            TextButton.icon(
+              onPressed:
+                  provider.isConfigured && !provider.isBusy ? _disconnect : null,
+              style: TextButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+              ),
+              icon: const Icon(Icons.link_off, size: 18),
+              label: const Text('删除连接'),
+            ),
+            const Spacer(),
             OutlinedButton.icon(
               onPressed: provider.isBusy ? null : _testConnection,
               icon: const Icon(Icons.wifi_tethering_outlined, size: 18),
