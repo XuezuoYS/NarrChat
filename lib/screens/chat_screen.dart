@@ -575,9 +575,7 @@ class _ChatScreenState extends State<ChatScreen>
       child: Container(
         decoration: BoxDecoration(
           color: context.narrColors.surface,
-          border: Border(
-            bottom: BorderSide(color: context.narrColors.divider),
-          ),
+          border: Border(bottom: BorderSide(color: context.narrColors.divider)),
         ),
         child: AppBar(
           // 收紧返回按钮与书名之间的间距（默认 titleSpacing=16 使箭头右侧空白偏大）。
@@ -587,14 +585,20 @@ class _ChatScreenState extends State<ChatScreen>
             tooltip: '返回书籍列表',
             onPressed: () => Navigator.of(context).maybePop(),
           ),
-          title: Text(
-            book?.title ?? '对话',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: context.narrColors.textPrimary,
+          // 书名可点击：点击直接进入书籍设置页（无视觉提示，仅友好性交互）。
+          title: GestureDetector(
+            onTap: book == null
+                ? null
+                : () => BookSettingsScreen.open(context, book: book),
+            child: Text(
+              book?.title ?? '对话',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: context.narrColors.textPrimary,
+              ),
             ),
           ),
           actions: [
@@ -602,8 +606,7 @@ class _ChatScreenState extends State<ChatScreen>
               IconButton(
                 icon: const Icon(Icons.book_outlined),
                 tooltip: '书籍设置',
-                onPressed: () =>
-                    BookSettingsScreen.open(context, book: book),
+                onPressed: () => BookSettingsScreen.open(context, book: book),
               ),
             IconButton(
               icon: const Icon(Icons.settings_outlined),
@@ -869,8 +872,8 @@ class _ChatScreenState extends State<ChatScreen>
                     onRefresh: () => _handleReAsk(round),
                     // 调试数据仅保留最新一轮：仅当属于本轮时提供入口
                     //（失败重试等场景下最新轮可能无对应调试数据）。
-                    onViewDebug: isLatest &&
-                            roundProvider.debugRoundId == round.id
+                    onViewDebug:
+                        isLatest && roundProvider.debugRoundId == round.id
                         ? _showDebugDialog
                         : null,
                   ),
@@ -924,11 +927,7 @@ class _ChatScreenState extends State<ChatScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const BrandLogo(
-                size: 34,
-                title: 'NarrChat',
-                titleSize: 20,
-              ),
+              const BrandLogo(size: 34, title: 'NarrChat', titleSize: 20),
               const SizedBox(height: 20),
               Text(
                 book == null

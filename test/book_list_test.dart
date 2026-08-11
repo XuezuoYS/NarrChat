@@ -43,8 +43,10 @@ class _MockRoundDao extends RoundDao {
   Future<int> insertRound(Round round) async => 1;
 
   @override
-  Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async =>
-      1;
+  Future<int> updateRoundFields(
+    int roundId,
+    Map<String, Object?> fields,
+  ) async => 1;
 
   @override
   Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {}
@@ -80,10 +82,7 @@ Future<void> pumpHome(
         ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
       ],
-      child: MaterialApp(
-        theme: NarrChatTheme.light,
-        home: const HomeScreen(),
-      ),
+      child: MaterialApp(theme: NarrChatTheme.light, home: const HomeScreen()),
     ),
   );
   await tester.pumpAndSettle();
@@ -97,10 +96,13 @@ List<String?> visibleTitles(WidgetTester tester) => tester
 
 void main() {
   testWidgets('搜索：按标题 / 分类过滤', (tester) async {
-    await pumpHome(tester, books: const [
-      Book(id: 1, title: '剑来', category: '玄幻'),
-      Book(id: 2, title: '三体', category: '科幻'),
-    ]);
+    await pumpHome(
+      tester,
+      books: const [
+        Book(id: 1, title: '剑来', category: '玄幻'),
+        Book(id: 2, title: '三体', category: '科幻'),
+      ],
+    );
 
     await tester.enterText(find.byType(TextField), '三体');
     await tester.pump();
@@ -126,11 +128,14 @@ void main() {
   });
 
   testWidgets('排序：A-Z 按拼音', (tester) async {
-    await pumpHome(tester, books: const [
-      Book(id: 1, title: '张三'),
-      Book(id: 2, title: '阿伟'),
-      Book(id: 3, title: 'Book'),
-    ]);
+    await pumpHome(
+      tester,
+      books: const [
+        Book(id: 1, title: '张三'),
+        Book(id: 2, title: '阿伟'),
+        Book(id: 3, title: 'Book'),
+      ],
+    );
 
     await tester.tap(find.text('A-Z'));
     await tester.pumpAndSettle();
@@ -162,6 +167,20 @@ void main() {
     await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
     expect(find.text('新建书籍'), findsOneWidget, reason: '应已返回首页书籍列表');
+  });
+
+  testWidgets('对话页点击顶栏书名直接进入书籍设置', (tester) async {
+    await pumpHome(tester, books: const [Book(id: 1, title: '测试书')]);
+
+    await tester.tap(find.text('测试书'));
+    await tester.pumpAndSettle();
+    expect(find.text('测试书'), findsOneWidget, reason: '应已进入对话页（AppBar 显示书名）');
+
+    // 点击顶栏书名，应直接进入书籍设置页。
+    await tester.tap(find.text('测试书'));
+    await tester.pumpAndSettle();
+    expect(find.text('书籍设置'), findsWidgets, reason: '应进入书籍设置页');
+    expect(find.text('保存'), findsOneWidget, reason: '设置页应显示保存按钮');
   });
 
   testWidgets('列表无编辑 / 书籍设置入口，仅保留删除', (tester) async {
