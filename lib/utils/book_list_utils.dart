@@ -1,5 +1,6 @@
 import '../models/book.dart';
 import 'pinyin_sort.dart';
+import 'search_utils.dart';
 
 /// 书籍列表排序模式。
 enum BookSortMode {
@@ -15,15 +16,14 @@ enum BookSortMode {
 }
 
 /// 按搜索词过滤书籍（标题 / 分类，大小写不敏感）。
+///
+/// 支持多关键词模糊搜索：以空格分隔关键词，所有关键词都必须命中
+/// （每个关键词命中标题或分类即可），如 `"修仙 剑"`。
 List<Book> filterBooks(List<Book> books, String query) {
-  final q = query.trim().toLowerCase();
-  if (q.isEmpty) return books;
+  final keywords = splitKeywords(query);
+  if (keywords.isEmpty) return books;
   return books
-      .where(
-        (b) =>
-            b.title.toLowerCase().contains(q) ||
-            b.category.toLowerCase().contains(q),
-      )
+      .where((b) => matchesKeywords(keywords, [b.title, b.category]))
       .toList();
 }
 

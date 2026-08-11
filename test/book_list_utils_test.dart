@@ -27,6 +27,25 @@ void main() {
       expect(r.map((b) => b.id), [2]);
     });
 
+    test('多关键词：全部命中才通过（标题或分类）', () {
+      final r = filterBooks(books, '剑 玄幻');
+      expect(r.map((b) => b.id), [1]);
+    });
+
+    test('多关键词：部分命中不通过', () {
+      expect(filterBooks(books, '剑 科幻'), isEmpty);
+    });
+
+    test('多关键词：可跨字段命中（标题 + 分类）', () {
+      final r = filterBooks(books, '三 科');
+      expect(r.map((b) => b.id), [2]);
+    });
+
+    test('多关键词：大小写不敏感且忽略多余空格', () {
+      final r = filterBooks(books, '  hobbit   fantasy  ');
+      expect(r.map((b) => b.id), [3]);
+    });
+
     test('无匹配返回空列表', () {
       expect(filterBooks(books, '不存在的书'), isEmpty);
     });

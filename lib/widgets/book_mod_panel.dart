@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
 import '../utils/pinyin_sort.dart';
+import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -54,10 +56,19 @@ class _BookModPanelState extends State<BookModPanel> {
   /// 当前选项卡（默认「已启用」）。
   _BookModsTab _tab = _BookModsTab.enabled;
 
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -244,6 +255,33 @@ class _BookModPanelState extends State<BookModPanel> {
           onSelectionChanged: (s) => setState(() => _tab = s.first),
         ),
         const SizedBox(height: 12),
+        TextField(
+          controller: _searchController,
+          onChanged: (v) => setState(() => _searchQuery = v),
+          onTapOutside: unfocusOnTapOutside,
+          decoration: InputDecoration(
+            hintText: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
+            prefixIcon: const Icon(Icons.search, size: 18),
+            suffixIcon: _searchQuery.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    tooltip: '清空搜索',
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _searchQuery = '');
+                    },
+                  ),
+            isDense: true,
+            filled: true,
+            fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         if (!_loaded)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
@@ -259,10 +297,19 @@ class _BookModPanelState extends State<BookModPanel> {
 
   /// 「已启用」列表：支持拖动排序（自上而下）。
   Widget _buildEnabledList() {
-    if (_enabled.isEmpty) {
-      return const AppEmptyHint(
+    final keywords = splitKeywords(_searchQuery);
+    final searching = keywords.isNotEmpty;
+    // 只保留命中搜索的项；index 指向全量列表，确保开关/拖动操作准确对应。
+    final filtered = <int>[
+      for (var i = 0; i < _enabled.length; i++)
+        if (modMatchesKeywords(keywords, _modByRef[_enabled[i].ref])) i,
+    ];
+    if (filtered.isEmpty) {
+      return AppEmptyHint(
         icon: Icons.check_circle_outline,
-        text: '暂无启用中的 Mod\n可在「未启用」标签中打开开关以启用',
+        text: _enabled.isEmpty
+            ? '暂无启用中的 Mod\n可在「未启用」标签中打开开关以启用'
+            : '未找到匹配的 Mod',
       );
     }
     return Column(
@@ -283,14 +330,15 @@ class _BookModPanelState extends State<BookModPanel> {
           buildDefaultDragHandles: false,
           onReorderItem: _reorderEnabled,
           children: [
-            for (var i = 0; i < _enabled.length; i++)
+            for (final i in filtered)
               _BookModTile(
                 key: ValueKey('book_mod_enabled_${_enabled[i].ref}'),
                 config: _enabled[i],
                 mod: _modByRef[_enabled[i].ref],
                 index: i,
                 onToggle: (_) => _disable(i),
-                showDragHandle: true,
+                // 搜索过滤时禁用拖动，避免过滤列表与全量列表索引错位。
+                showDragHandle: !searching,
               ),
           ],
         ),
@@ -300,10 +348,18 @@ class _BookModPanelState extends State<BookModPanel> {
 
   /// 「未启用」列表：按名称拼音 a~z 排序，不可拖动。
   Widget _buildDisabledList() {
-    if (_disabled.isEmpty) {
-      return const AppEmptyHint(
+    final keywords = splitKeywords(_searchQuery);
+    // 只保留命中搜索的项；index 指向全量列表，确保开关操作准确对应。
+    final filtered = <int>[
+      for (var i = 0; i < _disabled.length; i++)
+        if (modMatchesKeywords(keywords, _modByRef[_disabled[i].ref])) i,
+    ];
+    if (filtered.isEmpty) {
+      return AppEmptyHint(
         icon: Icons.remove_circle_outline,
-        text: '暂无未启用的 Mod\n可在「已启用」标签中关闭开关以停用',
+        text: _disabled.isEmpty
+            ? '暂无未启用的 Mod\n可在「已启用」标签中关闭开关以停用'
+            : '未找到匹配的 Mod',
       );
     }
     return Column(
@@ -317,7 +373,7 @@ class _BookModPanelState extends State<BookModPanel> {
           ),
         ),
         const SizedBox(height: 8),
-        for (var i = 0; i < _disabled.length; i++)
+        for (final i in filtered)
           _BookModTile(
             key: ValueKey('book_mod_disabled_${_disabled[i].ref}'),
             config: _disabled[i],

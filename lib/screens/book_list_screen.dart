@@ -13,7 +13,7 @@ import 'chat_screen.dart';
 
 /// 首页：书籍列表。
 ///
-/// - 搜索：按标题 / 分类过滤；
+/// - 搜索：按标题 / 分类过滤（空格分隔多关键词模糊匹配）；
 /// - 排序：时间（最近对话）或 A-Z（拼音）；
 /// - 点击书籍进入对话页；列表项菜单仅提供「删除」；
 /// - 「新建书籍」打开书籍设置页（创建模式），保存后直接进入该书的对话页；
@@ -134,7 +134,7 @@ class _BookListScreenState extends State<BookListScreen> {
             onChanged: (_) => setState(() {}),
             onTapOutside: unfocusOnTapOutside,
             decoration: InputDecoration(
-              hintText: '搜索书籍',
+              hintText: '搜索书籍（名称 / 类别，空格分隔多关键词）',
               prefixIcon: const Icon(Icons.search, size: 20),
               suffixIcon: _searchController.text.isEmpty
                   ? null

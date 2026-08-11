@@ -8,6 +8,7 @@ import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -33,12 +34,21 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
   // 默认打开「我的 Mod」选项卡。
   _ModsTab _tab = _ModsTab.mine;
 
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ModProvider>().loadUserMods();
     });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   void _showMessage(String message) {
@@ -318,6 +328,33 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           onSelectionChanged: (s) => setState(() => _tab = s.first),
         ),
         const SizedBox(height: 12),
+        TextField(
+          controller: _searchController,
+          onChanged: (v) => setState(() => _searchQuery = v),
+          onTapOutside: unfocusOnTapOutside,
+          decoration: InputDecoration(
+            hintText: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
+            prefixIcon: const Icon(Icons.search, size: 18),
+            suffixIcon: _searchQuery.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    tooltip: '清空搜索',
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _searchQuery = '');
+                    },
+                  ),
+            isDense: true,
+            filled: true,
+            fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         if (_tab == _ModsTab.preset)
           _buildPresetList(provider.presetMods)
         else
@@ -328,6 +365,9 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
 
   /// 预置 Mod 列表（仅可查看）。
   Widget _buildPresetList(List<Mod> mods) {
+    final keywords = splitKeywords(_searchQuery);
+    final filtered =
+        mods.where((mod) => modMatchesKeywords(keywords, mod)).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -339,10 +379,13 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           ),
         ),
         const SizedBox(height: 8),
-        if (mods.isEmpty)
-          const AppEmptyHint(icon: Icons.extension_outlined, text: '暂无预置 Mod')
+        if (filtered.isEmpty)
+          AppEmptyHint(
+            icon: Icons.extension_outlined,
+            text: mods.isEmpty ? '暂无预置 Mod' : '未找到匹配的 Mod',
+          )
         else
-          for (final mod in mods)
+          for (final mod in filtered)
             _ModTile(
               mod: mod,
               onView: () => _viewMod(mod),
@@ -353,6 +396,9 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
 
   /// 用户自定义 Mod 列表（可编辑/导出/删除）。
   Widget _buildUserList(List<Mod> mods) {
+    final keywords = splitKeywords(_searchQuery);
+    final filtered =
+        mods.where((mod) => modMatchesKeywords(keywords, mod)).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -381,13 +427,15 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           ],
         ),
         const SizedBox(height: 8),
-        if (mods.isEmpty)
-          const AppEmptyHint(
+        if (filtered.isEmpty)
+          AppEmptyHint(
             icon: Icons.extension_outlined,
-            text: '暂无自定义 Mod，点击「新建」创建，或「导入」分享来的 JSON。',
+            text: mods.isEmpty
+                ? '暂无自定义 Mod，点击「新建」创建，或「导入」分享来的 JSON。'
+                : '未找到匹配的 Mod',
           )
         else
-          for (final mod in mods)
+          for (final mod in filtered)
             _ModTile(
               mod: mod,
               onView: () => _viewMod(mod),
