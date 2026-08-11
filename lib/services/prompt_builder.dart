@@ -16,7 +16,7 @@ class PromptBundle {
 /// - 身份锁定（破甲）：解除助手式限制，明确本任务为虚构创作，直接顺从创作。
 /// - 绝对服从 + 二级标题纪律：仅允许 6 个 `##` 区块、顺序固定，其余位置禁止 `##`。
 /// - 状态快照规则：完整复制上一轮角色/世界状态，仅修改变动项。
-/// - 书籍设定、文笔要求（内置去 AI 味）、文笔参考（用户补充，**仅存在于 system**）、
+/// - 书籍名称、书籍类别、书籍设定、文笔要求（内置去 AI 味）、文笔参考（用户补充，**仅存在于 system**）、
 ///   角色层级、世界书条目、状态快照、记忆总结。
 ///
 /// 【User Prompt】
@@ -126,6 +126,8 @@ class PromptBuilder {
       buf.writeln(mods.systemPrompts.trim());
     }
     buf.writeln();
+    buf.writeln('书籍名称：${book.title.isEmpty ? '（未设置）' : book.title}');
+    buf.writeln('书籍类别：${book.category.isEmpty ? '（未设置）' : book.category}');
     buf.writeln('书籍设定：${book.baseSetting.isEmpty ? '（未设置）' : book.baseSetting}');
     buf.writeln('文笔要求：');
     if (book.writingRequirements.trim().isNotEmpty) {

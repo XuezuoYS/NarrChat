@@ -129,8 +129,10 @@ void main() {
       expect(system, contains('禁止使用 ##'));
     });
 
-    test('系统提示词包含书籍设定/文笔要求/文笔参考/角色层级/世界书条目', () {
+    test('系统提示词包含书籍名称/类别/设定/文笔要求/文笔参考/角色层级/世界书条目', () {
       final system = buildBundle().systemPrompt;
+      expect(system, contains('书籍名称：测试书'));
+      expect(system, contains('书籍类别：玄幻'));
       expect(system, contains('书籍设定：北域修仙世界，宗门林立。'));
       // 内置去 AI 味文笔要求已迁移到预置 Mod（web_novel_style），
       // 内置提示词仅注入「文笔要求」区与本书文笔要求描述。
