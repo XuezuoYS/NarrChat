@@ -913,10 +913,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// ChatScreen 直接使用时（如测试）首帧可能尚无当前书籍，故 [book] 可空。
   Widget _buildEmptyState(BuildContext context, Book? book) {
     final suggestions = [
-      ('✍️ 写出开篇', '请以引人入胜的方式，写出本故事的开篇。'),
-      ('🎬 推进剧情', '请继续推进剧情，让情节更加精彩。'),
-      ('⚡ 制造转折', '请为本轮剧情安排一个意想不到的转折。'),
-      ('🔍 检查一致性', '请检查当前剧情与世界设定、角色状态是否一致，如有冲突请指出。'),
+      ('✍️ 写出开篇 - 状态提示词', '''请写一个开篇。
+由于此轮为初始轮次，## 角色状态 区块应遵守系统提示词中的 `角色类别描述格式` （如有）
+开始剧情：
+'''),
     ];
     return Center(
       child: SingleChildScrollView(
