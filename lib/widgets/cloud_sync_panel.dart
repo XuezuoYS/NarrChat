@@ -45,6 +45,14 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     _userName = TextEditingController(text: provider.userName);
     _keepVersions = TextEditingController(text: '${provider.keepVersions}');
     _autoUpload = provider.autoUpload;
+    // 已配置 WebDAV 时，进入面板自动刷新云端备份列表。
+    // 使用 post-frame 回调，避免在 build/initState 阶段触发 notifyListeners。
+    if (provider.isConfigured) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        context.read<CloudSyncProvider>().refreshBackups();
+      });
+    }
   }
 
   @override
