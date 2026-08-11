@@ -9,7 +9,7 @@ enum MarkdownSyntaxToken {
   /// 标题正文。
   headingText,
 
-  /// 列表符号 / 引用 `>` 记号。
+  /// 列表符号。
   marker,
 
   /// 链接文字 / 图片替代文字。
@@ -24,7 +24,7 @@ enum MarkdownSyntaxToken {
   /// 行内代码 / 围栏代码块。
   code,
 
-  /// 引用内容。
+  /// 引用内容（含 `>` 记号）。
   blockquote,
 
   /// 水平分割线。
@@ -163,19 +163,12 @@ class MarkdownSyntaxHighlighter {
       _add(raw, lineStart, lineStart + line.length, MarkdownSyntaxToken.hr);
       return;
     }
-    // 引用：`>` 记号 + 内容整体块级样式，行内元素由优先级解析叠加。
+    // 引用：整行（含 `>` 记号）为块级引用样式，行内元素由优先级解析叠加。
     final bq = _blockquotePattern.firstMatch(line);
     if (bq != null) {
-      final markerStart = bq.end - bq.group(1)!.length;
       _add(
         raw,
-        lineStart + markerStart,
-        lineStart + bq.end,
-        MarkdownSyntaxToken.marker,
-      );
-      _add(
-        raw,
-        lineStart + bq.end,
+        lineStart + bq.end - bq.group(1)!.length,
         lineStart + line.length,
         MarkdownSyntaxToken.blockquote,
       );

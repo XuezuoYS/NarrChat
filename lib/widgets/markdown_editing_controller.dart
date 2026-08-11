@@ -4,14 +4,17 @@ import '../utils/markdown_syntax_highlighter.dart';
 
 /// Markdown 编辑框语法高亮配色（仿 VS Code / GitHub，随亮暗主题自适应）。
 class MarkdownSyntaxColors {
-  /// 标题。
+  /// 标题（正文与 `#` 记号同色）。
   final Color heading;
 
-  /// 列表符号 / 引用记号。
+  /// 列表符号。
   final Color marker;
 
   /// 链接文字 / 自动链接。
   final Color link;
+
+  /// 链接目标地址（与斜体同色）。
+  final Color linkUrl;
 
   /// 行内代码 / 围栏代码。
   final Color code;
@@ -19,42 +22,46 @@ class MarkdownSyntaxColors {
   /// 加粗内容（`**加粗**`，以颜色区分而非加粗字重）。
   final Color bold;
 
-  /// 引用内容。
+  /// 引用内容（含 `>` 记号）。
   final Color blockquote;
 
-  /// 弱化内容（URL、括号、分割线等）。
+  /// 弱化内容（分割线、转义等）。
   final Color dim;
 
   const MarkdownSyntaxColors({
     required this.heading,
     required this.marker,
     required this.link,
+    required this.linkUrl,
     required this.code,
     required this.bold,
     required this.blockquote,
     required this.dim,
   });
 
-  /// 浅色主题（VS Code 浅色风格：蓝标题、红代码、蓝链接、灰引用）。
+  /// 浅色主题（One Dark Pro 配色在浅色背景下的加深适配）。
   static const MarkdownSyntaxColors light = MarkdownSyntaxColors(
-    heading: Color(0xFF005CC5),
-    marker: Color(0xFF6E5BEF),
-    link: Color(0xFF0000EE),
-    code: Color(0xFFA31515),
-    bold: Color(0xFF188038),
-    blockquote: Color(0xFF6A737D),
-    dim: Color(0xFF6A737D),
+    heading: Color(0xFFC62D4A),
+    marker: Color(0xFF9A6700),
+    link: Color(0xFF0969DA),
+    linkUrl: Color(0xFF8250DF),
+    code: Color(0xFF1A7F37),
+    bold: Color(0xFFB45309),
+    blockquote: Color(0xFF57606A),
+    dim: Color(0xFF57606A),
   );
 
-  /// 深色主题（GitHub Dark 风格：亮蓝标题、橙代码、亮蓝链接、灰引用）。
+  /// 深色主题（与 VS Code One Dark Pro 完全一致）：红标题、黄列表、
+  /// 蓝链接、紫 URL、绿代码、橙加粗、灰引用。
   static const MarkdownSyntaxColors dark = MarkdownSyntaxColors(
-    heading: Color(0xFF58A6FF),
-    marker: Color(0xFFB0A6FF),
-    link: Color(0xFF4DA3FF),
-    code: Color(0xFFCE9178),
-    bold: Color(0xFF7EE0B5),
-    blockquote: Color(0xFF8B949E),
-    dim: Color(0xFF8B949E),
+    heading: Color(0xFFE06C75),
+    marker: Color(0xFFE5C07B),
+    link: Color(0xFF61AFEF),
+    linkUrl: Color(0xFFC678DD),
+    code: Color(0xFF98C379),
+    bold: Color(0xFFD19A66),
+    blockquote: Color(0xFF5C6370),
+    dim: Color(0xFF5C6370),
   );
 
   /// 按当前主题亮度选取配色。
@@ -155,6 +162,7 @@ class MarkdownEditingController extends TextEditingController {
     switch (token) {
       case MarkdownSyntaxToken.headingMarker:
       case MarkdownSyntaxToken.headingText:
+        // One Dark Pro：标题正文与 `#` 记号同为珊瑚红。
         return base.copyWith(color: colors.heading);
       case MarkdownSyntaxToken.marker:
         return base.copyWith(color: colors.marker);
@@ -165,10 +173,10 @@ class MarkdownEditingController extends TextEditingController {
           decorationColor: colors.link,
         );
       case MarkdownSyntaxToken.linkUrl:
+        return base.copyWith(color: colors.linkUrl);
       case MarkdownSyntaxToken.linkBracket:
-      case MarkdownSyntaxToken.hr:
-      case MarkdownSyntaxToken.dim:
-        return base.copyWith(color: colors.dim);
+        // One Dark Pro：链接 `[ ] ( )` 括号为珊瑚红（punctuation.definition.metadata）。
+        return base.copyWith(color: colors.heading);
       case MarkdownSyntaxToken.code:
         return base.copyWith(color: colors.code, fontFamily: 'monospace');
       case MarkdownSyntaxToken.blockquote:
@@ -176,7 +184,8 @@ class MarkdownEditingController extends TextEditingController {
       case MarkdownSyntaxToken.bold:
         return base.copyWith(color: colors.bold);
       case MarkdownSyntaxToken.italic:
-        return base.copyWith(fontStyle: FontStyle.italic);
+        // One Dark Pro：斜体为紫色。
+        return base.copyWith(color: colors.linkUrl, fontStyle: FontStyle.italic);
       case MarkdownSyntaxToken.boldItalic:
         return base.copyWith(color: colors.bold, fontStyle: FontStyle.italic);
       case MarkdownSyntaxToken.strike:
@@ -191,6 +200,9 @@ class MarkdownEditingController extends TextEditingController {
           decoration: TextDecoration.underline,
           decorationColor: colors.link,
         );
+      case MarkdownSyntaxToken.hr:
+      case MarkdownSyntaxToken.dim:
+        return base.copyWith(color: colors.dim);
     }
   }
 }

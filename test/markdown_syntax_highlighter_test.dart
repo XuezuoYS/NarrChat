@@ -63,21 +63,22 @@ void main() {
       expect(_textOf(t, MarkdownSyntaxToken.hr), '* * *');
     });
 
-    test('`> 引用` 记号与内容分开', () {
+    test('`> 引用` 整行（含记号）为引用样式', () {
       const t = '> 引用内容';
-      expect(_textOf(t, MarkdownSyntaxToken.marker), '>');
-      expect(_textOf(t, MarkdownSyntaxToken.blockquote), ' 引用内容');
+      expect(_textOf(t, MarkdownSyntaxToken.marker), isEmpty);
+      expect(_textOf(t, MarkdownSyntaxToken.blockquote), '> 引用内容');
     });
 
     test('`>text` 无空格也识别为引用', () {
       const t = '>text';
-      expect(_textOf(t, MarkdownSyntaxToken.marker), '>');
-      expect(_textOf(t, MarkdownSyntaxToken.blockquote), 'text');
+      expect(_textOf(t, MarkdownSyntaxToken.marker), isEmpty);
+      expect(_textOf(t, MarkdownSyntaxToken.blockquote), '>text');
     });
 
-    test('`>> 嵌套` 两个记号都识别', () {
+    test('`>> 嵌套` 整体为引用样式', () {
       const t = '>> 嵌套';
-      expect(_textOf(t, MarkdownSyntaxToken.marker), '>>');
+      expect(_textOf(t, MarkdownSyntaxToken.marker), isEmpty);
+      expect(_textOf(t, MarkdownSyntaxToken.blockquote), '>> 嵌套');
     });
 
     test('无序列表 `- 项目`', () {

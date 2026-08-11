@@ -79,6 +79,66 @@ void main() {
     c.dispose();
   });
 
+  test('深色主题配色与 VS Code One Dark Pro 一致', () {
+    // 取值自 One Dark Pro themeData（classic 色板）。
+    expect(MarkdownSyntaxColors.dark.heading, const Color(0xFFE06C75));
+    expect(MarkdownSyntaxColors.dark.marker, const Color(0xFFE5C07B));
+    expect(MarkdownSyntaxColors.dark.link, const Color(0xFF61AFEF));
+    expect(MarkdownSyntaxColors.dark.linkUrl, const Color(0xFFC678DD));
+    expect(MarkdownSyntaxColors.dark.code, const Color(0xFF98C379));
+    expect(MarkdownSyntaxColors.dark.bold, const Color(0xFFD19A66));
+    expect(MarkdownSyntaxColors.dark.blockquote, const Color(0xFF5C6370));
+    expect(MarkdownSyntaxColors.dark.dim, const Color(0xFF5C6370));
+  });
+
+  testWidgets('深色标题记号与正文同为标题红', (tester) async {
+    final c = MarkdownEditingController(text: '# 标题');
+    final ctx = await _pumpField(tester, c, brightness: Brightness.dark);
+    final span = c.buildTextSpan(
+      context: ctx,
+      style: const TextStyle(color: Colors.white),
+      withComposing: false,
+    );
+    final parts = _flatten(span);
+    expect(parts.firstWhere((s) => s.text == '#').style?.color,
+        MarkdownSyntaxColors.dark.heading);
+    expect(parts.firstWhere((s) => s.text == ' 标题').style?.color,
+        MarkdownSyntaxColors.dark.heading);
+    c.dispose();
+  });
+
+  testWidgets('深色链接括号红、文字蓝、URL 紫', (tester) async {
+    final c = MarkdownEditingController(text: '[文字](https://a.b)');
+    final ctx = await _pumpField(tester, c, brightness: Brightness.dark);
+    final span = c.buildTextSpan(
+      context: ctx,
+      style: const TextStyle(color: Colors.white),
+      withComposing: false,
+    );
+    final parts = _flatten(span);
+    expect(parts.firstWhere((s) => s.text == '[').style?.color,
+        MarkdownSyntaxColors.dark.heading);
+    expect(parts.firstWhere((s) => s.text == '文字').style?.color,
+        MarkdownSyntaxColors.dark.link);
+    expect(parts.firstWhere((s) => s.text == 'https://a.b').style?.color,
+        MarkdownSyntaxColors.dark.linkUrl);
+    c.dispose();
+  });
+
+  testWidgets('深色斜体为紫色斜体', (tester) async {
+    final c = MarkdownEditingController(text: '*斜体*');
+    final ctx = await _pumpField(tester, c, brightness: Brightness.dark);
+    final span = c.buildTextSpan(
+      context: ctx,
+      style: const TextStyle(color: Colors.white),
+      withComposing: false,
+    );
+    final italic = _flatten(span).firstWhere((s) => s.text == '*斜体*');
+    expect(italic.style?.color, MarkdownSyntaxColors.dark.linkUrl);
+    expect(italic.style?.fontStyle, FontStyle.italic);
+    c.dispose();
+  });
+
   testWidgets('行内代码使用等宽字体与代码色', (tester) async {
     final c = MarkdownEditingController(text: '`code`');
     final ctx = await _pumpField(tester, c);
@@ -93,7 +153,7 @@ void main() {
     c.dispose();
   });
 
-  testWidgets('链接文字加下划线且 URL 弱化', (tester) async {
+  testWidgets('链接文字加下划线且 URL 紫色', (tester) async {
     final c = MarkdownEditingController(text: '[文字](https://a.b)');
     final ctx = await _pumpField(tester, c);
     final span = c.buildTextSpan(
@@ -105,7 +165,7 @@ void main() {
     final link = parts.firstWhere((s) => s.text == '文字');
     expect(link.style?.decoration, TextDecoration.underline);
     final url = parts.firstWhere((s) => s.text == 'https://a.b');
-    expect(url.style?.color, MarkdownSyntaxColors.light.dim);
+    expect(url.style?.color, MarkdownSyntaxColors.light.linkUrl);
     c.dispose();
   });
 
