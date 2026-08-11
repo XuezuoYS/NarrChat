@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/book.dart';
+import '../models/mod.dart';
 import '../models/role_category.dart';
+import '../models/world_book_entry.dart';
 import '../providers/book_provider.dart';
+import '../providers/mod_provider.dart';
+import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/constants.dart';
 import '../utils/focus_utils.dart';
@@ -49,6 +53,12 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   late List<RoleCategory> _roleCategories;
 
   bool _isSaving = false;
+
+  /// 新建书籍草稿模式下收集的世界书条目（保存书籍成功后统一落库）。
+  List<WorldBookEntry> _draftWorldBookEntries = [];
+
+  /// 新建书籍草稿模式下收集的 Mod 配置（保存书籍成功后统一落库）。
+  List<BookModConfig> _draftModConfigs = [];
 
   @override
   void initState() {
@@ -111,11 +121,58 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     if (!mounted) return;
     setState(() => _isSaving = false);
     if (ok) {
+      final errors = <String>[];
+      // 新建书籍：将草稿阶段配置的世界书条目与 Mod 一并落库到新书。
+      if (widget.book == null) {
+        await _commitDraftData(errors);
+      }
+      if (!mounted) return;
       Navigator.of(context).pop(true);
+      if (errors.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('部分数据保存失败：${errors.join('；')}')),
+        );
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('保存失败：${provider.error ?? '未知错误'}')),
       );
+    }
+  }
+
+  /// 新建书籍成功后，将草稿阶段配置的世界书条目与 Mod 配置落库到新书。
+  Future<void> _commitDraftData(List<String> errors) async {
+    // 所有 Provider 在首个 await 之前获取，避免跨异步间隙使用 context。
+    final bookId = context.read<BookProvider>().currentBook?.id;
+    final wbProvider = context.read<WorldBookProvider>();
+    final modProvider = context.read<ModProvider>();
+    if (bookId == null) return;
+
+    // 世界书条目（逐条插入）。
+    if (_draftWorldBookEntries.isNotEmpty) {
+      await wbProvider.loadEntries(bookId);
+      for (final entry in _draftWorldBookEntries) {
+        final ok = await wbProvider.addEntry(
+          keyword: entry.keyword,
+          content: entry.content,
+          isActive: entry.isActive,
+        );
+        if (!ok) {
+          errors.add('世界书条目「${entry.keyword}」保存失败');
+          break;
+        }
+      }
+    }
+
+    // Mod 配置（整体替换，bookId 由草稿占位 0 改为新书 ID）。
+    if (_draftModConfigs.isNotEmpty) {
+      final ok = await modProvider.saveBookModConfigs(
+        bookId,
+        _draftModConfigs.map((c) => c.copyWith(bookId: bookId)).toList(),
+      );
+      if (!ok) {
+        errors.add('Mod 配置保存失败');
+      }
     }
   }
 
@@ -150,11 +207,19 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           case 2:
             return _buildBaseSetting(context);
           case 3:
-            return WorldBookPanel(bookId: widget.book?.id);
+            return WorldBookPanel(
+              bookId: widget.book?.id,
+              pendingEntries: _draftWorldBookEntries,
+              onPendingChanged: (entries) => _draftWorldBookEntries = entries,
+            );
           case 4:
             return _buildWritingStyle(context);
           default:
-            return BookModPanel(bookId: widget.book?.id);
+            return BookModPanel(
+              bookId: widget.book?.id,
+              pendingConfigs: _draftModConfigs.isEmpty ? null : _draftModConfigs,
+              onPendingChanged: (configs) => _draftModConfigs = configs,
+            );
         }
       },
     );

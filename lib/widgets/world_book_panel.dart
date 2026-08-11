@@ -13,10 +13,21 @@ import 'app_empty_hint.dart';
 /// App 会扫描本轮输入与最近历史轮次，命中关键词的条目内容将注入 System Prompt。
 /// 支持新增、编辑、启用/停用与删除。
 class WorldBookPanel extends StatefulWidget {
-  /// 所属书籍 ID；为 null 表示新建书籍尚未保存（此时仅显示提示）。
+  /// 所属书籍 ID；为 null 表示新建书籍草稿模式（条目保存在内存，
+  /// 保存书籍后由外层统一落库）。
   final int? bookId;
 
-  const WorldBookPanel({super.key, this.bookId});
+  /// 草稿模式（bookId 为 null）下当前的世界书条目；改动后通过
+  /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
+  final List<WorldBookEntry>? pendingEntries;
+  final ValueChanged<List<WorldBookEntry>>? onPendingChanged;
+
+  const WorldBookPanel({
+    super.key,
+    this.bookId,
+    this.pendingEntries,
+    this.onPendingChanged,
+  });
 
   @override
   State<WorldBookPanel> createState() => _WorldBookPanelState();
@@ -26,15 +37,30 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
   final TextEditingController _keywordController = TextEditingController();
   final TextEditingController _contentController = TextEditingController();
 
+  /// 草稿模式下的本地条目（仅 bookId 为 null 时使用）。
+  late List<WorldBookEntry> _pending;
+
+  bool get _isDraft => widget.bookId == null;
+
   @override
   void initState() {
     super.initState();
+    _pending = List.of(widget.pendingEntries ?? const []);
     final bookId = widget.bookId;
     if (bookId != null) {
       // 进入时加载该书籍的世界书条目。
       WidgetsBinding.instance.addPostFrameCallback((_) {
         context.read<WorldBookProvider>().loadEntries(bookId);
       });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant WorldBookPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 草稿模式下外层状态可能在切换标签后重建本面板，同步最新条目。
+    if (_isDraft && oldWidget.pendingEntries != widget.pendingEntries) {
+      _pending = List.of(widget.pendingEntries ?? const []);
     }
   }
 
@@ -50,6 +76,23 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     final content = _contentController.text.trim();
     if (keyword.isEmpty || content.isEmpty) {
       _showMessage('关键词与内容不能为空');
+      return;
+    }
+    if (_isDraft) {
+      setState(() {
+        _pending.add(
+          WorldBookEntry(
+            bookId: 0,
+            keyword: keyword,
+            content: content,
+            isActive: true,
+            createdAt: DateTime.now(),
+          ),
+        );
+      });
+      _keywordController.clear();
+      _contentController.clear();
+      _notifyPendingChanged();
       return;
     }
     final ok = await context.read<WorldBookProvider>().addEntry(
@@ -70,6 +113,19 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       builder: (_) => _WorldBookEntryDialog(entry: entry),
     );
     if (result == null || !mounted) return;
+    if (_isDraft) {
+      final index = _pending.indexWhere((e) => identical(e, entry));
+      if (index == -1) return;
+      setState(() {
+        _pending[index] = _pending[index].copyWith(
+          keyword: result.keyword,
+          content: result.content,
+          isActive: result.isActive,
+        );
+      });
+      _notifyPendingChanged();
+      return;
+    }
     final ok = await context.read<WorldBookProvider>().updateEntry(
           entry.copyWith(
             keyword: result.keyword,
@@ -82,6 +138,39 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     }
   }
 
+  /// 草稿模式下将最新条目回传外层。
+  void _notifyPendingChanged() {
+    widget.onPendingChanged?.call(List.of(_pending));
+  }
+
+  /// 切换条目启用状态。
+  Future<void> _toggleEntry(WorldBookEntry entry, bool active) async {
+    if (_isDraft) {
+      final index = _pending.indexWhere((e) => identical(e, entry));
+      if (index == -1) return;
+      setState(() {
+        _pending[index] = _pending[index].copyWith(isActive: active);
+      });
+      _notifyPendingChanged();
+      return;
+    }
+    await context.read<WorldBookProvider>().updateEntry(
+          entry.copyWith(isActive: active),
+        );
+  }
+
+  /// 删除条目。
+  Future<void> _deleteEntry(WorldBookEntry entry) async {
+    if (_isDraft) {
+      setState(() {
+        _pending.removeWhere((e) => identical(e, entry));
+      });
+      _notifyPendingChanged();
+      return;
+    }
+    await context.read<WorldBookProvider>().removeEntry(entry.id!);
+  }
+
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
@@ -90,62 +179,11 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final bookId = widget.bookId;
-    if (bookId == null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            '世界书',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: context.narrColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '关键词命中后自动注入 System Prompt。',
-            style: TextStyle(
-              fontSize: 12,
-              color: context.narrColors.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            decoration: BoxDecoration(
-              color: context.narrColors.background,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: context.narrColors.divider),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.menu_book_outlined,
-                  size: 28,
-                  color: context.narrColors.textSecondary,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    '保存新建书籍后，即可在此管理本书的世界书条目。',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: context.narrColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
-
     final theme = Theme.of(context);
-    final worldBookProvider = context.watch<WorldBookProvider>();
-    final entries = worldBookProvider.entries;
+    // 草稿模式使用面板本地内存条目；编辑模式使用全局 Provider 的条目。
+    final entries = _isDraft
+        ? List.unmodifiable(_pending)
+        : context.watch<WorldBookProvider>().entries;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -232,15 +270,9 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
               final entry = entries[index];
               return _EntryTile(
                 entry: entry,
-                onToggle: (v) async {
-                  await worldBookProvider.updateEntry(
-                    entry.copyWith(isActive: v),
-                  );
-                },
+                onToggle: (v) => _toggleEntry(entry, v),
                 onEdit: () => _editEntry(entry),
-                onDelete: () async {
-                  await worldBookProvider.removeEntry(entry.id!);
-                },
+                onDelete: () => _deleteEntry(entry),
               );
             },
           ),

@@ -17,10 +17,22 @@ import 'type_badge.dart';
 /// - 通过开关启用/禁用，改动即时保存：发送请求时，本书启用中的 Mod 将
 ///   按顺序自动置入前置词、后置词、系统提示词与世界书。
 class BookModPanel extends StatefulWidget {
-  /// 所属书籍 ID；为 null 表示新建书籍尚未保存（此时仅显示提示）。
+  /// 所属书籍 ID；为 null 表示新建书籍草稿模式（改动保存在内存，
+  /// 保存书籍后由外层统一落库）。
   final int? bookId;
 
-  const BookModPanel({super.key, this.bookId});
+  /// 草稿模式（bookId 为 null）下完整的 Mod 配置（已启用 + 未启用），
+  /// 为 null 时首次进入按「全部未启用」初始化；改动后通过
+  /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
+  final List<BookModConfig>? pendingConfigs;
+  final ValueChanged<List<BookModConfig>>? onPendingChanged;
+
+  const BookModPanel({
+    super.key,
+    this.bookId,
+    this.pendingConfigs,
+    this.onPendingChanged,
+  });
 
   @override
   State<BookModPanel> createState() => _BookModPanelState();
@@ -45,16 +57,17 @@ class _BookModPanelState extends State<BookModPanel> {
   @override
   void initState() {
     super.initState();
-    final bookId = widget.bookId;
-    if (bookId != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _load(bookId));
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
-  Future<void> _load(int bookId) async {
+  Future<void> _load() async {
     final provider = context.read<ModProvider>();
     await provider.loadUserMods();
-    final saved = await provider.getBookModConfigs(bookId);
+    final bookId = widget.bookId;
+    // 草稿模式（bookId 为 null）读取外层暂存的配置；编辑模式从数据库读取。
+    final saved = bookId != null
+        ? await provider.getBookModConfigs(bookId)
+        : widget.pendingConfigs;
     if (!mounted) return;
 
     final allMods = provider.allMods;
@@ -62,14 +75,16 @@ class _BookModPanelState extends State<BookModPanel> {
     final result = <BookModConfig>[];
     final seen = <String>{};
 
-    // 1. 已保存的配置按置入顺序排列（引用已不存在的 Mod 则跳过）。
-    final sorted = List.of(saved)
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    for (final c in sorted) {
-      if (seen.contains(c.ref)) continue;
-      seen.add(c.ref);
-      if (_modByRef.containsKey(c.ref)) {
-        result.add(c.copyWith(bookId: bookId));
+    // 1. 已保存 / 草稿的配置按置入顺序排列（引用已不存在的 Mod 则跳过）。
+    if (saved != null) {
+      final sorted = List.of(saved)
+        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+      for (final c in sorted) {
+        if (seen.contains(c.ref)) continue;
+        seen.add(c.ref);
+        if (_modByRef.containsKey(c.ref)) {
+          result.add(c.copyWith(bookId: bookId ?? 0));
+        }
       }
     }
     // 2. 尚未配置的 Mod 追加到末尾（默认禁用）。
@@ -79,7 +94,7 @@ class _BookModPanelState extends State<BookModPanel> {
       seen.add(ref);
       result.add(
         BookModConfig(
-          bookId: bookId,
+          bookId: bookId ?? 0,
           presetKey: mod.presetKey,
           modId: mod.id,
           isEnabled: false,
@@ -134,17 +149,21 @@ class _BookModPanelState extends State<BookModPanel> {
 
   Future<void> _doSave() async {
     final bookId = widget.bookId;
-    if (bookId == null) return;
     final configs = <BookModConfig>[
       for (var i = 0; i < _enabled.length; i++)
-        _enabled[i].copyWith(bookId: bookId, sortOrder: i, isEnabled: true),
+        _enabled[i].copyWith(bookId: bookId ?? 0, sortOrder: i, isEnabled: true),
       for (var i = 0; i < _disabled.length; i++)
         _disabled[i].copyWith(
-          bookId: bookId,
+          bookId: bookId ?? 0,
           sortOrder: _enabled.length + i,
           isEnabled: false,
         ),
     ];
+    if (bookId == null) {
+      // 草稿模式：仅回传内存配置，由外层在保存书籍后统一落库。
+      widget.onPendingChanged?.call(configs);
+      return;
+    }
     final provider = context.read<ModProvider>();
     final ok = await provider.saveBookModConfigs(bookId, configs);
     if (!ok && mounted) {
@@ -187,59 +206,6 @@ class _BookModPanelState extends State<BookModPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final bookId = widget.bookId;
-    if (bookId == null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Mod 管理',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: context.narrColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '启用 Mod 后自动置入前置词、后置词、系统提示词与世界书。',
-            style: TextStyle(
-              fontSize: 12,
-              color: context.narrColors.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            decoration: BoxDecoration(
-              color: context.narrColors.background,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: context.narrColors.divider),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.extension_outlined,
-                  size: 28,
-                  color: context.narrColors.textSecondary,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    '保存新建书籍后，即可在此为本书启用 Mod 并调整置入顺序。',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: context.narrColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
