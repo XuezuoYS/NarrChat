@@ -105,13 +105,15 @@ class _ChatScreenState extends State<ChatScreen>
       parent: _sidebarController,
       curve: Curves.easeOutCubic,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final book = context.read<BookProvider>().currentBook;
-      if (book != null) {
-        context.read<RoundProvider>().loadRounds(book.id!);
-        // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
-        context.read<WorldBookProvider>().loadEntries(book.id!);
-      }
+      if (book == null) return;
+      await context.read<RoundProvider>().loadRounds(book.id!);
+      if (!mounted) return;
+      // 打开书籍后自动滚动到底部，直接查看最新剧情 / 状态。
+      _scrollToBottom();
+      // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
+      context.read<WorldBookProvider>().loadEntries(book.id!);
     });
   }
 
