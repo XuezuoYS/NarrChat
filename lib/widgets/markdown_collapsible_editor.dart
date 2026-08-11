@@ -3,6 +3,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
+import 'markdown_editing_controller.dart';
 
 /// Markdown 文档树节点。
 class MarkdownNode {
@@ -63,7 +64,7 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
 class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     implements EditableFieldState {
   bool _editMode = false;
-  late final TextEditingController _editController;
+  late final MarkdownEditingController _editController;
 
   // 一键展开 / 全部折叠控制。
   bool _allExpanded = true;
@@ -71,7 +72,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   @override
   void initState() {
     super.initState();
-    _editController = TextEditingController(text: widget.controller.text);
+    _editController = MarkdownEditingController(text: widget.controller.text);
     // 外部（父级）修改 controller 时同步到编辑框（仅非编辑模式下）。
     widget.controller.addListener(_syncFromExternal);
     _editController.addListener(_onEditChanged);

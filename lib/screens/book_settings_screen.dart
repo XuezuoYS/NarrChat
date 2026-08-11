@@ -14,6 +14,7 @@ import '../utils/focus_utils.dart';
 import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
+import '../widgets/markdown_editing_controller.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/world_book_panel.dart';
 
@@ -44,11 +45,11 @@ class BookSettingsScreen extends StatefulWidget {
 class _BookSettingsScreenState extends State<BookSettingsScreen> {
   late final TextEditingController _title;
   late final TextEditingController _category;
-  late final TextEditingController _writingRequirements;
-  late final TextEditingController _baseSetting;
-  late final TextEditingController _writingStyle;
-  late final TextEditingController _globalPrePrompt;
-  late final TextEditingController _globalPostPrompt;
+  late final MarkdownEditingController _writingRequirements;
+  late final MarkdownEditingController _baseSetting;
+  late final MarkdownEditingController _writingStyle;
+  late final MarkdownEditingController _globalPrePrompt;
+  late final MarkdownEditingController _globalPostPrompt;
   late int _historyRounds;
   late List<RoleCategory> _roleCategories;
 
@@ -66,11 +67,11 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     final b = widget.book;
     _title = TextEditingController(text: b?.title ?? '');
     _category = TextEditingController(text: b?.category ?? '');
-    _writingRequirements = TextEditingController(text: b?.writingRequirements ?? '');
-    _baseSetting = TextEditingController(text: b?.baseSetting ?? '');
-    _writingStyle = TextEditingController(text: b?.writingStyle ?? '');
-    _globalPrePrompt = TextEditingController(text: b?.globalPrePrompt ?? '');
-    _globalPostPrompt = TextEditingController(text: b?.globalPostPrompt ?? '');
+    _writingRequirements = MarkdownEditingController(text: b?.writingRequirements ?? '');
+    _baseSetting = MarkdownEditingController(text: b?.baseSetting ?? '');
+    _writingStyle = MarkdownEditingController(text: b?.writingStyle ?? '');
+    _globalPrePrompt = MarkdownEditingController(text: b?.globalPrePrompt ?? '');
+    _globalPostPrompt = MarkdownEditingController(text: b?.globalPostPrompt ?? '');
     _historyRounds = (b?.historyRounds ?? 1) < 1 ? 1 : (b?.historyRounds ?? 1);
     _roleCategories = List.of(
       b?.roleCategories ?? Constants.defaultRoleCategories,

@@ -18,6 +18,7 @@ import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
+import '../widgets/markdown_editing_controller.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
 import 'book_settings_screen.dart';
@@ -69,7 +70,8 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen>
     with SingleTickerProviderStateMixin {
-  final TextEditingController _inputController = TextEditingController();
+  /// 主输入框控制器：支持 Markdown 语法高亮（继承 TextEditingController）。
+  final MarkdownEditingController _inputController = MarkdownEditingController();
   final ScrollController _scrollController = ScrollController();
 
   bool _drawerOpen = false;
@@ -444,7 +446,7 @@ class _ChatScreenState extends State<ChatScreen>
     required String initial,
     required Future<void> Function(String text) onSave,
   }) async {
-    final controller = TextEditingController(text: initial);
+    final controller = MarkdownEditingController(text: initial);
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(

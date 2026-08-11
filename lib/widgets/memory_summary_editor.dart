@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
+import 'markdown_editing_controller.dart';
 
 /// 一条记忆条目：轮数 + 日期 + 概括内容（三者绑定在一条内）。
 class MemoryEntry {
@@ -88,12 +89,12 @@ class MemorySummaryEditor extends StatefulWidget {
 class MemorySummaryEditorState extends State<MemorySummaryEditor>
     implements EditableFieldState {
   bool _editMode = false;
-  late final TextEditingController _editController;
+  late final MarkdownEditingController _editController;
 
   @override
   void initState() {
     super.initState();
-    _editController = TextEditingController(text: widget.controller.text);
+    _editController = MarkdownEditingController(text: widget.controller.text);
     widget.controller.addListener(_syncFromExternal);
     _editController.addListener(_onEditChanged);
   }

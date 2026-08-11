@@ -6,6 +6,7 @@ import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import 'app_empty_hint.dart';
+import 'markdown_editing_controller.dart';
 
 /// 世界书管理面板（作为书籍设置的一个子模块）。
 ///
@@ -35,7 +36,7 @@ class WorldBookPanel extends StatefulWidget {
 
 class _WorldBookPanelState extends State<WorldBookPanel> {
   final TextEditingController _keywordController = TextEditingController();
-  final TextEditingController _contentController = TextEditingController();
+  final MarkdownEditingController _contentController = MarkdownEditingController();
 
   /// 草稿模式下的本地条目（仅 bookId 为 null 时使用）。
   late List<WorldBookEntry> _pending;
@@ -362,14 +363,14 @@ class _WorldBookEntryDialog extends StatefulWidget {
 
 class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
   late final TextEditingController _keyword;
-  late final TextEditingController _content;
+  late final MarkdownEditingController _content;
   late bool _isActive;
 
   @override
   void initState() {
     super.initState();
     _keyword = TextEditingController(text: widget.entry.keyword);
-    _content = TextEditingController(text: widget.entry.content);
+    _content = MarkdownEditingController(text: widget.entry.content);
     _isActive = widget.entry.isActive;
   }
 

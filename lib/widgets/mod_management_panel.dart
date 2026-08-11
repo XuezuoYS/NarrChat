@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
+import 'markdown_editing_controller.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
 
@@ -672,9 +673,9 @@ class _ModDetailDialog extends StatefulWidget {
 class _ModDetailDialogState extends State<_ModDetailDialog> {
   late final TextEditingController _name;
   late final TextEditingController _description;
-  late final TextEditingController _prePrompt;
-  late final TextEditingController _postPrompt;
-  late final TextEditingController _systemPrompt;
+  late final MarkdownEditingController _prePrompt;
+  late final MarkdownEditingController _postPrompt;
+  late final MarkdownEditingController _systemPrompt;
   late List<ModWorldBookEntry> _worldBookEntries;
 
   bool get _readOnly => widget.readOnly;
@@ -686,9 +687,9 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
     final mod = widget.mod;
     _name = TextEditingController(text: mod?.name ?? '');
     _description = TextEditingController(text: mod?.description ?? '');
-    _prePrompt = TextEditingController(text: mod?.prePrompt ?? '');
-    _postPrompt = TextEditingController(text: mod?.postPrompt ?? '');
-    _systemPrompt = TextEditingController(text: mod?.systemPrompt ?? '');
+    _prePrompt = MarkdownEditingController(text: mod?.prePrompt ?? '');
+    _postPrompt = MarkdownEditingController(text: mod?.postPrompt ?? '');
+    _systemPrompt = MarkdownEditingController(text: mod?.systemPrompt ?? '');
     _worldBookEntries = List.of(mod?.worldBookEntries ?? const []);
   }
 
@@ -1024,13 +1025,13 @@ class _WorldBookEntryDialog extends StatefulWidget {
 
 class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
   late final TextEditingController _keyword;
-  late final TextEditingController _content;
+  late final MarkdownEditingController _content;
 
   @override
   void initState() {
     super.initState();
     _keyword = TextEditingController(text: widget.entry?.keyword ?? '');
-    _content = TextEditingController(text: widget.entry?.content ?? '');
+    _content = MarkdownEditingController(text: widget.entry?.content ?? '');
   }
 
   @override

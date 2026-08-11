@@ -3,13 +3,14 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
+import 'markdown_editing_controller.dart';
 
 /// 支持 Markdown 渲染的文本编辑组件。
 ///
 /// - 默认显示 Markdown 预览；
 /// - 点击标题栏的编辑图标或双击进入原始文本编辑模式；
-/// - 编辑模式使用内部独立的 [TextEditingController]，进入/退出编辑时与外部
-///   [controller] 双向同步；父级保存时读取 `controller.text`。
+/// - 编辑模式使用内部独立的 [MarkdownEditingController]（编辑时同步支持语法高亮），
+///   进入/退出编辑时与外部 [controller] 双向同步；父级保存时读取 `controller.text`。
 /// - [showToolbar] 为 false 时隐藏内部工具栏（含「编辑/完成」），
 ///   由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动编辑与保存。
 class MarkdownField extends StatefulWidget {
@@ -42,12 +43,12 @@ class MarkdownField extends StatefulWidget {
 
 class MarkdownFieldState extends State<MarkdownField> implements EditableFieldState {
   bool _editMode = false;
-  late final TextEditingController _editController;
+  late final MarkdownEditingController _editController;
 
   @override
   void initState() {
     super.initState();
-    _editController = TextEditingController(text: widget.controller.text);
+    _editController = MarkdownEditingController(text: widget.controller.text);
     widget.controller.addListener(_syncFromExternal);
     _editController.addListener(_onEditChanged);
   }
