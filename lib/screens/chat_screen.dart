@@ -914,7 +914,7 @@ class _ChatScreenState extends State<ChatScreen>
   Widget _buildEmptyState(BuildContext context, Book? book) {
     final suggestions = [
       ('✍️ 写出开篇 - 状态提示词', '''请写一个开篇。
-由于此轮为初始轮次，## 角色状态 区块应遵守系统提示词中的 `角色类别描述格式` （如有）
+由于此轮为初始轮次，## 角色状态 区块应遵守系统提示词中的 `角色类别描述格式` （如有）而非原样继承第0轮次的格式
 开始剧情：
 '''),
     ];
