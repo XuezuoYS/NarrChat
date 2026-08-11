@@ -107,6 +107,20 @@ build: 7
     });
   });
 
+  group('artifactBaseName（产物命名）', () {
+    const config = ReleaseConfig(version: '1.2.3', build: 57);
+
+    test('Windows x64 命名', () {
+      expect(artifactBaseName(config, device: 'windows', arch: 'x64'),
+          'NarrChat_1.2.3-57_windows_x64');
+    });
+
+    test('Android arm64 命名', () {
+      expect(artifactBaseName(config, device: 'android', arch: 'arm64'),
+          'NarrChat_1.2.3-57_android_arm64');
+    });
+  });
+
   group('pascalString', () {
     test('普通文本原样返回', () {
       expect(pascalString('abc'), 'abc');
@@ -168,7 +182,7 @@ build: 7
 
     test('产物命名与快捷方式任务', () {
       final out = build();
-      expect(out, contains('OutputBaseFilename=NarrChat-Windows-x64-1.1.3-8-setup'));
+      expect(out, contains('OutputBaseFilename=NarrChat_1.1.3-8_windows_x64-setup'));
       expect(out, contains('创建桌面快捷方式'));
       expect(out, contains('创建开始菜单快捷方式'));
       expect(out, contains('{autoprograms}'));

@@ -15,9 +15,9 @@
 //      并同步 pubspec.yaml 的 version 字段为 `{version}+{build}`
 //   3. 执行 flutter build ...
 //   4. 产物统一输出到 build/release/
-//      - Android: NarrChat-Android-arm64-{version}-{build}.apk
-//      - Windows: NarrChat-Windows-x64-{version}-{build}.zip
-//                 + NarrChat-Windows-x64-{version}-{build}-setup.exe（安装包）
+//      - Android: NarrChat_{version}-{build}_android_arm64.apk
+//      - Windows: NarrChat_{version}-{build}_windows_x64.zip
+//                 + NarrChat_{version}-{build}_windows_x64-setup.exe（安装包）
 //
 // Windows 安装包依赖 Inno Setup（免费开源，https://jrsoftware.org/isdl.php）。
 // 未安装时自动降级为仅产出 ZIP 便携包。
@@ -103,6 +103,17 @@ String syncPubspecVersion(String pubspec, String version, int build) {
   return pubspec
       .replaceAllMapped(line, (m) => 'version: ${buildPubspecVersion(version, build)}');
 }
+
+/// 生成发布产物的统一基础名，格式：`NarrChat_{version}-{build}_{device}_{arch}`。
+///
+/// 例如 `NarrChat_1.2.3-57_windows_x64`。
+/// [device] 为目标设备（如 android / windows），[arch] 为架构（如 arm64 / x64）。
+String artifactBaseName(
+  ReleaseConfig config, {
+  required String device,
+  required String arch,
+}) =>
+    'NarrChat_${config.version}-${config.build}_${device}_$arch';
 
 // ---------------------------------------------------------------------------
 // 控制台输出
@@ -425,7 +436,8 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
       'app-release.apk'));
   if (!src.existsSync()) _fail('未找到构建产物：${src.path}');
 
-  final name = 'NarrChat-Android-arm64-${config.version}-${config.build}.apk';
+  final name =
+      '${artifactBaseName(config, device: 'android', arch: 'arm64')}.apk';
   final dst = File(p.join(_releaseDir.path, name));
   _deleteIfExists(dst);
   src.renameSync(dst.path);
@@ -448,7 +460,8 @@ Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) 
   _cleanWindowsArtifacts(config);
 
   // --- ZIP 便携包 ---
-  final zipName = 'NarrChat-Windows-x64-${config.version}-${config.build}.zip';
+  final zipName =
+      '${artifactBaseName(config, device: 'windows', arch: 'x64')}.zip';
   final zipPath = p.join(_releaseDir.path, zipName);
   // 暂存目录：ZIP 顶层统一为 Narrchat 文件夹（解压即得干净程序目录）。
   final staging = Directory(p.join(_releaseDir.path, 'Narrchat'));
@@ -485,7 +498,8 @@ Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) 
   }
   _deleteDirIfExists(Directory(p.dirname(issPath)));
 
-  final setupName = 'NarrChat-Windows-x64-${config.version}-${config.build}-setup.exe';
+  final setupName =
+      '${artifactBaseName(config, device: 'windows', arch: 'x64')}-setup.exe';
   final setupPath = p.join(_releaseDir.path, setupName);
   if (!File(setupPath).existsSync()) {
     _fail('未找到 Inno Setup 产物：$setupPath');
@@ -601,9 +615,10 @@ void _deleteDirIfExists(Directory dir) {
 
 /// 清理 Windows 旧产物（同名 ZIP / setup.exe）与 NarrChat* 暂存目录残留。
 void _cleanWindowsArtifacts(ReleaseConfig config) {
+  final base = artifactBaseName(config, device: 'windows', arch: 'x64');
   final names = [
-    'NarrChat-Windows-x64-${config.version}-${config.build}.zip',
-    'NarrChat-Windows-x64-${config.version}-${config.build}-setup.exe',
+    '$base.zip',
+    '$base-setup.exe',
   ];
   for (final name in names) {
     _deleteIfExists(File(p.join(_releaseDir.path, name)));
@@ -723,7 +738,7 @@ UsePreviousAppDir=yes
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 OutputDir=$outputDirPath
-OutputBaseFilename=NarrChat-Windows-x64-${config.version}-${config.build}-setup
+OutputBaseFilename=NarrChat_${config.version}-${config.build}_windows_x64-setup
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile=$iconPath
