@@ -8,5 +8,5 @@
 #
 # version: 语义化版本号（显示用，如 1.2.3）
 # build:   构建号（Android versionCode，每次发布递增）
-version: 1.2.0
-build: 18
+version: 1.2.1
+build: 19
