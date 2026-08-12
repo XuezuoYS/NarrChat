@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/book_dao.dart';
@@ -109,6 +111,41 @@ class _ToggleAiService extends AiService {
   }
 }
 
+/// 可控流式 AI：测试驱动 [emit]/[complete]，模拟逐 chunk 输出与生成结束。
+class _FakeStreamingAiService extends AiService {
+  final Completer<void> _done = Completer<void>();
+  void Function(AiStreamChunk chunk)? _onChunk;
+
+  void emit(String delta) => _onChunk?.call(AiStreamChunk(contentDelta: delta));
+  void complete() => _done.complete();
+
+  @override
+  Future<AiCallResult> chat({
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, dynamic> requestBody,
+    bool stream = false,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) async {
+    _onChunk = onChunk;
+    onRequestBody?.call('{"model":"test","messages":[]}');
+    await _done.future;
+    _onChunk?.call(const AiStreamChunk(done: true));
+    return const AiCallResult(
+      content: '## 剧情演绎\n流式生成的最终正文\n'
+          '## 推荐行动\n\n'
+          '## 当前时间\n第一天 午时\n'
+          '## 世界状态\n\n'
+          '## 角色状态\n\n'
+          '## 记忆总结\n',
+      promptTokens: 10,
+      completionTokens: 20,
+    );
+  }
+}
+
 /// 全部选项关闭的设置（用于「无」摘要用例）。
 class _AllDisabledSettings extends AiSettingsProvider {
   @override
@@ -202,6 +239,31 @@ void main() {
             w is TextField &&
             w.decoration?.hintText == '输入你的行动或对话…',
       );
+
+  /// 「滚动到底部」按钮上的「有新内容」红点（圆形红色 Container）。
+  Finder redDot() => find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.decoration is BoxDecoration &&
+            (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+            (w.decoration as BoxDecoration).color == Colors.red,
+      );
+
+  /// 预置多轮长正文，使对话列表可滚动（红点用例需要离开底部的滚动空间）。
+  Future<void> seedRounds(_MockRoundDao dao, {int count = 4}) async {
+    for (var i = 1; i <= count; i++) {
+      await dao.insertRound(
+        Round(
+          bookId: 1,
+          roundIndex: i,
+          userInput: '第 $i 轮的用户输入',
+          aiNarrative: '第 $i 轮的剧情正文。' * 40,
+          currentTime: '第一天 午时',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+  }
 
   testWidgets('输入框：预设 3 行起步，最高 8 行（超出内滚）', (tester) async {
     final bookDao = _MockBookDao([book]);
@@ -375,5 +437,66 @@ void main() {
     expect(notifier.calls, hasLength(1));
     expect(notifier.calls.single.bookTitle, book.title);
     expect(notifier.calls.single.userInput, '开始新的剧情');
+  });
+
+  testWidgets('生成结束红点：生成中不显示，结束离开底部显示，回到底部消失', (tester) async {
+    final bookDao = _MockBookDao([book]);
+    final dao = _MockRoundDao();
+    await seedRounds(dao);
+    final ai = _FakeStreamingAiService();
+    final roundProvider = await pumpChat(tester, ai, bookDao, dao);
+
+    // 触发生成（UI 发送，流式进行中）。
+    await tester.enterText(composerField(), '继续剧情');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+    ai.emit('第一段内容');
+    await tester.pump();
+    expect(redDot(), findsNothing, reason: '生成过程中不应显示红点');
+
+    // 生成中上翻离开底部：仍不显示红点。
+    await tester.drag(find.byType(ListView), const Offset(0, 150));
+    await tester.pump();
+    expect(redDot(), findsNothing, reason: '生成过程中上翻也不应显示红点');
+
+    // 生成结束（此时用户未在底部）→ 显示红点。
+    ai.complete();
+    for (var i = 0; i < 20 && roundProvider.isSending; i++) {
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    expect(redDot(), findsOneWidget, reason: '生成结束且未在底部时应显示红点');
+
+    // 滚动回底部 → 红点消失。
+    await tester.drag(find.byType(ListView), const Offset(0, -3000));
+    await tester.pumpAndSettle();
+    expect(redDot(), findsNothing, reason: '滚动回底部后红点应消失');
+  });
+
+  testWidgets('红点不因调整窗口宽度/修改左下角选项误触发', (tester) async {
+    final bookDao = _MockBookDao([book]);
+    final dao = _MockRoundDao();
+    await seedRounds(dao, count: 2);
+    await pumpChat(tester, _ToggleAiService(), bookDao, dao);
+
+    // 位于底部：无红点。
+    expect(redDot(), findsNothing);
+
+    // 修改左下角选项（打开下拉 → 切换流式 → 收起）。
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('流式'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    expect(redDot(), findsNothing, reason: '修改左下角选项不应触发红点');
+
+    // 调整窗口宽度（1200 仍为宽屏）→ 恢复。
+    tester.view.physicalSize = const Size(1200, 900);
+    await tester.pumpAndSettle();
+    expect(redDot(), findsNothing, reason: '调整窗口宽度不应触发红点');
+    tester.view.physicalSize = const Size(1400, 900);
+    await tester.pumpAndSettle();
+    expect(redDot(), findsNothing);
   });
 }

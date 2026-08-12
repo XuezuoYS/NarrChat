@@ -96,6 +96,16 @@ class _ChatScreenState extends State<ChatScreen>
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
 
+  /// 「本轮生成结束」红点：生成结束后若用户未停留在底部则提示
+  /// 「有新内容可滚动查看」，滚动回底部后消失。
+  ///
+  /// 独立于 [_userScrolledAway]（自动跟随暂停标志）：生成中/调整窗口/修改选项
+  /// 触发的滚动通知不会误置该红点。
+  bool _newContentDot = false;
+
+  /// 是否已安排帧末重建（滚动通知可能在布局/手势分发期间触发，不宜直接 setState）。
+  bool _dotRebuildScheduled = false;
+
   /// 悬浮输入面板测量 key / 高度：消息列表底部留白据此动态适配，
   /// 避免固定大留白在默认输入框大小下造成大面积空白。
   final GlobalKey _composerKey = GlobalKey();
@@ -211,23 +221,62 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
-  /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复。
+  /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复；
+  /// 同时维护「生成结束」红点——滚动回底部即清除。
   bool _onChatScrollNotification(ScrollNotification notification) {
     if (notification is UserScrollNotification) {
       if (notification.direction == ScrollDirection.reverse) {
         // 用户上翻（offset 减小，向历史/顶部方向）→ 已离开底部，暂停自动跟随。
         _userScrolledAway = true;
       } else if (notification.direction == ScrollDirection.idle &&
-          _userScrolledAway &&
           _scrollController.hasClients) {
-        // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随。
+        // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随、清除红点。
         final pos = _scrollController.position;
         if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
           _userScrolledAway = false;
+          if (_newContentDot) {
+            _newContentDot = false;
+            _scheduleDotRebuild();
+          }
         }
       }
     }
     return false;
+  }
+
+  /// 帧末触发重建（滚动通知可能在布局/手势分发期间触发，不宜直接 setState）。
+  void _scheduleDotRebuild() {
+    if (_dotRebuildScheduled) return;
+    _dotRebuildScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _dotRebuildScheduled = false;
+      if (mounted) setState(() {});
+    });
+  }
+
+  /// 本轮生成结束（无论成败）的收尾：
+  /// - 用户停留在底部 → 自动跟随新内容滚到底（直接查看最新结果）；
+  /// - 用户离开底部 → 显示「有新内容可滚动查看」红点，不强制滚动。
+  ///
+  /// 与 [CompletionNotifier]（未来系统级推送的接口）共用「本轮生成结束」这一事件：
+  /// 红点即复用该事件的本地提示，未来后台推送也在此一并接入。
+  void _onGenerationFinished() {
+    // 帧末再判断，确保最后一块内容已完成布局、滚动范围已更新。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_isNearBottom()) {
+        _scrollToBottom();
+      } else if (!_newContentDot) {
+        setState(() => _newContentDot = true);
+      }
+    });
+  }
+
+  /// 是否已滚动到（或接近）底部（误差 [_kAutoScrollThreshold] 内视为底部）。
+  bool _isNearBottom() {
+    if (!_scrollController.hasClients) return true;
+    final pos = _scrollController.position;
+    return pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold;
   }
 
   Future<void> _send() async {
@@ -240,8 +289,9 @@ class _ChatScreenState extends State<ChatScreen>
     if (roundProvider.isSending) return;
 
     _inputController.clear();
-    // 发送新消息时恢复自动跟随（用户重新回到最新内容）。
+    // 发送新消息时恢复自动跟随（用户重新回到最新内容），并清除旧的「有新内容」红点。
     _userScrolledAway = false;
+    _newContentDot = false;
     _scrollToBottom();
 
     final ok = await roundProvider.sendRound(userInput: input, book: book);
@@ -264,7 +314,8 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       );
     }
-    _scrollToBottom();
+    // 本轮生成结束（无论成败）统一收尾：在底部则跟随新内容，离开底部则提示红点。
+    _onGenerationFinished();
   }
 
   /// 重新提问失败条目：以失败时的输入重新生成（sendRound 会先清空失败条目）。
@@ -1051,7 +1102,7 @@ class _ChatScreenState extends State<ChatScreen>
                   _ComposerSquareButton(
                     icon: Icons.vertical_align_bottom,
                     tooltip: '滚动到底部',
-                    dotVisible: _userScrolledAway,
+                    dotVisible: _newContentDot,
                     onPressed: _scrollToBottom,
                   ),
                   if (showSidebarButton) ...[
