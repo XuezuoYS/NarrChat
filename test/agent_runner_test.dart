@@ -141,6 +141,60 @@ void main() {
       expect(result.content, '正文');
     });
 
+    test('工具连续失败 3 次后不再执行，并告知模型停用', () async {
+      final tool = _FakeTool(
+        result: const AgentToolResult(success: false, content: '联网搜索失败：网络异常'),
+      );
+      final seenBodies = <Map<String, dynamic>>[];
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) {
+          seenBodies.add({'messages': messages, 'tools': tools});
+          return {'messages': messages, 'tools': tools};
+        },
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex < 4) {
+            callIndex++;
+            return AiCallResult(
+              content: '',
+              toolCalls: [_toolCall({'query': 'x'})],
+              promptTokens: 0,
+              completionTokens: 0,
+            );
+          }
+          callIndex++;
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 0,
+            completionTokens: 0,
+          );
+        },
+        tools: [tool],
+        maxIterations: 10,
+      );
+
+      final result = await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      // 只执行了 3 次，第 4 次起被停用（不再调用工具）。
+      expect(tool.calls, hasLength(3));
+      expect(callIndex, 5);
+      expect(result.content, '正文');
+
+      // 最后一次调用（第 5 次）的 tool 消息包含停用提示。
+      final messages = (seenBodies.last['messages'] as List).cast<Map>();
+      final toolMsgs =
+          messages.where((m) => m['role'] == 'tool').cast<Map>().toList();
+      expect(
+        toolMsgs.last['content'] as String,
+        contains('请勿再使用该工具'),
+      );
+      // 第 4 次调用（第 5 次 body 之前）时工具已停用，不执行。
+      expect(toolMsgs, hasLength(4)); // 3 次失败 + 1 次停用提示
+    });
+
     test('超出最大迭代次数抛 AiException', () async {
       final runner = AgentRunner(
         buildBody: (messages, tools) => {'messages': messages},
@@ -237,6 +291,46 @@ void main() {
 
       expect(result.success, isFalse);
       expect(result.content, contains('联网搜索失败'));
+    });
+
+    test('搜索失败触发 onFail 回调（异常）', () async {
+      final search = HtmlSearchService(
+        client: MockClient((request) async {
+          throw http.ClientException('网络失败');
+        }),
+      );
+      var onFailCalled = false;
+      List<SearchResult>? seen;
+      final tool = WebSearchTool(
+        search: search,
+        onResults: (r) => seen = r,
+        onFail: () => onFailCalled = true,
+      );
+
+      final result = await tool.run({'query': 'x'});
+
+      expect(result.success, isFalse);
+      expect(onFailCalled, isTrue);
+      expect(seen, isNull);
+    });
+
+    test('无结果触发 onFail 回调且不回调 onResults', () async {
+      final search = HtmlSearchService(
+        client: MockClient((request) async => htmlResponse('<html><body></body></html>')),
+      );
+      var onFailCalled = false;
+      List<SearchResult>? seen;
+      final tool = WebSearchTool(
+        search: search,
+        onResults: (r) => seen = r,
+        onFail: () => onFailCalled = true,
+      );
+
+      final result = await tool.run({'query': 'x'});
+
+      expect(result.success, isFalse);
+      expect(onFailCalled, isTrue);
+      expect(seen, isNull);
     });
 
     test('空关键词返回错误', () async {

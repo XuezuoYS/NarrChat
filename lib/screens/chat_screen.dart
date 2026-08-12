@@ -1232,16 +1232,18 @@ class _TypingBubble extends StatelessWidget {
 }
 
 /// 搜索细节框：每个框独立展开/折叠状态（多搜索框互不影响）。
-/// 进行中显示转圈；完成后显示 ✓。
+/// 进行中显示转圈；成功显示 ✓；失败显示小 ✕（不报错截断）。
 class _SearchBox extends StatefulWidget {
   final String query;
   final bool searching;
+  final bool failed;
   final List<SearchResult> results;
 
   const _SearchBox({
     super.key,
     required this.query,
     required this.searching,
+    required this.failed,
     required this.results,
   });
 
@@ -1312,6 +1314,12 @@ class _SearchBoxState extends State<_SearchBox> {
                       height: 12,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
+                  else if (widget.failed)
+                    const Icon(
+                      Icons.close,
+                      size: 14,
+                      color: Color(0xFFE5484D),
+                    )
                   else
                     const Icon(
                       Icons.check_circle,
@@ -1346,6 +1354,15 @@ class _SearchBoxState extends State<_SearchBox> {
 
   Widget _buildResults(BuildContext context) {
     final results = widget.results;
+    if (widget.failed) {
+      return Text(
+        '搜索失败，未获取到结果',
+        style: TextStyle(
+          fontSize: 12,
+          color: context.narrColors.textSecondary,
+        ),
+      );
+    }
     if (results.isEmpty) {
       return Text(
         widget.searching ? '正在搜索…' : '未获取到结果',
@@ -1589,6 +1606,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         key: ValueKey('search_$i'),
                         query: events[i].content,
                         searching: events[i].searching,
+                        failed: events[i].failed,
                         results: events[i].results,
                       ),
                   ],

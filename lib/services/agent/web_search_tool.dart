@@ -6,14 +6,20 @@ class WebSearchTool implements NarrAgentTool {
   WebSearchTool({
     HtmlSearchService? search,
     void Function(List<SearchResult> results)? onResults,
+    void Function()? onFail,
   })  : _search = search ?? HtmlSearchService(),
         // ignore: prefer_initializing_formals
-        _onResults = onResults;
+        _onResults = onResults,
+        // ignore: prefer_initializing_formals
+        _onFail = onFail;
 
   final HtmlSearchService _search;
 
-  /// 搜索完成回调（供 UI 展示结果明细）。
+  /// 搜索成功（有结果）回调（供 UI 展示结果明细）。
   final void Function(List<SearchResult> results)? _onResults;
+
+  /// 搜索失败 / 无结果回调（供 UI 把搜索框标记为失败，显示 ✕）。
+  final void Function()? _onFail;
 
   @override
   String get name => 'web_search';
@@ -39,17 +45,19 @@ class WebSearchTool implements NarrAgentTool {
   Future<AgentToolResult> run(Map<String, dynamic> arguments) async {
     final query = (arguments['query'] as String? ?? '').trim();
     if (query.isEmpty) {
+      _onFail?.call();
       return const AgentToolResult(success: false, content: '搜索关键词为空');
     }
     try {
       final results = await _search.search(query, maxResults: 5);
-      _onResults?.call(results);
       if (results.isEmpty) {
+        _onFail?.call();
         return AgentToolResult(
           success: false,
           content: '未找到与「$query」相关的搜索结果',
         );
       }
+      _onResults?.call(results);
       final sb = StringBuffer('搜索「$query」的结果：\n');
       for (var i = 0; i < results.length; i++) {
         final r = results[i];
@@ -60,6 +68,7 @@ class WebSearchTool implements NarrAgentTool {
       return AgentToolResult(success: true, content: sb.toString());
     } catch (e) {
       // 搜索失败：返回错误信息，由 Agent 循环回传模型继续执行。
+      _onFail?.call();
       return AgentToolResult(success: false, content: '联网搜索失败：$e');
     }
   }

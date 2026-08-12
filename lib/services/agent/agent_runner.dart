@@ -38,7 +38,7 @@ class AgentRunner {
     required this.buildBody,
     required this.call,
     this.tools = const [],
-    this.maxIterations = 3,
+    this.maxIterations = 30,
   });
 
   /// 根据当前 messages / tools 构建请求体（由调用方按预设规则或自定义模板实现）。
@@ -73,6 +73,8 @@ class AgentRunner {
     var totalCompletion = 0;
     final contentSb = StringBuffer();
     final reasoningSb = StringBuffer();
+    // 本轮内各工具连续失败次数：达到 3 次后不再执行该工具，并告知模型停用。
+    final toolFailures = <String, int>{};
 
     for (var i = 0; i < maxIterations; i++) {
       // 新一轮 LLM 调用：通知调用方（新一轮思考进入新块）。
@@ -125,6 +127,16 @@ class AgentRunner {
         }
         final tool = _byName(tc.name);
         final query = (tc.arguments['query'] as String?) ?? '';
+        // 已连续失败 3 次：不再执行该工具，直接告知模型停用，继续基于已有信息创作。
+        if ((toolFailures[tc.name] ?? 0) >= 3) {
+          messages.add({
+            'role': 'tool',
+            'tool_call_id': tc.id,
+            'content': '工具 ${tc.name} 已连续失败 3 次，请勿再使用该工具，'
+                '直接基于已有信息继续创作。',
+          });
+          continue;
+        }
         onActivity?.call(
           AgentActivity(
             type: AgentActivityType.searching,
@@ -135,6 +147,9 @@ class AgentRunner {
         final toolResult = tool != null
             ? await tool.run(tc.arguments)
             : AgentToolResult(success: false, content: '未知工具：${tc.name}');
+        if (!toolResult.success) {
+          toolFailures[tc.name] = (toolFailures[tc.name] ?? 0) + 1;
+        }
         messages.add({
           'role': 'tool',
           'tool_call_id': tc.id,

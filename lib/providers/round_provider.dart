@@ -56,8 +56,13 @@ class RoundProvider extends ChangeNotifier {
         _modProvider = modProvider,
         // ignore: prefer_initializing_formals
         _cloudSyncProvider = cloudSyncProvider {
-    // 联网搜索工具：搜索完成时更新 Agent 搜索状态（供流式气泡展示结果明细）。
-    _webSearchTool = webSearchTool ?? WebSearchTool(onResults: _handleSearchResults);
+    // 联网搜索工具：搜索成功回调更新结果明细；失败回调标记搜索框失败（✕）。
+    _webSearchTool =
+        webSearchTool ??
+        WebSearchTool(
+          onResults: _handleSearchResults,
+          onFail: _handleSearchFail,
+        );
   }
 
   final RoundDao _dao;
@@ -531,6 +536,22 @@ class RoundProvider extends ChangeNotifier {
           searching: false,
           results: results,
           done: true,
+        );
+        break;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 搜索失败 / 无结果回调：把搜索事件标记为失败（UI 显示 ✕，不报错截断）。
+  void _handleSearchFail() {
+    for (var i = _agentEvents.length - 1; i >= 0; i--) {
+      final e = _agentEvents[i];
+      if (e.type == AgentEventType.search && e.searching) {
+        _agentEvents[i] = e.copyWith(
+          searching: false,
+          done: true,
+          failed: true,
         );
         break;
       }

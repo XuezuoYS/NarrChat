@@ -31,12 +31,16 @@ class AgentEvent {
   /// 事件完成（思考结束 / 搜索完成）。
   final bool done;
 
+  /// 搜索失败 / 无结果（UI 显示 ✕，不报错截断）。
+  final bool failed;
+
   const AgentEvent({
     required this.type,
     this.content = '',
     this.searching = false,
     this.results = const [],
     this.done = false,
+    this.failed = false,
   });
 
   AgentEvent copyWith({
@@ -44,6 +48,7 @@ class AgentEvent {
     bool? searching,
     List<SearchResult>? results,
     bool? done,
+    bool? failed,
   }) {
     return AgentEvent(
       type: type,
@@ -51,6 +56,7 @@ class AgentEvent {
       searching: searching ?? this.searching,
       results: results ?? this.results,
       done: done ?? this.done,
+      failed: failed ?? this.failed,
     );
   }
 }
