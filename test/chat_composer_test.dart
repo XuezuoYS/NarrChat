@@ -353,6 +353,45 @@ void main() {
     expect(find.textContaining('搜索(BETA)'), findsNothing);
   });
 
+  testWidgets('下拉菜单：打开与关闭带 Material 动画（淡入淡出）', (tester) async {
+    final bookDao = _MockBookDao([book]);
+    final dao = _MockRoundDao();
+    await pumpChat(tester, _ToggleAiService(), bookDao, dao);
+
+    // 任一祖先 FadeTransition 透明度 < 1 → 动画进行中（淡入/淡出）。
+    bool anyFading() {
+      for (final e in find
+          .ancestor(
+            of: find.text('流式'),
+            matching: find.byType(FadeTransition),
+          )
+          .evaluate()) {
+        if ((e.widget as FadeTransition).opacity.value < 1.0) return true;
+      }
+      return false;
+    }
+
+    // 打开：停在动画中途（100ms < 打开时长 500ms），菜单项应处于淡入中。
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(anyFading(), isTrue, reason: '菜单打开应带动画（淡入中）');
+
+    // 动画完成后菜单项完全可见。
+    await tester.pumpAndSettle();
+    expect(find.text('流式'), findsOneWidget);
+
+    // 关闭：停在动画中途（100ms < 关闭时长 150ms），菜单项应处于淡出中。
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(anyFading(), isTrue, reason: '菜单关闭应带动画（淡出中）');
+
+    // 关闭动画完成后菜单项消失。
+    await tester.pumpAndSettle();
+    expect(find.text('流式'), findsNothing);
+  });
+
   testWidgets('联网搜索：未启用时二级提示灰色，启用后变警告色', (tester) async {
     final bookDao = _MockBookDao([book]);
     final dao = _MockRoundDao();
