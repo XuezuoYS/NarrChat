@@ -168,10 +168,10 @@ void main() {
     expect(find.text('打开侧栏'), findsNothing);
   });
 
-  testWidgets('窄屏：悬浮按钮呼出抽屉后按钮消失', (tester) async {
+  testWidgets('窄屏：方形按钮呼出抽屉（按钮常驻）', (tester) async {
     await pumpNarrowChat(tester);
 
-    // 初始：悬浮按钮存在（抽屉关闭）。
+    // 初始：输入面板方形按钮存在（抽屉关闭）。
     expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
     // 打开抽屉。
     await tester.tap(find.byIcon(Icons.view_sidebar_outlined));
@@ -183,8 +183,8 @@ void main() {
     expect(midLeft, greaterThan(600 - drawerWidth));
     expect(midLeft, lessThan(600));
     await tester.pump(const Duration(milliseconds: 400));
-    // 抽屉打开后悬浮按钮消失，且侧栏已完全滑入（左侧 x = 600 - drawerWidth）。
-    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    // 抽屉打开后侧栏已完全滑入（左侧 x = 600 - drawerWidth），按钮常驻。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
     expect(
       tester.getTopLeft(find.byType(SidebarPanel)).dx,
       closeTo(600 - drawerWidth, 1),
@@ -194,15 +194,15 @@ void main() {
   testWidgets('窄屏：聊天区左滑打开右侧抽屉', (tester) async {
     await pumpNarrowChat(tester);
 
-    // 初始：抽屉关闭，悬浮按钮存在。
+    // 初始：抽屉关闭，方形按钮存在。
     expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
 
     // 聊天区任意位置左滑（从右向左）。
     await tester.fling(find.byType(ChatScreen), const Offset(-300, 0), 1000);
     await tester.pumpAndSettle();
 
-    // 抽屉打开：悬浮按钮消失，侧栏完全滑入。
-    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    // 抽屉打开：按钮常驻，侧栏完全滑入。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
     final drawerWidth = 600 * 0.88;
     expect(
       tester.getTopLeft(find.byType(SidebarPanel)).dx,
@@ -217,8 +217,8 @@ void main() {
     await tester.drag(find.byType(ChatScreen), const Offset(-150, 0));
     await tester.pumpAndSettle();
 
-    // 抽屉打开：悬浮按钮消失。
-    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    // 抽屉打开：按钮常驻。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
   });
 
   testWidgets('窄屏：聊天区右滑不打开右侧抽屉', (tester) async {
@@ -235,16 +235,17 @@ void main() {
   testWidgets('窄屏：抽屉内右滑关闭右侧抽屉', (tester) async {
     await pumpNarrowChat(tester);
 
-    // 先通过悬浮按钮打开抽屉。
+    // 先通过方形按钮打开抽屉。
     await tester.tap(find.byIcon(Icons.view_sidebar_outlined));
     await tester.pumpAndSettle();
-    expect(find.byIcon(Icons.view_sidebar_outlined), findsNothing);
+    // 按钮常驻（抽屉打开时仍可见）。
+    expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
 
     // 抽屉内右滑（从左向右）。
     await tester.fling(find.byType(SidebarPanel), const Offset(300, 0), 1000);
     await tester.pumpAndSettle();
 
-    // 抽屉关闭：悬浮按钮重新出现。
+    // 抽屉关闭：按钮仍在。
     expect(find.byIcon(Icons.view_sidebar_outlined), findsOneWidget);
   });
 

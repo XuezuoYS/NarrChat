@@ -300,6 +300,9 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
   /// 侧边栏历史轮次顶栏背景色。
   final Color historyHeader;
 
+  /// 警告色（BETA/试验版等强调用）。浅色为黄棕色，深色为明亮琥珀黄。
+  final Color warning;
+
   const NarrChatColors({
     required this.background,
     required this.surface,
@@ -310,6 +313,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     required this.userBubble,
     required this.historyBackground,
     required this.historyHeader,
+    required this.warning,
   });
 
   /// 浅色主题配色。
@@ -323,6 +327,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     userBubble: Color(0xFFEEF1FF),
     historyBackground: Color(0xFFFFFBFB),
     historyHeader: Color(0xFFFDF0F0),
+    warning: Color(0xFFB7791F),
   );
 
   /// 深色主题配色。
@@ -336,6 +341,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     userBubble: Color(0xFF242A45),
     historyBackground: Color(0xFF201B1B),
     historyHeader: Color(0xFF2A1D1D),
+    warning: Color(0xFFF0B429),
   );
 
   @override
@@ -349,6 +355,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     Color? userBubble,
     Color? historyBackground,
     Color? historyHeader,
+    Color? warning,
   }) {
     return NarrChatColors(
       background: background ?? this.background,
@@ -360,6 +367,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
       userBubble: userBubble ?? this.userBubble,
       historyBackground: historyBackground ?? this.historyBackground,
       historyHeader: historyHeader ?? this.historyHeader,
+      warning: warning ?? this.warning,
     );
   }
 
@@ -380,6 +388,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
         t,
       )!,
       historyHeader: Color.lerp(historyHeader, other.historyHeader, t)!,
+      warning: Color.lerp(warning, other.warning, t)!,
     );
   }
 }

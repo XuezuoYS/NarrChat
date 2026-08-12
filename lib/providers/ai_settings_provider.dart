@@ -312,21 +312,23 @@ class AiSettingsProvider extends ChangeNotifier {
   }
 
   /// 保存 Chat 页每轮选项（思考 / 流式 / 联网搜索）的记忆值。
+  ///
+  /// 先乐观更新 UI 再异步持久化：即便磁盘写入慢或失败，界面也会立即反馈。
   Future<bool> setPerRoundOptions({
     required bool thinking,
     required bool streaming,
     bool? search,
   }) async {
+    _lastThinking = thinking;
+    _lastStreaming = streaming;
+    if (search != null) _lastSearch = search;
+    notifyListeners();
     try {
-      _lastThinking = thinking;
-      _lastStreaming = streaming;
-      if (search != null) _lastSearch = search;
       await LocalConfigService.update({
         _keyLastThinking: _lastThinking,
         _keyLastStreaming: _lastStreaming,
         _keyLastSearch: _lastSearch,
       });
-      notifyListeners();
       return true;
     } catch (e) {
       _error = e.toString();

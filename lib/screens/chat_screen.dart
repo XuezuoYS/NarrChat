@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../models/agent_event.dart';
 import '../models/book.dart';
+import '../models/model_preset.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
@@ -48,9 +49,6 @@ const Duration _kDrawerAnimDuration = Duration(milliseconds: 260);
 /// 侧栏开合进度阈值（进度大于该值视为展开）。
 const double _kSidebarOpenThreshold = 0.5;
 
-/// 移动端悬浮按钮距底部距离。
-const double _kFabBottom = 110;
-
 /// 滑动手势触发速度阈值（px/s）：横向快速甩动超过该值视为一次有效滑动。
 const double _kSwipeVelocityThreshold = 200;
 
@@ -62,10 +60,17 @@ const double _kSwipeMinDistance = 80;
 /// - 自带顶栏：返回按钮 + 书名 + 书籍设置 / 全局设置入口；
 /// - 桌面端（宽屏）：左右两栏布局，左侧主对话区，右侧侧边栏；
 /// - 移动端（窄屏）：主对话区全屏，侧边栏为从右向左滑出的抽屉，
-///   通过悬浮按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭；
+///   通过输入面板右上方形按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭；
 /// - 系统返回键：右侧抽屉打开时先关抽屉，否则返回书籍列表。
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  /// 预留：对话完成通知器——未来可在应用处于后台时，
+  /// 于本轮对话完成后发送系统级推送（默认占位不发送）。
+  final CompletionNotifier completionNotifier;
+
+  const ChatScreen({
+    super.key,
+    this.completionNotifier = const NoopCompletionNotifier(),
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -91,6 +96,11 @@ class _ChatScreenState extends State<ChatScreen>
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
 
+  /// 悬浮输入面板测量 key / 高度：消息列表底部留白据此动态适配，
+  /// 避免固定大留白在默认输入框大小下造成大面积空白。
+  final GlobalKey _composerKey = GlobalKey();
+  double _composerHeight = 0;
+
   /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
   late final AnimationController _sidebarController;
   late final Animation<double> _sidebarAnim;
@@ -110,6 +120,9 @@ class _ChatScreenState extends State<ChatScreen>
       parent: _sidebarController,
       curve: Curves.easeOutCubic,
     );
+    // 首帧后测量悬浮输入面板高度，驱动消息列表底部留白。
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _measureComposerHeight());
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final book = context.read<BookProvider>().currentBook;
       if (book == null) return;
@@ -232,6 +245,13 @@ class _ChatScreenState extends State<ChatScreen>
     _scrollToBottom();
 
     final ok = await roundProvider.sendRound(userInput: input, book: book);
+    if (ok) {
+      // 预留：对话完成（应用可能处于后台）→ 未来在此接入系统级推送。
+      widget.completionNotifier.notifyConversationCompleted(
+        bookTitle: book.title,
+        userInput: input,
+      );
+    }
 
     if (!ok && mounted && roundProvider.error != null) {
       // 请求失败已以「失败条目」气泡落库（用户输入 + 红框），不再弹消息提示；
@@ -732,17 +752,6 @@ class _ChatScreenState extends State<ChatScreen>
             ),
           ),
         ),
-        if (!_drawerOpen)
-          Positioned(
-            right: 16,
-            bottom: _kFabBottom,
-            child: FloatingActionButton.small(
-              heroTag: 'sidebar_fab',
-              onPressed: _openDrawer,
-              tooltip: '打开状态侧边栏',
-              child: const Icon(Icons.view_sidebar_outlined),
-            ),
-          ),
       ],
     );
   }
@@ -798,7 +807,7 @@ class _ChatScreenState extends State<ChatScreen>
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
         controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+        padding: EdgeInsets.fromLTRB(20, 24, 20, _composerHeight + 8),
         itemCount:
             chatRounds.length * 2 +
             (showFailure ? 1 : 0) +
@@ -885,9 +894,10 @@ class _ChatScreenState extends State<ChatScreen>
       ),
     );
 
-    return Column(
+    return Stack(
       children: [
-        Expanded(
+        // 消息区铺满（底部留白避免被悬浮输入面板遮挡）。
+        Positioned.fill(
           child: Container(
             // 与各边栏一致的内容表面背景。
             color: context.narrColors.surface,
@@ -897,7 +907,21 @@ class _ChatScreenState extends State<ChatScreen>
                 : messagesList,
           ),
         ),
-        _buildComposer(context),
+        // 伪悬浮输入面板：底部覆盖，同色背景遮挡其后的文本（仅留小空隙）。
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: NotificationListener<SizeChangedLayoutNotification>(
+            onNotification: (_) {
+              _measureComposerHeight();
+              return false;
+            },
+            child: SizeChangedLayoutNotifier(
+              child: _buildComposer(context),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -982,87 +1006,90 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 输入区：DeepSeek 风格——居中圆角输入框 + 圆形发送按钮 + 底部提示。
+  /// 帧末测量悬浮输入面板高度，驱动消息列表底部留白。
+  ///
+  /// 输入框增行/减行、方形按钮显隐等导致面板高度变化时，
+  /// [SizeChangedLayoutNotification] 会触发本方法重新测量。
+  void _measureComposerHeight() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final box =
+          _composerKey.currentContext?.findRenderObject() as RenderBox?;
+      final height = box?.size.height ?? 0;
+      if (height != _composerHeight && mounted) {
+        setState(() => _composerHeight = height);
+      }
+    });
+  }
+
+  /// 伪悬浮输入面板：底部通栏使用与消息区同色的背景，遮挡其后方滚动的文本；
+  /// 距底仅留一小点空隙。
+  ///
+  /// 输入卡上方的方形按钮行**不落入底色面板**——视觉上真悬浮于消息区之上；
+  /// 宽屏右侧栏常驻（展开）时隐藏「打开右侧栏」按钮，仅保留滚动到底部按钮；
+  /// 按钮行始终右对齐（自动贴右，避免观感奇怪）。
   Widget _buildComposer(BuildContext context) {
     final roundProvider = context.watch<RoundProvider>();
     final isSending = roundProvider.isSending;
-
-    final composerColumn = ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildComposerToolbar(),
-          _buildInputRow(context, roundProvider, isSending),
-          const SizedBox(height: 6),
-          Text(
-            '内容由 AI 生成，仅供创作参考，请仔细甄别',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 11,
-              color: context.narrColors.textSecondary,
-            ),
-          ),
-        ],
-      ),
-    );
+    // 宽屏侧栏常驻时无需「打开右侧栏」；窄屏/侧栏收起时保留。
+    final showSidebarButton = !(_isWide && _sidebarOpen);
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
-      decoration: BoxDecoration(
-        color: context.narrColors.surface,
-        border: Border(top: BorderSide(color: context.narrColors.divider)),
+      key: _composerKey,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部）。
+              // 真悬浮：直接浮于消息区之上，不被底色面板框住。
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _ComposerSquareButton(
+                    icon: Icons.vertical_align_bottom,
+                    tooltip: '滚动到底部',
+                    dotVisible: _userScrolledAway,
+                    onPressed: _scrollToBottom,
+                  ),
+                  if (showSidebarButton) ...[
+                    const SizedBox(width: 8),
+                    _ComposerSquareButton(
+                      icon: Icons.view_sidebar_outlined,
+                      tooltip: '打开右侧边栏',
+                      onPressed: _onToggleSidebar,
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 8),
+              // 底色面板：仅遮挡输入卡的下方与左右两侧（不含按钮行）。
+              Container(
+                width: double.infinity,
+                color: context.narrColors.surface,
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _buildComposerCard(context, roundProvider, isSending),
+              ),
+            ],
+          ),
+        ),
       ),
-      child: Center(child: composerColumn),
     );
   }
 
-  /// 输入区工具栏：每轮选项（思考 / 流式，临时控件，后续并入悬浮面板选项下拉）
-  /// + 滚动到底部。
-  Widget _buildComposerToolbar() {
-    final aiSettings = context.watch<AiSettingsProvider>();
-    final preset = aiSettings.selectedPreset;
-    return Row(
-      children: [
-        if (preset.supportsThinking) ...[
-          _ModeToggleChip(
-            label: '思考',
-            active: aiSettings.thinking,
-            onTap: () =>
-                _setPerRoundOptions(thinking: !aiSettings.thinking),
-          ),
-          const SizedBox(width: 6),
-        ],
-        if (preset.supportsStreaming) ...[
-          _ModeToggleChip(
-            label: '流式',
-            active: aiSettings.streaming,
-            onTap: () =>
-                _setPerRoundOptions(streaming: !aiSettings.streaming),
-          ),
-          const SizedBox(width: 6),
-        ],
-        if (preset.supportsSearch) ...[
-          _ModeToggleChip(
-            label: '联网搜索',
-            active: aiSettings.lastSearch,
-            onTap: () => _setPerRoundOptions(search: !aiSettings.lastSearch),
-          ),
-          const SizedBox(width: 6),
-        ],
-        // 滚动到底部
-        TextButton.icon(
-          onPressed: _scrollToBottom,
-          icon: const Icon(Icons.vertical_align_bottom, size: 16),
-          label: const Text('滚动到底部'),
-          style: TextButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            textStyle: const TextStyle(fontSize: 12),
-          ),
-        ),
-      ],
-    );
+  /// 打开 / 收起右侧状态栏（宽屏切换固定侧栏，窄屏切换抽屉）。
+  void _onToggleSidebar() {
+    if (_isWide) {
+      _setSidebarOpen(!_sidebarOpen);
+    } else {
+      if (_drawerOpen) {
+        _closeDrawer();
+      } else {
+        _openDrawer();
+      }
+    }
   }
 
   /// 保存每轮选项（思考 / 流式 / 联网搜索）记忆。
@@ -1079,77 +1106,100 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 主输入行：圆角输入容器 + 圆形发送/停止按钮。
-  Widget _buildInputRow(
+  /// 输入卡：多行输入框（3 行起步、最高 8 行，超出内滚，Markdown 高亮自动）
+  /// + 左下角选项下拉 + 右下角发送/停止按钮。
+  Widget _buildComposerCard(
     BuildContext context,
     RoundProvider roundProvider,
     bool isSending,
   ) {
+    final aiSettings = context.watch<AiSettingsProvider>();
+    final preset = aiSettings.selectedPreset;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: context.narrColors.divider),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _inputController,
-              onTapOutside: unfocusOnTapOutside,
-              minLines: 1,
-              maxLines: 5,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.5,
-                color: context.narrColors.textPrimary,
-              ),
-              decoration: InputDecoration(
-                hintText: '输入你的行动或对话…',
-                hintStyle: TextStyle(color: context.narrColors.placeholder),
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                filled: false,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-              ),
-              onSubmitted: (_) => _send(),
-            ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
           ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _inputController,
+            onTapOutside: unfocusOnTapOutside,
+            minLines: 3,
+            maxLines: 8,
+            style: TextStyle(
+              fontSize: 15,
+              height: 1.5,
+              color: context.narrColors.textPrimary,
+            ),
+            decoration: InputDecoration(
+              hintText: '输入你的行动或对话…',
+              hintStyle: TextStyle(color: context.narrColors.placeholder),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              filled: false,
+              contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+            ),
+            onSubmitted: (_) => _send(),
+          ),
+          // 底部行：左下角选项下拉 + 右下角发送/停止。
           Padding(
-            padding: const EdgeInsets.only(right: 8, bottom: 8),
-            child: SizedBox(
-              width: 36,
-              height: 36,
-              child: IconButton.filled(
-                // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
-                onPressed: isSending ? roundProvider.cancelGeneration : _send,
-                tooltip: isSending ? '停止生成' : '发送',
-                style: IconButton.styleFrom(
-                  backgroundColor: NarrChatTheme.primary,
-                  disabledBackgroundColor: Theme.of(
-                    context,
-                  ).colorScheme.outline,
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            child: Row(
+              children: [
+                _ChatModeDropdown(
+                  preset: preset,
+                  thinking: aiSettings.thinking,
+                  streaming: aiSettings.streaming,
+                  search: aiSettings.lastSearch,
+                  onThinkingChanged: (v) => _setPerRoundOptions(thinking: v),
+                  onStreamingChanged: (v) =>
+                      _setPerRoundOptions(streaming: v),
+                  onSearchChanged: (v) => _setPerRoundOptions(search: v),
                 ),
-                icon: isSending
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.arrow_upward,
-                        size: 18,
-                        color: Colors.white,
-                      ),
-              ),
+                const Spacer(),
+                SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: IconButton.filled(
+                    // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
+                    onPressed: isSending
+                        ? roundProvider.cancelGeneration
+                        : _send,
+                    tooltip: isSending ? '停止生成' : '发送',
+                    style: IconButton.styleFrom(
+                      backgroundColor: NarrChatTheme.primary,
+                      disabledBackgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.outline,
+                    ),
+                    icon: isSending
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.arrow_upward,
+                            size: 18,
+                            color: Colors.white,
+                          ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -1187,47 +1237,310 @@ class _ChatScreenState extends State<ChatScreen>
   }
 }
 
-/// 临时每轮选项开关（思考 / 流式），后续并入悬浮面板的选项下拉菜单。
-class _ModeToggleChip extends StatelessWidget {
+/// 对话完成通知器接口（预留）。
+///
+/// 未来可在应用处于后台时，于本轮对话完成后发送系统级推送。
+/// 通过 `ChatScreen.completionNotifier` 注入实现；默认使用
+/// [NoopCompletionNotifier]（占位不发送）。
+abstract interface class CompletionNotifier {
+  /// 本轮对话已完整生成完毕。
+  void notifyConversationCompleted({
+    required String bookTitle,
+    required String userInput,
+  });
+}
+
+/// 空实现：占位，什么都不做（默认值）。
+class NoopCompletionNotifier implements CompletionNotifier {
+  const NoopCompletionNotifier();
+
+  @override
+  void notifyConversationCompleted({
+    required String bookTitle,
+    required String userInput,
+  }) {
+    // 预留：默认不发送任何推送。
+  }
+}
+
+/// 聊天模式选项下拉（复用原每轮选项开关的视觉）。
+///
+/// - 收起时显示当前启用选项摘要（如「无」「流式 | 思考 | 搜索(BETA)」，
+///   搜索段用警告色，不加粗）；流式/思考启用时触发按钮为主题蓝边框+文字；
+/// - 展开为复选菜单，切换后保持展开可连续操作；
+/// - 联网搜索行始终显示 BETA 试验版二级提示（启用=警告色，未启用=灰）。
+class _ChatModeDropdown extends StatelessWidget {
+  final ModelPreset preset;
+  final bool thinking;
+  final bool streaming;
+  final bool search;
+  final ValueChanged<bool> onThinkingChanged;
+  final ValueChanged<bool> onStreamingChanged;
+  final ValueChanged<bool> onSearchChanged;
+
+  const _ChatModeDropdown({
+    required this.preset,
+    required this.thinking,
+    required this.streaming,
+    required this.search,
+    required this.onThinkingChanged,
+    required this.onStreamingChanged,
+    required this.onSearchChanged,
+  });
+
+  /// 摘要各段（顺序：流式 | 思考 | 搜索(BETA)）。
+  List<String> get _activeParts => [
+        if (preset.supportsStreaming && streaming) '流式',
+        if (preset.supportsThinking && thinking) '思考',
+        if (preset.supportsSearch && search) '搜索(BETA)',
+      ];
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // 警告色取自主题（浅色=黄棕色、深色=明亮琥珀黄），随深浅模式自动适配。
+    final warningColor = context.narrColors.warning;
+    final parts = _activeParts;
+    // 触发按钮态：流式/思考任一启用 → 主题蓝；仅搜索启用 → 警告黄；全关 → 灰。
+    final blueActive =
+        (preset.supportsStreaming && streaming) ||
+        (preset.supportsThinking && thinking);
+    final searchOnlyActive = !blueActive && preset.supportsSearch && search;
+    final triggerActive = blueActive || searchOnlyActive;
+    final Color triggerColor = blueActive
+        ? scheme.primary
+        : searchOnlyActive
+            ? warningColor
+            : scheme.onSurfaceVariant;
+
+    return MenuAnchor(
+      style: MenuStyle(
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+      menuChildren: [
+        if (preset.supportsThinking)
+          _ModeMenuRow(
+            label: '思考',
+            active: thinking,
+            onChanged: onThinkingChanged,
+          ),
+        if (preset.supportsStreaming)
+          _ModeMenuRow(
+            label: '流式',
+            active: streaming,
+            onChanged: onStreamingChanged,
+          ),
+        if (preset.supportsSearch)
+          _ModeMenuRow(
+            label: '搜索',
+            active: search,
+            onChanged: onSearchChanged,
+            activeLabelColor: warningColor,
+            // 二级提示始终显示（启用/禁用一致），且在按钮内可整体点击切换；
+            // 未启用时为灰色，启用后为警告色。
+            subtitle: '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗',
+            subtitleColor: search ? warningColor : scheme.onSurfaceVariant,
+          ),
+      ],
+      builder: (context, controller, _) {
+        return InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            if (controller.isOpen) {
+              controller.close();
+            } else {
+              controller.open();
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              // 启用：主题色淡底 + 主题色边框；全关：浅灰底无边框。
+              color: triggerActive
+                  ? triggerColor.withValues(alpha: 0.08)
+                  : scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+              border: triggerActive
+                  ? Border.all(color: triggerColor, width: 1.2)
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.tune, size: 14, color: triggerColor),
+                const SizedBox(width: 6),
+                // 摘要：分段渲染，搜索(BETA) 用警告色（不加粗）；无启用项时显示「无」。
+                Text.rich(
+                  TextSpan(
+                    children: parts.isEmpty
+                        ? const [TextSpan(text: '无')]
+                        : [
+                            for (var i = 0; i < parts.length; i++) ...[
+                              if (i > 0) const TextSpan(text: ' | '),
+                              TextSpan(
+                                text: parts[i],
+                                style: TextStyle(
+                                  color: parts[i] == '搜索(BETA)'
+                                      ? warningColor
+                                      : triggerColor,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ],
+                  ),
+                  style: TextStyle(fontSize: 12, color: triggerColor),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  controller.isOpen
+                      ? Icons.arrow_drop_up
+                      : Icons.arrow_drop_down,
+                  size: 18,
+                  color: triggerColor,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 下拉菜单复选行（复用原 `_ModeToggleChip` 视觉）。
+///
+/// 激活态文本/图标用主题色（避免白字在浅色菜单上不可见）；
+/// 可带始终显示的二级提示（[subtitle]），整行（含二级文本）均可点击切换。
+class _ModeMenuRow extends StatelessWidget {
   final String label;
   final bool active;
-  final VoidCallback? onTap;
+  final ValueChanged<bool> onChanged;
 
-  const _ModeToggleChip({
+  /// 激活时的文字/图标颜色（默认主题色；搜索行传黄色）。
+  final Color? activeLabelColor;
+
+  /// 二级提示文本（如搜索的 BETA 试验版警告），始终显示且可点击。
+  final String? subtitle;
+  final Color? subtitleColor;
+
+  const _ModeMenuRow({
     required this.label,
     required this.active,
-    this.onTap,
+    required this.onChanged,
+    this.activeLabelColor,
+    this.subtitle,
+    this.subtitleColor,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(6),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: active ? scheme.primary : scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              active ? Icons.check_circle : Icons.circle_outlined,
-              size: 13,
-              color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
-                fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+    final color = active
+        ? (activeLabelColor ?? scheme.primary)
+        : scheme.onSurfaceVariant;
+    final sub = subtitle;
+    return MenuItemButton(
+      // 保持菜单展开，便于连续切换多个选项。
+      closeOnActivate: false,
+      onPressed: () => onChanged(!active),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                active ? Icons.check_circle : Icons.circle_outlined,
+                size: 13,
+                color: color,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: color,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+          if (sub != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                sub,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: subtitleColor ?? scheme.onSurfaceVariant,
+                ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 输入面板上方的 1:1 方形按钮（40×40）。
+///
+/// [dotVisible] 为 true 时在右上角显示红点（如滚动到底部按钮在
+/// 用户上翻离开底部时）。
+class _ComposerSquareButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final bool dotVisible;
+
+  const _ComposerSquareButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.dotVisible = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Material(
+                color: scheme.surfaceContainerLow,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  side: BorderSide(color: scheme.outlineVariant),
+                ),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: onPressed,
+                  child: Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ),
+            // 红点：右上角。
+            if (dotVisible)
+              Positioned(
+                top: 6,
+                right: 6,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
