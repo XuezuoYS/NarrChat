@@ -307,18 +307,28 @@ void main() {
     expect(sidebarX, greaterThan(scrollX));
   });
 
-  testWidgets('下拉摘要：默认显示「流式 | 思考 | 搜索(BETA)」，搜索段黄色加粗', (tester) async {
+  testWidgets('下拉摘要：默认「流式 | 思考」（搜索默认关闭），开启后搜索段警告色', (tester) async {
     final bookDao = _MockBookDao([book]);
     final dao = _MockRoundDao();
     await pumpChat(tester, _ToggleAiService(), bookDao, dao);
 
-    // 摘要富文本整体文本。
-    final summary = find.textContaining('搜索(BETA)');
-    expect(summary, findsOneWidget);
+    // 默认：思考/流式开启、联网搜索关闭。
     expect(find.textContaining('流式'), findsOneWidget);
     expect(find.textContaining('思考'), findsOneWidget);
+    expect(find.textContaining('搜索(BETA)'), findsNothing);
+
+    // 打开菜单，点击「搜索」行启用。
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('搜索'));
+    await tester.pumpAndSettle();
+    // 收起菜单 → 摘要含 搜索(BETA)。
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
 
     // 搜索(BETA) 段为警告色（不加粗）。
+    final summary = find.textContaining('搜索(BETA)');
+    expect(summary, findsOneWidget);
     final text = tester.widget<Text>(summary);
     final span = text.textSpan! as TextSpan;
     final searchSpan = span.children!
@@ -343,48 +353,56 @@ void main() {
     expect(find.textContaining('搜索(BETA)'), findsNothing);
   });
 
-  testWidgets('开启联网搜索：菜单内显示黄色 BETA 警告', (tester) async {
+  testWidgets('联网搜索：未启用时二级提示灰色，启用后变警告色', (tester) async {
     final bookDao = _MockBookDao([book]);
     final dao = _MockRoundDao();
     await pumpChat(tester, _ToggleAiService(), bookDao, dao);
 
-    // 打开选项下拉。
+    // 打开选项下拉：搜索默认关闭 → 二级提示为灰色。
     await tester.tap(find.byIcon(Icons.tune));
     await tester.pumpAndSettle();
-
-    // 搜索开启 → 黄色警告文案出现。
     const warnText = '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗';
     final warn = find.text(warnText);
     expect(warn, findsOneWidget);
-    expect(tester.widget<Text>(warn).style?.color, _kWarningYellow);
+    expect(
+      tester.widget<Text>(warn).style?.color,
+      isNot(_kWarningYellow),
+      reason: '搜索未启用时二级提示为灰色',
+    );
+
+    // 点击「搜索」行启用 → 二级提示变为警告色。
+    await tester.tap(find.text('搜索'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(find.text(warnText)).style?.color,
+      _kWarningYellow,
+    );
   });
 
-  testWidgets('联网搜索二级提示：禁用时仍显示，点击二级文本本身可启用', (tester) async {
+  testWidgets('联网搜索二级提示：未启用为灰且可点二级文本启用', (tester) async {
     final bookDao = _MockBookDao([book]);
     final dao = _MockRoundDao();
     await pumpChat(tester, _ToggleAiService(), bookDao, dao);
 
-    // 打开菜单：默认搜索启用，二级提示显示。
+    // 打开菜单：搜索默认关闭，二级提示显示且为灰色。
     await tester.tap(find.byIcon(Icons.tune));
     await tester.pumpAndSettle();
     const warnText = '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗';
     expect(find.text(warnText), findsOneWidget);
-
-    // 点击「搜索」行禁用：二级提示仍在（启用/禁用始终显示）。
-    await tester.tap(find.text('搜索'));
-    await tester.pumpAndSettle();
-    expect(find.text(warnText), findsOneWidget);
-    // 未启用时二级文字为灰色（非警告色）。
     expect(
       tester.widget<Text>(find.text(warnText)).style?.color,
       isNot(_kWarningYellow),
     );
 
-    // 点击二级提示文本本身（位于按钮内）→ 重新启用搜索。
+    // 点击二级提示文本本身（位于按钮内）→ 启用搜索 → 变警告色。
     await tester.tap(find.text(warnText));
     await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(find.text(warnText)).style?.color,
+      _kWarningYellow,
+    );
 
-    // 收起菜单：摘要含 搜索(BETA)（已重新启用）。
+    // 收起菜单：摘要含 搜索(BETA)（已启用）。
     await tester.tap(find.byIcon(Icons.tune));
     await tester.pumpAndSettle();
     expect(find.textContaining('搜索(BETA)'), findsOneWidget);
@@ -395,8 +413,9 @@ void main() {
     final dao = _MockRoundDao();
     await pumpChat(tester, _ToggleAiService(), bookDao, dao);
 
-    // 默认全开：摘要含「思考」。
+    // 默认：思考/流式开启、联网搜索关闭。
     expect(find.textContaining('思考'), findsOneWidget);
+    expect(find.textContaining('搜索(BETA)'), findsNothing);
 
     // 打开菜单，点击「思考」行关闭该选项。
     await tester.tap(find.byIcon(Icons.tune));
@@ -404,7 +423,7 @@ void main() {
     await tester.tap(find.text('思考'));
     await tester.pumpAndSettle();
 
-    // closeOnActivate:false → 菜单保持展开（警告仍在）。
+    // closeOnActivate:false → 菜单保持展开（二级提示仍在）。
     expect(
       find.text('此功能为试验版，存在大量问题，启动会数倍增加 token 消耗'),
       findsOneWidget,
@@ -415,7 +434,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('思考'), findsNothing);
     expect(find.textContaining('流式'), findsOneWidget);
-    expect(find.textContaining('搜索(BETA)'), findsOneWidget);
+    expect(find.textContaining('搜索(BETA)'), findsNothing);
   });
 
   testWidgets('对话完成后调用 CompletionNotifier（预留推送接口）', (tester) async {

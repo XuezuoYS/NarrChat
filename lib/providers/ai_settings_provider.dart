@@ -72,10 +72,10 @@ class AiSettingsProvider extends ChangeNotifier {
   final Map<String, PresetParamMemory> _presetParams = {};
   String _customModelName = '';
   String _customRequestBody = ModelPresets.defaultCustomRequestBody;
-  bool _lastThinking = ModelPresets.defaultPreset.defaultThinking;
-  bool _lastStreaming = ModelPresets.defaultPreset.defaultStreaming;
-  // 搜索能力默认开启（预设支持搜索时开箱即用，用户可手动关闭）。
-  bool _lastSearch = true;
+  // 无本地配置时的每轮选项默认：思考/流式开启、联网搜索关闭（用户可随时调整）。
+  bool _lastThinking = true;
+  bool _lastStreaming = true;
+  bool _lastSearch = false;
 
   bool _isLoading = false;
   String? _error;
@@ -173,11 +173,10 @@ class AiSettingsProvider extends ChangeNotifier {
     _customRequestBody =
         (cfg[_keyCustomRequestBody] as String?) ??
         ModelPresets.defaultCustomRequestBody;
-    final preset = selectedPreset;
-    _lastThinking = (cfg[_keyLastThinking] as bool?) ?? preset.defaultThinking;
-    _lastStreaming =
-        (cfg[_keyLastStreaming] as bool?) ?? preset.defaultStreaming;
-    _lastSearch = (cfg[_keyLastSearch] as bool?) ?? true;
+    // 无对应本地配置时：思考/流式默认开启、联网搜索默认关闭。
+    _lastThinking = (cfg[_keyLastThinking] as bool?) ?? true;
+    _lastStreaming = (cfg[_keyLastStreaming] as bool?) ?? true;
+    _lastSearch = (cfg[_keyLastSearch] as bool?) ?? false;
   }
 
   /// 旧版配置（v1.2.x 及更早）迁移：
@@ -234,7 +233,7 @@ class AiSettingsProvider extends ChangeNotifier {
         customModelName: '',
         lastThinking: oldThinking,
         lastStreaming: oldStreaming,
-        lastSearch: true,
+        lastSearch: false,
       );
     }
     // 未命中内置预设（含空值 / 自定义模型名）→ 自定义模型。
@@ -244,7 +243,7 @@ class AiSettingsProvider extends ChangeNotifier {
       customModelName: oldModel,
       lastThinking: oldThinking,
       lastStreaming: oldStreaming,
-      lastSearch: true,
+      lastSearch: false,
     );
   }
 

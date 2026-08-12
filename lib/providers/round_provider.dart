@@ -340,8 +340,8 @@ class RoundProvider extends ChangeNotifier {
       final historyMessages = PromptBuilder.buildHistoryMessages(recentRounds);
 
       final useStream = settings?.streaming ?? true;
-      // 搜索能力：预设支持搜索时默认开启（模型按需调用）；
-      // 用户可手动关闭（lastSearch=false）。
+      // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
+      // 无设置注入时按预设能力回退（仅测试/降级路径）。
       final useSearch = settings == null
           ? ModelPresets.defaultPreset.supportsSearch
           : (settings.selectedPreset.supportsSearch && settings.lastSearch);
