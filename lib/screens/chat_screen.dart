@@ -21,6 +21,7 @@ import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/markdown_editing_controller.dart';
+import '../widgets/raw_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
 import 'book_settings_screen.dart';
@@ -282,6 +283,27 @@ class _ChatScreenState extends State<ChatScreen>
     await context.read<RoundProvider>().clearFailedAttempt();
   }
 
+  /// 查看指定轮次的 RAW 数据（请求 JSON + AI 返回三块）。
+  void _showRawDialog(Round round) {
+    final exchanges = context.read<RoundProvider>().rawExchangesFor(round.id!);
+    if (exchanges == null) return;
+    showRawDataDialog(context, exchanges: exchanges);
+  }
+
+  /// 查看失败条目的 RAW 数据（请求 JSON + 失败原因）。
+  void _showFailedRawDialog() {
+    final rp = context.read<RoundProvider>();
+    final exchanges = rp.failedRawExchanges;
+    if (exchanges == null) return;
+    showRawDataDialog(
+      context,
+      exchanges: exchanges,
+      failedError: rp.failedErrorMessage.isEmpty
+          ? null
+          : rp.failedErrorMessage,
+    );
+  }
+
   void _onViewSidebar(Round round) {
     final rounds = context.read<RoundProvider>().rounds;
     final latest = rounds.isEmpty ? null : rounds.last;
@@ -338,6 +360,8 @@ class _ChatScreenState extends State<ChatScreen>
           _handleReAsk(round);
         case 'sidebar':
           _onViewSidebar(round);
+        case 'raw':
+          _showRawDialog(round);
         case 'delete':
           _handleDelete(round);
       }
@@ -346,6 +370,9 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 构建气泡上下文菜单项（AI / 用户气泡的入口差异集中于此）。
   List<PopupMenuEntry<String>> _buildMenuItems(Round round, bool isAi) {
+    final hasRaw = isAi &&
+        round.id != null &&
+        context.read<RoundProvider>().rawExchangesFor(round.id!) != null;
     return <PopupMenuEntry<String>>[
       if (isAi) ...[
         const PopupMenuItem(
@@ -381,6 +408,11 @@ class _ChatScreenState extends State<ChatScreen>
             label: '查看侧边栏',
           ),
         ),
+        if (hasRaw)
+          const PopupMenuItem(
+            value: 'raw',
+            child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
+          ),
         const PopupMenuItem(
           value: 'delete',
           child: AppMenuAction(
@@ -785,6 +817,9 @@ class _ChatScreenState extends State<ChatScreen>
                 onRetry: _retryFailure,
                 onEditAndRetry: _editAndRetryFailure,
                 onClear: _clearFailure,
+                onViewRaw: roundProvider.failedRawExchanges != null
+                    ? _showFailedRawDialog
+                    : null,
               ),
             );
           } else if (showPendingUser && index == virtualBase) {
@@ -831,6 +866,9 @@ class _ChatScreenState extends State<ChatScreen>
                     onViewSidebar: () => _onViewSidebar(round),
                     onDelete: () => _handleDelete(round),
                     onRefresh: () => _handleReAsk(round),
+                    onViewRaw: roundProvider.rawExchangesFor(round.id!) != null
+                        ? () => _showRawDialog(round)
+                        : null,
                   ),
                 ),
               );

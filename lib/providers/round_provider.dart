@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -9,6 +10,7 @@ import '../database/round_dao.dart';
 import '../models/agent_event.dart';
 import '../models/book.dart';
 import '../models/failed_attempt.dart';
+import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../services/agent/agent_runner.dart';
 import '../services/agent/web_search_tool.dart';
@@ -107,6 +109,15 @@ class RoundProvider extends ChangeNotifier {
 
   /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
   (int, int)? _retryStatus;
+
+  /// 当前尝试的 RAW 时间线（请求体 → AI返回 交错；重试时清空）。
+  final List<RawExchange> _rawExchanges = [];
+
+  /// 各成功轮次的 RAW 时间线（内存，key = roundId；切换书籍时清理）。
+  final Map<int, List<RawExchange>> _rawDataByRound = {};
+
+  /// 失败条目的 RAW 时间线（最近一次失败 / 中断尝试）。
+  List<RawExchange>? _failedRawExchanges;
   String _pendingUserInput = '';
   String? _error;
   int? _bookId;
@@ -124,6 +135,18 @@ class RoundProvider extends ChangeNotifier {
 
   /// 当前自动重试进度（灰字「错误重连……（x/3）」）；null = 无重试。
   (int, int)? get retryStatus => _retryStatus;
+
+  /// 指定轮次的 RAW 时间线（无数据返回 null）。
+  List<RawExchange>? rawExchangesFor(int roundId) {
+    final data = _rawDataByRound[roundId];
+    return (data == null || data.isEmpty) ? null : data;
+  }
+
+  /// 失败条目的 RAW 时间线（无数据返回 null）。
+  List<RawExchange>? get failedRawExchanges {
+    final data = _failedRawExchanges;
+    return (data == null || data.isEmpty) ? null : data;
+  }
 
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _pendingUserInput;
@@ -161,6 +184,11 @@ class RoundProvider extends ChangeNotifier {
   /// 若书籍尚无任何轮次，自动创建「第零轮」（round_index = 0），
   /// 用于在开始对话前编辑初始的世界状态与角色状态。
   Future<void> loadRounds(int bookId) async {
+    // 切换书籍：清理旧书的内存 RAW 数据，避免跨书误配。
+    if (_bookId != null && _bookId != bookId) {
+      _rawDataByRound.clear();
+      _failedRawExchanges = null;
+    }
     _bookId = bookId;
     try {
       _setRounds(await _dao.getRoundsByBook(bookId));
@@ -203,6 +231,7 @@ class RoundProvider extends ChangeNotifier {
   Future<void> clearFailedAttempt() async {
     final id = _bookId;
     if (id == null) return;
+    _failedRawExchanges = null;
     await _setFailedAttempt(id, const FailedAttempt());
   }
 
@@ -253,10 +282,12 @@ class RoundProvider extends ChangeNotifier {
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
     _pendingUserInput = userInput;
-    // 重置 Agent 过程时间线与重试状态。
+    // 重置 Agent 过程时间线、重试状态与 RAW 时间线。
     _agentEvents = [];
     _newReasoningBlockPending = true;
     _retryStatus = null;
+    _rawExchanges.clear();
+    _failedRawExchanges = null;
     notifyListeners();
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
@@ -351,11 +382,11 @@ class RoundProvider extends ChangeNotifier {
               ),
             )
           : await _callWithRetry(
-              () => _aiService.chat(
+              () => _chatCapturing(
+                requestBody: requestBody,
                 apiBaseUrl:
                     settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
                 apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-                requestBody: requestBody,
                 stream: useStream,
                 onChunk: onChunk,
                 isCancelled: () => _cancelRequested,
@@ -366,6 +397,7 @@ class RoundProvider extends ChangeNotifier {
         _isStreaming = false;
         _streamingContent = '';
         _agentEvents = [];
+        _failedRawExchanges = List.of(_rawExchanges);
         await _setFailedAttempt(
           b.id!,
           FailedAttempt(userInput: userInput),
@@ -392,7 +424,10 @@ class RoundProvider extends ChangeNotifier {
         tokensOut: result.completionTokens,
         createdAt: DateTime.now(),
       );
-      await _dao.insertRound(newRound);
+      final newRoundId = await _dao.insertRound(newRound);
+      // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
+      _rawDataByRound[newRoundId] = List.of(_rawExchanges);
+      _rawExchanges.clear();
       await loadRounds(b.id!);
       // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
@@ -408,6 +443,7 @@ class RoundProvider extends ChangeNotifier {
       _streamingContent = '';
       _agentEvents = [];
       _error = null;
+      _failedRawExchanges = List.of(_rawExchanges);
       await _setFailedAttempt(
         b.id!,
         FailedAttempt(userInput: userInput),
@@ -418,6 +454,7 @@ class RoundProvider extends ChangeNotifier {
       _isStreaming = false;
       _streamingContent = '';
       _agentEvents = [];
+      _failedRawExchanges = List.of(_rawExchanges);
       final saved = await _setFailedAttempt(
         b.id!,
         FailedAttempt(userInput: userInput, errorMessage: e.toString()),
@@ -430,8 +467,49 @@ class RoundProvider extends ChangeNotifier {
       _cancelRequested = false;
       _pendingUserInput = '';
       _retryStatus = null;
+      _rawExchanges.clear();
       notifyListeners();
     }
+  }
+
+  /// 包裹一次 AI 调用并捕获 RAW 交换记录（请求体 + 返回三块）。
+  ///
+  /// 直发路径与 Agent 工具循环（逐迭代）共用：调用前入列一条携带请求体的
+  /// 交换记录，返回后回填思考 / 搜索 / 正文三块。
+  Future<AiCallResult> _chatCapturing({
+    required Map<String, dynamic> requestBody,
+    required String apiBaseUrl,
+    required String apiKey,
+    required bool stream,
+    required void Function(AiStreamChunk chunk)? onChunk,
+    required bool Function() isCancelled,
+  }) async {
+    final exchange = RawExchange(
+      requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
+    );
+    _rawExchanges.add(exchange);
+    final result = await _aiService.chat(
+      apiBaseUrl: apiBaseUrl,
+      apiKey: apiKey,
+      requestBody: requestBody,
+      stream: stream,
+      onChunk: onChunk,
+      isCancelled: isCancelled,
+    );
+    exchange
+      ..thinking = result.reasoningContent
+      ..search = _formatToolCalls(result.toolCalls)
+      ..content = result.content;
+    return result;
+  }
+
+  /// 把工具调用格式化为 RAW 展示用的 JSON 文本（空 = 无搜索块）。
+  static String _formatToolCalls(List<AiToolCall> calls) {
+    if (calls.isEmpty) return '';
+    return const JsonEncoder.withIndent('  ').convert([
+      for (final c in calls)
+        {'id': c.id, 'name': c.name, 'arguments': c.arguments},
+    ]);
   }
 
   /// 带自动重试的 AI 调用。
@@ -460,6 +538,7 @@ class RoundProvider extends ChangeNotifier {
         _streamingContent = '';
         _agentEvents = [];
         _newReasoningBlockPending = true;
+        _rawExchanges.clear();
         _retryStatus = (attempt + 1, _maxAiRetries);
         notifyListeners();
         if (_retryDelay > Duration.zero) {
@@ -508,14 +587,13 @@ class RoundProvider extends ChangeNotifier {
             : settings.buildRequestBody(values);
       },
       call: (requestBody, stream, onChunk, onRequestBody, isCancelled) =>
-          _aiService.chat(
+          _chatCapturing(
+            requestBody: requestBody,
             apiBaseUrl: apiBaseUrl,
             apiKey: apiKey,
-            requestBody: requestBody,
             stream: stream,
             onChunk: onChunk,
-            onRequestBody: onRequestBody,
-            isCancelled: isCancelled,
+            isCancelled: isCancelled ?? () => false,
           ),
       tools: [_webSearchTool],
     );

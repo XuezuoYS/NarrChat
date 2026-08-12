@@ -17,12 +17,16 @@ class FailedAttemptBubble extends StatelessWidget {
   final VoidCallback onEditAndRetry;
   final VoidCallback onClear;
 
+  /// RAW 查看回调（null = 无 RAW 数据，不显示按钮）。
+  final VoidCallback? onViewRaw;
+
   const FailedAttemptBubble({
     super.key,
     required this.attempt,
     required this.onRetry,
     required this.onEditAndRetry,
     required this.onClear,
+    this.onViewRaw,
   });
 
   void _showMenu(BuildContext context, Offset position) {
@@ -42,6 +46,11 @@ class FailedAttemptBubble extends StatelessWidget {
           value: 'copy',
           child: AppMenuAction(icon: Icons.copy_outlined, label: '复制输入'),
         ),
+        if (onViewRaw != null)
+          const PopupMenuItem(
+            value: 'raw',
+            child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
+          ),
         const PopupMenuItem(
           value: 'clear',
           child: AppMenuAction(
@@ -68,6 +77,8 @@ class FailedAttemptBubble extends StatelessWidget {
               ),
             );
           }
+        case 'raw':
+          onViewRaw?.call();
         case 'clear':
           onClear();
       }
@@ -106,6 +117,12 @@ class FailedAttemptBubble extends StatelessWidget {
                 label: '修改并重新提问',
                 onPressed: onEditAndRetry,
               ),
+              if (onViewRaw != null)
+                ActionButton(
+                  icon: Icons.raw_on,
+                  label: 'RAW',
+                  onPressed: onViewRaw!,
+                ),
               ActionButton(
                 icon: Icons.delete_outline,
                 label: '清除失败条目',
