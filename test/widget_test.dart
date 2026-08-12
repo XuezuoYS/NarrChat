@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/config/app_config.dart';
-import 'package:narrchat/models/ai_settings.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
@@ -48,34 +47,6 @@ void main() {
     test('推理强度档位', () {
       expect(AppConfig.reasoningEffortOptions, ['low', 'high', 'max']);
       expect(AppConfig.defaultReasoningEffort, 'high');
-    });
-  });
-
-  group('AiSettings', () {
-    test('copyWith 只修改指定字段', () {
-      const settings = AiSettings(
-        apiBaseUrl: 'https://api.deepseek.com',
-        apiKey: 'sk-test',
-        model: 'deepseek-v4-pro',
-        temperature: 1.0,
-        thinking: true,
-        reasoningEffort: 'high',
-        maxTokens: 4096,
-        streaming: true,
-      );
-      final updated = settings.copyWith(
-        model: 'deepseek-v4-flash',
-        thinking: false,
-        temperature: 0.7,
-      );
-      expect(updated.model, 'deepseek-v4-flash');
-      expect(updated.thinking, isFalse);
-      expect(updated.temperature, 0.7);
-      expect(updated.apiBaseUrl, 'https://api.deepseek.com');
-      expect(updated.apiKey, 'sk-test');
-      expect(updated.reasoningEffort, 'high');
-      expect(updated.maxTokens, 4096);
-      expect(updated.streaming, isTrue);
     });
   });
 

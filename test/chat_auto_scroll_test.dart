@@ -9,6 +9,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
+import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -89,14 +90,7 @@ class _FakeStreamingAiService extends AiService {
   Future<AiCallResult> chat({
     required String apiBaseUrl,
     required String apiKey,
-    required String systemPrompt,
-    required String userPrompt,
-    List<Map<String, String>> historyMessages = const [],
-    String? model,
-    double temperature = 1.0,
-    bool thinking = false,
-    String reasoningEffort = 'high',
-    int? maxTokens,
+    required Map<String, dynamic> requestBody,
     bool stream = false,
     void Function(AiStreamChunk chunk)? onChunk,
     void Function(String requestBody)? onRequestBody,
@@ -174,6 +168,7 @@ void main() {
     await tester.pumpWidget(
       MultiProvider(
         providers: [
+          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
           ChangeNotifierProvider(
             create: (_) => BookProvider(dao: bookDao)..loadBooks(),
           ),

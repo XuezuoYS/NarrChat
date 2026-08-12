@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
-import '../widgets/api_settings_form.dart';
+import '../widgets/ai_settings_form.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
@@ -12,7 +12,7 @@ import '../widgets/ui_settings_form.dart';
 /// 全窗口设置界面。
 ///
 /// 5 个子模块：
-/// - API 设置：完整可用的接口参数配置；
+/// - AI 选择：模型预设 + 参数（始终可调）+ API 连接；
 /// - UI 设置：全局字体等界面偏好；
 /// - Mod 管理：查看预置 Mod，创建/编辑/导出/导入自定义 Mod；
 /// - 云同步：WebDAV 云端备份 / 恢复；
@@ -32,7 +32,7 @@ class SettingsScreen extends StatelessWidget {
       title: '设置',
       icon: Icons.settings,
       navItems: const [
-        SettingsNavItem(icon: Icons.api_outlined, label: 'API 设置'),
+        SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'AI 选择'),
         SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),
         SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
@@ -41,7 +41,7 @@ class SettingsScreen extends StatelessWidget {
       contentBuilder: (context, index) {
         switch (index) {
           case 0:
-            return const ApiSettingsForm();
+            return const AiSettingsForm();
           case 1:
             return const UiSettingsForm();
           case 2:

@@ -8,6 +8,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
+import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -62,6 +63,7 @@ void main() {
     await tester.pumpWidget(
       MultiProvider(
         providers: [
+          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
           ChangeNotifierProvider(
             create: (_) => BookProvider(dao: bookDao)..loadBooks(),
           ),

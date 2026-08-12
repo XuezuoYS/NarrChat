@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../models/book.dart';
 import '../models/round.dart';
+import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
@@ -1027,11 +1028,31 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 输入区工具栏：滚动到底部。
+  /// 输入区工具栏：每轮选项（思考 / 流式，临时控件，后续并入悬浮面板选项下拉）
+  /// + 滚动到底部。
   Widget _buildComposerToolbar() {
+    final aiSettings = context.watch<AiSettingsProvider>();
+    final preset = aiSettings.selectedPreset;
     return Row(
-      mainAxisAlignment: MainAxisAlignment.start,
       children: [
+        if (preset.supportsThinking) ...[
+          _ModeToggleChip(
+            label: '思考',
+            active: aiSettings.thinking,
+            onTap: () =>
+                _setPerRoundOptions(thinking: !aiSettings.thinking),
+          ),
+          const SizedBox(width: 6),
+        ],
+        if (preset.supportsStreaming) ...[
+          _ModeToggleChip(
+            label: '流式',
+            active: aiSettings.streaming,
+            onTap: () =>
+                _setPerRoundOptions(streaming: !aiSettings.streaming),
+          ),
+          const SizedBox(width: 6),
+        ],
         // 滚动到底部
         TextButton.icon(
           onPressed: _scrollToBottom,
@@ -1043,6 +1064,15 @@ class _ChatScreenState extends State<ChatScreen>
           ),
         ),
       ],
+    );
+  }
+
+  /// 保存每轮选项（思考 / 流式）记忆。
+  Future<void> _setPerRoundOptions({bool? thinking, bool? streaming}) async {
+    final aiSettings = context.read<AiSettingsProvider>();
+    await aiSettings.setPerRoundOptions(
+      thinking: thinking ?? aiSettings.thinking,
+      streaming: streaming ?? aiSettings.streaming,
     );
   }
 
@@ -1150,6 +1180,54 @@ class _ChatScreenState extends State<ChatScreen>
       onAutoSaveField: (round, field, value) => context
           .read<RoundProvider>()
           .updateRoundField(round.id!, field, value),
+    );
+  }
+}
+
+/// 临时每轮选项开关（思考 / 流式），后续并入悬浮面板的选项下拉菜单。
+class _ModeToggleChip extends StatelessWidget {
+  final String label;
+  final bool active;
+  final VoidCallback? onTap;
+
+  const _ModeToggleChip({
+    required this.label,
+    required this.active,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? scheme.primary : scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              active ? Icons.check_circle : Icons.circle_outlined,
+              size: 13,
+              color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
+                fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

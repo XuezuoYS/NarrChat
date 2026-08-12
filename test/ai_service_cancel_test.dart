@@ -62,6 +62,15 @@ class _SseClient extends http.BaseClient {
 }
 
 void main() {
+  Map<String, dynamic> body({bool stream = false}) => {
+    'model': 'test',
+    'messages': [
+      {'role': 'system', 'content': '系统提示'},
+      {'role': 'user', 'content': '用户输入'},
+    ],
+    'stream': stream,
+  };
+
   test('非流式：生成中停止会及时中止（无需等服务器返回正文）', () async {
     final client = _PendingBodyClient();
     final ai = AiService(client: client);
@@ -70,8 +79,7 @@ void main() {
     final chatFuture = ai.chat(
       apiBaseUrl: 'https://example.com',
       apiKey: 'test-key',
-      systemPrompt: '系统提示',
-      userPrompt: '用户输入',
+      requestBody: body(stream: false),
       stream: false,
       isCancelled: () => cancelled,
     );
@@ -95,8 +103,7 @@ void main() {
     final result = await ai.chat(
       apiBaseUrl: 'https://example.com',
       apiKey: 'test-key',
-      systemPrompt: '系统提示',
-      userPrompt: '用户输入',
+      requestBody: body(stream: false),
       stream: false,
       isCancelled: () => false,
     );
@@ -114,8 +121,7 @@ void main() {
     final chatFuture = ai.chat(
       apiBaseUrl: 'https://example.com',
       apiKey: 'test-key',
-      systemPrompt: '系统提示',
-      userPrompt: '用户输入',
+      requestBody: body(stream: true),
       stream: true,
       isCancelled: () => cancelled,
     );
@@ -143,8 +149,7 @@ void main() {
     final chatFuture = ai.chat(
       apiBaseUrl: 'https://example.com',
       apiKey: 'test-key',
-      systemPrompt: '系统提示',
-      userPrompt: '用户输入',
+      requestBody: body(stream: true),
       stream: true,
       isCancelled: () => false,
     );
@@ -164,8 +169,7 @@ void main() {
     final result = await ai.chat(
       apiBaseUrl: 'https://example.com',
       apiKey: 'test-key',
-      systemPrompt: '系统提示',
-      userPrompt: '用户输入',
+      requestBody: body(stream: true),
       stream: true,
       onChunk: (c) {
         if (!c.done && c.contentDelta.isNotEmpty) deltas.add(c.contentDelta);

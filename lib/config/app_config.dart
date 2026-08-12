@@ -1,8 +1,10 @@
+import 'model_presets.dart';
+
 /// 应用全局配置。
 ///
 /// API Key 与 Base URL 的默认值写在此处；运行时实际值由
 /// [AiSettingsProvider] 从安全存储（flutter_secure_storage）与本地 JSON 配置文件
-/// （local_config/app_settings.json）中读取，并可在「AI 接口设置」对话框中修改。
+/// （local_config/app_settings.json）中读取，并可在「AI 选择」设置页中修改。
 /// 也支持通过 `--dart-define` 覆盖默认值，例如：
 /// ```bash
 /// flutter run --dart-define=NARRCHAT_API_KEY=sk-xxx \
@@ -18,16 +20,15 @@ class AppConfig {
   /// 默认 API Base URL（OpenAI 兼容格式，DeepSeek 官方地址）。
   static const String defaultApiBaseUrl = 'https://api.deepseek.com';
 
-  /// 默认 API Key（请通过「AI 接口设置」或安全存储配置）。
+  /// 默认 API Key（请通过「AI 选择」设置页或安全存储配置）。
   static const String defaultApiKey = '';
 
   /// 默认模型名称（DeepSeek 官方模型 ID）。
   static const String defaultModelName = 'deepseek-v4-flash';
 
-  /// 内置支持的模型列表（官方模型 ID，可在设置中选择，也支持自定义输入）。
-  static const List<String> supportedModels = [
-    'deepseek-v4-pro',
-    'deepseek-v4-flash',
+  /// 内置支持的模型列表（来自模型预设，可在设置中选择，也支持自定义输入）。
+  static List<String> get supportedModels => [
+    for (final p in ModelPresets.builtins) p.modelId,
   ];
 
   /// 思考强度档位（`reasoning_effort`，官方取值）。

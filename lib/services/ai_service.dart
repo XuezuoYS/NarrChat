@@ -80,24 +80,16 @@ class AiService {
 
   /// 发送对话请求并返回解析后的内容与 Token 用量。
   ///
+  /// [requestBody] 为**完整**的 OpenAI 兼容请求体（含 `model` / `messages` /
+  /// `stream` / 各模式参数），由 `AiRequestBodyBuilder` 按模型预设规则或
+  /// 自定义模板预先构建——本类不负责参数组装，只负责传输与解析。
+  ///
   /// [stream] 为 true 时启用 SSE 流式，增量内容通过 [onChunk] 回调；
   /// 即使流式，本方法也会在结束后返回聚合后的完整 [AiCallResult]。
-  ///
-  /// 参数遵循 DeepSeek 官方文档：
-  /// - `thinking.type` 为 `enabled` / `disabled`（官方默认开启，因此始终显式下发）；
-  /// - 思考模式下官方不支持 `temperature`，故开启思考时不发送温度；
-  /// - `reasoning_effort`：low / high / max，仅思考模式下生效。
   Future<AiCallResult> chat({
     required String apiBaseUrl,
     required String apiKey,
-    required String systemPrompt,
-    required String userPrompt,
-    List<Map<String, String>> historyMessages = const [],
-    String? model,
-    double temperature = 1.0,
-    bool thinking = false,
-    String reasoningEffort = 'high',
-    int? maxTokens,
+    required Map<String, dynamic> requestBody,
     bool stream = false,
     void Function(AiStreamChunk chunk)? onChunk,
     void Function(String requestBody)? onRequestBody,
@@ -106,32 +98,7 @@ class AiService {
   }) async {
     final baseUrl = apiBaseUrl.replaceAll(RegExp(r'/+$'), '');
     final uri = Uri.parse('$baseUrl/chat/completions');
-
-    // 按 API 要求以原生 messages 数组传递对话历史：
-    // system → 历史(user/assistant 交替) → 当前 user。
-    final messages = <Map<String, String>>[
-      {'role': 'system', 'content': systemPrompt},
-      ...historyMessages,
-      {'role': 'user', 'content': userPrompt},
-    ];
-
-    final body = jsonEncode({
-      'model': (model ?? AppConfig.defaultModelNameEffective).trim(),
-      'messages': messages,
-      // 思考模式官方默认开启，必须显式声明开/关。
-      'thinking': {'type': thinking ? 'enabled' : 'disabled'},
-      if (thinking) 'reasoning_effort': reasoningEffort,
-      // 思考模式下官方不支持 temperature（设置不报错但不生效），故不发送。
-      if (!thinking)
-        'temperature': temperature.clamp(
-          AppConfig.minTemperature,
-          AppConfig.maxTemperature,
-        ),
-      if (maxTokens != null && maxTokens > 0) 'max_tokens': maxTokens,
-      'stream': stream,
-      // 流式时携带 usage，以便统计 Token。
-      if (stream) 'stream_options': {'include_usage': true},
-    });
+    final body = jsonEncode(requestBody);
 
     // 暴露实际发出的请求 JSON（供“调试”功能展示）。
     onRequestBody?.call(body);

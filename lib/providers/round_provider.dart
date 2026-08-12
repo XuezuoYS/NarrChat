@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../config/app_config.dart';
+import '../config/model_presets.dart';
 import '../database/book_dao.dart';
 import '../database/round_dao.dart';
 import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/round.dart';
+import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
 import '../services/prompt_builder.dart';
@@ -301,17 +303,38 @@ class RoundProvider extends ChangeNotifier {
         notifyListeners();
       }
 
+      // 按当前预设（规则构建器 / 自定义模板）动态组合请求体：
+      // 不同模式（思考 / 联网搜索 / 流式）下发送的参数由预设规则决定。
+      final values = AiRequestValues(
+        model: (settings?.model.trim().isNotEmpty ?? false)
+            ? settings!.model
+            : ModelPresets.defaultPreset.modelId,
+        messages: [
+          {'role': 'system', 'content': prompts.systemPrompt},
+          ...historyMessages,
+          {'role': 'user', 'content': prompts.userPrompt},
+        ],
+        temperature: settings?.temperature ?? 1.0,
+        thinking:
+            settings?.thinking ?? ModelPresets.defaultPreset.defaultThinking,
+        reasoningEffort:
+            settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
+        maxTokens: settings?.maxTokens,
+        stream: useStream,
+        // 联网搜索工具在后续里程碑接入；当前无工具注入。
+        tools: null,
+      );
+      final requestBody = settings == null
+          ? AiRequestBodyBuilder.buildPresetBody(
+              rules: ModelPresets.defaultPreset.requestRules,
+              values: values,
+            )
+          : settings.buildRequestBody(values);
+
       final result = await _aiService.chat(
         apiBaseUrl: settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
         apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-        systemPrompt: prompts.systemPrompt,
-        userPrompt: prompts.userPrompt,
-        historyMessages: historyMessages,
-        model: settings?.model,
-        temperature: settings?.temperature ?? 1.0,
-        thinking: settings?.thinking ?? false,
-        reasoningEffort: settings?.reasoningEffort ?? 'high',
-        maxTokens: settings?.maxTokens,
+        requestBody: requestBody,
         stream: useStream,
         onChunk: useStream
             ? (chunk) {
