@@ -799,8 +799,9 @@ class _ChatScreenState extends State<ChatScreen>
                 ? _StreamingBubble(
                     content: roundProvider.streamingContent,
                     agentEvents: roundProvider.agentEvents,
+                    retryStatus: roundProvider.retryStatus,
                   )
-                : const _TypingBubble();
+                : _TypingBubble(retryStatus: roundProvider.retryStatus);
           } else {
             final round = chatRounds[index ~/ 2];
             final isAi = index.isOdd;
@@ -1197,36 +1198,79 @@ class _ModeToggleChip extends StatelessWidget {
 }
 
 /// AI 正在创作中的指示（极简，无气泡）。
+///
+/// [retryStatus] 非空时，在其下方显示灰字重试提示（错误重连……x/3），
+/// 与流式气泡共享 [_RetryStatusText]。
 class _TypingBubble extends StatelessWidget {
-  const _TypingBubble();
+  /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
+  final (int, int)? retryStatus;
+
+  const _TypingBubble({this.retryStatus});
 
   @override
   Widget build(BuildContext context) {
+    final retry = retryStatus;
     return Align(
       alignment: Alignment.centerLeft,
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const BrandLogo(size: 30),
-          const SizedBox(width: 10),
-          const SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: NarrChatTheme.primary,
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const BrandLogo(size: 30),
+              const SizedBox(width: 10),
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: NarrChatTheme.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'AI 正在创作…',
+                style: TextStyle(
+                  color: context.narrColors.textSecondary,
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Text(
-            'AI 正在创作…',
-            style: TextStyle(
-              color: context.narrColors.textSecondary,
-              fontSize: 13,
-            ),
-          ),
+          if (retry != null) ...[const SizedBox(height: 8), _RetryStatusText(attempt: retry.$1, total: retry.$2)],
         ],
       ),
+    );
+  }
+}
+
+/// 自动重试灰字提示：「错误重连……（x/3）」。
+class _RetryStatusText extends StatelessWidget {
+  /// 当前已重试次数。
+  final int attempt;
+
+  /// 重试总次数。
+  final int total;
+
+  const _RetryStatusText({required this.attempt, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.refresh, size: 12, color: context.narrColors.textSecondary),
+        const SizedBox(width: 5),
+        Text(
+          '错误重连……（$attempt/$total）',
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1558,9 +1602,13 @@ class _StreamingBubble extends StatefulWidget {
   final String content;
   final List<AgentEvent> agentEvents;
 
+  /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
+  final (int, int)? retryStatus;
+
   const _StreamingBubble({
     required this.content,
     required this.agentEvents,
+    this.retryStatus,
   });
 
   @override
@@ -1573,6 +1621,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
     final content = widget.content;
     final events = widget.agentEvents;
+    final retry = widget.retryStatus;
     final hasContent = content.isNotEmpty;
     final hasEvents = events.isNotEmpty;
 
@@ -1610,6 +1659,8 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         results: events[i].results,
                       ),
                   ],
+                  // 自动重试提示（灰字）：思考/搜索块之后、正文之前。
+                  if (retry != null) ...[const SizedBox(height: 8), _RetryStatusText(attempt: retry.$1, total: retry.$2)],
                   // 剧情正文。
                   if (hasContent) ...[
                     if (hasEvents) const Divider(height: 14),

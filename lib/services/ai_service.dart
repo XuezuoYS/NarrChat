@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -60,13 +61,45 @@ class AiCallResult {
   });
 }
 
+/// AI 请求失败类别：决定是否自动重试。
+///
+/// - [network]：网络 / 连接 / 超时类失败，**可自动重试**；
+/// - [api]：API 业务类失败（HTTP 非 200、响应解析失败等），不自动重试。
+enum AiExceptionKind { network, api }
+
 /// AI 请求异常。
 class AiException implements Exception {
   final String message;
-  const AiException(this.message);
+
+  /// 失败类别（默认 [AiExceptionKind.api]）。
+  final AiExceptionKind kind;
+
+  const AiException(this.message, {this.kind = AiExceptionKind.api});
 
   @override
   String toString() => message;
+}
+
+/// 将任意异常归类为 [AiExceptionKind]（自动重试策略的依据）。
+///
+/// 网络 / 超时 / 连接类异常归为 [AiExceptionKind.network]（可重试）；
+/// [AiException] 使用自身携带的 [AiException.kind]；其余归为 api。
+AiExceptionKind classifyAiErrorKind(Object error) {
+  if (error is AiException) return error.kind;
+  if (error is TimeoutException) return AiExceptionKind.network;
+  if (error is http.ClientException) return AiExceptionKind.network;
+  if (error is SocketException) return AiExceptionKind.network;
+  return AiExceptionKind.api;
+}
+
+/// 把底层连接 / 流错误统一为网络类 [AiException]（可自动重试、提示友好）；
+/// 已是 [AiException] 或非网络类错误原样返回。
+Object _toNetworkException(Object e) {
+  if (e is AiException) return e;
+  if (e is http.ClientException || e is SocketException) {
+    return AiException('网络请求中断：$e', kind: AiExceptionKind.network);
+  }
+  return e;
 }
 
 /// 用户主动中断请求时抛出的异常（与真实错误区分，不提示“请求失败”）。
@@ -225,12 +258,18 @@ class AiService {
       try {
         response = await _client.send(request).timeout(_requestTimeout);
       } on TimeoutException {
-        throw const AiException('请求超时，请检查网络或稍后重试。');
+        throw const AiException(
+          '请求超时，请检查网络或稍后重试。',
+          kind: AiExceptionKind.network,
+        );
       } on http.ClientException catch (e) {
         if (isCancelled?.call() ?? false) {
           throw const AiCancelledException();
         }
-        throw AiException('网络请求失败：${e.message}');
+        throw AiException(
+          '网络请求失败：${e.message}',
+          kind: AiExceptionKind.network,
+        );
       }
 
       // 响应头已返回后再检查一次（可能在 send 完成前用户已中断）。
@@ -252,7 +291,7 @@ class AiService {
               cancelSignal.completeError(const AiCancelledException(), st);
             }
           } else if (!cancelSignal.isCompleted) {
-            cancelSignal.completeError(e, st);
+            cancelSignal.completeError(_toNetworkException(e), st);
           }
         },
         onDone: () {
@@ -266,7 +305,10 @@ class AiService {
       try {
         await cancelSignal.future.timeout(_requestTimeout);
       } on TimeoutException {
-        throw const AiException('请求超时，请检查网络或稍后重试。');
+        throw const AiException(
+          '请求超时，请检查网络或稍后重试。',
+          kind: AiExceptionKind.network,
+        );
       }
       return bytes;
     } finally {
@@ -292,9 +334,15 @@ class AiService {
         ..body = body;
       response = await _client.send(request).timeout(_requestTimeout);
     } on TimeoutException {
-      throw const AiException('请求超时，请检查网络或稍后重试。');
+      throw const AiException(
+        '请求超时，请检查网络或稍后重试。',
+        kind: AiExceptionKind.network,
+      );
     } on http.ClientException catch (e) {
-      throw AiException('网络请求失败：${e.message}');
+      throw AiException(
+        '网络请求失败：${e.message}',
+        kind: AiExceptionKind.network,
+      );
     }
 
     if (response.statusCode != 200) {
@@ -407,16 +455,20 @@ class AiService {
         onError: (Object e, StackTrace st) {
           if (doneSignal.isCompleted) return;
           if (e is TimeoutException) {
-            // 空闲超时（服务器挂起）：统一转为请求超时错误。
+            // 空闲超时（服务器挂起）：统一转为请求超时错误（可自动重试）。
             doneSignal.completeError(
-              const AiException('请求超时，请检查网络或稍后重试。'),
+              const AiException(
+                '请求超时，请检查网络或稍后重试。',
+                kind: AiExceptionKind.network,
+              ),
               st,
             );
           } else if (isCancelled?.call() ?? false) {
             // 连接被取消（用户中断）中止时，流会以错误结束。
             doneSignal.completeError(const AiCancelledException(), st);
           } else {
-            doneSignal.completeError(e, st);
+            // 底层连接中断等：统一为网络类 AiException（可重试、提示友好）。
+            doneSignal.completeError(_toNetworkException(e), st);
           }
         },
         onDone: () {

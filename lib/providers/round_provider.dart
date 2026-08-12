@@ -32,6 +32,9 @@ class RoundProvider extends ChangeNotifier {
       '（如「搜索/查一下/查找/查资料」），请先调用 web_search 工具'
       '获取信息，再基于结果继续创作；未明确要求时不要调用搜索工具。';
 
+  /// 网络类失败自动重试的最大次数（灰字提示「错误重连……（x/3）」）。
+  static const int _maxAiRetries = 3;
+
   RoundProvider({
     RoundDao? dao,
     BookDao? bookDao,
@@ -43,6 +46,8 @@ class RoundProvider extends ChangeNotifier {
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
     WebSearchTool? webSearchTool,
+    /// 网络类失败重试间隔（测试可注入零时长）。
+    Duration retryDelay = const Duration(milliseconds: 800),
   })  : _dao = dao ?? RoundDao(),
         _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
@@ -55,7 +60,9 @@ class RoundProvider extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _modProvider = modProvider,
         // ignore: prefer_initializing_formals
-        _cloudSyncProvider = cloudSyncProvider {
+        _cloudSyncProvider = cloudSyncProvider,
+        // ignore: prefer_initializing_formals
+        _retryDelay = retryDelay {
     // 联网搜索工具：搜索成功回调更新结果明细；失败回调标记搜索框失败（✕）。
     _webSearchTool =
         webSearchTool ??
@@ -76,6 +83,9 @@ class RoundProvider extends ChangeNotifier {
   final CloudSyncProvider? _cloudSyncProvider;
   late final WebSearchTool _webSearchTool;
 
+  /// 网络类失败重试间隔。
+  final Duration _retryDelay;
+
   List<Round> _rounds = [];
 
   /// 缓存的不可变轮次视图：仅当 [_rounds] 重新赋值时更新。
@@ -94,6 +104,9 @@ class RoundProvider extends ChangeNotifier {
 
   /// 下一段思考增量到达时是否新建思考事件（agent 每轮开始时置位）。
   bool _newReasoningBlockPending = true;
+
+  /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
+  (int, int)? _retryStatus;
   String _pendingUserInput = '';
   String? _error;
   int? _bookId;
@@ -108,6 +121,9 @@ class RoundProvider extends ChangeNotifier {
 
   /// Agent 过程时间线（思考 / 搜索交错，供流式气泡渲染）。
   List<AgentEvent> get agentEvents => List.unmodifiable(_agentEvents);
+
+  /// 当前自动重试进度（灰字「错误重连……（x/3）」）；null = 无重试。
+  (int, int)? get retryStatus => _retryStatus;
 
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _pendingUserInput;
@@ -237,9 +253,10 @@ class RoundProvider extends ChangeNotifier {
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
     _pendingUserInput = userInput;
-    // 重置 Agent 过程时间线。
+    // 重置 Agent 过程时间线与重试状态。
     _agentEvents = [];
     _newReasoningBlockPending = true;
+    _retryStatus = null;
     notifyListeners();
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
@@ -315,30 +332,34 @@ class RoundProvider extends ChangeNotifier {
       // 本轮开启联网搜索 → Agent 工具循环（首轮带工具，搜索后生成）；
       // 否则走单轮直发路径。
       final result = useSearch
-          ? await _runAgent(
-              settings: settings,
-              apiBaseUrl:
-                  settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
-              apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-              initialMessages: [
-                {
-                  'role': 'system',
-                  'content': '${prompts.systemPrompt}\n\n$_searchInstruction',
-                },
-                ...historyMessages,
-                {'role': 'user', 'content': prompts.userPrompt},
-              ],
-              useStream: useStream,
-              onChunk: onChunk,
+          ? await _callWithRetry(
+              () => _runAgent(
+                settings: settings,
+                apiBaseUrl:
+                    settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
+                apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+                initialMessages: [
+                  {
+                    'role': 'system',
+                    'content': '${prompts.systemPrompt}\n\n$_searchInstruction',
+                  },
+                  ...historyMessages,
+                  {'role': 'user', 'content': prompts.userPrompt},
+                ],
+                useStream: useStream,
+                onChunk: onChunk,
+              ),
             )
-          : await _aiService.chat(
-              apiBaseUrl:
-                  settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
-              apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-              requestBody: requestBody,
-              stream: useStream,
-              onChunk: onChunk,
-              isCancelled: () => _cancelRequested,
+          : await _callWithRetry(
+              () => _aiService.chat(
+                apiBaseUrl:
+                    settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
+                apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+                requestBody: requestBody,
+                stream: useStream,
+                onChunk: onChunk,
+                isCancelled: () => _cancelRequested,
+              ),
             );
       // 用户主动中断：丢弃部分内容，以「已截断」失败条目保留用户输入。
       if (_cancelRequested) {
@@ -408,7 +429,46 @@ class RoundProvider extends ChangeNotifier {
       _isSending = false;
       _cancelRequested = false;
       _pendingUserInput = '';
+      _retryStatus = null;
       notifyListeners();
+    }
+  }
+
+  /// 带自动重试的 AI 调用。
+  ///
+  /// - 网络 / 连接 / 超时类失败（[AiExceptionKind.network]）：显示灰字
+  ///   「错误重连……（x/3）」，重置流式内容与 Agent 时间线后自动重试，
+  ///   最多 [_maxAiRetries] 次；
+  /// - API 业务类失败（[AiExceptionKind.api]）与用户中断：不重试，直接抛出。
+  Future<AiCallResult> _callWithRetry(
+    Future<AiCallResult> Function() action,
+  ) async {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        final result = await action();
+        _retryStatus = null;
+        return result;
+      } on AiCancelledException {
+        rethrow;
+      } catch (e) {
+        if (attempt >= _maxAiRetries ||
+            classifyAiErrorKind(e) != AiExceptionKind.network ||
+            _cancelRequested) {
+          rethrow;
+        }
+        // 重置流式内容与 Agent 时间线，展示重试提示并稍候重试。
+        _streamingContent = '';
+        _agentEvents = [];
+        _newReasoningBlockPending = true;
+        _retryStatus = (attempt + 1, _maxAiRetries);
+        notifyListeners();
+        if (_retryDelay > Duration.zero) {
+          await Future<void>.delayed(_retryDelay);
+        }
+        if (_cancelRequested) {
+          throw const AiCancelledException();
+        }
+      }
     }
   }
 
@@ -475,6 +535,8 @@ class RoundProvider extends ChangeNotifier {
     if (!useStream) return null;
     return (chunk) {
       if (chunk.done) return;
+      // 新一次尝试开始产出内容：清除重试提示（灰字消失）。
+      _retryStatus = null;
       if (chunk.contentDelta.isNotEmpty) {
         // 进入正文阶段：当前轮的思考已完成。
         _finishCurrentThinking();
