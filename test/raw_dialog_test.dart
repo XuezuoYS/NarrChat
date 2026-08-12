@@ -2,8 +2,11 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
+import 'package:narrchat/models/agent_event.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/raw_exchange.dart';
@@ -13,6 +16,7 @@ import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
 /// 内存版 BookDao，避免测试依赖 sqflite。
@@ -282,6 +286,100 @@ void main() {
       // 第 2 对：正文块，无搜索。
       expect(exchanges[1].content, contains('正文内容'));
       expect(exchanges[1].search, isEmpty);
+    });
+
+    test('Agent 路径：搜索 → 打开页面（fetch 事件与 RAW 捕获）', () async {
+      final dao = _MockRoundDao();
+      final bookDao = _MockBookDao();
+      final ai = _ScriptAiService([
+        AiCallResult(
+          content: '',
+          reasoningContent: '思考1',
+          toolCalls: [
+            const AiToolCall(
+              id: 'call_1',
+              name: 'web_search',
+              arguments: {'query': '青云宗'},
+            ),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+        AiCallResult(
+          content: '',
+          reasoningContent: '思考2',
+          toolCalls: [
+            const AiToolCall(
+              id: 'call_2',
+              name: 'fetch_page',
+              arguments: {'url': 'https://example.com/qingyun'},
+            ),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+        AiCallResult(
+          content: _fullContent,
+          reasoningContent: '思考3',
+          toolCalls: const [],
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      ]);
+      // 共享 mock 搜索服务：搜索结果页与页面正文均由它返回。
+      final search = HtmlSearchService(
+        client: MockClient(
+          (request) async => http.Response.bytes(
+            utf8.encode(
+              '<li class="b_algo"><h2><a href="https://example.com/qingyun">'
+              '青云宗</a></h2><div class="b_caption"><p>青云宗是北域大派。</p>'
+              '</div></li>',
+            ),
+            200,
+            headers: {'content-type': 'text/html; charset=utf-8'},
+          ),
+        ),
+      );
+      final provider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        searchService: search,
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds(1);
+
+      // 运行期间监听事件（sendRound 成功后 _agentEvents 会被清空，须实时捕获）。
+      var searchDone = false;
+      var fetchDone = false;
+      void captureEvents() {
+        for (final e in provider.agentEvents) {
+          if (e.type == AgentEventType.search && e.done) searchDone = true;
+          if (e.type == AgentEventType.fetch &&
+              e.content == 'https://example.com/qingyun' &&
+              e.done &&
+              !e.failed) {
+            fetchDone = true;
+          }
+        }
+      }
+
+      provider.addListener(captureEvents);
+      final ok = await provider.sendRound(userInput: '查一下青云宗', book: book);
+      provider.removeListener(captureEvents);
+      expect(ok, isTrue);
+
+      // Agent 时间线：搜索事件完成 + fetch 事件完成（含链接、未失败）。
+      expect(searchDone, isTrue, reason: '应有完成的搜索事件');
+      expect(fetchDone, isTrue, reason: '应有完成的打开页面事件');
+
+      // RAW 捕获 3 对交换，第 2 对搜索块含 fetch_page 调用。
+      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+      final exchanges = provider.rawExchangesFor(round.id!)!;
+      expect(ai.calls, 3);
+      expect(exchanges, hasLength(3));
+      expect(exchanges[1].search, contains('fetch_page'));
+      expect(exchanges[1].search, contains('https://example.com/qingyun'));
     });
 
     test('请求失败：捕获失败条目的请求（无返回三块）', () async {

@@ -71,23 +71,63 @@ class HtmlSearchService {
   Future<List<SearchResult>> _searchBing(
     String query,
     int maxResults,
-  ) async {
-    final html = await _get(
-      'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}',
-    );
-    final results = parseBingHtml(html);
-    return results.take(maxResults).toList();
-  }
+  ) =>
+      _paginate(
+        maxResults: maxResults,
+        buildUrl: (offset) => offset == 0
+            ? 'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}'
+            : 'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}'
+                  '&first=${offset + 1}',
+        parse: parseBingHtml,
+      );
 
   Future<List<SearchResult>> _searchDuckDuckGo(
     String query,
     int maxResults,
-  ) async {
-    final html = await _get(
-      'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}',
-    );
-    final results = parseDuckDuckGoHtml(html);
-    return results.take(maxResults).toList();
+  ) =>
+      _paginate(
+        maxResults: maxResults,
+        buildUrl: (offset) =>
+            'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}'
+            '${offset == 0 ? '' : '&s=$offset'}',
+        parse: parseDuckDuckGoHtml,
+      );
+
+  /// 翻页抓取搜索结果：每页约 10 条，逐页抓取直至凑齐 [maxResults]
+  /// 或没有更多结果；按 URL 去重。
+  ///
+  /// - 第一页失败（网络 / 非 200）向上抛，由上层按「引擎错误」回退备用引擎；
+  /// - 后续页失败时返回已收集的结果（不中断）；
+  /// - 某页为空或全部重复时停止。
+  Future<List<SearchResult>> _paginate({
+    required int maxResults,
+    required String Function(int offset) buildUrl,
+    required List<SearchResult> Function(String html) parse,
+  }) async {
+    const perPage = 10;
+    final all = <SearchResult>[];
+    final seen = <String>{};
+    for (var page = 0; page * perPage < maxResults; page++) {
+      try {
+        final html = await _get(buildUrl(page * perPage));
+        final results = parse(html);
+        if (results.isEmpty) break;
+        var added = 0;
+        for (final r in results) {
+          if (seen.add(r.url)) {
+            all.add(r);
+            added++;
+          }
+        }
+        if (added == 0) break; // 本页全部重复 → 无法继续翻页
+        if (all.length >= maxResults) break; // 已凑齐
+      } catch (e) {
+        // 第一页失败：向上抛（上层按引擎错误回退）；后续页失败：保留已收集结果。
+        if (all.isEmpty) rethrow;
+        break;
+      }
+    }
+    return all.take(maxResults).toList();
   }
 
   /// 抓取网页正文（去除 script/style/标签后的可读文本，截取前 [maxChars] 字符）。

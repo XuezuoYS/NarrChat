@@ -27,7 +27,9 @@ class WebSearchTool implements NarrAgentTool {
   @override
   String get description =>
       '联网搜索获取最新或真实世界信息（如地名、历史、设定、专有名词等），'
-      '返回标题、链接与摘要列表。需要核实或补充资料时使用。';
+      '返回最多 20 条结果的标题、链接与摘要。搜索后应主动用 fetch_page '
+      '打开最相关的 1~2 个结果页面阅读正文，以确保细节准确。'
+      '需要核实或补充资料时使用。';
 
   @override
   Map<String, dynamic> get parameters => {
@@ -49,7 +51,7 @@ class WebSearchTool implements NarrAgentTool {
       return const AgentToolResult(success: false, content: '搜索关键词为空');
     }
     try {
-      final results = await _search.search(query, maxResults: 5);
+      final results = await _search.search(query, maxResults: 20);
       if (results.isEmpty) {
         _onFail?.call();
         return AgentToolResult(

@@ -208,6 +208,53 @@ void main() {
       final results = await service.search('青云宗');
       expect(results, hasLength(2));
     });
+
+    test('翻页：maxResults=20 抓取 Bing 两页并合并去重', () async {
+      const page2Html = '''
+<html><body>
+<li class="b_algo"><h2><a href="https://example.com/2a">结果2A</a></h2><div class="b_caption"><p>摘要2A。</p></div></li>
+<li class="b_algo"><h2><a href="https://example.com/2b">结果2B</a></h2></li>
+<li class="b_algo"><h2><a href="https://example.com/2c">结果2C</a></h2></li>
+</body></html>
+''';
+      var bingCalls = 0;
+      final service = HtmlSearchService(
+        client: MockClient((request) async {
+          expect(request.url.host, 'www.bing.com');
+          bingCalls++;
+          final first = request.url.queryParameters['first'];
+          // 第二页 URL 应携带 first=11。
+          if (first == '11') return _html(page2Html);
+          return _html(bingHtml);
+        }),
+      );
+
+      final results = await service.search('青云宗', maxResults: 20);
+
+      expect(bingCalls, 2);
+      // 第一页 3 条 + 第二页 3 条 = 6 条。
+      expect(results, hasLength(6));
+      expect(results[3].url, 'https://example.com/2a');
+    });
+
+    test('翻页：第二页失败时返回已收集的第一页结果', () async {
+      var bingCalls = 0;
+      final service = HtmlSearchService(
+        client: MockClient((request) async {
+          bingCalls++;
+          if (request.url.queryParameters['first'] == '11') {
+            throw http.ClientException('第二页失败');
+          }
+          return _html(bingHtml);
+        }),
+      );
+
+      final results = await service.search('青云宗', maxResults: 20);
+
+      expect(bingCalls, 2);
+      expect(results, hasLength(3));
+      expect(results.first.url, 'https://www.qingcloud.com/');
+    });
   });
 
   group('fetchPageText（MockClient）', () {

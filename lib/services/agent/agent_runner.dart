@@ -8,13 +8,18 @@ enum AgentActivityType {
   /// 新一轮 LLM 调用开始（新一轮思考应新建思考块）。
   turn,
 
-  /// 正在执行搜索工具。
+  /// 正在执行搜索工具（web_search）。
   searching,
+
+  /// 正在执行打开网页工具（fetch_page）。
+  fetching,
 }
 
-/// Agent 活动事件（回调给 UI 展示搜索等过程）。
+/// Agent 活动事件（回调给 UI 展示搜索 / 打开页面等过程）。
 class AgentActivity {
   final AgentActivityType type;
+
+  /// 活动主体：搜索关键词或打开的链接。
   final String query;
   final int iteration;
 
@@ -126,7 +131,6 @@ class AgentRunner {
           throw const AiCancelledException();
         }
         final tool = _byName(tc.name);
-        final query = (tc.arguments['query'] as String?) ?? '';
         // 已连续失败 3 次：不再执行该工具，直接告知模型停用，继续基于已有信息创作。
         if ((toolFailures[tc.name] ?? 0) >= 3) {
           messages.add({
@@ -137,10 +141,14 @@ class AgentRunner {
           });
           continue;
         }
+        // 活动主体：搜索为关键词、打开网页为链接。
+        final subject = tc.name == 'fetch_page'
+            ? (tc.arguments['url'] as String? ?? '')
+            : (tc.arguments['query'] as String? ?? '');
         onActivity?.call(
           AgentActivity(
-            type: AgentActivityType.searching,
-            query: query,
+            type: _activityTypeFor(tc.name),
+            query: subject,
             iteration: i,
           ),
         );
@@ -159,6 +167,16 @@ class AgentRunner {
     }
 
     throw const AiException('Agent 工具调用超出最大迭代次数');
+  }
+
+  /// 工具名 → 活动类型（决定 UI 展示为搜索框还是打开页面框）。
+  static AgentActivityType _activityTypeFor(String toolName) {
+    switch (toolName) {
+      case 'fetch_page':
+        return AgentActivityType.fetching;
+      default:
+        return AgentActivityType.searching;
+    }
   }
 
   /// OpenAI 兼容的 tools 数组。

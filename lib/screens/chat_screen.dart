@@ -1496,6 +1496,84 @@ class _SearchBoxState extends State<_SearchBox> {
   }
 }
 
+/// 打开页面细节框：显示被打开的网页链接与状态（转圈 / ✓ / ✕）。
+class _FetchBox extends StatelessWidget {
+  final String url;
+  final bool searching;
+  final bool failed;
+
+  const _FetchBox({
+    super.key,
+    required this.url,
+    required this.searching,
+    required this.failed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.open_in_new,
+            size: 15,
+            color: NarrChatTheme.primary,
+          ),
+          const SizedBox(width: 6),
+          const Text(
+            '打开页面',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: NarrChatTheme.primary,
+            ),
+          ),
+          if (url.isNotEmpty) ...[
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                url,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(width: 4),
+          if (searching)
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else if (failed)
+            const Icon(
+              Icons.close,
+              size: 14,
+              color: Color(0xFFE5484D),
+            )
+          else
+            const Icon(
+              Icons.check_circle,
+              size: 14,
+              color: NarrChatTheme.primary,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 思考框：每个框独立展开/折叠状态（多思考框互不影响）。
 ///
 /// - 折叠：4~5 行固定高度、内容增长时自动向下滚动；
@@ -1678,7 +1756,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Agent 过程时间线：思考 / 搜索按真实顺序交错，
+                  // Agent 过程时间线：思考 / 搜索 / 打开页面按真实顺序交错，
                   // 每个框独立展开/折叠状态（按 index 作为 key 保持状态）。
                   for (var i = 0; i < events.length; i++) ...[
                     if (i > 0) const SizedBox(height: 8),
@@ -1688,13 +1766,20 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         content: events[i].content,
                         done: events[i].done,
                       )
-                    else
+                    else if (events[i].type == AgentEventType.search)
                       _SearchBox(
                         key: ValueKey('search_$i'),
                         query: events[i].content,
                         searching: events[i].searching,
                         failed: events[i].failed,
                         results: events[i].results,
+                      )
+                    else
+                      _FetchBox(
+                        key: ValueKey('fetch_$i'),
+                        url: events[i].content,
+                        searching: events[i].searching,
+                        failed: events[i].failed,
                       ),
                   ],
                   // 自动重试提示（灰字）：思考/搜索块之后、正文之前。

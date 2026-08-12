@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:narrchat/services/agent/agent_runner.dart';
+import 'package:narrchat/services/agent/fetch_page_tool.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
@@ -14,11 +15,12 @@ import 'package:narrchat/services/html_search_service.dart';
 class _FakeTool implements NarrAgentTool {
   final List<Map<String, dynamic>> calls = [];
   final AgentToolResult result;
+  final String toolName;
 
-  _FakeTool({required this.result});
+  _FakeTool({required this.result, this.toolName = 'web_search'});
 
   @override
-  String get name => 'web_search';
+  String get name => toolName;
 
   @override
   String get description => '测试工具';
@@ -41,6 +43,13 @@ class _FakeTool implements NarrAgentTool {
 
 AiToolCall _toolCall(Map<String, dynamic> args) =>
     AiToolCall(id: 'call_1', name: 'web_search', arguments: args);
+
+/// 构造带 UTF-8 头部的 HTML 响应（供 mock 搜索 / 抓取）。
+http.Response htmlResponse(String body) => http.Response.bytes(
+  utf8.encode(body),
+  200,
+  headers: {'content-type': 'text/html; charset=utf-8'},
+);
 
 void main() {
   group('AgentRunner', () {
@@ -256,12 +265,6 @@ void main() {
   });
 
   group('WebSearchTool', () {
-    http.Response htmlResponse(String body) => http.Response.bytes(
-      utf8.encode(body),
-      200,
-      headers: {'content-type': 'text/html; charset=utf-8'},
-    );
-
     test('格式化搜索结果并回调 onResults', () async {
       final search = HtmlSearchService(
         client: MockClient((request) async => htmlResponse(_bingHtml)),
@@ -344,6 +347,102 @@ void main() {
 
       expect(result.success, isFalse);
       expect(result.content, contains('搜索关键词为空'));
+    });
+
+    test('fetch_page 工具触发 fetching 活动（subject=url）', () async {
+      final tool = _FakeTool(
+        toolName: 'fetch_page',
+        result: const AgentToolResult(success: true, content: '页面正文'),
+      );
+      final activities = <AgentActivity>[];
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) => {'messages': messages, 'tools': tools},
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex == 0) {
+            callIndex++;
+            return AiCallResult(
+              content: '',
+              toolCalls: [
+                AiToolCall(
+                  id: 'call_1',
+                  name: 'fetch_page',
+                  arguments: {'url': 'https://example.com/qingyun'},
+                ),
+              ],
+              promptTokens: 0,
+              completionTokens: 0,
+            );
+          }
+          callIndex++;
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 0,
+            completionTokens: 0,
+          );
+        },
+        tools: [tool],
+      );
+
+      await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+        onActivity: activities.add,
+      );
+
+      final fetch = activities.firstWhere(
+        (a) => a.type == AgentActivityType.fetching,
+      );
+      expect(fetch.query, 'https://example.com/qingyun');
+      // 工具确实被执行（url 参数）。
+      expect(tool.calls.single['url'], 'https://example.com/qingyun');
+    });
+  });
+
+  group('FetchPageTool', () {
+    test('打开页面成功：返回正文并回调 onDone', () async {
+      final search = HtmlSearchService(
+        client: MockClient(
+          (request) async => htmlResponse(
+            '<html><body><h1>青云宗</h1><p>青云宗是北域大派。</p></body></html>',
+          ),
+        ),
+      );
+      var done = false;
+      final tool = FetchPageTool(search: search, onDone: () => done = true);
+
+      final result = await tool.run({'url': 'https://example.com'});
+
+      expect(result.success, isTrue);
+      expect(result.content, contains('青云宗是北域大派'));
+      expect(done, isTrue);
+    });
+
+    test('打开页面失败：返回错误并回调 onFail', () async {
+      final search = HtmlSearchService(
+        client: MockClient((request) async {
+          throw http.ClientException('网络失败');
+        }),
+      );
+      var fail = false;
+      final tool = FetchPageTool(search: search, onFail: () => fail = true);
+
+      final result = await tool.run({'url': 'https://example.com'});
+
+      expect(result.success, isFalse);
+      expect(result.content, contains('打开页面失败'));
+      expect(fail, isTrue);
+    });
+
+    test('空链接返回错误并回调 onFail', () async {
+      var fail = false;
+      final tool = FetchPageTool(onFail: () => fail = true);
+
+      final result = await tool.run(const {});
+
+      expect(result.success, isFalse);
+      expect(result.content, contains('链接为空'));
+      expect(fail, isTrue);
     });
   });
 }

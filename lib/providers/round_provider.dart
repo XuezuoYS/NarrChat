@@ -13,6 +13,7 @@ import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../services/agent/agent_runner.dart';
+import '../services/agent/fetch_page_tool.dart';
 import '../services/agent/web_search_tool.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
@@ -28,11 +29,14 @@ import 'world_book_provider.dart';
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
 class RoundProvider extends ChangeNotifier {
   /// Agent 路径注入的搜索指令：引导模型在用户明确要求搜索时先调用工具
-  ///（非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）。
+  ///（非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）；
+  /// 搜索后应主动打开结果页面阅读，确保细节准确。
   static const String _searchInstruction =
       '【联网搜索】若用户明确要求搜索、查询或查找资料'
       '（如「搜索/查一下/查找/查资料」），请先调用 web_search 工具'
-      '获取信息，再基于结果继续创作；未明确要求时不要调用搜索工具。';
+      '获取信息；然后从结果中主动选择最相关的 1~2 个页面，'
+      '用 fetch_page 打开并阅读正文，确保细节准确；'
+      '再基于获取的信息继续创作。未明确要求时不要调用搜索工具。';
 
   /// 网络类失败自动重试的最大次数（灰字提示「错误重连……（x/3）」）。
   static const int _maxAiRetries = 3;
@@ -48,6 +52,9 @@ class RoundProvider extends ChangeNotifier {
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
     WebSearchTool? webSearchTool,
+    FetchPageTool? fetchPageTool,
+    /// 默认搜索工具共用的搜索服务（测试可注入 mock）。
+    HtmlSearchService? searchService,
     /// 网络类失败重试间隔（测试可注入零时长）。
     Duration retryDelay = const Duration(milliseconds: 800),
   })  : _dao = dao ?? RoundDao(),
@@ -65,12 +72,23 @@ class RoundProvider extends ChangeNotifier {
         _cloudSyncProvider = cloudSyncProvider,
         // ignore: prefer_initializing_formals
         _retryDelay = retryDelay {
-    // 联网搜索工具：搜索成功回调更新结果明细；失败回调标记搜索框失败（✕）。
+    // 默认使用共享的搜索服务实例（避免重复创建 http client）。
+    final search = searchService ?? HtmlSearchService();
+    // 联网搜索工具：成功回调更新结果明细；失败回调标记搜索框失败（✕）。
     _webSearchTool =
         webSearchTool ??
         WebSearchTool(
+          search: search,
           onResults: _handleSearchResults,
           onFail: _handleSearchFail,
+        );
+    // 打开网页工具：成功/失败回调更新 fetch 事件状态（✓ / ✕）。
+    _fetchPageTool =
+        fetchPageTool ??
+        FetchPageTool(
+          search: search,
+          onDone: _handleFetchDone,
+          onFail: _handleFetchFail,
         );
   }
 
@@ -84,6 +102,7 @@ class RoundProvider extends ChangeNotifier {
   final ModProvider? _modProvider;
   final CloudSyncProvider? _cloudSyncProvider;
   late final WebSearchTool _webSearchTool;
+  late final FetchPageTool _fetchPageTool;
 
   /// 网络类失败重试间隔。
   final Duration _retryDelay;
@@ -595,7 +614,7 @@ class RoundProvider extends ChangeNotifier {
             onChunk: onChunk,
             isCancelled: isCancelled ?? () => false,
           ),
-      tools: [_webSearchTool],
+      tools: [_webSearchTool, _fetchPageTool],
     );
 
     return runner.run(
@@ -648,7 +667,8 @@ class RoundProvider extends ChangeNotifier {
 
   /// Agent 活动回调：
   /// - `turn`：新一轮 LLM 调用开始，上一轮思考完成，后续思考进入新事件；
-  /// - `searching`：开始搜索，本轮思考完成并新增搜索事件。
+  /// - `searching`：开始搜索，本轮思考完成并新增搜索事件；
+  /// - `fetching`：开始打开网页，本轮思考完成并新增 fetch 事件。
   void _handleAgentActivity(AgentActivity activity) {
     if (activity.type == AgentActivityType.turn) {
       _finishCurrentThinking();
@@ -659,6 +679,16 @@ class RoundProvider extends ChangeNotifier {
       _agentEvents.add(
         AgentEvent(
           type: AgentEventType.search,
+          content: activity.query,
+          searching: true,
+        ),
+      );
+      notifyListeners();
+    } else if (activity.type == AgentActivityType.fetching) {
+      _finishCurrentThinking();
+      _agentEvents.add(
+        AgentEvent(
+          type: AgentEventType.fetch,
           content: activity.query,
           searching: true,
         ),
@@ -692,6 +722,32 @@ class RoundProvider extends ChangeNotifier {
           searching: false,
           done: true,
           failed: true,
+        );
+        break;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 打开页面成功回调：把最近的进行中 fetch 事件标记完成（✓）。
+  void _handleFetchDone() {
+    _markFetchEvent(failed: false);
+  }
+
+  /// 打开页面失败回调：标记为失败（✕）。
+  void _handleFetchFail() {
+    _markFetchEvent(failed: true);
+  }
+
+  /// 更新最近一个进行中的 fetch 事件（完成 / 失败）。
+  void _markFetchEvent({required bool failed}) {
+    for (var i = _agentEvents.length - 1; i >= 0; i--) {
+      final e = _agentEvents[i];
+      if (e.type == AgentEventType.fetch && e.searching) {
+        _agentEvents[i] = e.copyWith(
+          searching: false,
+          done: true,
+          failed: failed,
         );
         break;
       }
