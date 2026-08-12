@@ -24,7 +24,7 @@ void main() {
       expect(migrated.customModelName, '');
       expect(migrated.lastThinking, isFalse);
       expect(migrated.lastStreaming, isTrue);
-      expect(migrated.lastSearch, isFalse);
+      expect(migrated.lastSearch, isTrue);
     });
 
     test('旧 model 未命中内置 → 迁移为自定义模型（名称保留）', () {

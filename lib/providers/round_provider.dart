@@ -6,12 +6,16 @@ import '../config/app_config.dart';
 import '../config/model_presets.dart';
 import '../database/book_dao.dart';
 import '../database/round_dao.dart';
+import '../models/agent_event.dart';
 import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/round.dart';
+import '../services/agent/agent_runner.dart';
+import '../services/agent/web_search_tool.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
+import '../services/html_search_service.dart';
 import '../services/prompt_builder.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
@@ -21,6 +25,13 @@ import 'world_book_provider.dart';
 
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
 class RoundProvider extends ChangeNotifier {
+  /// Agent 路径注入的搜索指令：引导模型在用户明确要求搜索时先调用工具
+  ///（非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）。
+  static const String _searchInstruction =
+      '【联网搜索】若用户明确要求搜索、查询或查找资料'
+      '（如「搜索/查一下/查找/查资料」），请先调用 web_search 工具'
+      '获取信息，再基于结果继续创作；未明确要求时不要调用搜索工具。';
+
   RoundProvider({
     RoundDao? dao,
     BookDao? bookDao,
@@ -31,6 +42,7 @@ class RoundProvider extends ChangeNotifier {
     WorldBookProvider? worldBookProvider,
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
+    WebSearchTool? webSearchTool,
   })  : _dao = dao ?? RoundDao(),
         _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
@@ -43,7 +55,10 @@ class RoundProvider extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _modProvider = modProvider,
         // ignore: prefer_initializing_formals
-        _cloudSyncProvider = cloudSyncProvider;
+        _cloudSyncProvider = cloudSyncProvider {
+    // 联网搜索工具：搜索完成时更新 Agent 搜索状态（供流式气泡展示结果明细）。
+    _webSearchTool = webSearchTool ?? WebSearchTool(onResults: _handleSearchResults);
+  }
 
   final RoundDao _dao;
   final BookDao _bookDao;
@@ -54,6 +69,7 @@ class RoundProvider extends ChangeNotifier {
   final WorldBookProvider? _worldBookProvider;
   final ModProvider? _modProvider;
   final CloudSyncProvider? _cloudSyncProvider;
+  late final WebSearchTool _webSearchTool;
 
   List<Round> _rounds = [];
 
@@ -66,7 +82,13 @@ class RoundProvider extends ChangeNotifier {
   bool _isStreaming = false;
   bool _cancelRequested = false;
   String _streamingContent = '';
-  String _streamingReasoning = '';
+
+  /// Agent 过程时间线：思考 / 搜索事件按真实顺序交错排列
+  ///（思考1 → 搜索1 → 思考2 → 搜索2 …）。
+  List<AgentEvent> _agentEvents = [];
+
+  /// 下一段思考增量到达时是否新建思考事件（agent 每轮开始时置位）。
+  bool _newReasoningBlockPending = true;
   String _pendingUserInput = '';
   String? _error;
   int? _bookId;
@@ -78,7 +100,9 @@ class RoundProvider extends ChangeNotifier {
   bool get isSending => _isSending;
   bool get isStreaming => _isStreaming;
   String get streamingContent => _streamingContent;
-  String get streamingReasoning => _streamingReasoning;
+
+  /// Agent 过程时间线（思考 / 搜索交错，供流式气泡渲染）。
+  List<AgentEvent> get agentEvents => List.unmodifiable(_agentEvents);
 
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _pendingUserInput;
@@ -105,34 +129,6 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 调试数据：始终反映最近一次尝试（成功轮次或失败条目）。
-  // - 成功：_debugRoundId 指向最新轮次，_debugRequestBody/_debugRawResponse/
-  //   _debugRawReasoning 对应其请求与返回；
-  // - 失败/中断：_failedDebugRequestBody 保留本次实际发出的请求，
-  //   轮次维度调试数据清空。
-  int? _debugRoundId;
-  String _debugRequestBody = '';
-  String _debugRawResponse = '';
-  String _debugRawReasoning = '';
-  String _failedDebugRequestBody = '';
-  String _failedDebugRawResponse = '';
-  String _failedDebugRawReasoning = '';
-
-  /// 调试数据所属轮次 id（null 表示当前调试数据属于失败条目或暂无）。
-  int? get debugRoundId => _debugRoundId;
-  String get debugRequestBody => _debugRequestBody;
-  String get debugRawResponse => _debugRawResponse;
-  String get debugRawReasoning => _debugRawReasoning;
-
-  /// 失败条目实际发出的请求 JSON。
-  String get failedDebugRequestBody => _failedDebugRequestBody;
-
-  /// 失败 / 截断前已流式累积的 AI 原始输出（未解析）。
-  String get failedDebugRawResponse => _failedDebugRawResponse;
-
-  /// 失败 / 截断前已流式累积的思考内容。
-  String get failedDebugRawReasoning => _failedDebugRawReasoning;
-
   /// 更新轮次列表并刷新缓存的不可变视图。
   void _setRounds(List<Round> rounds) {
     _rounds = rounds;
@@ -144,16 +140,6 @@ class RoundProvider extends ChangeNotifier {
   /// 若书籍尚无任何轮次，自动创建「第零轮」（round_index = 0），
   /// 用于在开始对话前编辑初始的世界状态与角色状态。
   Future<void> loadRounds(int bookId) async {
-    if (_bookId != bookId) {
-      // 切换书籍时清空调试数据。
-      _debugRoundId = null;
-      _debugRequestBody = '';
-      _debugRawResponse = '';
-      _debugRawReasoning = '';
-      _failedDebugRequestBody = '';
-      _failedDebugRawResponse = '';
-      _failedDebugRawReasoning = '';
-    }
     _bookId = bookId;
     try {
       _setRounds(await _dao.getRoundsByBook(bookId));
@@ -197,19 +183,6 @@ class RoundProvider extends ChangeNotifier {
     final id = _bookId;
     if (id == null) return;
     await _setFailedAttempt(id, const FailedAttempt());
-  }
-
-  /// 失败 / 中断时接管调试数据：保留本次实际发出的请求，以及流式中断前
-  /// 已累积的部分原始输出 / 思考内容；清空轮次维度调试数据
-  /// （最新尝试属于失败条目，不再属于任何成功轮次）。
-  /// 必须在清空 [_streamingContent] / [_streamingReasoning] 之前调用。
-  void _captureFailedDebug() {
-    _failedDebugRequestBody = _debugRequestBody;
-    _failedDebugRawResponse = _streamingContent;
-    _failedDebugRawReasoning = _streamingReasoning;
-    _debugRoundId = null;
-    _debugRawResponse = '';
-    _debugRawReasoning = '';
   }
 
   /// 重新加载当前书籍的轮次（云同步恢复数据后调用）。
@@ -259,14 +232,13 @@ class RoundProvider extends ChangeNotifier {
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
     _pendingUserInput = userInput;
+    // 重置 Agent 过程时间线。
+    _agentEvents = [];
+    _newReasoningBlockPending = true;
     notifyListeners();
     try {
-      // 开始新请求：清空本书「失败条目」（失败则稍后重新写入），
-      // 旧的失败调试数据一并失效。
+      // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
       await _setFailedAttempt(b.id!, const FailedAttempt());
-      _failedDebugRequestBody = '';
-      _failedDebugRawResponse = '';
-      _failedDebugRawReasoning = '';
       final lastRound = latestRound;
       final recentRounds = _takeRecent(b.historyRounds);
       final worldBookEntries = _worldBookScanner.scan(
@@ -296,10 +268,14 @@ class RoundProvider extends ChangeNotifier {
       final historyMessages = PromptBuilder.buildHistoryMessages(recentRounds);
 
       final useStream = settings?.streaming ?? true;
+      // 搜索能力：预设支持搜索时默认开启（模型按需调用）；
+      // 用户可手动关闭（lastSearch=false）。
+      final useSearch = settings == null
+          ? ModelPresets.defaultPreset.supportsSearch
+          : (settings.selectedPreset.supportsSearch && settings.lastSearch);
       if (useStream) {
         _isStreaming = true;
         _streamingContent = '';
-        _streamingReasoning = '';
         notifyListeners();
       }
 
@@ -321,7 +297,6 @@ class RoundProvider extends ChangeNotifier {
             settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
         maxTokens: settings?.maxTokens,
         stream: useStream,
-        // 联网搜索工具在后续里程碑接入；当前无工具注入。
         tools: null,
       );
       final requestBody = settings == null
@@ -331,33 +306,40 @@ class RoundProvider extends ChangeNotifier {
             )
           : settings.buildRequestBody(values);
 
-      final result = await _aiService.chat(
-        apiBaseUrl: settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
-        apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-        requestBody: requestBody,
-        stream: useStream,
-        onChunk: useStream
-            ? (chunk) {
-                if (chunk.done) return;
-                if (chunk.contentDelta.isNotEmpty) {
-                  _streamingContent += chunk.contentDelta;
-                }
-                if (chunk.reasoningDelta.isNotEmpty) {
-                  _streamingReasoning += chunk.reasoningDelta;
-                }
-                notifyListeners();
-              }
-            : null,
-        onRequestBody: (json) => _debugRequestBody = json,
-        isCancelled: () => _cancelRequested,
-      );
+      final onChunk = _buildStreamingOnChunk(useStream);
+      // 本轮开启联网搜索 → Agent 工具循环（首轮带工具，搜索后生成）；
+      // 否则走单轮直发路径。
+      final result = useSearch
+          ? await _runAgent(
+              settings: settings,
+              apiBaseUrl:
+                  settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
+              apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+              initialMessages: [
+                {
+                  'role': 'system',
+                  'content': '${prompts.systemPrompt}\n\n$_searchInstruction',
+                },
+                ...historyMessages,
+                {'role': 'user', 'content': prompts.userPrompt},
+              ],
+              useStream: useStream,
+              onChunk: onChunk,
+            )
+          : await _aiService.chat(
+              apiBaseUrl:
+                  settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
+              apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+              requestBody: requestBody,
+              stream: useStream,
+              onChunk: onChunk,
+              isCancelled: () => _cancelRequested,
+            );
       // 用户主动中断：丢弃部分内容，以「已截断」失败条目保留用户输入。
-      // 先接管流式累积的部分输出/思考到失败调试，再清空流式缓冲。
       if (_cancelRequested) {
-        _captureFailedDebug();
         _isStreaming = false;
         _streamingContent = '';
-        _streamingReasoning = '';
+        _agentEvents = [];
         await _setFailedAttempt(
           b.id!,
           FailedAttempt(userInput: userInput),
@@ -366,7 +348,7 @@ class RoundProvider extends ChangeNotifier {
       }
       _isStreaming = false;
       _streamingContent = '';
-      _streamingReasoning = '';
+      _agentEvents = [];
 
       final parsed = AiResponseParser.parse(result.content);
 
@@ -384,15 +366,7 @@ class RoundProvider extends ChangeNotifier {
         tokensOut: result.completionTokens,
         createdAt: DateTime.now(),
       );
-      final newRoundId = await _dao.insertRound(newRound);
-      // 仅保留最新一轮的调试数据（完整请求 JSON、AI 原始返回与思考内容）。
-      // Round 不可变：insertRound 返回真实自增 id 作为调试数据归属。
-      _debugRoundId = newRoundId;
-      _debugRawResponse = result.content;
-      _debugRawReasoning = result.reasoningContent;
-      _failedDebugRequestBody = '';
-      _failedDebugRawResponse = '';
-      _failedDebugRawReasoning = '';
+      await _dao.insertRound(newRound);
       await loadRounds(b.id!);
       // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
@@ -404,10 +378,9 @@ class RoundProvider extends ChangeNotifier {
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
       // 以「已截断」失败条目保留用户输入。
-      _captureFailedDebug();
       _isStreaming = false;
       _streamingContent = '';
-      _streamingReasoning = '';
+      _agentEvents = [];
       _error = null;
       await _setFailedAttempt(
         b.id!,
@@ -415,12 +388,10 @@ class RoundProvider extends ChangeNotifier {
       );
       return false;
     } catch (e) {
-      // 请求失败：以「生成失败 + 原因」失败条目保留用户输入（不再弹消息提示）；
-      // 若为流式中途失败，先接管已累积的部分内容。
-      _captureFailedDebug();
+      // 请求失败：以「生成失败 + 原因」失败条目保留用户输入（不再弹消息提示）。
       _isStreaming = false;
       _streamingContent = '';
-      _streamingReasoning = '';
+      _agentEvents = [];
       final saved = await _setFailedAttempt(
         b.id!,
         FailedAttempt(userInput: userInput, errorMessage: e.toString()),
@@ -434,6 +405,137 @@ class RoundProvider extends ChangeNotifier {
       _pendingUserInput = '';
       notifyListeners();
     }
+  }
+
+  /// Agent 工具循环执行（本轮开启联网搜索时）。
+  ///
+  /// 首轮带 `web_search` 工具调用模型；若模型请求搜索则执行并把结果
+  /// 回传，直至模型返回最终内容（6 区块）或达到最大迭代次数。
+  Future<AiCallResult> _runAgent({
+    required AiSettingsProvider? settings,
+    required String apiBaseUrl,
+    required String apiKey,
+    required List<Map<String, dynamic>> initialMessages,
+    required bool useStream,
+    required void Function(AiStreamChunk chunk)? onChunk,
+  }) async {
+    final runner = AgentRunner(
+      buildBody: (messages, tools) {
+        final values = AiRequestValues(
+          model: (settings?.model.trim().isNotEmpty ?? false)
+              ? settings!.model
+              : ModelPresets.defaultPreset.modelId,
+          messages: messages,
+          temperature: settings?.temperature ?? 1.0,
+          thinking:
+              settings?.thinking ?? ModelPresets.defaultPreset.defaultThinking,
+          reasoningEffort:
+              settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
+          maxTokens: settings?.maxTokens,
+          stream: useStream,
+          tools: tools,
+        );
+        return settings == null
+            ? AiRequestBodyBuilder.buildPresetBody(
+                rules: ModelPresets.defaultPreset.requestRules,
+                values: values,
+              )
+            : settings.buildRequestBody(values);
+      },
+      call: (requestBody, stream, onChunk, onRequestBody, isCancelled) =>
+          _aiService.chat(
+            apiBaseUrl: apiBaseUrl,
+            apiKey: apiKey,
+            requestBody: requestBody,
+            stream: stream,
+            onChunk: onChunk,
+            onRequestBody: onRequestBody,
+            isCancelled: isCancelled,
+          ),
+      tools: [_webSearchTool],
+    );
+
+    return runner.run(
+      initialMessages: initialMessages,
+      stream: useStream,
+      onChunk: onChunk,
+      isCancelled: () => _cancelRequested,
+      onActivity: _handleAgentActivity,
+    );
+  }
+
+  /// 流式增量回调：累积正文，思考按块累积（agent 每轮一个新思考块），
+  /// 并驱动 UI 更新（非流式返回 null）。
+  void Function(AiStreamChunk chunk)? _buildStreamingOnChunk(bool useStream) {
+    if (!useStream) return null;
+    return (chunk) {
+      if (chunk.done) return;
+      if (chunk.contentDelta.isNotEmpty) {
+        // 进入正文阶段：当前轮的思考已完成。
+        _finishCurrentThinking();
+        _streamingContent += chunk.contentDelta;
+      }
+      if (chunk.reasoningDelta.isNotEmpty) {
+        // 需要新建思考事件（首段思考或 agent 新一轮开始）时先开新事件。
+        if (_newReasoningBlockPending) {
+          _newReasoningBlockPending = false;
+          _agentEvents.add(const AgentEvent(type: AgentEventType.thinking));
+        }
+        final last = _agentEvents.length - 1;
+        _agentEvents[last] = _agentEvents[last].copyWith(
+          content: _agentEvents[last].content + chunk.reasoningDelta,
+        );
+      }
+      notifyListeners();
+    };
+  }
+
+  /// 将最近的未完成思考事件标记为完成（思考结束 / 开始搜索 / 进入正文时）。
+  void _finishCurrentThinking() {
+    for (var i = _agentEvents.length - 1; i >= 0; i--) {
+      final e = _agentEvents[i];
+      if (e.type == AgentEventType.thinking && !e.done) {
+        _agentEvents[i] = e.copyWith(done: true);
+        break;
+      }
+    }
+  }
+
+  /// Agent 活动回调：
+  /// - `turn`：新一轮 LLM 调用开始，上一轮思考完成，后续思考进入新事件；
+  /// - `searching`：开始搜索，本轮思考完成并新增搜索事件。
+  void _handleAgentActivity(AgentActivity activity) {
+    if (activity.type == AgentActivityType.turn) {
+      _finishCurrentThinking();
+      _newReasoningBlockPending = true;
+      notifyListeners();
+    } else if (activity.type == AgentActivityType.searching) {
+      _finishCurrentThinking();
+      _agentEvents.add(
+        AgentEvent(
+          type: AgentEventType.search,
+          content: activity.query,
+          searching: true,
+        ),
+      );
+      notifyListeners();
+    }
+  }
+
+  /// 搜索完成回调：更新最近一个进行中的搜索事件（结果 + 完成）。
+  void _handleSearchResults(List<SearchResult> results) {
+    for (var i = _agentEvents.length - 1; i >= 0; i--) {
+      final e = _agentEvents[i];
+      if (e.type == AgentEventType.search && e.searching) {
+        _agentEvents[i] = e.copyWith(
+          searching: false,
+          results: results,
+          done: true,
+        );
+        break;
+      }
+    }
+    notifyListeners();
   }
 
   /// 删除轮次。

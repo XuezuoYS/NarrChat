@@ -4,6 +4,7 @@ import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../models/agent_event.dart';
 import '../models/book.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
@@ -11,13 +12,13 @@ import '../providers/book_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../services/html_search_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
-import '../widgets/debug_prompt_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/round_action_dialogs.dart';
@@ -281,18 +282,6 @@ class _ChatScreenState extends State<ChatScreen>
     await context.read<RoundProvider>().clearFailedAttempt();
   }
 
-  /// 查看失败条目的调试信息：实际发出的请求，以及流式中断前
-  /// 已累积的部分原始输出 / 思考内容（若存在）。
-  void _showFailedDebugDialog() {
-    final rp = context.read<RoundProvider>();
-    DebugPromptDialog.show(
-      context,
-      requestBody: rp.failedDebugRequestBody,
-      rawResponse: rp.failedDebugRawResponse,
-      rawReasoning: rp.failedDebugRawReasoning,
-    );
-  }
-
   void _onViewSidebar(Round round) {
     final rounds = context.read<RoundProvider>().rounds;
     final latest = rounds.isEmpty ? null : rounds.last;
@@ -316,24 +305,9 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 查看最新一轮的调试信息（发送的 Prompt 与 AI 原始返回）。
-  void _showDebugDialog() {
-    final rp = context.read<RoundProvider>();
-    DebugPromptDialog.show(
-      context,
-      requestBody: rp.debugRequestBody,
-      rawResponse: rp.debugRawResponse,
-      rawReasoning: rp.debugRawReasoning,
-    );
-  }
-
   /// 长按 / 右键气泡触发的上下文菜单。
   void _onBubbleContextMenu(Round round, bool isAi, Offset position) {
-    final rp = context.read<RoundProvider>();
-    final chatRounds = rp.rounds.where((r) => r.roundIndex > 0).toList();
-    final isLatest = chatRounds.isNotEmpty && round.id == chatRounds.last.id;
-
-    final items = _buildMenuItems(round, isAi, isLatest);
+    final items = _buildMenuItems(round, isAi);
 
     showAppMenu<String>(
       context: context,
@@ -364,8 +338,6 @@ class _ChatScreenState extends State<ChatScreen>
           _handleReAsk(round);
         case 'sidebar':
           _onViewSidebar(round);
-        case 'debug':
-          _showDebugDialog();
         case 'delete':
           _handleDelete(round);
       }
@@ -373,11 +345,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 构建气泡上下文菜单项（AI / 用户气泡的入口差异集中于此）。
-  List<PopupMenuEntry<String>> _buildMenuItems(
-    Round round,
-    bool isAi,
-    bool isLatest,
-  ) {
+  List<PopupMenuEntry<String>> _buildMenuItems(Round round, bool isAi) {
     return <PopupMenuEntry<String>>[
       if (isAi) ...[
         const PopupMenuItem(
@@ -413,11 +381,6 @@ class _ChatScreenState extends State<ChatScreen>
             label: '查看侧边栏',
           ),
         ),
-        if (isLatest)
-          const PopupMenuItem(
-            value: 'debug',
-            child: AppMenuAction(icon: Icons.bug_report_outlined, label: '调试'),
-          ),
         const PopupMenuItem(
           value: 'delete',
           child: AppMenuAction(
@@ -822,9 +785,6 @@ class _ChatScreenState extends State<ChatScreen>
                 onRetry: _retryFailure,
                 onEditAndRetry: _editAndRetryFailure,
                 onClear: _clearFailure,
-                onViewDebug: roundProvider.failedDebugRequestBody.isNotEmpty
-                    ? _showFailedDebugDialog
-                    : null,
               ),
             );
           } else if (showPendingUser && index == virtualBase) {
@@ -838,15 +798,12 @@ class _ChatScreenState extends State<ChatScreen>
             item = isStreaming
                 ? _StreamingBubble(
                     content: roundProvider.streamingContent,
-                    reasoning: roundProvider.streamingReasoning,
+                    agentEvents: roundProvider.agentEvents,
                   )
                 : const _TypingBubble();
           } else {
             final round = chatRounds[index ~/ 2];
             final isAi = index.isOdd;
-            // 调试数据仅保留最新一轮：只有最新 AI 气泡提供「调试」入口。
-            final isLatest =
-                chatRounds.isNotEmpty && round.id == chatRounds.last.id;
             if (!isAi) {
               item = Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -873,12 +830,6 @@ class _ChatScreenState extends State<ChatScreen>
                     onViewSidebar: () => _onViewSidebar(round),
                     onDelete: () => _handleDelete(round),
                     onRefresh: () => _handleReAsk(round),
-                    // 调试数据仅保留最新一轮：仅当属于本轮时提供入口
-                    //（失败重试等场景下最新轮可能无对应调试数据）。
-                    onViewDebug:
-                        isLatest && roundProvider.debugRoundId == round.id
-                        ? _showDebugDialog
-                        : null,
                   ),
                 ),
               );
@@ -1053,6 +1004,14 @@ class _ChatScreenState extends State<ChatScreen>
           ),
           const SizedBox(width: 6),
         ],
+        if (preset.supportsSearch) ...[
+          _ModeToggleChip(
+            label: '联网搜索',
+            active: aiSettings.lastSearch,
+            onTap: () => _setPerRoundOptions(search: !aiSettings.lastSearch),
+          ),
+          const SizedBox(width: 6),
+        ],
         // 滚动到底部
         TextButton.icon(
           onPressed: _scrollToBottom,
@@ -1067,12 +1026,17 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 保存每轮选项（思考 / 流式）记忆。
-  Future<void> _setPerRoundOptions({bool? thinking, bool? streaming}) async {
+  /// 保存每轮选项（思考 / 流式 / 联网搜索）记忆。
+  Future<void> _setPerRoundOptions({
+    bool? thinking,
+    bool? streaming,
+    bool? search,
+  }) async {
     final aiSettings = context.read<AiSettingsProvider>();
     await aiSettings.setPerRoundOptions(
       thinking: thinking ?? aiSettings.thinking,
       streaming: streaming ?? aiSettings.streaming,
+      search: search ?? aiSettings.lastSearch,
     );
   }
 
@@ -1267,28 +1231,333 @@ class _TypingBubble extends StatelessWidget {
   }
 }
 
-/// AI 流式输出气泡：实时显示剧情正文；思考内容默认折叠，
-/// 通过「思考中」提示点击展开查看（内容非斜体）。极简无气泡样式。
+/// 搜索细节框：每个框独立展开/折叠状态（多搜索框互不影响）。
+/// 进行中显示转圈；完成后显示 ✓。
+class _SearchBox extends StatefulWidget {
+  final String query;
+  final bool searching;
+  final List<SearchResult> results;
+
+  const _SearchBox({
+    super.key,
+    required this.query,
+    required this.searching,
+    required this.results,
+  });
+
+  @override
+  State<_SearchBox> createState() => _SearchBoxState();
+}
+
+class _SearchBoxState extends State<_SearchBox> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final searching = widget.searching;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 头部：图标 + 状态文本 + 转圈/✓ + chevron。
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.travel_explore_outlined,
+                    size: 15,
+                    color: NarrChatTheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    searching ? '正在搜索' : '联网搜索',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: NarrChatTheme.primary,
+                    ),
+                  ),
+                  if (widget.query.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        searching
+                            ? '「${widget.query}」搜索中'
+                            : '「${widget.query}」· '
+                                  '${widget.results.length} 条结果',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: context.narrColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 4),
+                  if (searching)
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    const Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: NarrChatTheme.primary,
+                    ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.expand_more : Icons.chevron_right,
+                    size: 16,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // 展开：固定高度展示结果明细。
+          if (_expanded) ...[
+            Divider(height: 1, color: scheme.outlineVariant),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 150),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(10),
+                child: _buildResults(context),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResults(BuildContext context) {
+    final results = widget.results;
+    if (results.isEmpty) {
+      return Text(
+        widget.searching ? '正在搜索…' : '未获取到结果',
+        style: TextStyle(
+          fontSize: 12,
+          color: context.narrColors.textSecondary,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < results.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8),
+          Text(
+            '${i + 1}. ${results[i].title}',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: context.narrColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            results[i].url,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              color: context.narrColors.textSecondary,
+            ),
+          ),
+          if (results[i].snippet.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              results[i].snippet,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: context.narrColors.textSecondary,
+              ),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+/// 思考框：每个框独立展开/折叠状态（多思考框互不影响）。
+///
+/// - 折叠：4~5 行固定高度、内容增长时自动向下滚动；
+/// - 展开：全部内容内联展示（自动跟随交由聊天区全局滚动）；
+/// - 思考进行中显示转圈，完成后显示 ✓。
+class _ThinkingBox extends StatefulWidget {
+  final String content;
+  final bool done;
+
+  const _ThinkingBox({super.key, required this.content, required this.done});
+
+  @override
+  State<_ThinkingBox> createState() => _ThinkingBoxState();
+}
+
+class _ThinkingBoxState extends State<_ThinkingBox> {
+  final ScrollController _collapsedController = ScrollController();
+  String? _lastContent;
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _ThinkingBox oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 折叠态：思考内容增长时自动滚动到底部。
+    if (widget.content != _lastContent && !_expanded) {
+      _lastContent = widget.content;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_collapsedController.hasClients) return;
+        final pos = _collapsedController.position;
+        if (pos.maxScrollExtent > 0) {
+          _collapsedController.jumpTo(pos.maxScrollExtent);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _collapsedController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 头部：思考中 + 状态（转圈 / ✓）+ chevron。
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.psychology_outlined,
+                    size: 15,
+                    color: NarrChatTheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '思考中',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: NarrChatTheme.primary,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (widget.done)
+                    const Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: NarrChatTheme.primary,
+                    )
+                  else
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.expand_more : Icons.chevron_right,
+                    size: 16,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // 折叠：4~5 行固定高度、内部自动滚动；展开：全部内容内联。
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+              child: SelectableText(
+                widget.content,
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 96),
+              child: SingleChildScrollView(
+                controller: _collapsedController,
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                child: SelectableText(
+                  widget.content,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.5,
+                    color: context.narrColors.textSecondary,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// AI 流式输出气泡：实时显示剧情正文。
+///
+/// - 思考：每轮一个独立思考框（折叠 4~5 行自动滚动 / 展开全量内联）；
+/// - 联网搜索：Copilot 风格固定高度可展开细节框；
+/// - 生成期间气泡最底部持续显示转圈图标。
 class _StreamingBubble extends StatefulWidget {
   final String content;
-  final String reasoning;
+  final List<AgentEvent> agentEvents;
 
-  const _StreamingBubble({required this.content, required this.reasoning});
+  const _StreamingBubble({
+    required this.content,
+    required this.agentEvents,
+  });
 
   @override
   State<_StreamingBubble> createState() => _StreamingBubbleState();
 }
 
 class _StreamingBubbleState extends State<_StreamingBubble> {
-  bool _reasoningExpanded = false;
-
   @override
   Widget build(BuildContext context) {
     final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
     final content = widget.content;
-    final reasoning = widget.reasoning;
+    final events = widget.agentEvents;
     final hasContent = content.isNotEmpty;
-    final hasReasoning = reasoning.isNotEmpty;
+    final hasEvents = events.isNotEmpty;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -1305,75 +1574,27 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 思考区：默认折叠，点击「思考中」展开。
-                  if (hasReasoning) ...[
-                    InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: () => setState(
-                        () => _reasoningExpanded = !_reasoningExpanded,
+                  // Agent 过程时间线：思考 / 搜索按真实顺序交错，
+                  // 每个框独立展开/折叠状态（按 index 作为 key 保持状态）。
+                  for (var i = 0; i < events.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 8),
+                    if (events[i].type == AgentEventType.thinking)
+                      _ThinkingBox(
+                        key: ValueKey('think_$i'),
+                        content: events[i].content,
+                        done: events[i].done,
+                      )
+                    else
+                      _SearchBox(
+                        key: ValueKey('search_$i'),
+                        query: events[i].content,
+                        searching: events[i].searching,
+                        results: events[i].results,
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _reasoningExpanded
-                                  ? Icons.expand_more
-                                  : Icons.chevron_right,
-                              size: 16,
-                              color: NarrChatTheme.primary,
-                            ),
-                            const Icon(
-                              Icons.psychology_outlined,
-                              size: 14,
-                              color: NarrChatTheme.primary,
-                            ),
-                            const SizedBox(width: 4),
-                            const Text(
-                              '思考中',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: NarrChatTheme.primary,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            if (!hasContent) ...[
-                              const SizedBox(
-                                width: 12,
-                                height: 12,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                            ],
-                            Text(
-                              _reasoningExpanded ? '收起' : '点击查看',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: context.narrColors.textSecondary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (_reasoningExpanded) ...[
-                      const SizedBox(height: 2),
-                      SelectableText(
-                        reasoning,
-                        style: TextStyle(
-                          fontSize: 13,
-                          height: 1.5,
-                          color: context.narrColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                    if (hasContent) const Divider(height: 14),
                   ],
-                  if (hasContent)
+                  // 剧情正文。
+                  if (hasContent) ...[
+                    if (hasEvents) const Divider(height: 14),
                     SelectableText(
                       '$content▍',
                       style: TextStyle(
@@ -1381,26 +1602,28 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         height: 1.65,
                         color: context.narrColors.textPrimary,
                       ),
-                    )
-                  else if (!hasReasoning)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(
-                          width: 12,
-                          height: 12,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'AI 正在创作…',
-                          style: TextStyle(
-                            color: context.narrColors.textSecondary,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
                     ),
+                  ],
+                  // 生成中：气泡最底部持续显示转圈图标。
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        hasContent ? '正在生成…' : 'AI 正在创作…',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: context.narrColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),

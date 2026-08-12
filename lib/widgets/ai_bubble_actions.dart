@@ -7,14 +7,12 @@ import 'action_button.dart';
 /// - Token 用量（只读文本）
 /// - 查看本轮侧边栏
 /// - 刷新本轮
-/// - 查看调试信息（仅最新一轮，展示发送的 Prompt 与 AI 原始返回）
 /// - 删除本轮
 class AiBubbleActions extends StatelessWidget {
   final Round round;
   final VoidCallback onViewSidebar;
   final VoidCallback onDelete;
   final VoidCallback onRefresh;
-  final VoidCallback? onViewDebug;
 
   const AiBubbleActions({
     super.key,
@@ -22,7 +20,6 @@ class AiBubbleActions extends StatelessWidget {
     required this.onViewSidebar,
     required this.onDelete,
     required this.onRefresh,
-    this.onViewDebug,
   });
 
   @override
@@ -64,12 +61,6 @@ class AiBubbleActions extends StatelessWidget {
               label: '刷新本轮',
               onPressed: onRefresh,
             ),
-            if (onViewDebug != null)
-              ActionButton(
-                icon: Icons.bug_report_outlined,
-                label: '调试',
-                onPressed: onViewDebug!,
-              ),
             ActionButton(
               icon: Icons.delete_outline,
               label: '删除本轮',

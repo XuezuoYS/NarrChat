@@ -23,18 +23,38 @@ class AiStreamChunk {
   });
 }
 
+/// AI 请求的工具调用（模型决定调用某个工具）。
+class AiToolCall {
+  /// 调用 id（回填 tool 消息时使用）。
+  final String id;
+  final String name;
+
+  /// 工具参数（已解析为 JSON 对象）。
+  final Map<String, dynamic> arguments;
+
+  const AiToolCall({
+    required this.id,
+    required this.name,
+    required this.arguments,
+  });
+}
+
 /// AI 调用结果。
 class AiCallResult {
   final String content;
 
   /// 思考内容（思考模式下由 API 返回的 `reasoning_content`）。
   final String reasoningContent;
+
+  /// 模型请求的工具调用（空列表 = 无工具调用，直接返回最终内容）。
+  final List<AiToolCall> toolCalls;
   final int promptTokens;
   final int completionTokens;
 
   const AiCallResult({
     required this.content,
     this.reasoningContent = '',
+    this.toolCalls = const [],
     required this.promptTokens,
     required this.completionTokens,
   });
@@ -147,12 +167,14 @@ class AiService {
       final message = (choices.first as Map<String, dynamic>)['message'] as Map<String, dynamic>?;
       final content = (message?['content'] as String?) ?? '';
       final reasoningContent = (message?['reasoning_content'] as String?) ?? '';
+      final toolCalls = _parseToolCalls(message?['tool_calls']);
       final usage = data['usage'] as Map<String, dynamic>?;
       final promptTokens = (usage?['prompt_tokens'] as num?)?.toInt() ?? 0;
       final completionTokens = (usage?['completion_tokens'] as num?)?.toInt() ?? 0;
       return AiCallResult(
         content: content,
         reasoningContent: reasoningContent,
+        toolCalls: toolCalls,
         promptTokens: promptTokens,
         completionTokens: completionTokens,
       );
@@ -282,6 +304,8 @@ class AiService {
 
     final contentSb = StringBuffer();
     final reasoningSb = StringBuffer();
+    // 流式工具调用按 index 累积（id/name/arguments 分块到达）。
+    final toolCallAcc = <int, _ToolCallAccumulator>{};
     int promptTokens = 0;
     int completionTokens = 0;
 
@@ -328,6 +352,16 @@ class AiService {
           if (data.isEmpty) return;
           try {
             final json = jsonDecode(data) as Map<String, dynamic>;
+            // 部分服务商在最后一个 chunk 附带 usage（此时 choices 为空数组），
+            // 需在早退之前解析。
+            final usage = json['usage'] as Map<String, dynamic>?;
+            if (usage != null) {
+              promptTokens =
+                  (usage['prompt_tokens'] as num?)?.toInt() ?? promptTokens;
+              completionTokens =
+                  (usage['completion_tokens'] as num?)?.toInt() ??
+                  completionTokens;
+            }
             final choices = (json['choices'] as List<dynamic>?) ?? const [];
             if (choices.isEmpty) return;
             final delta =
@@ -343,13 +377,28 @@ class AiService {
               reasoningSb.write(reasoning);
               onChunk?.call(AiStreamChunk(reasoningDelta: reasoning));
             }
-            // 部分服务商在最后一个 chunk 附带 usage。
-            final usage = json['usage'] as Map<String, dynamic>?;
-            if (usage != null) {
-              promptTokens =
-                  (usage['prompt_tokens'] as num?)?.toInt() ?? promptTokens;
-              completionTokens = (usage['completion_tokens'] as num?)?.toInt() ??
-                  completionTokens;
+            // 流式工具调用：`delta.tool_calls` 分块累积。
+            final toolCalls = delta?['tool_calls'] as List<dynamic>?;
+            if (toolCalls != null) {
+              for (final raw in toolCalls) {
+                if (raw is! Map) continue;
+                final index = (raw['index'] as num?)?.toInt() ?? 0;
+                final acc = toolCallAcc.putIfAbsent(
+                  index,
+                  () => _ToolCallAccumulator(),
+                );
+                final id = raw['id'] as String?;
+                if (id != null && id.isNotEmpty) acc.id = id;
+                final fn = raw['function'] as Map<String, dynamic>?;
+                if (fn != null) {
+                  final name = fn['name'] as String?;
+                  if (name != null && name.isNotEmpty) acc.name = name;
+                  final args = fn['arguments'] as String?;
+                  if (args != null && args.isNotEmpty) {
+                    acc.arguments.write(args);
+                  }
+                }
+              }
             }
           } catch (_) {
             // 忽略无法解析的行，保证容错。
@@ -386,12 +435,65 @@ class AiService {
     return AiCallResult(
       content: contentSb.toString(),
       reasoningContent: reasoningSb.toString(),
+      toolCalls: [
+        for (final acc in toolCallAcc.values)
+          AiToolCall(
+            id: acc.id,
+            name: acc.name,
+            arguments: _parseToolArguments(acc.arguments.toString()),
+          ),
+      ],
       promptTokens: promptTokens,
       completionTokens: completionTokens,
     );
   }
 
+  /// 解析工具参数 JSON 字符串；非法时回退空 Map。
+  static Map<String, dynamic> _parseToolArguments(String raw) {
+    if (raw.trim().isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      return (decoded is Map<String, dynamic>) ? decoded : const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// 解析非流式响应中的 `message.tool_calls`。
+  static List<AiToolCall> _parseToolCalls(Object? raw) {
+    if (raw is! List) return const [];
+    final result = <AiToolCall>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final fn = item['function'];
+      if (fn is! Map) continue;
+      final name = fn['name'] as String? ?? '';
+      Map<String, dynamic> arguments = const {};
+      final argsRaw = fn['arguments'];
+      if (argsRaw is String) {
+        arguments = _parseToolArguments(argsRaw);
+      } else if (argsRaw is Map) {
+        arguments = Map<String, dynamic>.from(argsRaw);
+      }
+      result.add(
+        AiToolCall(
+          id: (item['id'] as String?) ?? '',
+          name: name,
+          arguments: arguments,
+        ),
+      );
+    }
+    return result;
+  }
+
   void dispose() {
     _client.close();
   }
+}
+
+/// 流式工具调用的增量累积器。
+class _ToolCallAccumulator {
+  String id = '';
+  String name = '';
+  final StringBuffer arguments = StringBuffer();
 }

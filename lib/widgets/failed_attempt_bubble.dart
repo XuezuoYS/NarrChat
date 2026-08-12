@@ -17,16 +17,12 @@ class FailedAttemptBubble extends StatelessWidget {
   final VoidCallback onEditAndRetry;
   final VoidCallback onClear;
 
-  /// 查看失败条目的调试信息（本次实际发出的请求）；为空时不显示入口。
-  final VoidCallback? onViewDebug;
-
   const FailedAttemptBubble({
     super.key,
     required this.attempt,
     required this.onRetry,
     required this.onEditAndRetry,
     required this.onClear,
-    this.onViewDebug,
   });
 
   void _showMenu(BuildContext context, Offset position) {
@@ -46,14 +42,6 @@ class FailedAttemptBubble extends StatelessWidget {
           value: 'copy',
           child: AppMenuAction(icon: Icons.copy_outlined, label: '复制输入'),
         ),
-        if (onViewDebug != null)
-          const PopupMenuItem(
-            value: 'debug',
-            child: AppMenuAction(
-              icon: Icons.bug_report_outlined,
-              label: '调试',
-            ),
-          ),
         const PopupMenuItem(
           value: 'clear',
           child: AppMenuAction(
@@ -80,8 +68,6 @@ class FailedAttemptBubble extends StatelessWidget {
               ),
             );
           }
-        case 'debug':
-          onViewDebug?.call();
         case 'clear':
           onClear();
       }
@@ -120,12 +106,6 @@ class FailedAttemptBubble extends StatelessWidget {
                 label: '修改并重新提问',
                 onPressed: onEditAndRetry,
               ),
-              if (onViewDebug != null)
-                ActionButton(
-                  icon: Icons.bug_report_outlined,
-                  label: '调试',
-                  onPressed: onViewDebug!,
-                ),
               ActionButton(
                 icon: Icons.delete_outline,
                 label: '清除失败条目',

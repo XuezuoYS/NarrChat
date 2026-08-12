@@ -17,7 +17,6 @@ import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
-import 'package:narrchat/widgets/debug_prompt_dialog.dart';
 import 'package:provider/provider.dart';
 
 /// 内存版 DAO，避免测试依赖 sqflite。
@@ -295,77 +294,5 @@ void main() {
     expect(bookDao.failed.isEmpty, isTrue);
     expect(find.text('已截断'), findsNothing);
     expect(find.text('生成失败'), findsNothing);
-  });
-
-  testWidgets('成功轮次：最新 AI 气泡可打开调试对话框', (tester) async {
-    final bookDao = _MockBookDao();
-    final dao = _MockRoundDao();
-    final roundProvider =
-        await pumpChat(tester, _ToggleAiService(), bookDao, dao);
-
-    final sendFuture = roundProvider.sendRound(userInput: '正常剧情', book: book);
-    await waitSendDone(tester, roundProvider);
-    expect(await sendFuture, isTrue);
-
-    // 最新 AI 气泡提供「调试」入口并展示本轮请求。
-    expect(find.text('调试'), findsOneWidget);
-    await tester.tap(find.text('调试'));
-    await tester.pumpAndSettle();
-    expect(find.byType(DebugPromptDialog), findsOneWidget);
-    expect(find.textContaining('model'), findsWidgets);
-  });
-
-  testWidgets('失败条目：提供调试入口并展示实际发出的请求', (tester) async {
-    final bookDao = _MockBookDao();
-    final dao = _MockRoundDao();
-    final roundProvider =
-        await pumpChat(tester, _ToggleAiService()..fail = true, bookDao, dao);
-
-    final sendFuture = roundProvider.sendRound(userInput: '触发失败', book: book);
-    await waitSendDone(tester, roundProvider);
-    expect(await sendFuture, isFalse);
-    expect(bookDao.failed.errorMessage, isNotEmpty);
-
-    // 失败条目底部提供「调试」入口，打开后展示实际发出的请求。
-    expect(find.text('调试'), findsOneWidget);
-    await tester.tap(find.text('调试'));
-    await tester.pumpAndSettle();
-    expect(find.byType(DebugPromptDialog), findsOneWidget);
-    expect(find.textContaining('model'), findsWidgets);
-  });
-
-  testWidgets('流式截断：调试中保留截断前的部分输出与思考', (tester) async {
-    final bookDao = _MockBookDao();
-    final dao = _MockRoundDao();
-    final ai = _FakeStreamingAiService();
-    final roundProvider = await pumpChat(tester, ai, bookDao, dao);
-
-    final sendFuture = roundProvider.sendRound(userInput: '请继续剧情', book: book);
-    await tester.pump();
-    // 先累积部分思考与正文，再停止生成。
-    ai.emitReasoning('思考片段内容');
-    ai.emit('部分剧情内容');
-    await tester.pump();
-    roundProvider.cancelGeneration();
-    ai.complete();
-    await waitSendDone(tester, roundProvider);
-    expect(await sendFuture, isFalse);
-    expect(bookDao.failed.isTruncated, isTrue);
-
-    // 失败条目调试入口：截断前的部分内容被临时保存可供查看。
-    expect(find.text('调试'), findsOneWidget);
-    await tester.tap(find.text('调试'));
-    await tester.pumpAndSettle();
-    expect(find.byType(DebugPromptDialog), findsOneWidget);
-
-    // 「AI 原始返回」Tab 展示截断前的部分正文。
-    await tester.tap(find.text('AI 原始返回'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('部分剧情内容'), findsOneWidget);
-
-    // 「思考内容」Tab 展示截断前的部分思考。
-    await tester.tap(find.text('思考内容'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('思考片段内容'), findsOneWidget);
   });
 }
