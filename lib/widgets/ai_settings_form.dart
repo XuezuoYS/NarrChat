@@ -262,22 +262,36 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      preset.displayName,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                    // 标题 + 副标题为同一组件内的不同格式：宽度不足时
+                    // 优先截断末尾的副标题（ellipsis），大标题最后才被压缩。
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: preset.displayName,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurface,
+                            ),
+                          ),
+                          TextSpan(
+                            text: isCustom
+                                ? '  OpenAI 兼容格式 · 请求体自定义'
+                                : '  ${preset.modelId}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      isCustom
-                          ? 'OpenAI 兼容格式 · 请求体自定义'
-                          : preset.modelId,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     if (!isCustom) ...[
                       const SizedBox(height: 4),
