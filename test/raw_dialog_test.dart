@@ -172,6 +172,24 @@ void main() {
       expect(whole, hasLength(1));
       expect(whole.single.text, 'abc');
     });
+
+    test('highlightSpans 当前定位命中使用 currentStyle', () {
+      const base = TextStyle(fontSize: 12);
+      const hl = TextStyle(backgroundColor: Color(0xFFFFF176));
+      const cur = TextStyle(backgroundColor: Color(0xFFFFB74D));
+      final spans = highlightSpans(
+        '青云 青云',
+        '青云',
+        base,
+        hl,
+        currentIndex: 1,
+        currentStyle: cur,
+      );
+      expect(spans, hasLength(3));
+      expect(spans[0].style?.backgroundColor, const Color(0xFFFFF176));
+      expect(spans[1].style?.backgroundColor, isNull); // 中间空格普通
+      expect(spans[2].style?.backgroundColor, const Color(0xFFFFB74D));
+    });
   });
 
   group('RoundProvider RAW 捕获', () {
@@ -352,6 +370,56 @@ void main() {
       // 请求体 2 处、思考块 1 处。
       expect(find.text('· 2 处'), findsOneWidget);
       expect(find.text('· 1 处'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('关键词检索：上一处/下一处循环定位与计数', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: '{"a": "青云宗 青云宗"}',
+          thinking: '青云宗',
+          search: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      // 查询为空：无导航控件。
+      expect(find.byKey(const Key('raw_match_next')), findsNothing);
+
+      // 输入关键词：命中 3 处，自动展开含匹配块，当前 1/3。
+      await tester.enterText(
+        find.byKey(const Key('raw_search_field')),
+        '青云宗',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('1/3'), findsOneWidget);
+      expect(find.byType(SelectableText), findsNWidgets(2));
+
+      // 下一处：2/3 → 3/3 → 循环回 1/3。
+      await tester.tap(find.byKey(const Key('raw_match_next')));
+      await tester.pumpAndSettle();
+      expect(find.text('2/3'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('raw_match_next')));
+      await tester.pumpAndSettle();
+      expect(find.text('3/3'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('raw_match_next')));
+      await tester.pumpAndSettle();
+      expect(find.text('1/3'), findsOneWidget);
+
+      // 上一处：回 3/3。
+      await tester.tap(find.byKey(const Key('raw_match_prev')));
+      await tester.pumpAndSettle();
+      expect(find.text('3/3'), findsOneWidget);
+
+      // 清空搜索：导航消失、恢复全部折叠。
+      await tester.tap(find.byIcon(Icons.clear));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('raw_match_next')), findsNothing);
+      expect(find.byType(SelectableText), findsNothing);
     });
 
     testWidgets('各块默认折叠，点击标题展开', (tester) async {

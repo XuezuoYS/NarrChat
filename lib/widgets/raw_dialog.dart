@@ -53,13 +53,17 @@ int countMatches(String text, String query) {
 
 /// 把 [text] 按 [query] 分割为高亮片段（命中处使用 [highlightStyle]）。
 ///
-/// 纯函数、大小写不敏感；空查询返回整段普通文本。
+/// 纯函数、大小写不敏感；空查询返回整段普通文本。[currentIndex] 指定
+/// 「当前定位」命中的局部序号，命中处改用 [currentStyle]（浏览器 Ctrl+F
+/// 式当前项高亮）。
 List<TextSpan> highlightSpans(
   String text,
   String query,
   TextStyle style,
-  TextStyle highlightStyle,
-) {
+  TextStyle highlightStyle, {
+  int currentIndex = -1,
+  TextStyle? currentStyle,
+}) {
   if (query.isEmpty || text.isEmpty) {
     return [TextSpan(text: text, style: style)];
   }
@@ -67,6 +71,7 @@ List<TextSpan> highlightSpans(
   final q = query.toLowerCase();
   final spans = <TextSpan>[];
   var start = 0;
+  var matchIndex = 0;
   while (true) {
     final idx = lower.indexOf(q, start);
     if (idx < 0) {
@@ -78,16 +83,41 @@ List<TextSpan> highlightSpans(
     if (idx > start) {
       spans.add(TextSpan(text: text.substring(start, idx), style: style));
     }
+    final isCurrent = currentStyle != null && matchIndex == currentIndex;
     spans.add(
       TextSpan(
         text: text.substring(idx, idx + q.length),
-        style: highlightStyle,
+        style: isCurrent ? currentStyle : highlightStyle,
       ),
     );
     start = idx + q.length;
+    matchIndex++;
   }
   return spans;
 }
+
+/// 检索命中（跨块全局匹配列表的一项）。
+class _RawMatch {
+  /// 所属块（全局块序号，见 [_RawDialogState._forEachBlock]）。
+  final int blockIndex;
+
+  /// 块内局部命中序号。
+  final int localIndex;
+
+  /// 命中区间（半开区间）。
+  final int start;
+  final int end;
+
+  const _RawMatch({
+    required this.blockIndex,
+    required this.localIndex,
+    required this.start,
+    required this.end,
+  });
+}
+
+/// 定位滚动时，匹配行距视口顶部的留白。
+const double _kScrollTopPadding = 40;
 
 /// RAW 调试对话框：查看每轮实际发出的请求 JSON 与 AI 原始返回。
 ///
@@ -114,14 +144,202 @@ class _RawDialogState extends State<RawDialog> {
   bool _escapeNewlines = false;
   final TextEditingController _searchController = TextEditingController();
 
+  /// 全局匹配列表（按文档顺序跨块）。
+  List<_RawMatch> _matches = const [];
+
+  /// 当前定位的匹配在 [_matches] 中的下标（-1 = 无）。
+  int _currentMatch = -1;
+
+  /// 已展开的块（全局块序号）。
+  final Set<int> _expandedBlocks = <int>{};
+
+  /// 时间线滚动控制与视口锚点。
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _scrollViewKey = GlobalKey();
+
+  /// 每个块的「内容」GlobalKey（用于滚动定位到匹配行）。
+  final Map<int, GlobalKey> _blockContentKeys = {};
+
   /// 按「转译换行符」开关转译后的展示文本（开启 = 展开转义序列）。
   String _display(String text) => _escapeNewlines ? expandEscapes(text) : text;
 
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
+
+  /// 是否有返回内容（任一区块非空）。
+  bool _hasReturn(RawExchange ex) =>
+      ex.thinking.isNotEmpty || ex.search.isNotEmpty || ex.content.isNotEmpty;
+
+  /// 按文档顺序遍历全部块（请求体 + 思考/搜索/正文），回调传入
+  /// 全局块序号、展示文本与是否等宽。
+  void _forEachBlock(void Function(int blockIndex, String text, bool mono) fn) {
+    var blockIndex = 0;
+    for (final ex in widget.exchanges) {
+      fn(blockIndex++, _display(ex.requestBody), true);
+      if (_hasReturn(ex)) {
+        fn(blockIndex++, _display(ex.thinking), false);
+        fn(blockIndex++, _display(ex.search), false);
+        fn(blockIndex++, _display(ex.content), false);
+      }
+    }
+  }
+
+  /// 计算全部匹配（按文档顺序、大小写不敏感）。
+  List<_RawMatch> _computeMatches() {
+    if (_query.isEmpty) return const [];
+    final q = _query.toLowerCase();
+    final matches = <_RawMatch>[];
+    _forEachBlock((blockIndex, text, _) {
+      if (text.isEmpty) return;
+      final lower = text.toLowerCase();
+      var start = 0;
+      var localIndex = 0;
+      while (true) {
+        final idx = lower.indexOf(q, start);
+        if (idx < 0) break;
+        matches.add(
+          _RawMatch(
+            blockIndex: blockIndex,
+            localIndex: localIndex,
+            start: idx,
+            end: idx + q.length,
+          ),
+        );
+        localIndex++;
+        start = idx + q.length;
+      }
+    });
+    return matches;
+  }
+
+  /// 块内「当前定位」命中的局部序号（-1 = 无）。
+  int _localCurrentIndex(int blockIndex) {
+    if (_currentMatch < 0 || _currentMatch >= _matches.length) return -1;
+    final m = _matches[_currentMatch];
+    return m.blockIndex == blockIndex ? m.localIndex : -1;
+  }
+
+  /// 搜索词变化：重算匹配、自动展开含匹配的块、定位到第一处。
+  void _onQueryChanged(String value) {
+    setState(() {
+      _query = value;
+      _matches = _computeMatches();
+      _currentMatch = _matches.isEmpty ? -1 : 0;
+      if (_query.isEmpty) {
+        // 清空搜索 → 恢复默认全部折叠。
+        _expandedBlocks.clear();
+      } else {
+        // 浏览器 Ctrl+F 式：自动展开含匹配的块，便于浏览全部命中。
+        for (final m in _matches) {
+          _expandedBlocks.add(m.blockIndex);
+        }
+      }
+    });
+    if (_matches.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToBlockOffset(_matches.first);
+      });
+    }
+  }
+
+  /// 转译换行符开关变化：转译后文本变化，需重算匹配与定位。
+  void _setEscapeNewlines(bool value) {
+    setState(() {
+      _escapeNewlines = value;
+      _matches = _computeMatches();
+      _currentMatch = _matches.isEmpty ? -1 : 0;
+    });
+    if (_matches.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToBlockOffset(_matches.first);
+      });
+    }
+  }
+
+  /// 定位到指定匹配（循环取模；自动展开所属块并平滑滚动）。
+  void _goToMatch(int newIndex) {
+    if (_matches.isEmpty) return;
+    final count = _matches.length;
+    final idx = ((newIndex % count) + count) % count;
+    setState(() {
+      _currentMatch = idx;
+      _expandedBlocks.add(_matches[idx].blockIndex);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBlockOffset(_matches[idx]);
+    });
+  }
+
+  /// 展开 / 折叠指定块。
+  void _setBlockExpanded(int blockIndex, bool value) {
+    setState(() {
+      if (value) {
+        _expandedBlocks.add(blockIndex);
+      } else {
+        _expandedBlocks.remove(blockIndex);
+      }
+    });
+  }
+
+  /// 把 [match] 所在块（已展开）平滑滚动到匹配行：
+  /// 用同款样式的 TextPainter 按字符偏移估算行位置，再换算滚动目标。
+  void _scrollToBlockOffset(_RawMatch match) {
+    final contentCtx = _blockContentKeys[match.blockIndex]?.currentContext;
+    final contentBox = contentCtx?.findRenderObject() as RenderBox?;
+    final viewportBox =
+        _scrollViewKey.currentContext?.findRenderObject() as RenderBox?;
+    if (contentBox == null ||
+        viewportBox == null ||
+        !_scrollController.hasClients) {
+      return;
+    }
+    String? blockText;
+    bool? blockMono;
+    _forEachBlock((bi, text, mono) {
+      if (bi == match.blockIndex) {
+        blockText = text;
+        blockMono = mono;
+      }
+    });
+    if (blockText == null) return;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: blockText,
+        style: _blockStyle(blockMono ?? false),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: contentBox.size.width);
+    final caret = painter.getOffsetForCaret(
+      TextPosition(offset: match.start),
+      Rect.zero,
+    );
+
+    final contentTopGlobal = contentBox.localToGlobal(Offset.zero).dy;
+    final viewportTopGlobal = viewportBox.localToGlobal(Offset.zero).dy;
+    final contentTopInViewport = contentTopGlobal - viewportTopGlobal;
+    final matchYInContent =
+        _scrollController.offset + contentTopInViewport + caret.dy;
+    final target = (matchYInContent - _kScrollTopPadding).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// 与内容一致的块文本样式（TextPainter 估算布局用）。
+  static TextStyle _blockStyle(bool mono) => TextStyle(
+    fontSize: 12.5,
+    height: 1.5,
+    fontFamily: mono ? 'monospace' : null,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -154,7 +372,7 @@ class _RawDialogState extends State<RawDialog> {
                   ),
                   Switch(
                     value: _escapeNewlines,
-                    onChanged: (v) => setState(() => _escapeNewlines = v),
+                    onChanged: _setEscapeNewlines,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                   IconButton(
@@ -165,36 +383,74 @@ class _RawDialogState extends State<RawDialog> {
                 ],
               ),
             ),
-            // 关键词检索。
+            // 关键词检索 + 上一处 / 下一处定位（浏览器 Ctrl+F 式）。
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
-              child: TextField(
-                key: const Key('raw_search_field'),
-                controller: _searchController,
-                onChanged: (v) => setState(() => _query = v),
-                onTapOutside: unfocusOnTapOutside,
-                decoration: InputDecoration(
-                  hintText: '关键词检索…',
-                  prefixIcon: const Icon(Icons.search, size: 18),
-                  suffixIcon: _query.isEmpty
-                      ? null
-                      : IconButton(
-                          icon: const Icon(Icons.clear, size: 16),
-                          tooltip: '清空',
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _query = '');
-                          },
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('raw_search_field'),
+                      controller: _searchController,
+                      onChanged: _onQueryChanged,
+                      onSubmitted: (_) => _goToMatch(_currentMatch + 1),
+                      onTapOutside: unfocusOnTapOutside,
+                      decoration: InputDecoration(
+                        hintText: '关键词检索…',
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        suffixIcon: _query.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.clear, size: 16),
+                                tooltip: '清空',
+                                onPressed: () {
+                                  _searchController.clear();
+                                  _onQueryChanged('');
+                                },
+                              ),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
                         ),
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 8,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
                   ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
+                  if (_query.isNotEmpty) ...[const SizedBox(width: 4),
+                    IconButton(
+                      key: const Key('raw_match_prev'),
+                      icon: const Icon(Icons.arrow_upward, size: 16),
+                      tooltip: '上一处',
+                      onPressed: _matches.isEmpty
+                          ? null
+                          : () => _goToMatch(_currentMatch - 1),
+                    ),
+                    IconButton(
+                      key: const Key('raw_match_next'),
+                      icon: const Icon(Icons.arrow_downward, size: 16),
+                      tooltip: '下一处',
+                      onPressed: _matches.isEmpty
+                          ? null
+                          : () => _goToMatch(_currentMatch + 1),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: Text(
+                        _matches.isEmpty
+                            ? '0/0'
+                            : '${_currentMatch + 1}/${_matches.length}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
             // 失败原因提示条。
@@ -222,6 +478,8 @@ class _RawDialogState extends State<RawDialog> {
             // 时间线主体。
             Expanded(
               child: SingleChildScrollView(
+                key: _scrollViewKey,
+                controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
                 child: _buildTimeline(context),
               ),
@@ -242,81 +500,113 @@ class _RawDialogState extends State<RawDialog> {
         ),
       );
     }
+    final children = <Widget>[];
+    var blockIndex = 0;
+    for (var i = 0; i < widget.exchanges.length; i++) {
+      if (i > 0) children.add(const SizedBox(height: 18));
+      final built = _buildExchange(context, widget.exchanges[i], i, blockIndex);
+      children.add(built.widget);
+      blockIndex = built.nextBlockIndex;
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < widget.exchanges.length; i++) ...[
-          if (i > 0) const SizedBox(height: 18),
-          _buildExchange(context, widget.exchanges[i], i),
-        ],
-      ],
+      children: children,
     );
   }
 
-  Widget _buildExchange(BuildContext context, RawExchange ex, int index) {
+  /// 构建一次交换（请求体 + AI 返回三块），返回构建结果与下一个全局块序号。
+  ({Widget widget, int nextBlockIndex}) _buildExchange(
+    BuildContext context,
+    RawExchange ex,
+    int index,
+    int blockIndex,
+  ) {
     final scheme = Theme.of(context).colorScheme;
-    final hasReturn =
-        ex.thinking.isNotEmpty || ex.search.isNotEmpty || ex.content.isNotEmpty;
-    return Column(
-      key: Key('raw_exchange_$index'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // 请求体：可折叠块（默认折叠）。
-        _CollapsibleBlock(
-          label: '【请求体 ${index + 1}】',
-          text: _display(ex.requestBody),
-          query: _query,
-          mono: true,
+    final requestBlockIndex = blockIndex;
+    final children = <Widget>[
+      // 请求体：可折叠块（默认折叠）。
+      _CollapsibleBlock(
+        label: '【请求体 ${index + 1}】',
+        text: _display(ex.requestBody),
+        query: _query,
+        mono: true,
+        expanded: _expandedBlocks.contains(requestBlockIndex),
+        onToggle: (v) => _setBlockExpanded(requestBlockIndex, v),
+        currentMatchIndex: _localCurrentIndex(requestBlockIndex),
+        contentKey: _blockContentKeys.putIfAbsent(
+          requestBlockIndex,
+          () => GlobalKey(),
         ),
-        const SizedBox(height: 10),
-        // AI 返回：分组标签 + 三个可折叠块。
-        Text(
-          '【AI返回 ${index + 1}】',
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: scheme.primary,
-          ),
+      ),
+      const SizedBox(height: 10),
+      // AI 返回：分组标签 + 三个可折叠块。
+      Text(
+        '【AI返回 ${index + 1}】',
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: scheme.primary,
         ),
-        const SizedBox(height: 2),
-        if (hasReturn) ...[
+      ),
+      const SizedBox(height: 2),
+    ];
+    blockIndex++;
+    if (_hasReturn(ex)) {
+      final parts = <(String, String)>[
+        ('思考块', _display(ex.thinking)),
+        ('搜索块', _display(ex.search)),
+        ('正文块', _display(ex.content)),
+      ];
+      for (final (label, text) in parts) {
+        final partBlockIndex = blockIndex;
+        children.add(
           _CollapsibleBlock(
-            label: '思考块',
-            text: _display(ex.thinking),
+            label: label,
+            text: text,
             query: _query,
-          ),
-          _CollapsibleBlock(
-            label: '搜索块',
-            text: _display(ex.search),
-            query: _query,
-          ),
-          _CollapsibleBlock(
-            label: '正文块',
-            text: _display(ex.content),
-            query: _query,
-          ),
-        ] else
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              widget.failedError == null ? '请求已中断，无 AI 返回' : '请求失败，无 AI 返回',
-              style: TextStyle(
-                fontSize: 12,
-                fontStyle: FontStyle.italic,
-                color: scheme.onSurfaceVariant,
-              ),
+            expanded: _expandedBlocks.contains(partBlockIndex),
+            onToggle: (v) => _setBlockExpanded(partBlockIndex, v),
+            currentMatchIndex: _localCurrentIndex(partBlockIndex),
+            contentKey: _blockContentKeys.putIfAbsent(
+              partBlockIndex,
+              () => GlobalKey(),
             ),
           ),
-      ],
+        );
+        blockIndex++;
+      }
+    } else {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            widget.failedError == null ? '请求已中断，无 AI 返回' : '请求失败，无 AI 返回',
+            style: TextStyle(
+              fontSize: 12,
+              fontStyle: FontStyle.italic,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+    }
+    return (
+      widget: Column(
+        key: Key('raw_exchange_$index'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: children,
+      ),
+      nextBlockIndex: blockIndex,
     );
   }
 }
 
-/// 可折叠内容块：标题行（标签 + 匹配计数 + 折叠箭头）默认**折叠**，
+/// 可折叠内容块：标题行（标签 + 匹配计数 + 折叠箭头），默认**折叠**，
 /// 点击标题展开内容；空内容直接显示「（无）」，不提供展开。
-class _CollapsibleBlock extends StatefulWidget {
+/// 展开状态由父级控制（供检索定位联动：命中块自动展开）。
+class _CollapsibleBlock extends StatelessWidget {
   final String label;
 
   /// 展示文本（已按「转译换行符」处理）。
@@ -328,25 +618,33 @@ class _CollapsibleBlock extends StatefulWidget {
   /// 等宽字体（用于 JSON 展示）。
   final bool mono;
 
+  /// 是否展开（由父级控制）。
+  final bool expanded;
+
+  /// 展开状态变更回调。
+  final ValueChanged<bool> onToggle;
+
+  /// 本块内「当前定位」命中的局部序号（-1 = 无）。
+  final int currentMatchIndex;
+
+  /// 内容区 GlobalKey（用于滚动定位）。
+  final GlobalKey contentKey;
+
   const _CollapsibleBlock({
     required this.label,
     required this.text,
     required this.query,
     this.mono = false,
+    required this.expanded,
+    required this.onToggle,
+    required this.currentMatchIndex,
+    required this.contentKey,
   });
-
-  @override
-  State<_CollapsibleBlock> createState() => _CollapsibleBlockState();
-}
-
-class _CollapsibleBlockState extends State<_CollapsibleBlock> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final text = widget.text;
-    final count = countMatches(text, widget.query);
+    final count = countMatches(text, query);
     final isEmpty = text.isEmpty;
 
     final header = Row(
@@ -354,13 +652,13 @@ class _CollapsibleBlockState extends State<_CollapsibleBlock> {
       children: [
         if (!isEmpty)
           Icon(
-            _expanded ? Icons.expand_more : Icons.chevron_right,
+            expanded ? Icons.expand_more : Icons.chevron_right,
             size: 16,
             color: scheme.onSurfaceVariant,
           ),
         const SizedBox(width: 2),
         Text(
-          widget.label,
+          label,
           style: TextStyle(
             fontSize: 12.5,
             fontWeight: FontWeight.w600,
@@ -399,20 +697,22 @@ class _CollapsibleBlockState extends State<_CollapsibleBlock> {
         else ...[
           InkWell(
             borderRadius: BorderRadius.circular(6),
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: () => onToggle(!expanded),
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: header,
             ),
           ),
-          if (_expanded) ...[
+          if (expanded) ...[
             const SizedBox(height: 4),
             Padding(
               padding: const EdgeInsets.only(left: 18),
               child: _HighlightText(
+                key: contentKey,
                 text: text,
-                query: widget.query,
-                mono: widget.mono,
+                query: query,
+                mono: mono,
+                currentIndex: currentMatchIndex,
               ),
             ),
           ],
@@ -422,16 +722,22 @@ class _CollapsibleBlockState extends State<_CollapsibleBlock> {
   }
 }
 
-/// 可选中文本：按关键词高亮（黄底加粗），等宽字体用于 JSON 展示。
+/// 可选中文本：按关键词高亮（命中黄底加粗，「当前定位」橙底），
+/// 等宽字体用于 JSON 展示。
 class _HighlightText extends StatelessWidget {
   final String text;
   final String query;
   final bool mono;
 
+  /// 本段内「当前定位」命中的局部序号（-1 = 无）。
+  final int currentIndex;
+
   const _HighlightText({
+    super.key,
     required this.text,
     required this.query,
     this.mono = false,
+    this.currentIndex = -1,
   });
 
   @override
@@ -447,8 +753,21 @@ class _HighlightText extends StatelessWidget {
       backgroundColor: const Color(0xFFFFF176).withValues(alpha: 0.5),
       fontWeight: FontWeight.w700,
     );
+    final current = base.copyWith(
+      backgroundColor: const Color(0xFFFFB74D).withValues(alpha: 0.6),
+      fontWeight: FontWeight.w700,
+    );
     return SelectableText.rich(
-      TextSpan(children: highlightSpans(text, query, base, highlight)),
+      TextSpan(
+        children: highlightSpans(
+          text,
+          query,
+          base,
+          highlight,
+          currentIndex: currentIndex,
+          currentStyle: current,
+        ),
+      ),
     );
   }
 }
