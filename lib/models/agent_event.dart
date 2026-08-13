@@ -37,6 +37,10 @@ class AgentEvent {
   /// 搜索失败 / 无结果（UI 显示 ✕，不报错截断）。
   final bool failed;
 
+  /// 页面拒绝访问（HTTP 4xx/5xx）：非工具故障，UI 显示黄色 ✕，
+  /// 不计入工具连续失败次数。
+  final bool refused;
+
   const AgentEvent({
     required this.type,
     this.content = '',
@@ -44,6 +48,7 @@ class AgentEvent {
     this.results = const [],
     this.done = false,
     this.failed = false,
+    this.refused = false,
   });
 
   AgentEvent copyWith({
@@ -52,6 +57,7 @@ class AgentEvent {
     List<SearchResult>? results,
     bool? done,
     bool? failed,
+    bool? refused,
   }) {
     return AgentEvent(
       type: type,
@@ -60,6 +66,7 @@ class AgentEvent {
       results: results ?? this.results,
       done: done ?? this.done,
       failed: failed ?? this.failed,
+      refused: refused ?? this.refused,
     );
   }
 }

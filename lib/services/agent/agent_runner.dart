@@ -155,7 +155,9 @@ class AgentRunner {
         final toolResult = tool != null
             ? await tool.run(tc.arguments)
             : AgentToolResult(success: false, content: '未知工具：${tc.name}');
-        if (!toolResult.success) {
+        // 仅「工具故障」（网络/超时/解析等）计入连续失败次数；
+        // 页面拒绝访问（HTTP 4xx/5xx，refused）非工具故障，不计入。
+        if (!toolResult.success && !toolResult.refused) {
           toolFailures[tc.name] = (toolFailures[tc.name] ?? 0) + 1;
         }
         messages.add({

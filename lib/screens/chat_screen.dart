@@ -1686,6 +1686,7 @@ class _SearchBox extends StatefulWidget {
   final String query;
   final bool searching;
   final bool failed;
+  final bool refused;
   final List<SearchResult> results;
 
   const _SearchBox({
@@ -1693,6 +1694,7 @@ class _SearchBox extends StatefulWidget {
     required this.query,
     required this.searching,
     required this.failed,
+    this.refused = false,
     required this.results,
   });
 
@@ -1764,10 +1766,12 @@ class _SearchBoxState extends State<_SearchBox> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   else if (widget.failed)
-                    const Icon(
+                    Icon(
                       Icons.close,
                       size: 14,
-                      color: Color(0xFFE5484D),
+                      color: widget.refused
+                          ? context.narrColors.warning
+                          : const Color(0xFFE5484D),
                     )
                   else
                     const Icon(
@@ -1805,7 +1809,9 @@ class _SearchBoxState extends State<_SearchBox> {
     final results = widget.results;
     if (widget.failed) {
       return Text(
-        '搜索失败，未获取到结果',
+        widget.refused
+            ? '页面拒绝访问（HTTP 4xx/5xx），未能获取内容'
+            : '搜索失败，未获取到结果',
         style: TextStyle(
           fontSize: 12,
           color: context.narrColors.textSecondary,
@@ -1868,12 +1874,14 @@ class _FetchBox extends StatelessWidget {
   final String url;
   final bool searching;
   final bool failed;
+  final bool refused;
 
   const _FetchBox({
     super.key,
     required this.url,
     required this.searching,
     required this.failed,
+    this.refused = false,
   });
 
   @override
@@ -1924,10 +1932,12 @@ class _FetchBox extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             )
           else if (failed)
-            const Icon(
+            Icon(
               Icons.close,
               size: 14,
-              color: Color(0xFFE5484D),
+              color: refused
+                  ? context.narrColors.warning
+                  : const Color(0xFFE5484D),
             )
           else
             const Icon(
@@ -2139,6 +2149,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         query: events[i].content,
                         searching: events[i].searching,
                         failed: events[i].failed,
+                        refused: events[i].refused,
                         results: events[i].results,
                       )
                     else
@@ -2147,6 +2158,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         url: events[i].content,
                         searching: events[i].searching,
                         failed: events[i].failed,
+                        refused: events[i].refused,
                       ),
                   ],
                   // 自动重试提示（灰字）：思考/搜索块之后、正文之前。

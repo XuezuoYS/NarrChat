@@ -204,6 +204,48 @@ void main() {
       expect(toolMsgs, hasLength(4)); // 3 次失败 + 1 次停用提示
     });
 
+    test('拒绝访问（refused）不计入连续失败次数', () async {
+      final tool = _FakeTool(
+        result: const AgentToolResult(
+          success: false,
+          content: '页面拒绝访问（HTTP 403）',
+          refused: true,
+        ),
+      );
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) => {'messages': messages, 'tools': tools},
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex < 5) {
+            callIndex++;
+            return AiCallResult(
+              content: '',
+              toolCalls: [_toolCall({'query': 'x'})],
+              promptTokens: 0,
+              completionTokens: 0,
+            );
+          }
+          callIndex++;
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 0,
+            completionTokens: 0,
+          );
+        },
+        tools: [tool],
+        maxIterations: 10,
+      );
+
+      final result = await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      // 连续 5 次 refused 仍继续执行工具（不触发 3 次停用）。
+      expect(tool.calls, hasLength(5));
+      expect(result.content, '正文');
+    });
+
     test('超出最大迭代次数抛 AiException', () async {
       final runner = AgentRunner(
         buildBody: (messages, tools) => {'messages': messages},
@@ -278,6 +320,9 @@ void main() {
       expect(result.content, contains('搜索「青云宗」的结果'));
       expect(result.content, contains('青云 QingCloud'));
       expect(result.content, contains('链接：https://www.qingcloud.com/'));
+      // 结果末尾附加强制打开页面的指令。
+      expect(result.content, contains('【接下来必须执行】'));
+      expect(result.content, contains('fetch_page'));
       expect(seen, isNotNull);
       expect(seen!.length, 2);
     });
@@ -432,6 +477,27 @@ void main() {
       expect(result.success, isFalse);
       expect(result.content, contains('打开页面失败'));
       expect(fail, isTrue);
+    });
+
+    test('HTTP 4xx：返回 refused 结果并触发 onRefused', () async {
+      var refused = false;
+      final tool = FetchPageTool(
+        search: HtmlSearchService(
+          client: MockClient(
+            (request) async => http.Response('forbidden', 403),
+          ),
+        ),
+        onRefused: () => refused = true,
+      );
+
+      final result = await tool.run({'url': 'https://example.com/403'});
+
+      expect(result.success, isFalse);
+      expect(result.refused, isTrue);
+      expect(result.content, contains('403'));
+      // 拒绝访问时提示换用其它结果页面。
+      expect(result.content, contains('请改用 fetch_page'));
+      expect(refused, isTrue);
     });
 
     test('空链接返回错误并回调 onFail', () async {

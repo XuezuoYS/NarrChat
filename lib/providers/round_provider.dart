@@ -28,15 +28,20 @@ import 'world_book_provider.dart';
 
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
 class RoundProvider extends ChangeNotifier {
-  /// Agent 路径注入的搜索指令：引导模型在用户明确要求搜索时先调用工具
-  ///（非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）；
-  /// 搜索后应主动打开结果页面阅读，确保细节准确。
+  /// Agent 路径注入的搜索指令：引导模型在用户要求搜索或需要核实时主动调用工具
+  /// （非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）；
+  /// 搜索后必须主动打开结果页面阅读正文，确保细节准确。
   static const String _searchInstruction =
-      '【联网搜索】若用户明确要求搜索、查询或查找资料'
-      '（如「搜索/查一下/查找/查资料」），请先调用 web_search 工具'
-      '获取信息；然后从结果中主动选择最相关的 1~2 个页面，'
-      '用 fetch_page 打开并阅读正文，确保细节准确；'
-      '再基于获取的信息继续创作。未明确要求时不要调用搜索工具。';
+      '【联网搜索】本工具已由用户显式开启，你应主动利用它获取真实世界信息'
+      '（如核实地名、历史、设定、专有名词等，或用户要求搜索/查询/查找资料时），'
+      '不必等用户逐条点名，但也不要无关紧要地频繁调用。必须按以下流程执行：\n'
+      '1. 先调用 web_search 工具搜索，获取结果标题、链接与摘要；\n'
+      '2. 必须随后用 fetch_page 打开最相关的 1~3 个结果页面并阅读正文，'
+      '禁止只依赖摘要就动笔，务必确保细节准确；\n'
+      '3. 若页面拒绝访问（HTTP 4xx/5xx）或打开失败，'
+      '请换用其它结果页面继续获取信息，不要反复搜索而不打开页面；\n'
+      '4. 从打开的页面正文中提炼背景、设定、人物等细节后再继续创作；\n'
+      '5. 禁止在未打开任何页面的情况下直接结束联网环节开始创作。';
 
   /// 网络类失败自动重试的最大次数（灰字提示「错误重连……（x/3）」）。
   static const int _maxAiRetries = 3;
@@ -82,13 +87,14 @@ class RoundProvider extends ChangeNotifier {
           onResults: _handleSearchResults,
           onFail: _handleSearchFail,
         );
-    // 打开网页工具：成功/失败回调更新 fetch 事件状态（✓ / ✕）。
+    // 打开网页工具：成功/失败/拒绝访问回调更新 fetch 事件状态（✓ / 红✕ / 黄✕）。
     _fetchPageTool =
         fetchPageTool ??
         FetchPageTool(
           search: search,
           onDone: _handleFetchDone,
           onFail: _handleFetchFail,
+          onRefused: () => _handleFetchFail(refused: true),
         );
   }
 
@@ -735,12 +741,14 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 打开页面失败回调：标记为失败（✕）。
-  void _handleFetchFail() {
-    _markFetchEvent(failed: true);
+  /// [refused] 为 true 表示页面拒绝访问（HTTP 4xx/5xx），非工具故障，
+  /// UI 显示黄色 ✕ 且不计入工具连续失败次数。
+  void _handleFetchFail({bool refused = false}) {
+    _markFetchEvent(failed: true, refused: refused);
   }
 
-  /// 更新最近一个进行中的 fetch 事件（完成 / 失败）。
-  void _markFetchEvent({required bool failed}) {
+  /// 更新最近一个进行中的 fetch 事件（完成 / 失败 / 拒绝访问）。
+  void _markFetchEvent({required bool failed, bool refused = false}) {
     for (var i = _agentEvents.length - 1; i >= 0; i--) {
       final e = _agentEvents[i];
       if (e.type == AgentEventType.fetch && e.searching) {
@@ -748,6 +756,7 @@ class RoundProvider extends ChangeNotifier {
           searching: false,
           done: true,
           failed: failed,
+          refused: refused,
         );
         break;
       }

@@ -4,7 +4,15 @@ class AgentToolResult {
   final bool success;
   final String content;
 
-  const AgentToolResult({required this.success, required this.content});
+  /// 页面拒绝访问（HTTP 4xx/5xx）：非工具故障，不计入工具连续失败次数，
+  /// UI 显示黄色 ✕。
+  final bool refused;
+
+  const AgentToolResult({
+    required this.success,
+    required this.content,
+    this.refused = false,
+  });
 }
 
 /// Agent 工具接口：模型通过 `tool_calls` 调用。

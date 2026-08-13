@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fast_gbk/fast_gbk.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -114,6 +115,68 @@ void main() {
       final html = '<p>${'很长的正文内容' * 100}</p>';
       final text = HtmlSearchService.extractPageText(html, maxChars: 20);
       expect(text.length, lessThanOrEqualTo(20));
+    });
+
+    test('主内容区优先：剔除导航/页眉页脚/侧栏噪音', () {
+      const html = '''
+<html><body>
+<nav><a>导航一</a><a>导航二</a></nav>
+<header>网站标题与菜单</header>
+<aside>侧栏推荐文章</aside>
+<article>
+<h1>正文标题</h1>
+<p>这是文章正文第一段，包含关键信息。</p>
+<p>第二段补充更多细节内容。</p>
+</article>
+<footer>版权与备案信息</footer>
+</body></html>
+''';
+      final text = HtmlSearchService.extractPageText(html);
+      expect(text, contains('正文标题'));
+      expect(text, contains('关键信息'));
+      expect(text, isNot(contains('导航')));
+      expect(text, isNot(contains('网站标题')));
+      expect(text, isNot(contains('侧栏')));
+      expect(text, isNot(contains('版权')));
+    });
+
+    test('SPA 内嵌 JSON（ProseMirror）抽取正文', () {
+      const html = '''
+<html><body>
+<div class="app">仅少量可见文字</div>
+<script id="prefetch-data">var __x__ = null;
+var __article__ = {"doc":{"type":"doc","content":[
+  {"type":"heading","attrs":{"level":1},"children":[{"type":"text","text":"器灵·落星盏","node_id":"a"}],"node_id":"n1"},
+  {"type":"paragraph","children":[{"type":"text","text":"这是文章正文第一段，包含关键信息。","node_id":"b"}],"node_id":"n2"}
+]}};
+</script>
+</body></html>
+''';
+      final text = HtmlSearchService.extractPageText(html);
+      expect(text, contains('器灵·落星盏'));
+      expect(text, contains('这是文章正文第一段，包含关键信息。'));
+    });
+
+    test('SPA 内嵌 JSON（整段作为转义字符串，如抖音百科）抽取正文', () {
+      const html = '''
+<html><body>
+<div class="app">少量</div>
+<script id="prefetch-data">var __x__ = "{\\"doc\\":{\\"type\\":\\"doc\\",\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":\\"背景故事第一段内容。\\",\\"node_id\\":\\"a\\"}]}}";
+</script>
+</body></html>
+''';
+      final text = HtmlSearchService.extractPageText(html);
+      expect(text, contains('背景故事第一段内容。'));
+    });
+
+    test('application/ld+json 整段 JSON 抽取', () {
+      const html = '''
+<html><body><div>少量</div>
+<script type="application/ld+json">{"name":"青云","description":"青云科技是一家企业级云服务商，成立于2012年，提供云计算与AI基础设施。"}</script>
+</body></html>
+''';
+      final text = HtmlSearchService.extractPageText(html);
+      expect(text, contains('青云科技是一家企业级云服务商'));
     });
   });
 
@@ -273,6 +336,114 @@ void main() {
       expect(text, contains('标题'));
       expect(text, contains('正文内容。'));
       expect(text, isNot(contains('bad()')));
+    });
+
+    test('2xx 状态码视为访问成功（如 206）', () async {
+      final service = HtmlSearchService(
+        client: MockClient(
+          (request) async => _html(
+            '<html><body><p>部分内容。</p></body></html>',
+            status: 206,
+          ),
+        ),
+      );
+      final text = await service.fetchPageText('https://example.com/206');
+      expect(text, contains('部分内容'));
+    });
+
+    test('非 2xx（如 403）抛 HttpStatusException', () async {
+      final service = HtmlSearchService(
+        client: MockClient((request) async => _html('forbidden', status: 403)),
+      );
+      expect(
+        service.fetchPageText('https://example.com/403'),
+        throwsA(
+          isA<HttpStatusException>()
+              .having((e) => e.statusCode, 'statusCode', 403),
+        ),
+      );
+    });
+
+    test('gzip 响应自动解压', () async {
+      const body = '<html><body><p>压缩后的正文。</p></body></html>';
+      final service = HtmlSearchService(
+        client: MockClient(
+          (request) async => http.Response.bytes(
+            gzip.encode(utf8.encode(body)),
+            200,
+            headers: {
+              'content-type': 'text/html; charset=utf-8',
+              'content-encoding': 'gzip',
+            },
+          ),
+        ),
+      );
+      final text = await service.fetchPageText('https://example.com/gzip');
+      expect(text, contains('压缩后的正文'));
+    });
+
+    test('响应头标 gzip 但正文已被底层解压：不重复解压（模拟 dart:io）', () async {
+      final service = HtmlSearchService(
+        client: MockClient(
+          (request) async => http.Response(
+            '<html><body><p>已解压的正文。</p></body></html>',
+            200,
+            headers: {
+              'content-type': 'text/html; charset=utf-8',
+              'content-encoding': 'gzip',
+            },
+          ),
+        ),
+      );
+      final text = await service.fetchPageText('https://example.com/gz');
+      expect(text, contains('已解压的正文'));
+    });
+
+    test('403 时先预热会话 Cookie 再重试一次', () async {
+      final calls = <String>[];
+      final service = HtmlSearchService(
+        client: MockClient((request) async {
+          // 站点根路径：建立会话 Cookie。
+          if (request.url.host == 'baike.baidu.com' &&
+              request.url.path == '/') {
+            return http.Response(
+              'root',
+              200,
+              headers: {'set-cookie': 'BAIDUID=abc; path=/'},
+            );
+          }
+          calls.add('${request.method} ${request.url.path}');
+          // 带上会话 Cookie 后返回 200，否则 403。
+          if ((request.headers['Cookie'] ?? '').contains('BAIDUID')) {
+            return _html('<html><body><p>预热后的正文。</p></body></html>');
+          }
+          return http.Response('forbidden', 403);
+        }),
+      );
+
+      final text = await service.fetchPageText('https://baike.baidu.com/item/x');
+      expect(text, contains('预热后的正文'));
+      // 请求序列：目标页(403) → 站点根(预热) → 目标页(200)。
+      expect(calls, ['GET /item/x', 'GET /item/x']);
+    });
+
+    test('GBK 编码页面按 <meta charset> 解码（修复乱码）', () async {
+      final body = gbk.encode(
+        '<html><head><meta charset="gbk"></head>'
+        '<body><h1>王者荣耀</h1><p>嫦娥皮肤落星盏。</p></body></html>',
+      );
+      final service = HtmlSearchService(
+        client: MockClient(
+          (request) async => http.Response.bytes(
+            body,
+            200,
+            headers: {'content-type': 'text/html'},
+          ),
+        ),
+      );
+      final text = await service.fetchPageText('https://pvp.qq.com/x');
+      expect(text, contains('王者荣耀'));
+      expect(text, contains('嫦娥皮肤落星盏。'));
     });
   });
 }
