@@ -13,9 +13,10 @@ class ReleaseInfo {
   /// 读取失败时的兜底构建号。
   static const String defaultBuild = '0';
 
-  /// Flutter 版本号（构建时经 `--dart-define=FLUTTER_VERSION` 注入；
+  /// Flutter 版本号（构建时经 `--dart-define=NARRCHAT_FLUTTER_VERSION` 注入；
   /// 未注入时为空字符串，调用方据此隐藏「关于」面板的 Flutter 行）。
-  static const String flutterVersion = String.fromEnvironment('FLUTTER_VERSION');
+  static const String flutterVersion =
+      String.fromEnvironment('NARRCHAT_FLUTTER_VERSION');
 
   static Map<String, String>? _info;
 

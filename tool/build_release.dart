@@ -581,7 +581,7 @@ Future<Process> _startFlutter(List<String> args) async {
 }
 
 /// 解析当前 Flutter 版本号（`flutter --version --machine` 的 frameworkVersion），
-/// 供 `--dart-define=FLUTTER_VERSION` 注入「关于」面板展示。
+/// 供 `--dart-define=NARRCHAT_FLUTTER_VERSION` 注入「关于」面板展示。
 ///
 /// 解析失败返回 null（此时不注入 define，「关于」面板隐藏 Flutter 行）；
 /// 结果缓存，一次构建只解析一次。
@@ -612,12 +612,15 @@ String? _resolveFlutterVersion() {
   return version;
 }
 
-/// `--dart-define=FLUTTER_VERSION=...` 参数列表；解析失败返回空列表。
+/// `--dart-define=NARRCHAT_FLUTTER_VERSION=...` 参数列表；解析失败返回空列表。
+///
+/// ⚠️ 不能使用 `FLUTTER_VERSION`——Flutter 3.44 已将其保留为框架内置
+/// dart-define（`FlutterVersion`），运行时用 `--dart-define` 覆盖会直接报错。
 List<String> _flutterVersionDefine() {
   final version = _resolveFlutterVersion();
   return version == null
       ? const []
-      : ['--dart-define=FLUTTER_VERSION=$version'];
+      : ['--dart-define=NARRCHAT_FLUTTER_VERSION=$version'];
 }
 
 /// 实时输出 flutter 构建日志，返回退出码。
