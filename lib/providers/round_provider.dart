@@ -26,6 +26,47 @@ import 'cloud_sync_provider.dart';
 import 'mod_provider.dart';
 import 'world_book_provider.dart';
 
+/// 单本书的运行时生成状态（支持多本书并发生成互不干扰）。
+///
+/// 生成令牌 [token]：每次 `sendRound` 自增。旧一轮的残留流回调（onChunk /
+/// isCancelled）捕获发起时的令牌，一旦与当前 [token] 不一致即丢弃 / 中止，
+/// 从根源上杜绝「上一轮流式输出注入本轮」与双流式并存。
+class _BookGenState {
+  _BookGenState(this.bookId);
+
+  final int bookId;
+
+  /// 生成令牌：新请求使旧残留回调失效。
+  int token = 0;
+
+  bool isSending = false;
+  bool isStreaming = false;
+  bool cancelRequested = false;
+  String streamingContent = '';
+
+  /// Agent 过程时间线：思考 / 搜索事件按真实顺序交错排列
+  ///（思考1 → 搜索1 → 思考2 → 搜索2 …）。
+  final List<AgentEvent> agentEvents = [];
+
+  /// 下一段思考增量到达时是否新建思考事件（agent 每轮开始时置位）。
+  bool newReasoningBlockPending = true;
+
+  /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
+  (int, int)? retryStatus;
+
+  /// 当前尝试的 RAW 时间线（请求体 → AI返回 交错；重试时清空）。
+  final List<RawExchange> rawExchanges = [];
+
+  /// 失败条目的 RAW 时间线（最近一次失败 / 中断尝试）。
+  List<RawExchange>? failedRawExchanges;
+
+  /// 生成期间展示的用户输入（结束 / 中断后清除）。
+  String pendingUserInput = '';
+
+  /// 本书的「失败条目」（最近一次未完成的生成尝试；空 = 无）。
+  FailedAttempt failedAttempt = const FailedAttempt();
+}
+
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
 class RoundProvider extends ChangeNotifier {
   /// Agent 路径注入的搜索指令：引导模型在用户要求搜索或需要核实时主动调用工具
@@ -77,26 +118,11 @@ class RoundProvider extends ChangeNotifier {
         _cloudSyncProvider = cloudSyncProvider,
         // ignore: prefer_initializing_formals
         _retryDelay = retryDelay {
-    // 默认使用共享的搜索服务实例（避免重复创建 http client）。
-    final search = searchService ?? HtmlSearchService();
-    // 联网搜索工具：成功回调更新结果明细；失败回调标记搜索框失败（✕）。
-    _webSearchTool =
-        webSearchTool ??
-        WebSearchTool(
-          search: search,
-          onResults: _handleSearchResults,
-          onFail: _handleSearchFail,
-        );
-    // 打开网页工具：成功/失败/拒绝访问/跳转回调更新 fetch 事件状态（✓ / 红✕ / 黄✕ / 跳转链）。
-    _fetchPageTool =
-        fetchPageTool ??
-        FetchPageTool(
-          search: search,
-          onDone: _handleFetchDone,
-          onFail: _handleFetchFail,
-          onRefused: () => _handleFetchFail(refused: true),
-          onHop: _handleFetchHop,
-        );
+    // 共享搜索服务实例（默认 Agent 工具按书复用，避免重复创建 http client）。
+    _searchService = searchService ?? HtmlSearchService();
+    // 测试 / 调用方可注入工具（非 null 时 Agent 运行优先使用）。
+    _webSearchTool = webSearchTool;
+    _fetchPageTool = fetchPageTool;
   }
 
   final RoundDao _dao;
@@ -108,8 +134,12 @@ class RoundProvider extends ChangeNotifier {
   final WorldBookProvider? _worldBookProvider;
   final ModProvider? _modProvider;
   final CloudSyncProvider? _cloudSyncProvider;
-  late final WebSearchTool _webSearchTool;
-  late final FetchPageTool _fetchPageTool;
+  /// 共享搜索服务（默认 Agent 工具按书复用同一实例，避免重复创建 http client）。
+  late final HtmlSearchService _searchService;
+
+  /// 测试 / 调用方可注入的工具（非 null 时 Agent 运行优先使用）。
+  WebSearchTool? _webSearchTool;
+  FetchPageTool? _fetchPageTool;
 
   /// 网络类失败重试间隔。
   final Duration _retryDelay;
@@ -121,46 +151,34 @@ class RoundProvider extends ChangeNotifier {
   /// 轮次未变化却随每次 chunk 触发侧栏等无关组件重建。
   List<Round> _roundsView = const [];
 
-  bool _isSending = false;
-  bool _isStreaming = false;
-  bool _cancelRequested = false;
-  String _streamingContent = '';
-
-  /// Agent 过程时间线：思考 / 搜索事件按真实顺序交错排列
-  ///（思考1 → 搜索1 → 思考2 → 搜索2 …）。
-  List<AgentEvent> _agentEvents = [];
-
-  /// 下一段思考增量到达时是否新建思考事件（agent 每轮开始时置位）。
-  bool _newReasoningBlockPending = true;
-
-  /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
-  (int, int)? _retryStatus;
-
-  /// 当前尝试的 RAW 时间线（请求体 → AI返回 交错；重试时清空）。
-  final List<RawExchange> _rawExchanges = [];
+  /// 各书运行时生成状态（key = bookId；支持多本书并发生成互不干扰）。
+  final Map<int, _BookGenState> _gens = {};
 
   /// 各成功轮次的 RAW 时间线（内存，key = roundId；切换书籍时清理）。
   final Map<int, List<RawExchange>> _rawDataByRound = {};
 
-  /// 失败条目的 RAW 时间线（最近一次失败 / 中断尝试）。
-  List<RawExchange>? _failedRawExchanges;
-  String _pendingUserInput = '';
   String? _error;
   int? _bookId;
 
-  /// 本书的「失败条目」（最近一次未完成的生成尝试；空 = 无）。
-  FailedAttempt _failedAttempt = const FailedAttempt();
+  /// 获取（必要时创建）指定书的运行时生成状态。
+  _BookGenState _gen(int bookId) =>
+      _gens.putIfAbsent(bookId, () => _BookGenState(bookId));
 
   List<Round> get rounds => _roundsView;
-  bool get isSending => _isSending;
-  bool get isStreaming => _isStreaming;
-  String get streamingContent => _streamingContent;
+
+  /// 当前查看书的运行时生成状态（未加载任何书或从未生成时为 null）。
+  _BookGenState? get _curGen => _bookId == null ? null : _gens[_bookId];
+
+  bool get isSending => _curGen?.isSending ?? false;
+  bool get isStreaming => _curGen?.isStreaming ?? false;
+  String get streamingContent => _curGen?.streamingContent ?? '';
 
   /// Agent 过程时间线（思考 / 搜索交错，供流式气泡渲染）。
-  List<AgentEvent> get agentEvents => List.unmodifiable(_agentEvents);
+  List<AgentEvent> get agentEvents =>
+      _curGen == null ? const [] : List.unmodifiable(_curGen!.agentEvents);
 
   /// 当前自动重试进度（灰字「错误重连……（x/3）」）；null = 无重试。
-  (int, int)? get retryStatus => _retryStatus;
+  (int, int)? get retryStatus => _curGen?.retryStatus;
 
   /// 指定轮次的 RAW 时间线（无数据返回 null）。
   List<RawExchange>? rawExchangesFor(int roundId) {
@@ -170,32 +188,40 @@ class RoundProvider extends ChangeNotifier {
 
   /// 失败条目的 RAW 时间线（无数据返回 null）。
   List<RawExchange>? get failedRawExchanges {
-    final data = _failedRawExchanges;
+    final data = _curGen?.failedRawExchanges;
     return (data == null || data.isEmpty) ? null : data;
   }
 
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
-  String get pendingUserInput => _pendingUserInput;
+  String get pendingUserInput => _curGen?.pendingUserInput ?? '';
 
-  /// 本书「失败条目」：请求失败 / 用户中断的未完成尝试（空 = 无）。
-  FailedAttempt get failedAttempt => _failedAttempt;
+  /// 当前查看书「失败条目」：请求失败 / 用户中断的未完成尝试（空 = 无）。
+  FailedAttempt get failedAttempt =>
+      _curGen?.failedAttempt ?? const FailedAttempt();
 
   /// 是否存在失败条目。
-  bool get hasFailureEntry => !_failedAttempt.isEmpty;
+  bool get hasFailureEntry => !failedAttempt.isEmpty;
 
   /// 失败条目的用户输入（空串 = 无）。
-  String get failedUserInput => _failedAttempt.userInput;
+  String get failedUserInput => failedAttempt.userInput;
 
   /// 失败条目的错误信息（空串 = 用户中断「已截断」）。
-  String get failedErrorMessage => _failedAttempt.errorMessage;
+  String get failedErrorMessage => failedAttempt.errorMessage;
+
+  /// 当前正在生成中的书籍 id（供跨书进程提示栏展示，点击可跳转对应书籍）。
+  List<int> get activeGenerationBookIds =>
+      [for (final g in _gens.values) if (g.isSending) g.bookId];
 
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 
-  /// 中断当前生成（流式会中止 HTTP 连接；非流式丢弃结果）。
-  void cancelGeneration() {
-    if (!_isSending) return;
-    _cancelRequested = true;
+  /// 中断指定书（默认当前查看书）的生成（流式会中止 HTTP 连接；非流式丢弃结果）。
+  void cancelGeneration({int? bookId}) {
+    final id = bookId ?? _bookId;
+    if (id == null) return;
+    final gen = _gens[id];
+    if (gen == null || !gen.isSending) return;
+    gen.cancelRequested = true;
     notifyListeners();
   }
 
@@ -213,7 +239,6 @@ class RoundProvider extends ChangeNotifier {
     // 切换书籍：清理旧书的内存 RAW 数据，避免跨书误配。
     if (_bookId != null && _bookId != bookId) {
       _rawDataByRound.clear();
-      _failedRawExchanges = null;
     }
     _bookId = bookId;
     try {
@@ -235,15 +260,15 @@ class RoundProvider extends ChangeNotifier {
   /// 加载本书「失败条目」；读取失败时置空（不打扰用户）。
   Future<void> _loadFailedAttempt(int bookId) async {
     try {
-      _failedAttempt = await _bookDao.getFailedAttempt(bookId);
+      _gen(bookId).failedAttempt = await _bookDao.getFailedAttempt(bookId);
     } catch (_) {
-      _failedAttempt = const FailedAttempt();
+      _gen(bookId).failedAttempt = const FailedAttempt();
     }
   }
 
   /// 写入本书「失败条目」（内存 + 数据库）；空条目即清空。返回是否成功落库。
   Future<bool> _setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    _failedAttempt = attempt;
+    _gen(bookId).failedAttempt = attempt;
     notifyListeners();
     try {
       await _bookDao.setFailedAttempt(bookId, attempt);
@@ -257,7 +282,7 @@ class RoundProvider extends ChangeNotifier {
   Future<void> clearFailedAttempt() async {
     final id = _bookId;
     if (id == null) return;
-    _failedRawExchanges = null;
+    _gen(id).failedRawExchanges = null;
     await _setFailedAttempt(id, const FailedAttempt());
   }
 
@@ -297,23 +322,28 @@ class RoundProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     }
-    if (_isSending) {
+    final gen = _gen(b.id!);
+    if (gen.isSending) {
       _error = '正在请求中，请稍候';
       return false;
     }
 
     final settings = _aiSettingsProvider;
-    _isSending = true;
-    _cancelRequested = false;
+    // 生成令牌：本轮唯一。旧一轮的残留流回调（onChunk / isCancelled）捕获发起时
+    // 的令牌，一旦与当前不一致即丢弃 / 中止，杜绝跨轮注入与双流式并存。
+    gen.token++;
+    final genToken = gen.token;
+    gen.isSending = true;
+    gen.cancelRequested = false;
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
-    _pendingUserInput = userInput;
+    gen.pendingUserInput = userInput;
     // 重置 Agent 过程时间线、重试状态与 RAW 时间线。
-    _agentEvents = [];
-    _newReasoningBlockPending = true;
-    _retryStatus = null;
-    _rawExchanges.clear();
-    _failedRawExchanges = null;
+    gen.agentEvents.clear();
+    gen.newReasoningBlockPending = true;
+    gen.retryStatus = null;
+    gen.rawExchanges.clear();
+    gen.failedRawExchanges = null;
     notifyListeners();
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
@@ -353,8 +383,8 @@ class RoundProvider extends ChangeNotifier {
           ? ModelPresets.defaultPreset.supportsSearch
           : (settings.selectedPreset.supportsSearch && settings.lastSearch);
       if (useStream) {
-        _isStreaming = true;
-        _streamingContent = '';
+        gen.isStreaming = true;
+        gen.streamingContent = '';
         notifyListeners();
       }
 
@@ -385,7 +415,10 @@ class RoundProvider extends ChangeNotifier {
             )
           : settings.buildRequestBody(values);
 
-      final onChunk = _buildStreamingOnChunk(useStream);
+      final onChunk = _buildStreamingOnChunk(useStream, gen, genToken);
+      // 取消闭包：用户显式中断，或本轮令牌已过期（新一轮已发起）都视为取消，
+      // 使上一轮残留流自行中止，绝不继续向本轮注入内容。
+      bool isCancelled() => gen.cancelRequested || genToken != gen.token;
       // 本轮开启联网搜索 → Agent 工具循环（首轮带工具，搜索后生成）；
       // 否则走单轮直发路径。
       final result = useSearch
@@ -405,34 +438,41 @@ class RoundProvider extends ChangeNotifier {
                 ],
                 useStream: useStream,
                 onChunk: onChunk,
+                gen: gen,
+                isCancelled: isCancelled,
               ),
+              gen: gen,
+              genToken: genToken,
             )
           : await _callWithRetry(
               () => _chatCapturing(
+                gen: gen,
                 requestBody: requestBody,
                 apiBaseUrl:
                     settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
                 apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
                 stream: useStream,
                 onChunk: onChunk,
-                isCancelled: () => _cancelRequested,
+                isCancelled: isCancelled,
               ),
+              gen: gen,
+              genToken: genToken,
             );
       // 用户主动中断：丢弃部分内容，以「已截断」失败条目保留用户输入。
-      if (_cancelRequested) {
-        _isStreaming = false;
-        _streamingContent = '';
-        _agentEvents = [];
-        _failedRawExchanges = List.of(_rawExchanges);
+      if (gen.cancelRequested) {
+        gen.isStreaming = false;
+        gen.streamingContent = '';
+        gen.agentEvents.clear();
+        gen.failedRawExchanges = List.of(gen.rawExchanges);
         await _setFailedAttempt(
           b.id!,
           FailedAttempt(userInput: userInput),
         );
         return false;
       }
-      _isStreaming = false;
-      _streamingContent = '';
-      _agentEvents = [];
+      gen.isStreaming = false;
+      gen.streamingContent = '';
+      gen.agentEvents.clear();
 
       final parsed = AiResponseParser.parse(result.content);
 
@@ -452,9 +492,13 @@ class RoundProvider extends ChangeNotifier {
       );
       final newRoundId = await _dao.insertRound(newRound);
       // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
-      _rawDataByRound[newRoundId] = List.of(_rawExchanges);
-      _rawExchanges.clear();
-      await loadRounds(b.id!);
+      _rawDataByRound[newRoundId] = List.of(gen.rawExchanges);
+      gen.rawExchanges.clear();
+      // 仅当用户仍停留在生成书时才重载其轮次；若已切到其它书，不把 _bookId
+      // 改回生成书，避免污染当前查看书籍的界面。
+      if (_bookId == b.id) {
+        await loadRounds(b.id!);
+      }
       // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
       final cloud = _cloudSyncProvider;
@@ -465,11 +509,11 @@ class RoundProvider extends ChangeNotifier {
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
       // 以「已截断」失败条目保留用户输入。
-      _isStreaming = false;
-      _streamingContent = '';
-      _agentEvents = [];
+      gen.isStreaming = false;
+      gen.streamingContent = '';
+      gen.agentEvents.clear();
       _error = null;
-      _failedRawExchanges = List.of(_rawExchanges);
+      gen.failedRawExchanges = List.of(gen.rawExchanges);
       await _setFailedAttempt(
         b.id!,
         FailedAttempt(userInput: userInput),
@@ -477,10 +521,10 @@ class RoundProvider extends ChangeNotifier {
       return false;
     } catch (e) {
       // 请求失败：以「生成失败 + 原因」失败条目保留用户输入（不再弹消息提示）。
-      _isStreaming = false;
-      _streamingContent = '';
-      _agentEvents = [];
-      _failedRawExchanges = List.of(_rawExchanges);
+      gen.isStreaming = false;
+      gen.streamingContent = '';
+      gen.agentEvents.clear();
+      gen.failedRawExchanges = List.of(gen.rawExchanges);
       final saved = await _setFailedAttempt(
         b.id!,
         FailedAttempt(userInput: userInput, errorMessage: e.toString()),
@@ -489,11 +533,11 @@ class RoundProvider extends ChangeNotifier {
       _error = saved ? null : e.toString();
       return false;
     } finally {
-      _isSending = false;
-      _cancelRequested = false;
-      _pendingUserInput = '';
-      _retryStatus = null;
-      _rawExchanges.clear();
+      gen.isSending = false;
+      gen.cancelRequested = false;
+      gen.pendingUserInput = '';
+      gen.retryStatus = null;
+      gen.rawExchanges.clear();
       notifyListeners();
     }
   }
@@ -503,6 +547,7 @@ class RoundProvider extends ChangeNotifier {
   /// 直发路径与 Agent 工具循环（逐迭代）共用：调用前入列一条携带请求体的
   /// 交换记录，返回后回填思考 / 搜索 / 正文三块。
   Future<AiCallResult> _chatCapturing({
+    required _BookGenState gen,
     required Map<String, dynamic> requestBody,
     required String apiBaseUrl,
     required String apiKey,
@@ -513,7 +558,7 @@ class RoundProvider extends ChangeNotifier {
     final exchange = RawExchange(
       requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
     );
-    _rawExchanges.add(exchange);
+    gen.rawExchanges.add(exchange);
     final result = await _aiService.chat(
       apiBaseUrl: apiBaseUrl,
       apiKey: apiKey,
@@ -545,32 +590,34 @@ class RoundProvider extends ChangeNotifier {
   ///   最多 [_maxAiRetries] 次；
   /// - API 业务类失败（[AiExceptionKind.api]）与用户中断：不重试，直接抛出。
   Future<AiCallResult> _callWithRetry(
-    Future<AiCallResult> Function() action,
-  ) async {
+    Future<AiCallResult> Function() action, {
+    required _BookGenState gen,
+    required int genToken,
+  }) async {
     for (var attempt = 0; ; attempt++) {
       try {
         final result = await action();
-        _retryStatus = null;
+        gen.retryStatus = null;
         return result;
       } on AiCancelledException {
         rethrow;
       } catch (e) {
         if (attempt >= _maxAiRetries ||
             classifyAiErrorKind(e) != AiExceptionKind.network ||
-            _cancelRequested) {
+            gen.cancelRequested) {
           rethrow;
         }
         // 重置流式内容与 Agent 时间线，展示重试提示并稍候重试。
-        _streamingContent = '';
-        _agentEvents = [];
-        _newReasoningBlockPending = true;
-        _rawExchanges.clear();
-        _retryStatus = (attempt + 1, _maxAiRetries);
+        gen.streamingContent = '';
+        gen.agentEvents.clear();
+        gen.newReasoningBlockPending = true;
+        gen.rawExchanges.clear();
+        gen.retryStatus = (attempt + 1, _maxAiRetries);
         notifyListeners();
         if (_retryDelay > Duration.zero) {
           await Future<void>.delayed(_retryDelay);
         }
-        if (_cancelRequested) {
+        if (gen.cancelRequested) {
           throw const AiCancelledException();
         }
       }
@@ -588,6 +635,8 @@ class RoundProvider extends ChangeNotifier {
     required List<Map<String, dynamic>> initialMessages,
     required bool useStream,
     required void Function(AiStreamChunk chunk)? onChunk,
+    required _BookGenState gen,
+    required bool Function() isCancelled,
   }) async {
     final runner = AgentRunner(
       buildBody: (messages, tools) {
@@ -614,6 +663,7 @@ class RoundProvider extends ChangeNotifier {
       },
       call: (requestBody, stream, onChunk, onRequestBody, isCancelled) =>
           _chatCapturing(
+            gen: gen,
             requestBody: requestBody,
             apiBaseUrl: apiBaseUrl,
             apiKey: apiKey,
@@ -621,40 +671,63 @@ class RoundProvider extends ChangeNotifier {
             onChunk: onChunk,
             isCancelled: isCancelled ?? () => false,
           ),
-      tools: [_webSearchTool, _fetchPageTool],
+      // 每个 Agent 运行使用绑定到本书生成状态的工具实例：多本书并发生成时，
+      // 搜索 / 抓取过程事件（UI 展示）互不串书；测试注入的工具优先。
+      tools: [
+        _webSearchTool ??
+            WebSearchTool(
+              search: _searchService,
+              onResults: (r) => _handleSearchResults(r, gen),
+              onFail: () => _handleSearchFail(gen),
+            ),
+        _fetchPageTool ??
+            FetchPageTool(
+              search: _searchService,
+              onDone: () => _handleFetchDone(gen),
+              onFail: () => _handleFetchFail(gen),
+              onRefused: () => _handleFetchFail(gen, refused: true),
+              onHop: (h) => _handleFetchHop(h, gen),
+            ),
+      ],
     );
 
     return runner.run(
       initialMessages: initialMessages,
       stream: useStream,
       onChunk: onChunk,
-      isCancelled: () => _cancelRequested,
-      onActivity: _handleAgentActivity,
+      isCancelled: isCancelled,
+      onActivity: (a) => _handleAgentActivity(a, gen),
     );
   }
 
   /// 流式增量回调：累积正文，思考按块累积（agent 每轮一个新思考块），
   /// 并驱动 UI 更新（非流式返回 null）。
-  void Function(AiStreamChunk chunk)? _buildStreamingOnChunk(bool useStream) {
+  void Function(AiStreamChunk chunk)? _buildStreamingOnChunk(
+    bool useStream,
+    _BookGenState gen,
+    int genToken,
+  ) {
     if (!useStream) return null;
     return (chunk) {
+      // 旧一轮的残留 chunk（令牌不一致）：直接丢弃，绝不注入本轮。
+      if (genToken != gen.token) return;
       if (chunk.done) return;
       // 新一次尝试开始产出内容：清除重试提示（灰字消失）。
-      _retryStatus = null;
+      gen.retryStatus = null;
       if (chunk.contentDelta.isNotEmpty) {
         // 进入正文阶段：当前轮的思考已完成。
-        _finishCurrentThinking();
-        _streamingContent += chunk.contentDelta;
+        _finishCurrentThinking(gen);
+        gen.streamingContent += chunk.contentDelta;
       }
       if (chunk.reasoningDelta.isNotEmpty) {
         // 需要新建思考事件（首段思考或 agent 新一轮开始）时先开新事件。
-        if (_newReasoningBlockPending) {
-          _newReasoningBlockPending = false;
-          _agentEvents.add(const AgentEvent(type: AgentEventType.thinking));
+        if (gen.newReasoningBlockPending) {
+          gen.newReasoningBlockPending = false;
+          gen.agentEvents.add(const AgentEvent(type: AgentEventType.thinking));
         }
-        final last = _agentEvents.length - 1;
-        _agentEvents[last] = _agentEvents[last].copyWith(
-          content: _agentEvents[last].content + chunk.reasoningDelta,
+        final last = gen.agentEvents.length - 1;
+        gen.agentEvents[last] = gen.agentEvents[last].copyWith(
+          content: gen.agentEvents[last].content + chunk.reasoningDelta,
         );
       }
       notifyListeners();
@@ -662,11 +735,11 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 将最近的未完成思考事件标记为完成（思考结束 / 开始搜索 / 进入正文时）。
-  void _finishCurrentThinking() {
-    for (var i = _agentEvents.length - 1; i >= 0; i--) {
-      final e = _agentEvents[i];
+  void _finishCurrentThinking(_BookGenState gen) {
+    for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+      final e = gen.agentEvents[i];
       if (e.type == AgentEventType.thinking && !e.done) {
-        _agentEvents[i] = e.copyWith(done: true);
+        gen.agentEvents[i] = e.copyWith(done: true);
         break;
       }
     }
@@ -676,14 +749,14 @@ class RoundProvider extends ChangeNotifier {
   /// - `turn`：新一轮 LLM 调用开始，上一轮思考完成，后续思考进入新事件；
   /// - `searching`：开始搜索，本轮思考完成并新增搜索事件；
   /// - `fetching`：开始打开网页，本轮思考完成并新增 fetch 事件。
-  void _handleAgentActivity(AgentActivity activity) {
+  void _handleAgentActivity(AgentActivity activity, _BookGenState gen) {
     if (activity.type == AgentActivityType.turn) {
-      _finishCurrentThinking();
-      _newReasoningBlockPending = true;
+      _finishCurrentThinking(gen);
+      gen.newReasoningBlockPending = true;
       notifyListeners();
     } else if (activity.type == AgentActivityType.searching) {
-      _finishCurrentThinking();
-      _agentEvents.add(
+      _finishCurrentThinking(gen);
+      gen.agentEvents.add(
         AgentEvent(
           type: AgentEventType.search,
           content: activity.query,
@@ -692,8 +765,8 @@ class RoundProvider extends ChangeNotifier {
       );
       notifyListeners();
     } else if (activity.type == AgentActivityType.fetching) {
-      _finishCurrentThinking();
-      _agentEvents.add(
+      _finishCurrentThinking(gen);
+      gen.agentEvents.add(
         AgentEvent(
           type: AgentEventType.fetch,
           content: activity.query,
@@ -704,12 +777,12 @@ class RoundProvider extends ChangeNotifier {
     }
   }
 
-  /// 搜索完成回调：更新最近一个进行中的搜索事件（结果 + 完成）。
-  void _handleSearchResults(List<SearchResult> results) {
-    for (var i = _agentEvents.length - 1; i >= 0; i--) {
-      final e = _agentEvents[i];
+  /// 搜索完成回调：更新指定书最近一个进行中的搜索事件（结果 + 完成）。
+  void _handleSearchResults(List<SearchResult> results, _BookGenState gen) {
+    for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+      final e = gen.agentEvents[i];
       if (e.type == AgentEventType.search && e.searching) {
-        _agentEvents[i] = e.copyWith(
+        gen.agentEvents[i] = e.copyWith(
           searching: false,
           results: results,
           done: true,
@@ -720,12 +793,12 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 搜索失败 / 无结果回调：把搜索事件标记为失败（UI 显示 ✕，不报错截断）。
-  void _handleSearchFail() {
-    for (var i = _agentEvents.length - 1; i >= 0; i--) {
-      final e = _agentEvents[i];
+  /// 搜索失败 / 无结果回调：把指定书搜索事件标记为失败（UI 显示 ✕，不报错截断）。
+  void _handleSearchFail(_BookGenState gen) {
+    for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+      final e = gen.agentEvents[i];
       if (e.type == AgentEventType.search && e.searching) {
-        _agentEvents[i] = e.copyWith(
+        gen.agentEvents[i] = e.copyWith(
           searching: false,
           done: true,
           failed: true,
@@ -736,24 +809,28 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 打开页面成功回调：把最近的进行中 fetch 事件标记完成（✓）。
-  void _handleFetchDone() {
-    _markFetchEvent(failed: false);
+  /// 打开页面成功回调：把指定书最近的进行中 fetch 事件标记完成（✓）。
+  void _handleFetchDone(_BookGenState gen) {
+    _markFetchEvent(gen, failed: false);
   }
 
-  /// 打开页面失败回调：标记为失败（✕）。
+  /// 打开页面失败回调：把指定书 fetch 事件标记为失败（✕）。
   /// [refused] 为 true 表示页面拒绝访问（HTTP 4xx/5xx），非工具故障，
   /// UI 显示黄色 ✕ 且不计入工具连续失败次数。
-  void _handleFetchFail({bool refused = false}) {
-    _markFetchEvent(failed: true, refused: refused);
+  void _handleFetchFail(_BookGenState gen, {bool refused = false}) {
+    _markFetchEvent(gen, failed: true, refused: refused);
   }
 
-  /// 更新最近一个进行中的 fetch 事件（完成 / 失败 / 拒绝访问）。
-  void _markFetchEvent({required bool failed, bool refused = false}) {
-    for (var i = _agentEvents.length - 1; i >= 0; i--) {
-      final e = _agentEvents[i];
+  /// 更新指定书最近一个进行中的 fetch 事件（完成 / 失败 / 拒绝访问）。
+  void _markFetchEvent(
+    _BookGenState gen, {
+    required bool failed,
+    bool refused = false,
+  }) {
+    for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+      final e = gen.agentEvents[i];
       if (e.type == AgentEventType.fetch && e.searching) {
-        _agentEvents[i] = e.copyWith(
+        gen.agentEvents[i] = e.copyWith(
           searching: false,
           done: true,
           failed: failed,
@@ -765,12 +842,12 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 抓取跳转回调：把每一跳追加到最近的 fetch 事件（UI 流式展示跳转链）。
-  void _handleFetchHop(FetchHop hop) {
-    for (var i = _agentEvents.length - 1; i >= 0; i--) {
-      final e = _agentEvents[i];
+  /// 抓取跳转回调：把每一跳追加到指定书最近的 fetch 事件（UI 流式展示跳转链）。
+  void _handleFetchHop(FetchHop hop, _BookGenState gen) {
+    for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+      final e = gen.agentEvents[i];
       if (e.type == AgentEventType.fetch) {
-        _agentEvents[i] = e.copyWith(hops: [...e.hops, hop]);
+        gen.agentEvents[i] = e.copyWith(hops: [...e.hops, hop]);
         break;
       }
     }
@@ -798,7 +875,7 @@ class RoundProvider extends ChangeNotifier {
   /// 2. 以当前轮次的用户输入重新请求 AI（本轮被新结果替换）。
   Future<void> refreshRound(Round round, {Book? book}) async {
     final b = book;
-    if (b == null || b.id == null || _isSending) return;
+    if (b == null || b.id == null || _gen(b.id!).isSending) return;
     await deleteRound(round, deleteFollowing: true);
     await sendRound(userInput: round.userInput, book: b);
   }
@@ -809,7 +886,7 @@ class RoundProvider extends ChangeNotifier {
   /// 3. 以修改后的输入重新请求 AI（替换原轮次及后续，而非追加新轮次）。
   Future<void> editAndReAsk(Round round, String editedInput, {Book? book}) async {
     final b = book;
-    if (b == null || b.id == null || _isSending) return;
+    if (b == null || b.id == null || _gen(b.id!).isSending) return;
     await updateUserInput(round.id!, editedInput);
     await deleteRound(round, deleteFollowing: true);
     await sendRound(userInput: editedInput, book: b);

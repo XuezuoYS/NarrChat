@@ -43,6 +43,16 @@ class _ImmediateClient extends http.BaseClient {
   }
 }
 
+/// 可控 SSE 流客户端：测试可随时向响应体追加数据行，模拟「停止后仍到达残留数据」。
+class _SseControllerClient extends http.BaseClient {
+  final StreamController<List<int>> body = StreamController<List<int>>();
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    return http.StreamedResponse(body.stream, 200);
+  }
+}
+
 /// 模拟 SSE 流式响应：依次返回 content / usage / [DONE] 数据行。
 class _SseClient extends http.BaseClient {
   @override
@@ -181,5 +191,47 @@ void main() {
     expect(result.promptTokens, 3);
     expect(result.completionTokens, 5);
     expect(deltas.join(), contains('剧情正文'));
+  });
+
+  test('流式：停止后残留数据行不再触发 onChunk（僵尸流已中止）', () async {
+    final client = _SseControllerClient();
+    final ai = AiService(client: client);
+    var cancelled = false;
+    final deltas = <String>[];
+    final chatFuture = ai.chat(
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'test-key',
+      requestBody: body(stream: true),
+      stream: true,
+      onChunk: (c) {
+        if (c.contentDelta.isNotEmpty) deltas.add(c.contentDelta);
+      },
+      isCancelled: () => cancelled,
+    );
+
+    // 正常流式阶段：推送一块内容。
+    client.body.add(
+      utf8.encode('data: {"choices":[{"delta":{"content":"AB"}}]}\n'),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(deltas, ['AB']);
+
+    // 用户停止后，服务器仍推来残留数据行——不得再触发 onChunk（注入下一轮）。
+    cancelled = true;
+    // 预注册结果期望（错误可能在 50ms 等待期内已触发，须在触发前挂上监听）。
+    final expectation = expectLater(
+      chatFuture,
+      throwsA(isA<AiCancelledException>()),
+    );
+    client.body.add(
+      utf8.encode('data: {"choices":[{"delta":{"content":"ZOMBIE"}}]}\n'),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    // 取消在轮询周期内生效（抛 AiCancelledException）。
+    await expectation;
+    expect(deltas, ['AB'], reason: '停止后残留数据不得再触发 onChunk');
+
+    await client.body.close();
   });
 }

@@ -619,18 +619,26 @@ class _ChatScreenState extends State<ChatScreen>
       },
       child: Scaffold(
         appBar: _buildAppBar(context),
-        body: LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= _kWideBreakpoint;
-            final chat = _buildChatArea(context);
-            final sidebar = _buildSidebar(
-              context,
-              onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
-            );
-            return wide
-                ? _buildWideLayout(context, chat, sidebar)
-                : _buildMobileLayout(context, chat, sidebar);
-          },
+        body: Column(
+          children: [
+            // 跨书进程提示栏：其他书籍正在生成时置顶展示，点击可跳转到对应书籍。
+            _buildGenerationBanner(context),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth >= _kWideBreakpoint;
+                  final chat = _buildChatArea(context);
+                  final sidebar = _buildSidebar(
+                    context,
+                    onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
+                  );
+                  return wide
+                      ? _buildWideLayout(context, chat, sidebar)
+                      : _buildMobileLayout(context, chat, sidebar);
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -686,6 +694,101 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       ),
     );
+  }
+
+  /// 跨书进程提示栏：其他书籍正在生成时置顶展示（书名 + 进度），
+  /// 点击跳转到对应书籍；无其他书生成时返回空组件。
+  Widget _buildGenerationBanner(BuildContext context) {
+    final roundProvider = context.watch<RoundProvider>();
+    final currentId = context.watch<BookProvider>().currentBook?.id;
+    final activeIds = roundProvider.activeGenerationBookIds
+        .where((id) => id != currentId)
+        .toList();
+    if (activeIds.isEmpty) return const SizedBox.shrink();
+
+    final books = context.read<BookProvider>().books;
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: context.narrColors.warning.withValues(alpha: 0.08),
+        border: Border(bottom: BorderSide(color: context.narrColors.divider)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final id in activeIds)
+              if (_bookById(books, id) case final book?)
+                _buildGenBannerChip(context, book),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 生成提示栏条目：小号加载圈 + 书名 + 箭头，点击跳转该书。
+  Widget _buildGenBannerChip(BuildContext context, Book book) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _jumpToBook(book.id),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    '《${book.title}》正在生成中',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: context.narrColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.arrow_forward_ios,
+                  size: 11,
+                  color: context.narrColors.textSecondary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 跳转到指定书对话页（替换当前对话页，展示该书的生成状态）。
+  void _jumpToBook(int? bookId) {
+    if (bookId == null) return;
+    final book = _bookById(context.read<BookProvider>().books, bookId);
+    if (book == null) return;
+    context.read<BookProvider>().selectBook(book);
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const ChatScreen()),
+    );
+  }
+
+  /// 按 id 查书（未找到返回 null）。
+  Book? _bookById(List<Book> books, int id) {
+    for (final b in books) {
+      if (b.id == id) return b;
+    }
+    return null;
   }
 
   /// 宽屏布局：聊天区 + 右侧栏固定槽位（带开合动画）。

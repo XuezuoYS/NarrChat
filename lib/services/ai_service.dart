@@ -384,7 +384,11 @@ class AiService {
           .listen(
         (line) {
           // 每行先检查用户中断（正常流式下停止生成即时生效）。
+          // 无论由轮询还是本行分支检测到取消，都必须中止底层连接订阅，
+          // 否则订阅保持存活会继续消费服务器残留数据（僵尸流），
+          // 导致上一轮的尾部增量被注入新一轮。
           if (isCancelled?.call() ?? false) {
+            unawaited(sub?.cancel()); // 中止底层连接
             if (!doneSignal.isCompleted) {
               doneSignal.completeError(const AiCancelledException());
             }
