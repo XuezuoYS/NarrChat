@@ -84,6 +84,8 @@ flutter:
     - assets/app_icon_rounded.png
     # 手动补充的开放源代码许可证清单（开发者维护，「开放源代码许可」页读取）。
     - assets/manual_licenses.json
+    # 更新日志（「更新日志」页读取；开发者维护）。
+    - update_log.md
 
   # To add assets to your application, add an assets section, like this:
   # assets:

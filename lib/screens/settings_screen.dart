@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'licenses_screen.dart';
+import 'update_log_screen.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../widgets/ai_settings_form.dart';
@@ -137,6 +138,12 @@ class _AboutPanelState extends State<_AboutPanel> {
               icon: Icons.receipt_long_outlined,
               label: '开放源代码许可',
               onTap: () => LicensesScreen.open(context),
+            ),
+            const SizedBox(height: 12),
+            _AboutEntry(
+              icon: Icons.history,
+              label: '更新日志',
+              onTap: () => UpdateLogScreen.open(context),
             ),
           ],
         ),
