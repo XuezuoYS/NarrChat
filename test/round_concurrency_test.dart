@@ -335,7 +335,7 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('其他书生成中：顶部横幅显示，点击跳转到该书', (tester) async {
+    testWidgets('其他书生成中：顶部显示计数横幅，点击弹窗后进入该书', (tester) async {
       final bookDao = _MockBookDao([bookA, bookB]);
       final dao = _MockRoundDao();
       final ai = _ConcurrentAiService();
@@ -360,18 +360,23 @@ void main() {
       );
 
       // 无其他书生成时：无横幅。
-      expect(find.text('《书A》正在生成中'), findsNothing);
+      expect(find.text('1本书正在生成……'), findsNothing);
 
       // 书 A 开始生成（保持挂起）。
       final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
       await tester.pump();
 
-      // 横幅出现：显示书 A 生成中，当前书 B 自身不显示。
-      expect(find.text('《书A》正在生成中'), findsOneWidget);
-      expect(find.text('《书B》正在生成中'), findsNothing);
+      // 横幅出现：显示计数（当前书 B 自身不计入）。
+      expect(find.text('1本书正在生成……'), findsOneWidget);
 
-      // 点击横幅 → 跳转到书 A 对话页。
-      await tester.tap(find.text('《书A》正在生成中'));
+      // 点击横幅 → 弹出「正在生成的书」对话框。
+      await tester.tap(find.text('1本书正在生成……'));
+      await tester.pump();
+      expect(find.text('正在生成的书'), findsOneWidget);
+      expect(find.text('书A'), findsOneWidget);
+
+      // 点击对话框中的书 A → 跳转到书 A 对话页。
+      await tester.tap(find.text('书A'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
 
@@ -391,6 +396,70 @@ void main() {
       );
       await tester.pump();
       await fA;
+    });
+
+    testWidgets('多本书生成：横幅计数，弹窗列出全部并可选跳转', (tester) async {
+      const bookC = Book(id: 3, title: '书C');
+      final bookDao = _MockBookDao([bookA, bookB, bookC]);
+      final dao = _MockRoundDao();
+      final ai = _ConcurrentAiService();
+      final bookProvider = BookProvider(dao: bookDao);
+      await bookProvider.loadBooks(); // 默认选中书A
+      bookProvider.selectBook(bookB); // 当前查看书 B
+
+      final roundProvider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        retryDelay: Duration.zero,
+      );
+      await roundProvider.loadRounds(2);
+      final worldBookProvider = WorldBookProvider(dao: _MockWorldBookDao());
+
+      await pumpChat(
+        tester,
+        bookProvider: bookProvider,
+        roundProvider: roundProvider,
+        worldBookProvider: worldBookProvider,
+      );
+
+      // 书 A 与书 C 同时生成。
+      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+      final fC = roundProvider.sendRound(userInput: '书C请求', book: bookC);
+      await tester.pump();
+
+      // 横幅显示 2 本书（当前书 B 不计入）。
+      expect(find.text('2本书正在生成……'), findsOneWidget);
+
+      // 点击横幅 → 弹窗列出书 A 与书 C。
+      await tester.tap(find.text('2本书正在生成……'));
+      await tester.pump();
+      expect(find.text('正在生成的书'), findsOneWidget);
+      expect(find.text('书A'), findsOneWidget);
+      expect(find.text('书C'), findsOneWidget);
+
+      // 点击书 C → 跳转到书 C。
+      await tester.tap(find.text('书C'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('书C'), findsWidgets);
+
+      // 收尾：完成两本书生成。
+      for (var i = 0; i < 20 && ai.sessions.length < 2; i++) {
+        await tester.pump();
+      }
+      for (final s in ai.sessions) {
+        s.completer.complete(
+          const AiCallResult(
+            content: _fullContent,
+            promptTokens: 1,
+            completionTokens: 1,
+          ),
+        );
+      }
+      await tester.pump();
+      await fA;
+      await fC;
     });
   });
 }

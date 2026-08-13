@@ -696,8 +696,8 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 跨书进程提示栏：其他书籍正在生成时置顶展示（书名 + 进度），
-  /// 点击跳转到对应书籍；无其他书生成时返回空组件。
+  /// 跨书进程提示栏：其他书籍正在生成时置顶展示计数（x本书正在生成……），
+  /// 点击弹出「正在生成的书」对话框再进入对应书籍；无其他书生成时返回空组件。
   Widget _buildGenerationBanner(BuildContext context) {
     final roundProvider = context.watch<RoundProvider>();
     final currentId = context.watch<BookProvider>().currentBook?.id;
@@ -706,68 +706,100 @@ class _ChatScreenState extends State<ChatScreen>
         .toList();
     if (activeIds.isEmpty) return const SizedBox.shrink();
 
-    final books = context.read<BookProvider>().books;
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: context.narrColors.warning.withValues(alpha: 0.08),
-        border: Border(bottom: BorderSide(color: context.narrColors.divider)),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (final id in activeIds)
-              if (_bookById(books, id) case final book?)
-                _buildGenBannerChip(context, book),
-          ],
+    return Material(
+      color: context.narrColors.warning.withValues(alpha: 0.08),
+      child: InkWell(
+        onTap: () => _showGeneratingBooksDialog(context, activeIds),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: context.narrColors.divider)),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '${activeIds.length}本书正在生成……',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: context.narrColors.textPrimary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.chevron_right,
+                size: 16,
+                color: context.narrColors.textSecondary,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  /// 生成提示栏条目：小号加载圈 + 书名 + 箭头，点击跳转该书。
-  Widget _buildGenBannerChip(BuildContext context, Book book) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 12),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => _jumpToBook(book.id),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    '《${book.title}》正在生成中',
+  /// 「正在生成的书」对话框：列出正在生成的其他书籍（书名 + 进度），
+  /// 点击对应条目进入该书对话页。
+  void _showGeneratingBooksDialog(BuildContext context, List<int> activeIds) {
+    final books = context.read<BookProvider>().books;
+    final entries = <Book>[];
+    for (final id in activeIds) {
+      final book = _bookById(books, id);
+      if (book != null) entries.add(book);
+    }
+    if (entries.isEmpty) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('正在生成的书'),
+        contentPadding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        content: SizedBox(
+          width: 320,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final book in entries)
+                ListTile(
+                  leading: const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  title: Text(
+                    book.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      color: context.narrColors.textPrimary,
-                    ),
                   ),
+                  trailing: Icon(
+                    Icons.chevron_right,
+                    size: 18,
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    _jumpToBook(book.id);
+                  },
                 ),
-                const SizedBox(width: 4),
-                Icon(
-                  Icons.arrow_forward_ios,
-                  size: 11,
-                  color: context.narrColors.textSecondary,
-                ),
-              ],
-            ),
+            ],
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+        ],
       ),
     );
   }
