@@ -399,32 +399,51 @@ var __article__ = {"doc":{"type":"doc","content":[
       expect(text, contains('已解压的正文'));
     });
 
-    test('403 时先预热会话 Cookie 再重试一次', () async {
+    test('百度百科 403 时回退 WAP 端点', () async {
       final calls = <String>[];
       final service = HtmlSearchService(
         client: MockClient((request) async {
-          // 站点根路径：建立会话 Cookie。
-          if (request.url.host == 'baike.baidu.com' &&
-              request.url.path == '/') {
-            return http.Response(
-              'root',
-              200,
-              headers: {'set-cookie': 'BAIDUID=abc; path=/'},
-            );
-          }
-          calls.add('${request.method} ${request.url.path}');
-          // 带上会话 Cookie 后返回 200，否则 403。
-          if ((request.headers['Cookie'] ?? '').contains('BAIDUID')) {
-            return _html('<html><body><p>预热后的正文。</p></body></html>');
+          calls.add('${request.url.host}${request.url.path}');
+          if (request.url.host == 'wapbaike.baidu.com') {
+            return _html('<html><body><p>WAP 正文内容。</p></body></html>');
           }
           return http.Response('forbidden', 403);
         }),
       );
 
       final text = await service.fetchPageText('https://baike.baidu.com/item/x');
+      expect(text, contains('WAP 正文内容'));
+      // 序列：桌面(403) → WAP(200)。
+      expect(calls, [
+        'baike.baidu.com/item/x',
+        'wapbaike.baidu.com/item/x',
+      ]);
+    });
+
+    test('非百度站点 403 时先预热会话 Cookie 再重试一次', () async {
+      final calls = <String>[];
+      final service = HtmlSearchService(
+        client: MockClient((request) async {
+          calls.add('${request.url.host}${request.url.path}');
+          if (request.url.path == '/') {
+            return http.Response(
+              'root',
+              200,
+              headers: {'set-cookie': 'SID=abc; path=/'},
+            );
+          }
+          // 带上会话 Cookie 后返回 200，否则 403。
+          if ((request.headers['Cookie'] ?? '').contains('SID')) {
+            return _html('<html><body><p>预热后的正文。</p></body></html>');
+          }
+          return http.Response('forbidden', 403);
+        }),
+      );
+
+      final text = await service.fetchPageText('https://example.com/item');
       expect(text, contains('预热后的正文'));
-      // 请求序列：目标页(403) → 站点根(预热) → 目标页(200)。
-      expect(calls, ['GET /item/x', 'GET /item/x']);
+      // 序列：目标页(403) → 站点根(预热) → 目标页(200)。
+      expect(calls, ['example.com/item', 'example.com/', 'example.com/item']);
     });
 
     test('GBK 编码页面按 <meta charset> 解码（修复乱码）', () async {

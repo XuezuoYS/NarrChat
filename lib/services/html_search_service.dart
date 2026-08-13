@@ -159,7 +159,17 @@ class HtmlSearchService {
     final uri = Uri.parse(url);
     var resp = await _send(uri);
     _storeCookies(resp, uri); // 403 等响应也可能携带会话 Cookie。
-    // 百度百科等站点偶发 WAF/反爬 403：先访问站点根路径建立会话 Cookie 再重试一次。
+    // 百度百科桌面端常被 WAF JS 挑战拦截（403），WAP 端点（wapbaike）不受影响，
+    // 直接回退到 WAP 主机（同路径）再取一次。
+    if (resp.statusCode == 403 && uri.host == 'baike.baidu.com') {
+      final wap = uri.replace(host: 'wapbaike.baidu.com');
+      resp = await _send(wap);
+      _storeCookies(resp, wap);
+      if (resp.statusCode < 300) {
+        return _decodeBody(resp);
+      }
+    }
+    // 一般 403：先访问站点根路径建立会话 Cookie 再重试一次。
     if (resp.statusCode == 403) {
       await _warmupSession(uri);
       resp = await _send(uri);
