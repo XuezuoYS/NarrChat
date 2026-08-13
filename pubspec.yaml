@@ -49,6 +49,7 @@ dependencies:
   flutter_secure_storage: ^10.3.1
   pinyin: ^3.3.0
   fast_gbk: ^1.0.0
+  flutter_local_notifications: ^22.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
