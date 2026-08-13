@@ -14,6 +14,7 @@ import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
+import 'services/manual_licenses_service.dart';
 import 'services/system_fonts_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
@@ -61,6 +62,8 @@ Future<void> main() async {
     await worldBookProvider.reloadCurrent();
     await roundProvider.reloadCurrent();
   };
+  // 开放源代码许可：注册手动补充的许可证清单（懒加载，仅打开许可证页时解析）。
+  ManualLicensesService.register();
   runApp(
     NarrChatApp(
       aiSettingsProvider: aiSettingsProvider,
