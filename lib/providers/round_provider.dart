@@ -87,7 +87,7 @@ class RoundProvider extends ChangeNotifier {
           onResults: _handleSearchResults,
           onFail: _handleSearchFail,
         );
-    // 打开网页工具：成功/失败/拒绝访问回调更新 fetch 事件状态（✓ / 红✕ / 黄✕）。
+    // 打开网页工具：成功/失败/拒绝访问/跳转回调更新 fetch 事件状态（✓ / 红✕ / 黄✕ / 跳转链）。
     _fetchPageTool =
         fetchPageTool ??
         FetchPageTool(
@@ -95,6 +95,7 @@ class RoundProvider extends ChangeNotifier {
           onDone: _handleFetchDone,
           onFail: _handleFetchFail,
           onRefused: () => _handleFetchFail(refused: true),
+          onHop: _handleFetchHop,
         );
   }
 
@@ -758,6 +759,18 @@ class RoundProvider extends ChangeNotifier {
           failed: failed,
           refused: refused,
         );
+        break;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 抓取跳转回调：把每一跳追加到最近的 fetch 事件（UI 流式展示跳转链）。
+  void _handleFetchHop(FetchHop hop) {
+    for (var i = _agentEvents.length - 1; i >= 0; i--) {
+      final e = _agentEvents[i];
+      if (e.type == AgentEventType.fetch) {
+        _agentEvents[i] = e.copyWith(hops: [...e.hops, hop]);
         break;
       }
     }

@@ -399,8 +399,9 @@ var __article__ = {"doc":{"type":"doc","content":[
       expect(text, contains('已解压的正文'));
     });
 
-    test('百度百科 403 时回退 WAP 端点', () async {
+    test('百度百科 403 时回退 WAP 端点并记录跳转链', () async {
       final calls = <String>[];
+      final hops = <FetchHop>[];
       final service = HtmlSearchService(
         client: MockClient((request) async {
           calls.add('${request.url.host}${request.url.path}');
@@ -411,12 +412,46 @@ var __article__ = {"doc":{"type":"doc","content":[
         }),
       );
 
-      final text = await service.fetchPageText('https://baike.baidu.com/item/x');
+      final text = await service.fetchPageText(
+        'https://baike.baidu.com/item/x',
+        onHop: hops.add,
+      );
       expect(text, contains('WAP 正文内容'));
       // 序列：桌面(403) → WAP(200)。
       expect(calls, [
         'baike.baidu.com/item/x',
         'wapbaike.baidu.com/item/x',
+      ]);
+      // 跳转链：应用重定向（无状态码）→ WAP 200。
+      expect(hops.map((h) => '${h.url}|${h.statusCode}').toList(), [
+        'https://baike.baidu.com/item/x|null',
+        'https://wapbaike.baidu.com/item/x|200',
+      ]);
+    });
+
+    test('手动跟随多级 3xx 重定向并回调每跳', () async {
+      final hops = <FetchHop>[];
+      final service = HtmlSearchService(
+        client: MockClient((request) async {
+          if (request.url.path == '/a') {
+            return http.Response('', 302, headers: {'location': '/b'});
+          }
+          if (request.url.path == '/b') {
+            return http.Response('', 302, headers: {'location': '/c'});
+          }
+          return _html('<html><body><p>最终内容。</p></body></html>');
+        }),
+      );
+
+      final text = await service.fetchPageText(
+        'https://example.com/a',
+        onHop: hops.add,
+      );
+      expect(text, contains('最终内容'));
+      expect(hops.map((h) => '${h.url}|${h.statusCode}').toList(), [
+        'https://example.com/a|302',
+        'https://example.com/b|302',
+        'https://example.com/c|200',
       ]);
     });
 

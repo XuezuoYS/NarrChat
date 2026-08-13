@@ -1869,12 +1869,13 @@ class _SearchBoxState extends State<_SearchBox> {
   }
 }
 
-/// 打开页面细节框：显示被打开的网页链接与状态（转圈 / ✓ / ✕）。
+/// 打开页面细节框：显示被打开的网页链接、状态（转圈 / ✓ / ✕）与跳转链。
 class _FetchBox extends StatelessWidget {
   final String url;
   final bool searching;
   final bool failed;
   final bool refused;
+  final List<FetchHop> hops;
 
   const _FetchBox({
     super.key,
@@ -1882,6 +1883,7 @@ class _FetchBox extends StatelessWidget {
     required this.searching,
     required this.failed,
     this.refused = false,
+    this.hops = const [],
   });
 
   @override
@@ -1894,59 +1896,110 @@ class _FetchBox extends StatelessWidget {
         border: Border.all(color: scheme.outlineVariant),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(
-            Icons.open_in_new,
-            size: 15,
-            color: NarrChatTheme.primary,
-          ),
-          const SizedBox(width: 6),
-          const Text(
-            '打开页面',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: NarrChatTheme.primary,
-            ),
-          ),
-          if (url.isNotEmpty) ...[
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                url,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+          Row(
+            children: [
+              const Icon(
+                Icons.open_in_new,
+                size: 15,
+                color: NarrChatTheme.primary,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                '打开页面',
                 style: TextStyle(
-                  fontSize: 11,
-                  color: context.narrColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: NarrChatTheme.primary,
                 ),
               ),
-            ),
+              if (url.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: context.narrColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(width: 4),
+              if (searching)
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else if (failed)
+                Icon(
+                  Icons.close,
+                  size: 14,
+                  color: refused
+                      ? context.narrColors.warning
+                      : const Color(0xFFE5484D),
+                )
+              else
+                const Icon(
+                  Icons.check_circle,
+                  size: 14,
+                  color: NarrChatTheme.primary,
+                ),
+            ],
+          ),
+          // 跳转链：HTTP 重定向 / 应用级回退，流式列出。
+          if (hops.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            for (var i = 0; i < hops.length; i++) ...[if (i > 0) const SizedBox(height: 3), _HopLine(hop: hops[i])],
           ],
-          const SizedBox(width: 4),
-          if (searching)
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else if (failed)
-            Icon(
-              Icons.close,
-              size: 14,
-              color: refused
-                  ? context.narrColors.warning
-                  : const Color(0xFFE5484D),
-            )
-          else
-            const Icon(
-              Icons.check_circle,
-              size: 14,
-              color: NarrChatTheme.primary,
-            ),
         ],
       ),
+    );
+  }
+}
+
+/// 抓取跳转链的一行：URL + 状态码 / 应用重定向。
+class _HopLine extends StatelessWidget {
+  final FetchHop hop;
+  const _HopLine({required this.hop});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    final isAppRedirect = hop.statusCode == null;
+    return Row(
+      children: [
+        Icon(
+          isAppRedirect ? Icons.swap_horiz : Icons.arrow_forward,
+          size: 12,
+          color: NarrChatTheme.primary,
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            hop.url,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          isAppRedirect ? '应用重定向' : '${hop.statusCode}',
+          style: TextStyle(
+            fontSize: 11,
+            color: isAppRedirect ? colors.warning : colors.textSecondary,
+          ),
+        ),
+        const SizedBox(width: 3),
+        const Icon(Icons.check, size: 12, color: NarrChatTheme.primary),
+      ],
     );
   }
 }
@@ -2159,6 +2212,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         searching: events[i].searching,
                         failed: events[i].failed,
                         refused: events[i].refused,
+                        hops: events[i].hops,
                       ),
                   ],
                   // 自动重试提示（灰字）：思考/搜索块之后、正文之前。

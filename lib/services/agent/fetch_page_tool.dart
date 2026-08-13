@@ -14,6 +14,7 @@ class FetchPageTool implements NarrAgentTool {
     void Function()? onDone,
     void Function()? onFail,
     void Function()? onRefused,
+    void Function(FetchHop hop)? onHop,
     int maxChars = 30000,
   })  : _search = search ?? HtmlSearchService(),
         // ignore: prefer_initializing_formals
@@ -22,6 +23,8 @@ class FetchPageTool implements NarrAgentTool {
         _onFail = onFail,
         // ignore: prefer_initializing_formals
         _onRefused = onRefused,
+        // ignore: prefer_initializing_formals
+        _onHop = onHop,
         // ignore: prefer_initializing_formals
         _maxChars = maxChars;
 
@@ -35,6 +38,9 @@ class FetchPageTool implements NarrAgentTool {
 
   /// 页面拒绝访问（HTTP 4xx/5xx）回调（供 UI 标记黄色 ✕，不计入失败次数）。
   final void Function()? _onRefused;
+
+  /// 重定向跳转回调（供 UI 流式展示抓取跳转链）。
+  final void Function(FetchHop hop)? _onHop;
 
   /// 抓取正文截取长度。
   final int _maxChars;
@@ -70,7 +76,11 @@ class FetchPageTool implements NarrAgentTool {
       return const AgentToolResult(success: false, content: '打开的链接为空');
     }
     try {
-      final text = await _search.fetchPageText(url, maxChars: _maxChars);
+      final text = await _search.fetchPageText(
+        url,
+        maxChars: _maxChars,
+        onHop: _onHop,
+      );
       if (text.trim().isEmpty) {
         _onFail?.call();
         return AgentToolResult(success: false, content: '页面无有效内容：$url');

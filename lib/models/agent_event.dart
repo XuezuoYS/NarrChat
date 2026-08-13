@@ -31,6 +31,9 @@ class AgentEvent {
   /// 搜索：结果列表。
   final List<SearchResult> results;
 
+  /// 抓取页面的跳转链（HTTP 重定向 / 应用级回退；仅 fetch 事件使用）。
+  final List<FetchHop> hops;
+
   /// 事件完成（思考结束 / 搜索完成）。
   final bool done;
 
@@ -46,6 +49,7 @@ class AgentEvent {
     this.content = '',
     this.searching = false,
     this.results = const [],
+    this.hops = const [],
     this.done = false,
     this.failed = false,
     this.refused = false,
@@ -55,6 +59,7 @@ class AgentEvent {
     String? content,
     bool? searching,
     List<SearchResult>? results,
+    List<FetchHop>? hops,
     bool? done,
     bool? failed,
     bool? refused,
@@ -64,6 +69,7 @@ class AgentEvent {
       content: content ?? this.content,
       searching: searching ?? this.searching,
       results: results ?? this.results,
+      hops: hops ?? this.hops,
       done: done ?? this.done,
       failed: failed ?? this.failed,
       refused: refused ?? this.refused,

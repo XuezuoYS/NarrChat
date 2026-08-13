@@ -19,6 +19,24 @@ class SearchResult {
   });
 }
 
+/// 抓取网页过程中的一跳（HTTP 3xx 重定向或应用级回退）。
+class FetchHop {
+  /// 本跳访问的 URL。
+  final String url;
+
+  /// HTTP 状态码；为 null 表示应用级重定向（如百度百科回退 WAP 端点）。
+  final int? statusCode;
+
+  const FetchHop({required this.url, this.statusCode});
+}
+
+/// 抓取结果：最终 HTML 与跳转链。
+class _FetchResult {
+  final String html;
+  final List<FetchHop> hops;
+  const _FetchResult(this.html, this.hops);
+}
+
 /// 联网搜索失败异常（两个引擎均失败时抛出）。
 class SearchException implements Exception {
   final String message;
@@ -128,8 +146,8 @@ class HtmlSearchService {
     final seen = <String>{};
     for (var page = 0; page * perPage < maxResults; page++) {
       try {
-        final html = await _get(buildUrl(page * perPage));
-        final results = parse(html);
+        final fetched = await _get(buildUrl(page * perPage));
+        final results = parse(fetched.html);
         if (results.isEmpty) break;
         var added = 0;
         for (final r in results) {
@@ -150,24 +168,52 @@ class HtmlSearchService {
   }
 
   /// 抓取网页正文（去除 script/style/标签后的可读文本，截取前 [maxChars] 字符）。
-  Future<String> fetchPageText(String url, {int maxChars = 30000}) async {
-    final html = await _get(url);
-    return extractPageText(html, maxChars: maxChars);
+  ///
+  /// [onHop]：每完成一跳（HTTP 重定向 / 应用级回退 / 最终响应）回调一次，
+  /// 供 UI 流式展示抓取跳转链。
+  Future<String> fetchPageText(
+    String url, {
+    int maxChars = 30000,
+    void Function(FetchHop hop)? onHop,
+  }) async {
+    final result = await _get(url, onHop: onHop);
+    return extractPageText(result.html, maxChars: maxChars);
   }
 
-  Future<String> _get(String url) async {
-    final uri = Uri.parse(url);
+  /// 抓取 URL：手动跟随 3xx 重定向并记录每一跳，返回最终 HTML 与跳转链。
+  Future<_FetchResult> _get(
+    String url, {
+    void Function(FetchHop hop)? onHop,
+  }) async {
+    final hops = <FetchHop>[];
+    void addHop(FetchHop hop) {
+      hops.add(hop);
+      onHop?.call(hop);
+    }
+
+    var uri = Uri.parse(url);
     var resp = await _send(uri);
-    _storeCookies(resp, uri); // 403 等响应也可能携带会话 Cookie。
-    // 百度百科桌面端常被 WAF JS 挑战拦截（403），WAP 端点（wapbaike）不受影响，
-    // 直接回退到 WAP 主机（同路径）再取一次。
+    _storeCookies(resp, uri);
+    // 手动跟随 3xx 重定向（记录每一跳；请求级已禁用自动跟随）。
+    // ⚠️ 不依赖 resp.isRedirect（该字段可能为 false），直接按状态码区间判断。
+    var redirectCount = 0;
+    while (resp.statusCode >= 300 &&
+        resp.statusCode < 400 &&
+        redirectCount < 5) {
+      addHop(FetchHop(url: uri.toString(), statusCode: resp.statusCode));
+      final location = resp.headers['location'];
+      if (location == null || location.isEmpty) break;
+      uri = uri.resolve(location);
+      resp = await _send(uri);
+      _storeCookies(resp, uri);
+      redirectCount++;
+    }
+    // 百度百科桌面端 403：WAP 应用级回退（同路径换主机）。
     if (resp.statusCode == 403 && uri.host == 'baike.baidu.com') {
-      final wap = uri.replace(host: 'wapbaike.baidu.com');
-      resp = await _send(wap);
-      _storeCookies(resp, wap);
-      if (resp.statusCode < 300) {
-        return _decodeBody(resp);
-      }
+      addHop(FetchHop(url: uri.toString())); // 应用重定向（无状态码）
+      uri = uri.replace(host: 'wapbaike.baidu.com');
+      resp = await _send(uri);
+      _storeCookies(resp, uri);
     }
     // 一般 403：先访问站点根路径建立会话 Cookie 再重试一次。
     if (resp.statusCode == 403) {
@@ -179,11 +225,19 @@ class HtmlSearchService {
     if (resp.statusCode >= 300) {
       throw HttpStatusException(resp.statusCode, url);
     }
-    return _decodeBody(resp);
+    addHop(FetchHop(url: uri.toString(), statusCode: resp.statusCode));
+    return _FetchResult(_decodeBody(resp), hops);
   }
 
-  Future<http.Response> _send(Uri uri) =>
-      _client.get(uri, headers: _headersFor(uri)).timeout(_timeout);
+  /// 发送请求：请求级禁用自动跟随重定向，由 [_get] 手动跟随以记录每一跳。
+  Future<http.Response> _send(Uri uri) async {
+    final request = http.Request('GET', uri)
+      ..followRedirects = false
+      ..maxRedirects = 0;
+    request.headers.addAll(_headersFor(uri));
+    final streamed = await _client.send(request).timeout(_timeout);
+    return http.Response.fromStream(streamed);
+  }
 
   /// 访问站点根路径以建立会话 Cookie（部分站点反爬要求先有 Cookie）。
   Future<void> _warmupSession(Uri uri) async {
