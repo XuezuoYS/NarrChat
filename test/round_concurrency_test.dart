@@ -15,6 +15,7 @@ import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
+import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
@@ -460,6 +461,83 @@ void main() {
       await tester.pump();
       await fA;
       await fC;
+    });
+
+    testWidgets('首页（书籍列表）也展示生成横幅并可进入对应书', (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final bookDao = _MockBookDao([bookA, bookB]);
+      final dao = _MockRoundDao();
+      final ai = _ConcurrentAiService();
+      final bookProvider = BookProvider(dao: bookDao);
+      await bookProvider.loadBooks();
+      final roundProvider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        retryDelay: Duration.zero,
+      );
+      final worldBookProvider = WorldBookProvider(dao: _MockWorldBookDao());
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(create: (_) => bookProvider),
+            ChangeNotifierProvider(create: (_) => worldBookProvider),
+            ChangeNotifierProvider(create: (_) => roundProvider),
+            ChangeNotifierProvider(create: (_) => SidebarProvider()),
+          ],
+          child: MaterialApp(
+            theme: NarrChatTheme.light,
+            home: const HomeScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 无生成时：无横幅。
+      expect(find.text('1本书正在生成……'), findsNothing);
+
+      // 书 A 开始生成（保持挂起）。
+      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+      await tester.pump();
+
+      // 首页（无当前查看书）展示横幅，计数含书 A。
+      expect(find.text('1本书正在生成……'), findsOneWidget);
+
+      // 点击横幅 → 弹窗（首页书籍列表本身也有「书A」条目，需限定在弹窗内）。
+      await tester.tap(find.text('1本书正在生成……'));
+      await tester.pump();
+      expect(find.text('正在生成的书'), findsOneWidget);
+      final dialogBookA = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('书A'),
+      );
+      expect(dialogBookA, findsOneWidget);
+
+      // 点击弹窗中的书 A → 进入书 A 对话页。
+      await tester.tap(dialogBookA);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('书A'), findsWidgets);
+
+      // 收尾：完成书 A 生成。
+      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
+        await tester.pump();
+      }
+      ai.sessions.first.completer.complete(
+        const AiCallResult(
+          content: _fullContent,
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      );
+      await tester.pump();
+      await fA;
     });
   });
 }

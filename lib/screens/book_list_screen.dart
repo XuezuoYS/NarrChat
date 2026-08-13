@@ -8,6 +8,7 @@ import '../utils/book_list_utils.dart';
 import '../utils/focus_utils.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/book_actions.dart';
+import '../widgets/generation_banner.dart';
 import 'book_settings_screen.dart';
 import 'chat_screen.dart';
 
@@ -78,6 +79,8 @@ class _BookListScreenState extends State<BookListScreen> {
           children: [
             _buildToolbar(context, provider.books.length),
             const Divider(height: 1),
+            // 跨书进程提示栏：其他书籍正在生成时展示计数横幅，点击弹窗选择跳转。
+            GenerationBanner(onOpenBook: _openChat),
             Expanded(
               child: provider.isLoading && provider.books.isEmpty
                   ? const Center(child: CircularProgressIndicator())

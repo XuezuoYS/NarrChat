@@ -21,6 +21,7 @@ import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/failed_attempt_bubble.dart';
+import '../widgets/generation_banner.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
@@ -619,26 +620,34 @@ class _ChatScreenState extends State<ChatScreen>
       },
       child: Scaffold(
         appBar: _buildAppBar(context),
-        body: Column(
-          children: [
-            // 跨书进程提示栏：其他书籍正在生成时置顶展示，点击可跳转到对应书籍。
-            _buildGenerationBanner(context),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final wide = constraints.maxWidth >= _kWideBreakpoint;
-                  final chat = _buildChatArea(context);
-                  final sidebar = _buildSidebar(
-                    context,
-                    onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
-                  );
-                  return wide
-                      ? _buildWideLayout(context, chat, sidebar)
-                      : _buildMobileLayout(context, chat, sidebar);
-                },
-              ),
-            ),
-          ],
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= _kWideBreakpoint;
+            final chat = _buildChatArea(context);
+            final sidebar = _buildSidebar(
+              context,
+              onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
+            );
+            // 悬浮进程提示：盖在对话区上方（不占位、不遮挡右侧栏），宽窄屏一致。
+            final chatWithBanner = Stack(
+              children: [
+                Positioned.fill(child: chat),
+                Positioned(
+                  top: 8,
+                  left: 0,
+                  right: 0,
+                  child: GenerationBanner(
+                    excludeBookId:
+                        context.watch<BookProvider>().currentBook?.id,
+                    onOpenBook: _jumpToBook,
+                  ),
+                ),
+              ],
+            );
+            return wide
+                ? _buildWideLayout(context, chatWithBanner, sidebar)
+                : _buildMobileLayout(context, chatWithBanner, sidebar);
+          },
         ),
       ),
     );
@@ -696,131 +705,12 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 跨书进程提示栏：其他书籍正在生成时置顶展示计数（x本书正在生成……），
-  /// 点击弹出「正在生成的书」对话框再进入对应书籍；无其他书生成时返回空组件。
-  Widget _buildGenerationBanner(BuildContext context) {
-    final roundProvider = context.watch<RoundProvider>();
-    final currentId = context.watch<BookProvider>().currentBook?.id;
-    final activeIds = roundProvider.activeGenerationBookIds
-        .where((id) => id != currentId)
-        .toList();
-    if (activeIds.isEmpty) return const SizedBox.shrink();
-
-    return Material(
-      color: context.narrColors.warning.withValues(alpha: 0.08),
-      child: InkWell(
-        onTap: () => _showGeneratingBooksDialog(context, activeIds),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-          decoration: BoxDecoration(
-            border: Border(bottom: BorderSide(color: context.narrColors.divider)),
-          ),
-          child: Row(
-            children: [
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  '${activeIds.length}本书正在生成……',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: context.narrColors.textPrimary,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Icon(
-                Icons.chevron_right,
-                size: 16,
-                color: context.narrColors.textSecondary,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 「正在生成的书」对话框：列出正在生成的其他书籍（书名 + 进度），
-  /// 点击对应条目进入该书对话页。
-  void _showGeneratingBooksDialog(BuildContext context, List<int> activeIds) {
-    final books = context.read<BookProvider>().books;
-    final entries = <Book>[];
-    for (final id in activeIds) {
-      final book = _bookById(books, id);
-      if (book != null) entries.add(book);
-    }
-    if (entries.isEmpty) return;
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('正在生成的书'),
-        contentPadding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        content: SizedBox(
-          width: 320,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final book in entries)
-                ListTile(
-                  leading: const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  title: Text(
-                    book.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Icon(
-                    Icons.chevron_right,
-                    size: 18,
-                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                  ),
-                  onTap: () {
-                    Navigator.of(ctx).pop();
-                    _jumpToBook(book.id);
-                  },
-                ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// 跳转到指定书对话页（替换当前对话页，展示该书的生成状态）。
-  void _jumpToBook(int? bookId) {
-    if (bookId == null) return;
-    final book = _bookById(context.read<BookProvider>().books, bookId);
-    if (book == null) return;
+  void _jumpToBook(Book book) {
     context.read<BookProvider>().selectBook(book);
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => const ChatScreen()),
     );
-  }
-
-  /// 按 id 查书（未找到返回 null）。
-  Book? _bookById(List<Book> books, int id) {
-    for (final b in books) {
-      if (b.id == id) return b;
-    }
-    return null;
   }
 
   /// 宽屏布局：聊天区 + 右侧栏固定槽位（带开合动画）。

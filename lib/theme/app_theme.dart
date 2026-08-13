@@ -303,6 +303,9 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
   /// 警告色（BETA/试验版等强调用）。浅色为黄棕色，深色为明亮琥珀黄。
   final Color warning;
 
+  /// 跨书生成进程提示栏的背景色（不透明；浅色为淡琥珀，深色为深琥珀）。
+  final Color bannerBackground;
+
   const NarrChatColors({
     required this.background,
     required this.surface,
@@ -314,6 +317,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     required this.historyBackground,
     required this.historyHeader,
     required this.warning,
+    required this.bannerBackground,
   });
 
   /// 浅色主题配色。
@@ -328,6 +332,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     historyBackground: Color(0xFFFFFBFB),
     historyHeader: Color(0xFFFDF0F0),
     warning: Color(0xFFB7791F),
+    bannerBackground: Color(0xFFFFF0CC),
   );
 
   /// 深色主题配色。
@@ -342,6 +347,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     historyBackground: Color(0xFF201B1B),
     historyHeader: Color(0xFF2A1D1D),
     warning: Color(0xFFF0B429),
+    bannerBackground: Color(0xFF3E3418),
   );
 
   @override
@@ -356,6 +362,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     Color? historyBackground,
     Color? historyHeader,
     Color? warning,
+    Color? bannerBackground,
   }) {
     return NarrChatColors(
       background: background ?? this.background,
@@ -368,6 +375,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
       historyBackground: historyBackground ?? this.historyBackground,
       historyHeader: historyHeader ?? this.historyHeader,
       warning: warning ?? this.warning,
+      bannerBackground: bannerBackground ?? this.bannerBackground,
     );
   }
 
@@ -389,6 +397,11 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
       )!,
       historyHeader: Color.lerp(historyHeader, other.historyHeader, t)!,
       warning: Color.lerp(warning, other.warning, t)!,
+      bannerBackground: Color.lerp(
+        bannerBackground,
+        other.bannerBackground,
+        t,
+      )!,
     );
   }
 }
