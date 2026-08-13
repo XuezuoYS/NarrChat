@@ -97,6 +97,9 @@ class RoundProvider extends ChangeNotifier {
     WorldBookProvider? worldBookProvider,
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
+    /// 生成成功回调（bookId, bookTitle）：由 main 接入系统通知服务；
+    /// 仅生成成功时触发，取消 / 失败不触发。
+    this.onGenerationCompleted,
     WebSearchTool? webSearchTool,
     FetchPageTool? fetchPageTool,
     /// 默认搜索工具共用的搜索服务（测试可注入 mock）。
@@ -143,6 +146,9 @@ class RoundProvider extends ChangeNotifier {
 
   /// 网络类失败重试间隔。
   final Duration _retryDelay;
+
+  /// 生成成功回调（bookId, bookTitle）。
+  final void Function(int bookId, String bookTitle)? onGenerationCompleted;
 
   List<Round> _rounds = [];
 
@@ -502,6 +508,8 @@ class RoundProvider extends ChangeNotifier {
       // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
       final cloud = _cloudSyncProvider;
+      // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
+      onGenerationCompleted?.call(b.id!, b.title);
       if (cloud != null && cloud.autoUpload && cloud.isConfigured) {
         unawaited(cloud.upload(auto: true));
       }

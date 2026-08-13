@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
@@ -15,12 +17,17 @@ import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
 import 'services/manual_licenses_service.dart';
+import 'services/notification_service.dart';
 import 'services/system_fonts_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 桌面端：初始化窗口管理器（通知点击后把窗口恢复到前台）。
+  if (Platform.isWindows) {
+    await windowManager.ensureInitialized();
+  }
   // 提前初始化数据库（桌面端会在此处完成 FFI 工厂切换），
   // 失败时不阻塞启动，后续请求会重试并暴露错误。
   try {
@@ -49,11 +56,18 @@ Future<void> main() async {
   final bookProvider = BookProvider()..loadBooks();
   final worldBookProvider = WorldBookProvider();
   final modProvider = ModProvider()..loadUserMods();
+  // 生成完成系统通知：生成任务成功完成且用户不在该书 chat 页时弹出系统通知，
+  // 点击通知进入对应书 chat 页；进入该书 chat 页则自动删除通知。
+  final notificationService = GenerationNotificationService(
+    bookProvider: bookProvider,
+  );
+  await notificationService.init();
   final roundProvider = RoundProvider(
     aiSettingsProvider: aiSettingsProvider,
     worldBookProvider: worldBookProvider,
     modProvider: modProvider,
     cloudSyncProvider: cloudSyncProvider,
+    onGenerationCompleted: notificationService.onGenerationCompleted,
   );
   // 云同步下载（替换/合并）完成后，重载本地内存态数据。
   cloudSyncProvider.onDataRestored = () async {
@@ -73,8 +87,14 @@ Future<void> main() async {
       worldBookProvider: worldBookProvider,
       modProvider: modProvider,
       roundProvider: roundProvider,
+      navigatorKey: notificationService.navigatorKey,
+      navigatorObservers: [notificationService.routeObserver],
     ),
   );
+  // 冷启动点通知：首帧后跳转到对应书的 chat 页。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(notificationService.handleLaunchNotificationIfAny());
+  });
 }
 
 class NarrChatApp extends StatelessWidget {
@@ -85,6 +105,8 @@ class NarrChatApp extends StatelessWidget {
   final WorldBookProvider worldBookProvider;
   final ModProvider modProvider;
   final RoundProvider roundProvider;
+  final GlobalKey<NavigatorState> navigatorKey;
+  final List<NavigatorObserver> navigatorObservers;
 
   const NarrChatApp({
     super.key,
@@ -95,6 +117,8 @@ class NarrChatApp extends StatelessWidget {
     required this.worldBookProvider,
     required this.modProvider,
     required this.roundProvider,
+    required this.navigatorKey,
+    required this.navigatorObservers,
   });
 
   @override
@@ -119,6 +143,10 @@ class NarrChatApp extends StatelessWidget {
             child: MaterialApp(
               title: 'NarrChat',
               debugShowCheckedModeBanner: false,
+              // 通知服务通过该 key 在任意位置导航（通知点击进入对应书 chat 页）。
+              navigatorKey: navigatorKey,
+              // 通知服务观察路由栈，判断用户是否正在查看某本书的 chat 页。
+              navigatorObservers: navigatorObservers,
               // 云同步自动上传等后台操作通过此 key 弹出全局 SnackBar 提示。
               scaffoldMessengerKey: CloudSyncProvider.messengerKey,
               theme: NarrChatTheme.lightWithFont(ui.fontFamily),

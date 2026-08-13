@@ -156,16 +156,12 @@ class _AllDisabledSettings extends AiSettingsProvider {
   bool get lastSearch => false;
 }
 
-/// 记录对话完成回调的测试通知器。
-class _RecordingNotifier implements CompletionNotifier {
-  final List<({String bookTitle, String userInput})> calls = [];
+/// 记录生成完成回调的测试记录器。
+class _RecordingCompletion {
+  final List<({int bookId, String bookTitle})> calls = [];
 
-  @override
-  void notifyConversationCompleted({
-    required String bookTitle,
-    required String userInput,
-  }) {
-    calls.add((bookTitle: bookTitle, userInput: userInput));
+  void call(int bookId, String bookTitle) {
+    calls.add((bookId: bookId, bookTitle: bookTitle));
   }
 }
 
@@ -178,7 +174,7 @@ void main() {
     _MockBookDao bookDao,
     _MockRoundDao dao, {
     AiSettingsProvider? settings,
-    CompletionNotifier? completionNotifier,
+    void Function(int bookId, String bookTitle)? onGenerationCompleted,
     Size size = const Size(1400, 900),
   }) async {
     tester.view.physicalSize = size;
@@ -190,6 +186,7 @@ void main() {
       dao: dao,
       aiService: ai,
       bookDao: bookDao,
+      onGenerationCompleted: onGenerationCompleted,
     );
     await roundProvider.loadRounds(1);
 
@@ -209,10 +206,7 @@ void main() {
         child: MaterialApp(
           theme: NarrChatTheme.light,
           home: Scaffold(
-            body: ChatScreen(
-              completionNotifier:
-                  completionNotifier ?? const NoopCompletionNotifier(),
-            ),
+            body: ChatScreen(),
           ),
         ),
       ),
@@ -476,25 +470,25 @@ void main() {
     expect(find.textContaining('搜索(BETA)'), findsNothing);
   });
 
-  testWidgets('对话完成后调用 CompletionNotifier（预留推送接口）', (tester) async {
+  testWidgets('生成完成后调用 onGenerationCompleted 回调', (tester) async {
     final bookDao = _MockBookDao([book]);
     final dao = _MockRoundDao();
-    final notifier = _RecordingNotifier();
+    final completion = _RecordingCompletion();
     final roundProvider = await pumpChat(
       tester,
       _ToggleAiService(),
       bookDao,
       dao,
-      completionNotifier: notifier,
+      onGenerationCompleted: completion.call,
     );
 
     await tester.enterText(composerField(), '开始新的剧情');
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await waitSendDone(tester, roundProvider);
 
-    expect(notifier.calls, hasLength(1));
-    expect(notifier.calls.single.bookTitle, book.title);
-    expect(notifier.calls.single.userInput, '开始新的剧情');
+    expect(completion.calls, hasLength(1));
+    expect(completion.calls.single.bookId, book.id);
+    expect(completion.calls.single.bookTitle, book.title);
   });
 
   testWidgets('生成结束红点：生成中不显示，结束离开底部显示，回到底部消失', (tester) async {

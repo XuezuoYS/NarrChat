@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 #
 # 注意：version 由 tool/build_release.dart 从 release.yaml 自动同步（`{version}+{build}`），
 # 手动修改后请保持与 release.yaml 一致。
-version: 1.2.1+21
+version: 1.2.1+24
 
 environment:
   sdk: ^3.12.2
@@ -50,6 +50,7 @@ dependencies:
   pinyin: ^3.3.0
   fast_gbk: ^1.0.0
   flutter_local_notifications: ^22.3.0
+  window_manager: ^0.5.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

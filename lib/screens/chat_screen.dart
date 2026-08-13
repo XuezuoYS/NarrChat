@@ -4,6 +4,7 @@ import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../config/chat_route.dart';
 import '../models/agent_event.dart';
 import '../models/book.dart';
 import '../models/model_preset.dart';
@@ -64,14 +65,7 @@ const double _kSwipeMinDistance = 80;
 ///   通过输入面板右上方形按钮或「聊天区左滑」呼出，抽屉内右滑或点遮罩关闭；
 /// - 系统返回键：右侧抽屉打开时先关抽屉，否则返回书籍列表。
 class ChatScreen extends StatefulWidget {
-  /// 预留：对话完成通知器——未来可在应用处于后台时，
-  /// 于本轮对话完成后发送系统级推送（默认占位不发送）。
-  final CompletionNotifier completionNotifier;
-
-  const ChatScreen({
-    super.key,
-    this.completionNotifier = const NoopCompletionNotifier(),
-  });
+  const ChatScreen({super.key});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -296,13 +290,6 @@ class _ChatScreenState extends State<ChatScreen>
     _scrollToBottom();
 
     final ok = await roundProvider.sendRound(userInput: input, book: book);
-    if (ok) {
-      // 预留：对话完成（应用可能处于后台）→ 未来在此接入系统级推送。
-      widget.completionNotifier.notifyConversationCompleted(
-        bookTitle: book.title,
-        userInput: input,
-      );
-    }
 
     if (!ok && mounted && roundProvider.error != null) {
       // 请求失败已以「失败条目」气泡落库（用户输入 + 红框），不再弹消息提示；
@@ -709,7 +696,10 @@ class _ChatScreenState extends State<ChatScreen>
   void _jumpToBook(Book book) {
     context.read<BookProvider>().selectBook(book);
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const ChatScreen()),
+      MaterialPageRoute(
+        builder: (_) => const ChatScreen(),
+        settings: RouteSettings(name: chatRouteName, arguments: book.id),
+      ),
     );
   }
 
@@ -1310,32 +1300,6 @@ class _ChatScreenState extends State<ChatScreen>
           .read<RoundProvider>()
           .updateRoundField(round.id!, field, value),
     );
-  }
-}
-
-/// 对话完成通知器接口（预留）。
-///
-/// 未来可在应用处于后台时，于本轮对话完成后发送系统级推送。
-/// 通过 `ChatScreen.completionNotifier` 注入实现；默认使用
-/// [NoopCompletionNotifier]（占位不发送）。
-abstract interface class CompletionNotifier {
-  /// 本轮对话已完整生成完毕。
-  void notifyConversationCompleted({
-    required String bookTitle,
-    required String userInput,
-  });
-}
-
-/// 空实现：占位，什么都不做（默认值）。
-class NoopCompletionNotifier implements CompletionNotifier {
-  const NoopCompletionNotifier();
-
-  @override
-  void notifyConversationCompleted({
-    required String bookTitle,
-    required String userInput,
-  }) {
-    // 预留：默认不发送任何推送。
   }
 }
 

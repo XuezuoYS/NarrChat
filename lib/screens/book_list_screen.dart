@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../config/chat_route.dart';
 import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../theme/app_theme.dart';
@@ -50,7 +51,10 @@ class _BookListScreenState extends State<BookListScreen> {
     final provider = context.read<BookProvider>();
     provider.selectBook(book);
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ChatScreen()),
+      MaterialPageRoute(
+        builder: (_) => const ChatScreen(),
+        settings: RouteSettings(name: chatRouteName, arguments: book.id),
+      ),
     );
     if (!mounted) return;
     await provider.refreshLastRoundTimes();
