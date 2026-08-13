@@ -114,6 +114,12 @@ class _AboutPanelState extends State<_AboutPanel> {
                       );
                     },
                   ),
+                  if (ReleaseInfo.flutterVersion.isNotEmpty) ...[const SizedBox(height: 12),
+                    _AboutRow(
+                      label: 'Flutter',
+                      value: ReleaseInfo.flutterVersion,
+                    ),
+                  ],
                   const SizedBox(height: 14),
                   Text(
                     '本软件仅供创作参考，生成内容请仔细甄别。',

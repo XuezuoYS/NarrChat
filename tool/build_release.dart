@@ -167,6 +167,9 @@ late final Directory _root;
 late final Directory _releaseDir;
 final List<String> _artifacts = [];
 
+/// Flutter 版本号解析结果缓存（见 [_resolveFlutterVersion]）。
+String? _cachedFlutterVersion;
+
 // ---------------------------------------------------------------------------
 // 构建目标
 // ---------------------------------------------------------------------------
@@ -433,6 +436,7 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
     'android-arm64',
     '--build-name=${config.version}',
     '--build-number=${config.build}',
+    ..._flutterVersionDefine(),
   ]);
   if (code != 0) _fail('Android 构建失败（flutter 退出码 $code）。');
 
@@ -452,7 +456,12 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
 Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) async {
   _checkWindowsEphemeralHealth();
   _step('Windows：编译 x64 Release');
-  final code = await _runFlutterLive(['build', 'windows', '--release']);
+  final code = await _runFlutterLive([
+    'build',
+    'windows',
+    '--release',
+    ..._flutterVersionDefine(),
+  ]);
   if (code != 0) _fail('Windows 构建失败（flutter 退出码 $code）。');
 
   final srcDir = Directory(p.join(
@@ -569,6 +578,46 @@ Future<Process> _startFlutter(List<String> args) async {
     }
   }
   throw last!;
+}
+
+/// 解析当前 Flutter 版本号（`flutter --version --machine` 的 frameworkVersion），
+/// 供 `--dart-define=FLUTTER_VERSION` 注入「关于」面板展示。
+///
+/// 解析失败返回 null（此时不注入 define，「关于」面板隐藏 Flutter 行）；
+/// 结果缓存，一次构建只解析一次。
+String? _resolveFlutterVersion() {
+  if (_cachedFlutterVersion != null) return _cachedFlutterVersion;
+  String? version;
+  final candidates =
+      Platform.isWindows ? const ['flutter', 'flutter.bat'] : const ['flutter'];
+  for (final cmd in candidates) {
+    try {
+      final result = Process.runSync(
+        cmd,
+        ['--version', '--machine'],
+        workingDirectory: _root.path,
+      );
+      if (result.exitCode != 0) continue;
+      final map = jsonDecode((result.stdout as String).trim());
+      final v = (map as Map<String, dynamic>)['frameworkVersion'];
+      if (v is String && v.isNotEmpty) {
+        version = v;
+        break;
+      }
+    } catch (_) {
+      // 尝试下一个候选命令。
+    }
+  }
+  _cachedFlutterVersion = version;
+  return version;
+}
+
+/// `--dart-define=FLUTTER_VERSION=...` 参数列表；解析失败返回空列表。
+List<String> _flutterVersionDefine() {
+  final version = _resolveFlutterVersion();
+  return version == null
+      ? const []
+      : ['--dart-define=FLUTTER_VERSION=$version'];
 }
 
 /// 实时输出 flutter 构建日志，返回退出码。
