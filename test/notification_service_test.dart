@@ -24,8 +24,11 @@ const bookB = Book(id: 2, title: '书B');
 class _FakeBackend implements NotificationBackend {
   final List<({int id, String title, String body, String payload})> shown = [];
   final List<int> cancelled = [];
+  final List<int> startedForeground = [];
+  int stopForegroundCount = 0;
   void Function(int bookId)? onTap;
   int? launchPayload;
+  bool? notificationsEnabled;
 
   @override
   Future<void> init({required void Function(int bookId) onTap}) async {
@@ -47,6 +50,26 @@ class _FakeBackend implements NotificationBackend {
 
   @override
   Future<int?> launchNotificationPayload() async => launchPayload;
+
+  @override
+  Future<bool?> areNotificationsEnabled() async => notificationsEnabled;
+
+  @override
+  Future<void> openNotificationSettings() async {}
+
+  @override
+  Future<void> startForeground({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    startedForeground.add(id);
+  }
+
+  @override
+  Future<void> stopForeground() async {
+    stopForegroundCount++;
+  }
 
   /// 模拟用户点击通知。
   void tap(int bookId) => onTap?.call(bookId);
@@ -185,6 +208,26 @@ void main() {
     service.routeObserver.didPush(chatRoute(2), null);
 
     expect(backend.cancelled, contains(2));
+  });
+
+  testWidgets('生成任务进行中启动保活前台服务，全部结束后停止', (tester) async {
+    final backend = _FakeBackend();
+    final service = await _makeService(backend);
+
+    // 首个生成任务开始 → 启动前台服务。
+    service.onGenerationActiveChanged(true);
+    await tester.pump();
+    expect(backend.startedForeground, hasLength(1));
+
+    // 全部结束 → 停止前台服务。
+    service.onGenerationActiveChanged(false);
+    await tester.pump();
+    expect(backend.stopForegroundCount, 1);
+
+    // 重复上报同状态不重复启停。
+    service.onGenerationActiveChanged(false);
+    await tester.pump();
+    expect(backend.stopForegroundCount, 1);
   });
 
   testWidgets('点通知跳转到对应书 chat 页', (tester) async {

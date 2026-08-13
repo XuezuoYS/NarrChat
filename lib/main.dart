@@ -11,6 +11,7 @@ import 'providers/ai_settings_provider.dart';
 import 'providers/book_provider.dart';
 import 'providers/cloud_sync_provider.dart';
 import 'providers/mod_provider.dart';
+import 'providers/notification_settings_provider.dart';
 import 'providers/round_provider.dart';
 import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
@@ -62,12 +63,17 @@ Future<void> main() async {
     bookProvider: bookProvider,
   );
   await notificationService.init();
+  // 通知设置状态：主页检测「未开启系统通知」提示（回到前台自动刷新）。
+  final notificationSettingsProvider = NotificationSettingsProvider(
+    service: notificationService,
+  )..attach();
   final roundProvider = RoundProvider(
     aiSettingsProvider: aiSettingsProvider,
     worldBookProvider: worldBookProvider,
     modProvider: modProvider,
     cloudSyncProvider: cloudSyncProvider,
     onGenerationCompleted: notificationService.onGenerationCompleted,
+    onGenerationActiveChanged: notificationService.onGenerationActiveChanged,
   );
   // 云同步下载（替换/合并）完成后，重载本地内存态数据。
   cloudSyncProvider.onDataRestored = () async {
@@ -87,6 +93,7 @@ Future<void> main() async {
       worldBookProvider: worldBookProvider,
       modProvider: modProvider,
       roundProvider: roundProvider,
+      notificationSettingsProvider: notificationSettingsProvider,
       navigatorKey: notificationService.navigatorKey,
       navigatorObservers: [notificationService.routeObserver],
     ),
@@ -105,6 +112,7 @@ class NarrChatApp extends StatelessWidget {
   final WorldBookProvider worldBookProvider;
   final ModProvider modProvider;
   final RoundProvider roundProvider;
+  final NotificationSettingsProvider notificationSettingsProvider;
   final GlobalKey<NavigatorState> navigatorKey;
   final List<NavigatorObserver> navigatorObservers;
 
@@ -117,6 +125,7 @@ class NarrChatApp extends StatelessWidget {
     required this.worldBookProvider,
     required this.modProvider,
     required this.roundProvider,
+    required this.notificationSettingsProvider,
     required this.navigatorKey,
     required this.navigatorObservers,
   });
@@ -132,6 +141,7 @@ class NarrChatApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: worldBookProvider),
         ChangeNotifierProvider.value(value: modProvider),
         ChangeNotifierProvider.value(value: roundProvider),
+        ChangeNotifierProvider.value(value: notificationSettingsProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。

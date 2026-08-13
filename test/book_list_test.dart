@@ -9,10 +9,12 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
+import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/home_screen.dart';
+import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
@@ -58,6 +60,46 @@ class _MockWorldBookDao extends WorldBookDao {
   Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
 }
 
+/// 记录通知开关状态的假后端（仅用于「未开启通知」提示条 UI 测试）。
+class _FakeNotificationBackend implements NotificationBackend {
+  _FakeNotificationBackend({this.notificationsEnabled});
+
+  bool? notificationsEnabled;
+
+  @override
+  Future<void> init({required void Function(int bookId) onTap}) async {}
+
+  @override
+  Future<void> show({
+    required int id,
+    required String title,
+    required String body,
+    required String payload,
+  }) async {}
+
+  @override
+  Future<void> cancel(int id) async {}
+
+  @override
+  Future<int?> launchNotificationPayload() async => null;
+
+  @override
+  Future<bool?> areNotificationsEnabled() async => notificationsEnabled;
+
+  @override
+  Future<void> openNotificationSettings() async {}
+
+  @override
+  Future<void> startForeground({
+    required int id,
+    required String title,
+    required String body,
+  }) async {}
+
+  @override
+  Future<void> stopForeground() async {}
+}
+
 /// 以宽屏渲染首页（书籍列表），可注入书籍与最近对话时间。
 Future<void> pumpHome(
   WidgetTester tester, {
@@ -69,18 +111,24 @@ Future<void> pumpHome(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final bookDao = _MockBookDao(books, times: times);
+  final bookProvider = BookProvider(dao: bookDao)..loadBooks();
   await tester.pumpWidget(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-        ChangeNotifierProvider(
-          create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-        ),
+        ChangeNotifierProvider(create: (_) => bookProvider),
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
         ),
         ChangeNotifierProvider(
           create: (_) => RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => NotificationSettingsProvider(
+            service: GenerationNotificationService(
+              bookProvider: bookProvider,
+            ),
+          ),
         ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
       ],
@@ -202,5 +250,45 @@ void main() {
     await pumpHome(tester, books: const []);
     expect(find.text('还没有书籍'), findsOneWidget);
     expect(find.text('新建书籍'), findsOneWidget);
+  });
+
+  testWidgets('系统通知未开启时主页显示提示条', (tester) async {
+    final bookDao = _MockBookDao(const [Book(id: 1, title: '测试书')]);
+    final bookProvider = BookProvider(dao: bookDao)..loadBooks();
+    final service = GenerationNotificationService(
+      bookProvider: bookProvider,
+      backend: _FakeNotificationBackend(notificationsEnabled: false),
+    );
+    final settings = NotificationSettingsProvider(service: service);
+    await settings.refresh();
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+          ChangeNotifierProvider(create: (_) => bookProvider),
+          ChangeNotifierProvider(
+            create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
+          ),
+          ChangeNotifierProvider(
+            create: (_) =>
+                RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
+          ),
+          ChangeNotifierProvider<NotificationSettingsProvider>.value(
+            value: settings,
+          ),
+          ChangeNotifierProvider(create: (_) => SidebarProvider()),
+        ],
+        child: MaterialApp(theme: NarrChatTheme.light, home: const HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('您没有开启系统通知'), findsOneWidget);
+    expect(find.text('去开启'), findsOneWidget);
   });
 }

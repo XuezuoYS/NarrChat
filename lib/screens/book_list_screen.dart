@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../config/chat_route.dart';
 import '../models/book.dart';
 import '../providers/book_provider.dart';
+import '../providers/notification_settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/book_list_utils.dart';
 import '../utils/focus_utils.dart';
@@ -83,6 +84,15 @@ class _BookListScreenState extends State<BookListScreen> {
           children: [
             _buildToolbar(context, provider.books.length),
             const Divider(height: 1),
+            // 系统通知未开启提示（Android）：后台生成成功将无法及时收到通知。
+            Consumer<NotificationSettingsProvider>(
+              builder: (context, settings, _) {
+                if (settings.notificationsEnabled != false) {
+                  return const SizedBox.shrink();
+                }
+                return _buildNotificationHint(context, settings);
+              },
+            ),
             // 跨书进程提示栏：其他书籍正在生成时展示计数横幅，点击弹窗选择跳转。
             GenerationBanner(onOpenBook: _openChat),
             Expanded(
@@ -102,6 +112,48 @@ class _BookListScreenState extends State<BookListScreen> {
             ),
             _buildCreateButton(context),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 系统通知未开启提示卡片（Android 检测到未开启时显示）。
+  Widget _buildNotificationHint(
+    BuildContext context,
+    NotificationSettingsProvider settings,
+  ) {
+    final colors = context.narrColors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Material(
+        color: colors.bannerBackground,
+        borderRadius: BorderRadius.circular(10),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+          child: Row(
+            children: [
+              Icon(
+                Icons.notifications_off_outlined,
+                size: 18,
+                color: colors.warning,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '您没有开启系统通知，这会导致软件处于后台时，生成成功后您无法及时收到信息',
+                  style: TextStyle(fontSize: 12.5, color: colors.textPrimary),
+                ),
+              ),
+              TextButton(
+                onPressed: () => settings.openSettings(),
+                child: Text(
+                  '去开启',
+                  style: TextStyle(fontSize: 12.5, color: colors.warning),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

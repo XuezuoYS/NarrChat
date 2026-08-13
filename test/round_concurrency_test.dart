@@ -11,12 +11,14 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
+import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
@@ -489,6 +491,13 @@ void main() {
             ChangeNotifierProvider(create: (_) => bookProvider),
             ChangeNotifierProvider(create: (_) => worldBookProvider),
             ChangeNotifierProvider(create: (_) => roundProvider),
+            ChangeNotifierProvider(
+              create: (_) => NotificationSettingsProvider(
+                service: GenerationNotificationService(
+                  bookProvider: bookProvider,
+                ),
+              ),
+            ),
             ChangeNotifierProvider(create: (_) => SidebarProvider()),
           ],
           child: MaterialApp(

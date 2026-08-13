@@ -42,6 +42,15 @@ class GenerationNotificationService with WidgetsBindingObserver {
   AppLifecycleState _lifecycle = AppLifecycleState.resumed;
   int? _topChatBookId;
 
+  /// Android 后台生成保活前台服务通知 id（与书籍完成通知的 bookId 错开）。
+  static const int _kForegroundNotificationId = 0x4E43;
+
+  /// 当前是否有生成任务在跑（由 [RoundProvider] 上报）。
+  bool _backgroundTaskActive = false;
+
+  /// 前台服务是否已启动（避免重复启动）。
+  bool _foregroundServiceRunning = false;
+
   /// 初始化通知插件并注册生命周期监听（在 [main] 中调用一次）。
   Future<void> init() async {
     await _backend.init(onTap: _onNotificationTap);
@@ -86,6 +95,35 @@ class GenerationNotificationService with WidgetsBindingObserver {
       ),
     );
   }
+
+  /// 生成任务活动状态变化（由 [RoundProvider] 在「首个任务开始 / 全部任务结束」时回调）。
+  ///
+  /// 只要有任务在跑就启动 Android 前台服务保活（应用切后台后联网不受 Doze 限制，
+  /// 无需用户改设置）；全部结束即停止。服务通知为低重要性常驻提示，不打扰。
+  void onGenerationActiveChanged(bool active) {
+    if (_backgroundTaskActive == active) return;
+    _backgroundTaskActive = active;
+    if (active && !_foregroundServiceRunning) {
+      _foregroundServiceRunning = true;
+      unawaited(
+        _backend.startForeground(
+          id: _kForegroundNotificationId,
+          title: '正在后台生成',
+          body: 'AI 正在生成内容，完成后将通知您',
+        ),
+      );
+    } else if (!active && _foregroundServiceRunning) {
+      _foregroundServiceRunning = false;
+      unawaited(_backend.stopForeground());
+    }
+  }
+
+  /// 是否允许应用发送通知（Android；非 Android 返回 null 表示不适用）。
+  Future<bool?> areNotificationsEnabled() => _backend.areNotificationsEnabled();
+
+  /// 打开系统通知设置页（Android）。
+  Future<void> openNotificationSettings() =>
+      _backend.openNotificationSettings();
 
   /// 删除指定书的生成完成通知（进入对应书 chat 页时调用）。
   Future<void> dismissForBook(int bookId) async {
@@ -167,6 +205,22 @@ abstract interface class NotificationBackend {
 
   /// 读取「应用是否由点通知启动」对应的 bookId（非冷启动返回 null）。
   Future<int?> launchNotificationPayload();
+
+  /// 是否允许应用发送通知（Android；非 Android 返回 null 表示不适用）。
+  Future<bool?> areNotificationsEnabled();
+
+  /// 打开系统通知设置页（Android；非 Android 为空操作）。
+  Future<void> openNotificationSettings();
+
+  /// 启动后台保活前台服务（Android；非 Android 为空操作）。
+  Future<void> startForeground({
+    required int id,
+    required String title,
+    required String body,
+  });
+
+  /// 停止后台保活前台服务。
+  Future<void> stopForeground();
 }
 
 /// 基于 flutter_local_notifications 的真实后端。
@@ -179,6 +233,11 @@ class FlutterLocalNotificationBackend implements NotificationBackend {
   static const String _channelId = 'generation_done';
   static const String _channelName = '生成完成通知';
   static const String _channelDescription = 'AI 生成任务完成时提醒';
+
+  /// 后台生成保活前台服务的常驻通知渠道（低重要性、无声音，不打扰）。
+  static const String _ongoingChannelId = 'generation_ongoing';
+  static const String _ongoingChannelName = '生成任务进行中';
+  static const String _ongoingChannelDescription = '后台生成任务进行中（保活）';
 
   @override
   Future<void> init({required void Function(int bookId) onTap}) async {
@@ -221,6 +280,10 @@ class FlutterLocalNotificationBackend implements NotificationBackend {
       channelDescription: _channelDescription,
       importance: Importance.high,
       priority: Priority.high,
+      // 默认开启悬浮（heads-up）通知：高重要级 + 声音/振动。
+      playSound: true,
+      enableVibration: true,
+      visibility: NotificationVisibility.public,
     );
     // Windows：用应用 Logo 覆盖默认空白图标（appLogoOverride）。
     final windowsDetails = WindowsNotificationDetails(
@@ -255,6 +318,73 @@ class FlutterLocalNotificationBackend implements NotificationBackend {
     if (details == null || !details.didNotificationLaunchApp) return null;
     final payload = details.notificationResponse?.payload;
     return payload == null ? null : int.tryParse(payload);
+  }
+
+  @override
+  Future<bool?> areNotificationsEnabled() async {
+    if (!Platform.isAndroid) return null;
+    return _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.areNotificationsEnabled();
+  }
+
+  @override
+  Future<void> openNotificationSettings() async {
+    if (!Platform.isAndroid) return;
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.openAppNotificationSettings();
+  }
+
+  @override
+  Future<void> startForeground({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    if (!Platform.isAndroid) return;
+    try {
+      const androidDetails = AndroidNotificationDetails(
+        _ongoingChannelId,
+        _ongoingChannelName,
+        channelDescription: _ongoingChannelDescription,
+        importance: Importance.low,
+        priority: Priority.low,
+        ongoing: true,
+        autoCancel: false,
+        playSound: false,
+        enableVibration: false,
+      );
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.startForegroundService(
+            id: id,
+            title: title,
+            body: body,
+            notificationDetails: androidDetails,
+            foregroundServiceTypes: {
+              AndroidServiceForegroundType.foregroundServiceTypeDataSync,
+            },
+          );
+    } catch (_) {
+      // 个别设备 / 系统版本可能拒绝从后台启动前台服务，失败不崩溃。
+    }
+  }
+
+  @override
+  Future<void> stopForeground() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.stopForegroundService();
+    } catch (_) {
+      // 忽略。
+    }
   }
 }
 

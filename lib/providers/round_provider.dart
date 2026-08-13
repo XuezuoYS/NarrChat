@@ -100,6 +100,9 @@ class RoundProvider extends ChangeNotifier {
     /// 生成成功回调（bookId, bookTitle）：由 main 接入系统通知服务；
     /// 仅生成成功时触发，取消 / 失败不触发。
     this.onGenerationCompleted,
+    /// 生成任务活动状态回调（active=true 首个任务开始 / false 全部结束）：
+    /// 由 main 接入通知服务，用于启动 / 停止 Android 后台保活前台服务。
+    this.onGenerationActiveChanged,
     WebSearchTool? webSearchTool,
     FetchPageTool? fetchPageTool,
     /// 默认搜索工具共用的搜索服务（测试可注入 mock）。
@@ -150,6 +153,9 @@ class RoundProvider extends ChangeNotifier {
   /// 生成成功回调（bookId, bookTitle）。
   final void Function(int bookId, String bookTitle)? onGenerationCompleted;
 
+  /// 生成任务活动状态回调（首个任务开始 / 全部任务结束）。
+  final void Function(bool active)? onGenerationActiveChanged;
+
   List<Round> _rounds = [];
 
   /// 缓存的不可变轮次视图：仅当 [_rounds] 重新赋值时更新。
@@ -169,6 +175,9 @@ class RoundProvider extends ChangeNotifier {
   /// 获取（必要时创建）指定书的运行时生成状态。
   _BookGenState _gen(int bookId) =>
       _gens.putIfAbsent(bookId, () => _BookGenState(bookId));
+
+  /// 当前是否至少有一本书正在生成（用于通知服务保活启停）。
+  bool _hasActiveGeneration() => _gens.values.any((g) => g.isSending);
 
   List<Round> get rounds => _roundsView;
 
@@ -339,6 +348,8 @@ class RoundProvider extends ChangeNotifier {
     // 的令牌，一旦与当前不一致即丢弃 / 中止，杜绝跨轮注入与双流式并存。
     gen.token++;
     final genToken = gen.token;
+    // 记录本次请求开始前是否已有其它生成任务（用于「首个任务开始」通知服务）。
+    final wasActive = _hasActiveGeneration();
     gen.isSending = true;
     gen.cancelRequested = false;
     _error = null;
@@ -351,6 +362,8 @@ class RoundProvider extends ChangeNotifier {
     gen.rawExchanges.clear();
     gen.failedRawExchanges = null;
     notifyListeners();
+    // 首个生成任务开始：通知服务启动 Android 后台保活前台服务。
+    if (!wasActive) onGenerationActiveChanged?.call(true);
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
       await _setFailedAttempt(b.id!, const FailedAttempt());
@@ -546,6 +559,10 @@ class RoundProvider extends ChangeNotifier {
       gen.pendingUserInput = '';
       gen.retryStatus = null;
       gen.rawExchanges.clear();
+      // 全部生成任务结束：通知服务停止 Android 后台保活前台服务。
+      if (!_hasActiveGeneration()) {
+        onGenerationActiveChanged?.call(false);
+      }
       notifyListeners();
     }
   }

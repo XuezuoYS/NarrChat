@@ -10,10 +10,12 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
+import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/home_screen.dart';
+import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
@@ -60,18 +62,24 @@ void main() {
 
     const book = Book(id: 1, title: '测试书');
     final bookDao = _MockBookDao([book]);
+    final bookProvider = BookProvider(dao: bookDao)..loadBooks();
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-          ChangeNotifierProvider(
-            create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-          ),
+          ChangeNotifierProvider(create: (_) => bookProvider),
           ChangeNotifierProvider(
             create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
           ),
           ChangeNotifierProvider(
             create: (_) => RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
+          ),
+          ChangeNotifierProvider(
+            create: (_) => NotificationSettingsProvider(
+              service: GenerationNotificationService(
+                bookProvider: bookProvider,
+              ),
+            ),
           ),
           ChangeNotifierProvider(create: (_) => SidebarProvider()),
         ],
