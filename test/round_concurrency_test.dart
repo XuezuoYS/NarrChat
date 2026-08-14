@@ -2,13 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
@@ -22,6 +16,8 @@ import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/fakes.dart';
+
 /// 合法 6 区块正文。
 const _fullContent = '## 剧情演绎\n正文内容\n'
     '## 推荐行动\n\n'
@@ -29,68 +25,6 @@ const _fullContent = '## 剧情演绎\n正文内容\n'
     '## 世界状态\n\n'
     '## 角色状态\n\n'
     '## 记忆总结\n';
-
-class _MockBookDao extends BookDao {
-  _MockBookDao([this.books = const []]);
-  final List<Book> books;
-  FailedAttempt failed = const FailedAttempt();
-
-  @override
-  Future<List<Book>> getAllBooks() async => books;
-
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => failed;
-
-  @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    failed = attempt;
-  }
-}
-
-class _MockRoundDao extends RoundDao {
-  final List<Round> rounds = [];
-  int _nextId = 1;
-
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async =>
-      List.of(rounds.where((r) => r.bookId == bookId));
-
-  @override
-  Future<int> insertRound(Round round) async {
-    final created = Round(
-      id: _nextId++,
-      bookId: round.bookId,
-      roundIndex: round.roundIndex,
-      userInput: round.userInput,
-      aiNarrative: round.aiNarrative,
-      worldState: round.worldState,
-      characterState: round.characterState,
-      memorySummary: round.memorySummary,
-      currentTime: round.currentTime,
-      recommendedAction: round.recommendedAction,
-      tokensIn: round.tokensIn,
-      tokensOut: round.tokensOut,
-      createdAt: round.createdAt,
-    );
-    rounds.add(created);
-    return created.id!;
-  }
-
-  @override
-  Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async =>
-      1;
-
-  @override
-  Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {}
-}
-
-class _MockWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
-}
 
 /// 单次流式会话：保存 onChunk / isCancelled，供测试逐块驱动与完成。
 class _StreamSession {
@@ -135,8 +69,8 @@ void main() {
 
   group('并发与跨轮隔离', () {
     test('停止后立即重发：旧流残留不注入新一轮（令牌守卫）', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
@@ -201,8 +135,8 @@ void main() {
     });
 
     test('书 A 生成中切到书 B：B 不泄漏 A 的流式，且可并发生成', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
@@ -266,8 +200,8 @@ void main() {
     });
 
     test('书 A 生成完成时若已切到书 B：不把当前查看书改回 A', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
@@ -339,8 +273,8 @@ void main() {
     }
 
     testWidgets('其他书生成中：顶部显示计数横幅，点击弹窗后进入该书', (tester) async {
-      final bookDao = _MockBookDao([bookA, bookB]);
-      final dao = _MockRoundDao();
+      final bookDao = FakeBookDao(books: [bookA, bookB]);
+      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
       final bookProvider = BookProvider(dao: bookDao);
       await bookProvider.loadBooks(); // 默认选中第一本（书A）
@@ -353,7 +287,7 @@ void main() {
         retryDelay: Duration.zero,
       );
       await roundProvider.loadRounds(2);
-      final worldBookProvider = WorldBookProvider(dao: _MockWorldBookDao());
+      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       await pumpChat(
         tester,
@@ -403,8 +337,8 @@ void main() {
 
     testWidgets('多本书生成：横幅计数，弹窗列出全部并可选跳转', (tester) async {
       const bookC = Book(id: 3, title: '书C');
-      final bookDao = _MockBookDao([bookA, bookB, bookC]);
-      final dao = _MockRoundDao();
+      final bookDao = FakeBookDao(books: [bookA, bookB, bookC]);
+      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
       final bookProvider = BookProvider(dao: bookDao);
       await bookProvider.loadBooks(); // 默认选中书A
@@ -417,7 +351,7 @@ void main() {
         retryDelay: Duration.zero,
       );
       await roundProvider.loadRounds(2);
-      final worldBookProvider = WorldBookProvider(dao: _MockWorldBookDao());
+      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       await pumpChat(
         tester,
@@ -471,8 +405,8 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      final bookDao = _MockBookDao([bookA, bookB]);
-      final dao = _MockRoundDao();
+      final bookDao = FakeBookDao(books: [bookA, bookB]);
+      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
       final bookProvider = BookProvider(dao: bookDao);
       await bookProvider.loadBooks();
@@ -482,7 +416,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      final worldBookProvider = WorldBookProvider(dao: _MockWorldBookDao());
+      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       await tester.pumpWidget(
         MultiProvider(

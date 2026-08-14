@@ -1,57 +1,42 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/config/app_config.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/ai_response_parser.dart';
 import 'package:narrchat/services/prompt_builder.dart';
-import 'package:narrchat/services/world_book_scanner.dart';
-import 'package:narrchat/utils/constants.dart';
 
-/// 测试用书籍。
-const _book = Book(
-  id: 1,
-  title: '测试书',
-  category: '玄幻',
-  baseSetting: '北域修仙世界，宗门林立。',
-  writingRequirements: '本书文笔要求：多用对话推进。',
-  writingStyle: '用户补充：多用短句。',
-  globalPrePrompt: '用户前置词：保持悬念。',
-  globalPostPrompt: '用户后置词：留下钩子。',
-  historyRounds: 2,
-  roleHierarchy: '主角 > 女主角 > NPC',
-);
-
-/// 测试用上一轮。
-const _lastRound = Round(
-  id: 1,
-  bookId: 1,
-  roundIndex: 1,
-  userInput: '我踏入青云宗。',
-  aiNarrative: '山门巍峨，云雾缭绕。',
-  worldState: '- 地点：青云宗\n- 天气：晴',
-  characterState: '## 女主角\n### 苏清月\n- 心情：平静',
-  memorySummary: '主角初入宗门。',
-  currentTime: '第三天 午时',
-);
-
+/// PromptBuilder 组装逻辑单元测试（原 widget_test.dart 拆分而来：
+/// 仅保留 PromptBuilder 组；WorldBookScanner / Constants / AiResponseParser
+/// 分别迁移至 world_book_scanner_test.dart / constants_test.dart /
+/// ai_response_parser_test.dart，AppConfig 断言并入 model_preset_test.dart）。
 void main() {
-  group('AppConfig', () {
-    test('内置模型列表（官方模型 ID）', () {
-      expect(AppConfig.supportedModels, contains('deepseek-v4-pro'));
-      expect(AppConfig.supportedModels, contains('deepseek-v4-flash'));
-    });
-
-    test('推理强度档位', () {
-      expect(AppConfig.reasoningEffortOptions, ['low', 'high', 'max']);
-      expect(AppConfig.defaultReasoningEffort, 'high');
-    });
-  });
-
   group('PromptBuilder', () {
     const builder = PromptBuilder();
+
+    const _book = Book(
+      id: 1,
+      title: '测试书',
+      category: '玄幻',
+      baseSetting: '北域修仙世界，宗门林立。',
+      writingRequirements: '本书文笔要求：多用对话推进。',
+      writingStyle: '用户补充：多用短句。',
+      globalPrePrompt: '用户前置词：保持悬念。',
+      globalPostPrompt: '用户后置词：留下钩子。',
+      historyRounds: 2,
+      roleHierarchy: '主角 > 女主角 > NPC',
+    );
+
+    const _lastRound = Round(
+      id: 1,
+      bookId: 1,
+      roundIndex: 1,
+      userInput: '我踏入青云宗。',
+      aiNarrative: '山门巍峨，云雾缭绕。',
+      worldState: '- 地点：青云宗\n- 天气：晴',
+      characterState: '## 女主角\n### 苏清月\n- 心情：平静',
+      memorySummary: '主角初入宗门。',
+      currentTime: '第三天 午时',
+    );
 
     PromptBundle buildBundle() => builder.build(
           book: _book,
@@ -298,190 +283,6 @@ void main() {
       expect(parsed.worldState, contains('青云宗主殿'));
       expect(parsed.characterState, contains('苏清月'));
       expect(parsed.memorySummary, contains('拜见掌门'));
-    });
-  });
-
-  group('WorldBookScanner', () {
-    test('命中关键词注入内容，未命中返回空', () {
-      const scanner = WorldBookScanner();
-      const entry = WorldBookEntry(
-        id: 1,
-        bookId: 1,
-        keyword: '青云宗, 苏清月',
-        content: '青云宗是北域的修仙大派。',
-        isActive: true,
-      );
-      // 命中
-      final hit = scanner.scan(
-        userInput: '苏清月带我去了青云宗',
-        historyRounds: const [],
-        entries: const [entry],
-      );
-      expect(hit, contains('青云宗是北域的修仙大派。'));
-      // 未命中
-      final miss = scanner.scan(
-        userInput: '我走在集市上',
-        historyRounds: const [],
-        entries: const [entry],
-      );
-      expect(miss, isEmpty);
-    });
-
-    test('停用条目不参与扫描', () {
-      const scanner = WorldBookScanner();
-      const entry = WorldBookEntry(
-        id: 1,
-        bookId: 1,
-        keyword: '青云宗',
-        content: '青云宗是北域的修仙大派。',
-        isActive: false,
-      );
-      final result = scanner.scan(
-        userInput: '青云宗',
-        historyRounds: const [],
-        entries: const [entry],
-      );
-      expect(result, isEmpty);
-    });
-
-    test('可从历史轮次中命中', () {
-      const scanner = WorldBookScanner();
-      const entry = WorldBookEntry(
-        id: 1,
-        bookId: 1,
-        keyword: '青云宗',
-        content: '青云宗是北域的修仙大派。',
-        isActive: true,
-      );
-      final result = scanner.scan(
-        userInput: '继续前行',
-        historyRounds: const [
-          Round(bookId: 1, roundIndex: 1, userInput: '我进入了青云宗'),
-        ],
-        entries: const [entry],
-      );
-      expect(result, contains('青云宗是北域的修仙大派。'));
-    });
-  });
-
-  group('Constants', () {
-    test('默认角色层级', () {
-      expect(Constants.defaultRoleHierarchy, [
-        '主角',
-        '女主角',
-        'NPC',
-      ]);
-      expect(
-        Constants.joinRoleHierarchy(Constants.defaultRoleHierarchy),
-        '主角 > 女主角 > NPC',
-      );
-    });
-
-    test('拆分与拼接互逆', () {
-      final roles = Constants.splitRoleHierarchy('主角 > 女主角 > NPC');
-      expect(roles, ['主角', '女主角', 'NPC']);
-      expect(Constants.joinRoleHierarchy(roles), '主角 > 女主角 > NPC');
-    });
-
-    test('空值回退默认', () {
-      expect(Constants.splitRoleHierarchy(null).length, 3);
-      expect(Constants.splitRoleHierarchy('').length, 3);
-    });
-
-    test('角色类别编解码互逆且保留名称与格式', () {
-      final categories = Constants.defaultRoleCategories;
-      final json = Constants.encodeRoleCategories(categories);
-      final decoded = Constants.decodeRoleCategories(json);
-      expect(decoded.length, categories.length);
-      expect(decoded.first.name, '主角');
-      expect(decoded.first.format, contains('- 姓名：'));
-      // 自定义类别也能正确往返
-      const custom = [RoleCategory(name: '男二', format: '- 姓名：\n- 身份：')];
-      final decodedCustom =
-          Constants.decodeRoleCategories(Constants.encodeRoleCategories(custom));
-      expect(decodedCustom.single.name, '男二');
-      expect(decodedCustom.single.format, '- 姓名：\n- 身份：');
-    });
-
-    test('角色类别空值或非法 JSON 回退默认', () {
-      expect(Constants.decodeRoleCategories(null).length, 3);
-      expect(Constants.decodeRoleCategories('').length, 3);
-      expect(Constants.decodeRoleCategories('not a json').length, 3);
-    });
-  });
-
-  group('AiResponseParser', () {
-    test('完整解析 6 个二级标题区块', () {
-      const raw = '''
-用户的开场白（应被丢弃）
-
-## 剧情演绎
-主角踏入山谷，风声低语。
-
-## 世界状态
-- 天气：阴
-- 地点：幽暗山谷
-
-## 角色状态
-# 角色状态
-## 女主角
-### 苏清月
-- 心情：担忧
-
-## 记忆总结
-主角与苏清月重逢。
-
-## 当前时间
-午后
-
-## 推荐行动
-继续深入山谷探索。
-''';
-      final parsed = AiResponseParser.parse(raw);
-      expect(parsed.aiNarrative, contains('主角踏入山谷'));
-      expect(parsed.worldState, contains('幽暗山谷'));
-      expect(parsed.characterState, contains('苏清月'));
-      // 角色状态内部结构绝不被解析
-      expect(parsed.characterState, contains('## 女主角'));
-      expect(parsed.memorySummary, contains('重逢'));
-      expect(parsed.currentTime, '午后');
-      expect(parsed.recommendedAction, contains('继续深入山谷'));
-    });
-
-    test('缺失区块时对应字段为空字符串（容错）', () {
-      const raw = '''
-## 剧情演绎
-只有剧情。
-''';
-      final parsed = AiResponseParser.parse(raw);
-      expect(parsed.aiNarrative, '只有剧情。');
-      expect(parsed.worldState, '');
-      expect(parsed.characterState, '');
-      expect(parsed.memorySummary, '');
-      expect(parsed.currentTime, '');
-      expect(parsed.recommendedAction, '');
-    });
-
-    test('容忍标题层级/空格差异', () {
-      const raw = '''
-##剧情演绎
-无空格标题。
-
-# 世界状态
-一级标题也能匹配。
-
-### 角色状态
-三级标题也能匹配。
-''';
-      final parsed = AiResponseParser.parse(raw);
-      expect(parsed.aiNarrative, '无空格标题。');
-      expect(parsed.worldState, '一级标题也能匹配。');
-      expect(parsed.characterState, '三级标题也能匹配。');
-    });
-
-    test('空输入不崩溃', () {
-      final parsed = AiResponseParser.parse('');
-      expect(parsed.isEmpty, isTrue);
     });
   });
 }

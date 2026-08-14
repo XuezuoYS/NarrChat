@@ -1,95 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
-import 'package:narrchat/providers/book_provider.dart';
-import 'package:narrchat/providers/notification_settings_provider.dart';
-import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/providers/sidebar_provider.dart';
-import 'package:narrchat/providers/world_book_provider.dart';
-import 'package:narrchat/screens/home_screen.dart';
-import 'package:narrchat/services/notification_service.dart';
-import 'package:narrchat/theme/app_theme.dart';
-import 'package:provider/provider.dart';
 
-/// 内存版 DAO，避免测试依赖 sqflite。
-class _MockBookDao extends BookDao {
-  final List<Book> books;
-  _MockBookDao(this.books);
-  @override
-  Future<List<Book>> getAllBooks() async => books;
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-  FailedAttempt _failed = const FailedAttempt();
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => _failed;
-  @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    _failed = attempt;
-  }
-}
+import 'helpers/chat_harness.dart';
 
-class _MockRoundDao extends RoundDao {
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async => [];
-  @override
-  Future<int> insertRound(Round round) async => 1;
-  @override
-  Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async => 1;
-  @override
-  Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {}
-}
-
-class _MockWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
-}
-
+/// 系统返回键行为测试：退出确认 / SystemNavigator.pop / 抽屉优先关闭。
 void main() {
   /// 以移动端窄屏（安卓）渲染主界面，并预置一本已选中的书。
   Future<void> pumpHome(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(400, 800);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    const book = Book(id: 1, title: '测试书');
-    final bookDao = _MockBookDao([book]);
-    final bookProvider = BookProvider(dao: bookDao)..loadBooks();
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-          ChangeNotifierProvider(create: (_) => bookProvider),
-          ChangeNotifierProvider(
-            create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => NotificationSettingsProvider(
-              service: GenerationNotificationService(
-                bookProvider: bookProvider,
-              ),
-            ),
-          ),
-          ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        ],
-        child: MaterialApp(
-          theme: NarrChatTheme.light,
-          home: const HomeScreen(),
-        ),
-      ),
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(id: 1, title: '测试书')],
+      size: const Size(400, 800),
     );
-    await tester.pumpAndSettle();
   }
 
   /// 模拟系统返回键（安卓），并等待弹窗/动画完成。

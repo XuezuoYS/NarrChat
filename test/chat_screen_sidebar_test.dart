@@ -1,149 +1,24 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
-import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
-import 'package:narrchat/providers/book_provider.dart';
-import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/providers/sidebar_provider.dart';
-import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
-import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/markdown_field.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
-import 'package:provider/provider.dart';
 
-/// 内存版 DAO，避免测试依赖 sqflite。
-class _MockBookDao extends BookDao {
-  final List<Book> books;
-  _MockBookDao(this.books);
-  @override
-  Future<List<Book>> getAllBooks() async => books;
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-  FailedAttempt _failed = const FailedAttempt();
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => _failed;
-  @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    _failed = attempt;
-  }
-}
+import 'helpers/chat_harness.dart';
 
-class _MockRoundDao extends RoundDao {
-  final List<Round> _rounds = [];
-  int _nextId = 1;
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async =>
-      List.of(_rounds.where((r) => r.bookId == bookId));
-  @override
-  Future<int> insertRound(Round round) async {
-    final created = Round(
-      id: _nextId++,
-      bookId: round.bookId,
-      roundIndex: round.roundIndex,
-      userInput: round.userInput,
-      aiNarrative: round.aiNarrative,
-      worldState: round.worldState,
-      characterState: round.characterState,
-      memorySummary: round.memorySummary,
-      currentTime: round.currentTime,
-      recommendedAction: round.recommendedAction,
-      tokensIn: round.tokensIn,
-      tokensOut: round.tokensOut,
-      createdAt: round.createdAt,
-    );
-    _rounds.add(created);
-    return created.id!;
-  }
-
-  @override
-  Future<int> updateRoundFields(
-    int roundId,
-    Map<String, Object?> fields,
-  ) async => 1;
-
-  @override
-  Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {}
-}
-
-class _MockWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
-}
-
+/// 侧边栏开合 / 抽屉手势测试（宽屏常驻侧栏 + 窄屏抽屉）。
 void main() {
   Future<void> pumpWideChat(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    const book = Book(id: 1, title: '测试书');
-    final bookDao = _MockBookDao([book]);
-    final roundProvider = RoundProvider(dao: _MockRoundDao(), bookDao: bookDao);
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-          ChangeNotifierProvider(
-            create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
-          ),
-          ChangeNotifierProvider(create: (_) => roundProvider),
-          ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        ],
-        child: MaterialApp(
-          theme: NarrChatTheme.light,
-          home: Scaffold(body: const ChatScreen()),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
     // 测试环境中 ChatScreen 的 post-frame 回调执行时书籍可能尚未就绪，
-    // 导致 loadRounds 未触发、侧边栏为空态；这里显式加载（第零轮）以保证有内容。
-    await roundProvider.loadRounds(1);
+    // 导致 loadRounds 未触发、侧边栏为空态；pumpChatScreen 在 pump 前显式
+    // loadRounds（第零轮）以保证有内容。
+    await pumpChatScreen(tester);
     await tester.pumpAndSettle();
   }
 
   Future<void> pumpNarrowChat(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(600, 900);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    const book = Book(id: 1, title: '测试书');
-    final bookDao = _MockBookDao([book]);
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-          ChangeNotifierProvider(
-            create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
-          ),
-          ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        ],
-        child: MaterialApp(
-          theme: NarrChatTheme.light,
-          home: Scaffold(body: const ChatScreen()),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await pumpChatScreen(tester, size: const Size(600, 900));
   }
 
   testWidgets('宽屏：右侧栏默认展开，无「打开侧栏」按钮', (tester) async {

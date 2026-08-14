@@ -4,11 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
 import 'package:narrchat/models/agent_event.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/raw_exchange.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
@@ -19,63 +16,7 @@ import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
-/// 内存版 BookDao，避免测试依赖 sqflite。
-class _MockBookDao extends BookDao {
-  FailedAttempt failed = const FailedAttempt();
-
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => failed;
-
-  @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    failed = attempt;
-  }
-}
-
-class _MockRoundDao extends RoundDao {
-  final List<Round> rounds = [];
-  int _nextId = 1;
-
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async =>
-      List.of(rounds.where((r) => r.bookId == bookId));
-
-  @override
-  Future<int> insertRound(Round round) async {
-    final created = Round(
-      id: _nextId++,
-      bookId: round.bookId,
-      roundIndex: round.roundIndex,
-      userInput: round.userInput,
-      aiNarrative: round.aiNarrative,
-      worldState: round.worldState,
-      characterState: round.characterState,
-      memorySummary: round.memorySummary,
-      currentTime: round.currentTime,
-      recommendedAction: round.recommendedAction,
-      tokensIn: round.tokensIn,
-      tokensOut: round.tokensOut,
-      createdAt: round.createdAt,
-    );
-    rounds.add(created);
-    return created.id!;
-  }
-
-  @override
-  Future<int> updateRoundFields(
-    int roundId,
-    Map<String, Object?> fields,
-  ) async => 1;
-
-  @override
-  Future<void> deleteRound(
-    int roundId, {
-    bool deleteFollowing = false,
-  }) async {}
-}
+import 'helpers/fakes.dart';
 
 /// 禁用联网搜索的 AI 设置（强制走直发路径，且不触碰本地配置文件）。
 class _SearchDisabledSettings extends AiSettingsProvider {
@@ -198,8 +139,8 @@ void main() {
 
   group('RoundProvider RAW 捕获', () {
     test('直发路径：捕获 1 对请求/返回三块', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ScriptAiService([
         AiCallResult(
           content: _fullContent,
@@ -236,8 +177,8 @@ void main() {
     });
 
     test('Agent 路径：多对交换且搜索块为 tool_calls JSON', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ScriptAiService([
         AiCallResult(
           content: '',
@@ -289,8 +230,8 @@ void main() {
     });
 
     test('Agent 路径：搜索 → 打开页面（fetch 事件与 RAW 捕获）', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final ai = _ScriptAiService([
         AiCallResult(
           content: '',
@@ -383,8 +324,8 @@ void main() {
     });
 
     test('请求失败：捕获失败条目的请求（无返回三块）', () async {
-      final dao = _MockRoundDao();
-      final bookDao = _MockBookDao();
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
       final provider = RoundProvider(
         dao: dao,
         bookDao: bookDao,

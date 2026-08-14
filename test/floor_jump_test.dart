@@ -1,223 +1,57 @@
-import 'dart:async';
-
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
-import 'package:narrchat/providers/book_provider.dart';
-import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/providers/sidebar_provider.dart';
-import 'package:narrchat/providers/world_book_provider.dart';
-import 'package:narrchat/screens/chat_screen.dart';
-import 'package:narrchat/services/ai_service.dart';
-import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/floor_jump_bar.dart';
-import 'package:provider/provider.dart';
 
-/// 内存版 DAO，避免测试依赖 sqflite。
-class _MockBookDao extends BookDao {
-  final List<Book> books;
-  _MockBookDao([this.books = const []]);
-  FailedAttempt failed = const FailedAttempt();
+import 'helpers/chat_harness.dart';
+import 'helpers/fakes.dart';
 
-  @override
-  Future<List<Book>> getAllBooks() async => books;
-
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => failed;
-
-  @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    failed = attempt;
-  }
-}
-
-class _MockRoundDao extends RoundDao {
-  final List<Round> rounds = [];
-  int _nextId = 1;
-
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async =>
-      List.of(rounds.where((r) => r.bookId == bookId));
-
-  @override
-  Future<int> insertRound(Round round) async {
-    final created = Round(
-      id: _nextId++,
-      bookId: round.bookId,
-      roundIndex: round.roundIndex,
-      userInput: round.userInput,
-      aiNarrative: round.aiNarrative,
-      worldState: round.worldState,
-      characterState: round.characterState,
-      memorySummary: round.memorySummary,
-      currentTime: round.currentTime,
-      recommendedAction: round.recommendedAction,
-      tokensIn: round.tokensIn,
-      tokensOut: round.tokensOut,
-      createdAt: round.createdAt,
-    );
-    rounds.add(created);
-    return created.id!;
-  }
-
-  @override
-  Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async =>
-      1;
-
-  @override
-  Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {
-    rounds.removeWhere((r) => r.id == roundId);
-  }
-}
-
-class _MockWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
-}
-
-/// 立即返回成功结果的 AI（不触发真实网络/搜索工具）。
-class _ToggleAiService extends AiService {
-  @override
-  Future<AiCallResult> chat({
-    required String apiBaseUrl,
-    required String apiKey,
-    required Map<String, dynamic> requestBody,
-    bool stream = false,
-    void Function(AiStreamChunk chunk)? onChunk,
-    void Function(String requestBody)? onRequestBody,
-    bool Function()? isCancelled,
-  }) async {
-    return const AiCallResult(
-      content: '## 剧情演绎\n成功正文\n'
-          '## 推荐行动\n\n'
-          '## 当前时间\n第一天 午时\n'
-          '## 世界状态\n\n'
-          '## 角色状态\n\n'
-          '## 记忆总结\n',
-      promptTokens: 1,
-      completionTokens: 1,
-    );
-  }
-}
-
-/// 可控流式 AI：测试驱动 [emit]/[complete]，模拟逐 chunk 输出与生成结束。
-class _FakeStreamingAiService extends AiService {
-  final Completer<void> _done = Completer<void>();
-  void Function(AiStreamChunk chunk)? _onChunk;
-
-  void emit(String delta) => _onChunk?.call(AiStreamChunk(contentDelta: delta));
-  void complete() => _done.complete();
-
-  @override
-  Future<AiCallResult> chat({
-    required String apiBaseUrl,
-    required String apiKey,
-    required Map<String, dynamic> requestBody,
-    bool stream = false,
-    void Function(AiStreamChunk chunk)? onChunk,
-    void Function(String requestBody)? onRequestBody,
-    bool Function()? isCancelled,
-  }) async {
-    _onChunk = onChunk;
-    await _done.future;
-    _onChunk?.call(const AiStreamChunk(done: true));
-    return const AiCallResult(
-      content: '## 剧情演绎\n流式生成的最终正文\n'
-          '## 推荐行动\n\n'
-          '## 当前时间\n第一天 午时\n'
-          '## 世界状态\n\n'
-          '## 角色状态\n\n'
-          '## 记忆总结\n',
-      promptTokens: 10,
-      completionTokens: 20,
-    );
-  }
-}
-
+/// 楼层跳转（FloorJumpBar）测试：按钮布局/箭头跳转/回车/缺口/流式/动画/Tooltip。
 void main() {
   const book = Book(id: 1, title: '测试书');
 
-  Future<RoundProvider> pumpChat(
-    WidgetTester tester,
-    _MockBookDao bookDao,
-    _MockRoundDao dao, {
+  /// 预置 rounds 轮（单轮正文足够高，最后一轮起点可达视口顶），
+  /// 并 pump 对话页。返回 RoundProvider（用于缺口删除等用例）。
+  Future<dynamic> pumpChat(
+    WidgetTester tester, {
+    FakeBookDao? bookDao,
+    FakeRoundDao? dao,
     int rounds = 6,
     Size size = const Size(1400, 900),
-    AiService? ai,
+    FakeStreamingAiService? ai,
   }) async {
-    tester.view.physicalSize = size;
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    for (var i = 1; i <= rounds; i++) {
-      await dao.insertRound(
-        Round(
-          bookId: 1,
-          roundIndex: i,
-          userInput: '第 $i 轮的用户输入',
-          // 正文足够长：单轮内容高于视口，最后一轮起点可达（可对齐视口顶）。
-          aiNarrative: '第 $i 轮的剧情正文。' * 200,
-          currentTime: '第一天 午时',
-          createdAt: DateTime.now(),
-        ),
-      );
-    }
-    final roundProvider = RoundProvider(
-      dao: dao,
-      aiService: ai ?? _ToggleAiService(),
-      bookDao: bookDao,
+    final provider = await pumpChatScreen(
+      tester,
+      bookDao: bookDao ?? FakeBookDao(books: [book]),
+      roundDao: dao ?? FakeRoundDao(),
+      ai: ai ?? FakeStreamingAiService(),
+      seedRounds: rounds,
+      seedBodyRepeats: 200,
+      size: size,
     );
-    await roundProvider.loadRounds(1);
-
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-          ChangeNotifierProvider(
-            create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-          ),
-          ChangeNotifierProvider(
-            create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
-          ),
-          ChangeNotifierProvider(create: (_) => roundProvider),
-          ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        ],
-        child: MaterialApp(
-          theme: NarrChatTheme.light,
-          home: Scaffold(
-            body: ChatScreen(),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    return roundProvider;
+    return provider;
   }
 
   /// 对话消息列表最外层（ListView 自带）的滚动状态。
   ScrollableState chatScrollable(WidgetTester tester) {
     return tester.state<ScrollableState>(
-      find.descendant(of: find.byType(ListView), matching: find.byType(Scrollable)).first,
+      find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
     );
   }
 
   /// 对话消息列表的滚动偏移。
-  double chatOffset(WidgetTester tester) => chatScrollable(tester).position.pixels;
+  double chatOffset(WidgetTester tester) =>
+      chatScrollable(tester).position.pixels;
 
   /// 对话消息列表的最大滚动偏移。
-  double chatMax(WidgetTester tester) => chatScrollable(tester).position.maxScrollExtent;
+  double chatMax(WidgetTester tester) =>
+      chatScrollable(tester).position.maxScrollExtent;
 
   Finder floorButton() => find.byIcon(Icons.layers_outlined);
   Finder floorBar() => find.byType(FloorJumpBar);
@@ -283,9 +117,7 @@ void main() {
   }
 
   testWidgets('宽屏：楼层跳转按钮位于滚动到底部按钮左侧', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     expect(floorButton(), findsOneWidget);
     final floorX = tester.getCenter(floorButton()).dx;
@@ -294,14 +126,7 @@ void main() {
   });
 
   testWidgets('窄屏：按钮顺序为 楼层跳转 < 滚动到底部 < 打开侧栏', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(
-      tester,
-      bookDao,
-      dao,
-      size: const Size(600, 900),
-    );
+    await pumpChat(tester, size: const Size(600, 900));
 
     final floorX = tester.getCenter(find.byTooltip('楼层跳转')).dx;
     final scrollX = tester.getCenter(find.byTooltip('滚动到底部')).dx;
@@ -311,9 +136,7 @@ void main() {
   });
 
   testWidgets('点击按钮在其上方弹出悬浮条，中间数字为当前（底部=最后一轮）轮次', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
     // 测试环境无初始自动滚动：显式滚到底部 → 当前轮应为最后一轮。
     await scrollChatToBottom(tester);
     expect(chatOffset(tester), closeTo(chatMax(tester), 1));
@@ -330,9 +153,7 @@ void main() {
   });
 
   testWidgets('左箭头：轮中部 → 当前轮起点；轮起点 → 上一轮起点', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
     await scrollChatToBottom(tester);
 
     await openFloorBar(tester);
@@ -350,9 +171,7 @@ void main() {
   });
 
   testWidgets('右箭头：下一轮起点；最后一轮 → 列表末尾', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
     await scrollChatToBottom(tester);
 
     await openFloorBar(tester);
@@ -373,9 +192,7 @@ void main() {
   });
 
   testWidgets('回车跳转：输入数字回车 → 对应轮起点，悬浮条关闭', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     await openFloorBar(tester);
     await tester.enterText(numberField(), '2');
@@ -387,9 +204,7 @@ void main() {
   });
 
   testWidgets('边界：第 1 轮起点时左箭头禁用', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     // 输入 1 回车跳到第 1 轮起点。
     await openFloorBar(tester);
@@ -408,9 +223,7 @@ void main() {
   });
 
   testWidgets('关闭：点悬浮条外部或再次点击按钮', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     await openFloorBar(tester);
     expect(floorBar(), findsOneWidget);
@@ -429,9 +242,7 @@ void main() {
   });
 
   testWidgets('打开悬浮条不改变按钮位置（bar 弹出在按钮上方、按钮不移动）', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     final floorBtn = find.byTooltip('楼层跳转');
     final scrollBtn = find.byTooltip('滚动到底部');
@@ -458,17 +269,14 @@ void main() {
   });
 
   testWidgets('无聊天轮次（仅第零轮）时隐藏楼层跳转按钮', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao, rounds: 0);
+    await pumpChat(tester, rounds: 0);
 
     expect(floorButton(), findsNothing);
   });
 
   testWidgets('roundIndex 缺口：输入被删轮号 → 就近跳到已存在的上一轮', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    final provider = await pumpChat(tester, bookDao, dao);
+    final dao = FakeRoundDao();
+    final provider = await pumpChat(tester, dao: dao);
 
     // 删除第 3 轮（DAO 不重编号，产生缺口：1,2,4,5,6）。
     final round3 = dao.rounds.firstWhere((r) => r.roundIndex == 3);
@@ -486,9 +294,7 @@ void main() {
   });
 
   testWidgets('用户主动滑动消息区时自动收起悬浮条（自动向下滚动除外）', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     await openFloorBar(tester);
     expect(floorBar(), findsOneWidget);
@@ -500,10 +306,8 @@ void main() {
   });
 
   testWidgets('流式自动跟随滚动不收起悬浮条，且中间数字跟随新内容更新', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    final ai = _FakeStreamingAiService();
-    final provider = await pumpChat(tester, bookDao, dao, ai: ai);
+    final ai = FakeStreamingAiService();
+    final provider = await pumpChat(tester, ai: ai);
 
     // 滚到底部后开始流式生成（自动跟随保持视口在底部）。
     await scrollChatToBottom(tester);
@@ -535,9 +339,7 @@ void main() {
   });
 
   testWidgets('打开悬浮条带动画（淡入）', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     await tester.tap(floorButton());
     await tester.pump();
@@ -570,9 +372,7 @@ void main() {
   });
 
   testWidgets('第 5 轮底部点左箭头 → 第 5 轮顶部（而非跳到第 4 轮）', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     // 先滚到顶部：构建/上报前几轮（第 4 轮起点已上报）。
     await tester.drag(find.byType(ListView), const Offset(0, 10000));
@@ -600,9 +400,7 @@ void main() {
   });
 
   testWidgets('悬浮条不使用 RenderFollowerLayer（修复红屏闪烁断言）', (tester) async {
-    final bookDao = _MockBookDao([book]);
-    final dao = _MockRoundDao();
-    await pumpChat(tester, bookDao, dao);
+    await pumpChat(tester);
 
     await openFloorBar(tester);
     expect(floorBar(), findsOneWidget);

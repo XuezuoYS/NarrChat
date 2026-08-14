@@ -1,46 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
-import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/world_book_entry.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
-import 'package:narrchat/providers/book_provider.dart';
-import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/providers/sidebar_provider.dart';
-import 'package:narrchat/providers/world_book_provider.dart';
-import 'package:narrchat/screens/chat_screen.dart';
-import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/utils/focus_utils.dart';
-import 'package:provider/provider.dart';
 
-/// 内存版 DAO，避免测试依赖 sqflite（仅覆盖加载所需方法）。
-class _MockBookDao extends BookDao {
-  final List<Book> books;
-  _MockBookDao(this.books);
-  @override
-  Future<List<Book>> getAllBooks() async => books;
-  @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => {};
-  @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async =>
-      const FailedAttempt();
-}
+import 'helpers/chat_harness.dart';
 
-class _MockRoundDao extends RoundDao {
-  @override
-  Future<List<Round>> getRoundsByBook(int bookId) async => [];
-}
-
-class _MockWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
-}
-
+/// 点击输入框外部取消焦点（共享工具 + 聊天主输入框）。
 void main() {
   group('onTapOutside 共享工具', () {
     testWidgets('点击输入框外部取消焦点（触屏平台）', (tester) async {
@@ -91,35 +56,7 @@ void main() {
 
   group('聊天主输入框', () {
     Future<void> pumpNarrowChat(WidgetTester tester) async {
-      tester.view.physicalSize = const Size(600, 900);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-
-      const book = Book(id: 1, title: '测试书');
-      final bookDao = _MockBookDao([book]);
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-            ChangeNotifierProvider(
-              create: (_) => BookProvider(dao: bookDao)..loadBooks(),
-            ),
-            ChangeNotifierProvider(
-              create: (_) => WorldBookProvider(dao: _MockWorldBookDao()),
-            ),
-            ChangeNotifierProvider(
-              create: (_) => RoundProvider(dao: _MockRoundDao(), bookDao: bookDao),
-            ),
-            ChangeNotifierProvider(create: (_) => SidebarProvider()),
-          ],
-          child: MaterialApp(
-            theme: NarrChatTheme.light,
-            home: Scaffold(body: const ChatScreen()),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
+      await pumpChatScreen(tester, size: const Size(600, 900));
     }
 
     /// 聊天主输入框（通过 hint 定位，避免误匹配侧边栏抽屉内的编辑框）。
