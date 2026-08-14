@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/licenses_screen.dart';
 import 'package:narrchat/screens/settings_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -97,9 +98,12 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider(
           create: (_) => AiSettingsProvider(),
-          child: MaterialApp(
-            theme: NarrChatTheme.light,
-            home: const SettingsScreen(),
+          child: ChangeNotifierProvider(
+            create: (_) => CloudSyncProvider(),
+            child: MaterialApp(
+              theme: NarrChatTheme.light,
+              home: const SettingsScreen(),
+            ),
           ),
         ),
       );

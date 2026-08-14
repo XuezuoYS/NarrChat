@@ -9,6 +9,7 @@ import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
 import '../utils/focus_utils.dart';
+import 'settings_form_state.dart';
 
 /// 云同步（WebDAV）设置面板。
 ///
@@ -16,35 +17,25 @@ import '../utils/focus_utils.dart';
 ///   备份用户名 / 保留历史版本 / 每轮结束后自动上传；
 /// - 云端备份：立即上传、刷新列表、选择版本下载；
 /// - 下载时弹出提示框：删除本地数据（整体恢复）或合并本地数据。
+///
+/// 表单值由外层 [SettingsFormState] 持有（切换面板不丢失），
+/// 由设置页右上角「保存」统一校验并落库；保存后不退出设置页。
 class CloudSyncPanel extends StatefulWidget {
-  const CloudSyncPanel({super.key});
+  final SettingsFormState form;
+
+  const CloudSyncPanel({super.key, required this.form});
 
   @override
   State<CloudSyncPanel> createState() => _CloudSyncPanelState();
 }
 
 class _CloudSyncPanelState extends State<CloudSyncPanel> {
-  late final TextEditingController _url;
-  late final TextEditingController _username;
-  late final TextEditingController _password;
-  late final TextEditingController _folder;
-  late final TextEditingController _userName;
-  late final TextEditingController _keepVersions;
-  late bool _autoUpload;
-  bool _obscurePassword = true;
-  bool _isSaving = false;
+  SettingsFormState get _form => widget.form;
 
   @override
   void initState() {
     super.initState();
     final provider = context.read<CloudSyncProvider>();
-    _url = TextEditingController(text: provider.webdavUrl);
-    _username = TextEditingController(text: provider.webdavUsername);
-    _password = TextEditingController(text: provider.webdavPassword);
-    _folder = TextEditingController(text: provider.folder);
-    _userName = TextEditingController(text: provider.userName);
-    _keepVersions = TextEditingController(text: '${provider.keepVersions}');
-    _autoUpload = provider.autoUpload;
     // 已配置 WebDAV 时，进入面板自动刷新云端备份列表。
     // 使用 post-frame 回调，避免在 build/initState 阶段触发 notifyListeners。
     if (provider.isConfigured) {
@@ -53,41 +44,6 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
         context.read<CloudSyncProvider>().refreshBackups();
       });
     }
-  }
-
-  @override
-  void dispose() {
-    _url.dispose();
-    _username.dispose();
-    _password.dispose();
-    _folder.dispose();
-    _userName.dispose();
-    _keepVersions.dispose();
-    super.dispose();
-  }
-
-  int? get _keepVersionsValue => int.tryParse(_keepVersions.text.trim());
-
-  Future<void> _save() async {
-    final keep = _keepVersionsValue;
-    if (keep == null || keep < 1 || keep > 99) {
-      _showSnack('保留历史版本需为 1 ~ 99 的整数');
-      return;
-    }
-    setState(() => _isSaving = true);
-    final provider = context.read<CloudSyncProvider>();
-    final ok = await provider.save(
-      webdavUrl: _url.text,
-      webdavUsername: _username.text,
-      webdavPassword: _password.text,
-      folder: _folder.text,
-      keepVersions: keep,
-      autoUpload: _autoUpload,
-      userName: _userName.text,
-    );
-    if (!mounted) return;
-    setState(() => _isSaving = false);
-    _showSnack(ok ? '设置已保存' : '保存失败：${provider.error ?? '未知错误'}');
   }
 
   /// 删除当前 WebDAV 连接：确认后清除本地保存的连接配置并重置表单。
@@ -125,13 +81,13 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     }
     // 同步清空表单并恢复默认值。
     setState(() {
-      _url.clear();
-      _username.clear();
-      _password.clear();
-      _folder.text = CloudSyncProvider.defaultFolder;
-      _userName.text = CloudSyncProvider.defaultUserName;
-      _keepVersions.text = '${CloudSyncProvider.defaultKeepVersions}';
-      _autoUpload = false;
+      _form.webdavUrl.clear();
+      _form.webdavUsername.clear();
+      _form.webdavPassword.clear();
+      _form.webdavFolder.text = CloudSyncProvider.defaultFolder;
+      _form.webdavUserName.text = CloudSyncProvider.defaultUserName;
+      _form.webdavKeepVersions.text = '${CloudSyncProvider.defaultKeepVersions}';
+      _form.autoUpload = false;
     });
     _showSnack('已删除连接');
   }
@@ -155,10 +111,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   Future<void> _testConnection() async {
     final provider = context.read<CloudSyncProvider>();
     final result = await provider.testConnection(
-      url: _url.text,
-      username: _username.text,
-      password: _password.text,
-      folder: _folder.text,
+      url: _form.webdavUrl.text,
+      username: _form.webdavUsername.text,
+      password: _form.webdavPassword.text,
+      folder: _form.webdavFolder.text,
     );
     if (!mounted) return;
     _showSnack(result == null ? '连接成功：WebDAV 服务器可用' : '连接失败：$result');
@@ -249,7 +205,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
         ),
         const SizedBox(height: 12),
         TextField(
-          controller: _url,
+          controller: _form.webdavUrl,
           onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: 'WebDAV 服务器地址',
@@ -263,7 +219,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           children: [
             Expanded(
               child: TextField(
-                controller: _username,
+                controller: _form.webdavUsername,
                 onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '登录用户名',
@@ -276,9 +232,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             const SizedBox(width: 12),
             Expanded(
               child: TextField(
-                controller: _password,
+                controller: _form.webdavPassword,
                 onTapOutside: unfocusOnTapOutside,
-                obscureText: _obscurePassword,
+                obscureText: _form.obscurePassword,
                 // 密码框：禁用输入法联想/自动更正，避免敏感信息被记录。
                 enableSuggestions: false,
                 autocorrect: false,
@@ -289,13 +245,14 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                   isDense: true,
                   suffixIcon: IconButton(
                     icon: Icon(
-                      _obscurePassword
+                      _form.obscurePassword
                           ? Icons.visibility_off
                           : Icons.visibility,
                     ),
-                    tooltip: _obscurePassword ? '显示' : '隐藏',
-                    onPressed: () =>
-                        setState(() => _obscurePassword = !_obscurePassword),
+                    tooltip: _form.obscurePassword ? '显示' : '隐藏',
+                    onPressed: () => setState(
+                      () => _form.obscurePassword = !_form.obscurePassword,
+                    ),
                   ),
                 ),
               ),
@@ -307,7 +264,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           children: [
             Expanded(
               child: TextField(
-                controller: _folder,
+                controller: _form.webdavFolder,
                 onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '存储文件夹',
@@ -320,7 +277,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             const SizedBox(width: 12),
             Expanded(
               child: TextField(
-                controller: _userName,
+                controller: _form.webdavUserName,
                 onTapOutside: unfocusOnTapOutside,
                 decoration: const InputDecoration(
                   labelText: '备份用户名',
@@ -333,7 +290,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             const SizedBox(width: 12),
             Expanded(
               child: TextField(
-                controller: _keepVersions,
+                controller: _form.webdavKeepVersions,
                 onTapOutside: unfocusOnTapOutside,
                 keyboardType: TextInputType.number,
                 // 仅允许数字且最多 2 位（1~99），与保存时的范围校验一致。
@@ -361,8 +318,8 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           contentPadding: EdgeInsets.zero,
           title: const Text('每轮生成结束后自动上传'),
           subtitle: const Text('关闭时仅在上方手动上传'),
-          value: _autoUpload,
-          onChanged: (v) => setState(() => _autoUpload = v),
+          value: _form.autoUpload,
+          onChanged: (v) => setState(() => _form.autoUpload = v),
         ),
         const SizedBox(height: 8),
         Row(
@@ -381,12 +338,6 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
               onPressed: provider.isBusy ? null : _testConnection,
               icon: const Icon(Icons.wifi_tethering_outlined, size: 18),
               label: const Text('测试连接'),
-            ),
-            const SizedBox(width: 12),
-            FilledButton.icon(
-              onPressed: _isSaving ? null : _save,
-              icon: const Icon(Icons.save_outlined, size: 18),
-              label: Text(_isSaving ? '保存中…' : '保存设置'),
             ),
           ],
         ),

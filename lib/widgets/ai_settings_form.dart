@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../config/model_presets.dart';
 import '../models/model_preset.dart';
-import '../providers/ai_settings_provider.dart';
 import '../services/ai_request_body_builder.dart';
 import '../utils/focus_utils.dart';
 import 'app_menu.dart';
+import 'settings_form_state.dart';
 
 /// 「AI 选择」设置面板（原「API 设置」）。
 ///
@@ -15,122 +14,24 @@ import 'app_menu.dart';
 /// - **参数始终可调**，特殊情况以次级文本说明
 ///   （如「思考模式下不发送该参数」「非思考模式下无效」）；
 /// - **API 连接**：仅 API Key / Base URL（模型与选项由预设决定，不在此调整）。
+///
+/// 表单值由外层 [SettingsFormState] 持有（切换面板不丢失），
+/// 由设置页右上角「保存」统一校验并落库；保存后不退出设置页。
 class AiSettingsForm extends StatefulWidget {
-  const AiSettingsForm({super.key});
+  final SettingsFormState form;
+
+  const AiSettingsForm({super.key, required this.form});
 
   @override
   State<AiSettingsForm> createState() => _AiSettingsFormState();
 }
 
 class _AiSettingsFormState extends State<AiSettingsForm> {
-  late final TextEditingController _apiKey;
-  late final TextEditingController _baseUrl;
-  late final TextEditingController _customModelName;
-  late final TextEditingController _customRequestBody;
-  late final TextEditingController _maxTokens;
-  late String _selectedPresetId;
-  late double _temperature;
-  late String _reasoningEffort;
-  bool _obscureKey = true;
-  bool _isSaving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    final settings = context.read<AiSettingsProvider>();
-    _apiKey = TextEditingController(text: settings.apiKey);
-    _baseUrl = TextEditingController(text: settings.baseUrl);
-    _customModelName = TextEditingController(text: settings.customModelName);
-    _customRequestBody = TextEditingController(
-      text: settings.customRequestBody,
-    );
-    _selectedPresetId = settings.selectedPresetId;
-    _temperature = settings.temperature;
-    _reasoningEffort = settings.reasoningEffort;
-    _maxTokens = TextEditingController(
-      text: settings.maxTokens?.toString() ?? '',
-    );
-  }
-
-  @override
-  void dispose() {
-    _apiKey.dispose();
-    _baseUrl.dispose();
-    _customModelName.dispose();
-    _customRequestBody.dispose();
-    _maxTokens.dispose();
-    super.dispose();
-  }
-
-  int? get _effectiveMaxTokens {
-    final text = _maxTokens.text.trim();
-    if (text.isEmpty) return null;
-    return int.tryParse(text);
-  }
-
-  bool get _isCustom => _selectedPresetId == ModelPresets.customId;
+  SettingsFormState get _form => widget.form;
 
   /// 切换预设：载入该预设记忆的参数（无记忆则用预设默认值）。
   void _selectPreset(String id) {
-    final settings = context.read<AiSettingsProvider>();
-    setState(() {
-      _selectedPresetId = id;
-      final preset = ModelPresets.byId(id);
-      final memory = settings.presetParams[id];
-      _temperature = memory?.temperature ?? preset.defaultTemperature;
-      _reasoningEffort =
-          memory?.reasoningEffort ?? preset.defaultReasoningEffort;
-      final max = memory?.maxTokens ?? preset.defaultMaxTokens;
-      _maxTokens.text = max?.toString() ?? '';
-    });
-  }
-
-  Future<void> _save() async {
-    final maxTokens = _effectiveMaxTokens;
-    if (maxTokens != null && maxTokens <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('最大输出 Tokens 需为正整数或留空')),
-      );
-      return;
-    }
-    if (_isCustom) {
-      final name = _customModelName.text.trim();
-      if (name.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('自定义模型名称不能为空')),
-        );
-        return;
-      }
-      try {
-        AiRequestBodyBuilder.validateCustomTemplate(_customRequestBody.text);
-      } on FormatException catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message)),
-        );
-        return;
-      }
-    }
-
-    setState(() => _isSaving = true);
-    final provider = context.read<AiSettingsProvider>();
-    final ok = await provider.save(
-      apiKey: _apiKey.text,
-      baseUrl: _baseUrl.text,
-      selectedPresetId: _selectedPresetId,
-      temperature: _temperature,
-      reasoningEffort: _reasoningEffort,
-      maxTokens: maxTokens,
-      customModelName: _customModelName.text,
-      customRequestBody: _customRequestBody.text,
-    );
-    if (!mounted) return;
-    setState(() => _isSaving = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(ok ? '已保存' : '保存失败：${provider.error ?? '未知错误'}'),
-        duration: const Duration(seconds: 1),
-      ),
-    );
+    setState(() => _form.selectPreset(id));
   }
 
   // ---------------------------------------------------------------------------
@@ -138,7 +39,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
   // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final preset = ModelPresets.byId(_selectedPresetId);
+    final preset = ModelPresets.byId(_form.selectedPresetId);
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -160,9 +61,9 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           const SizedBox(height: 20),
           _sectionTitle(context, 'API 连接'),
           TextField(
-            controller: _apiKey,
+            controller: _form.apiKey,
             onTapOutside: unfocusOnTapOutside,
-            obscureText: _obscureKey,
+            obscureText: _form.obscureKey,
             enableSuggestions: false,
             autocorrect: false,
             decoration: InputDecoration(
@@ -171,15 +72,18 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
               border: const OutlineInputBorder(),
               isDense: true,
               suffixIcon: IconButton(
-                icon: Icon(_obscureKey ? Icons.visibility_off : Icons.visibility),
-                tooltip: _obscureKey ? '显示' : '隐藏',
-                onPressed: () => setState(() => _obscureKey = !_obscureKey),
+                icon: Icon(
+                  _form.obscureKey ? Icons.visibility_off : Icons.visibility,
+                ),
+                tooltip: _form.obscureKey ? '显示' : '隐藏',
+                onPressed: () =>
+                    setState(() => _form.obscureKey = !_form.obscureKey),
               ),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
-            controller: _baseUrl,
+            controller: _form.baseUrl,
             onTapOutside: unfocusOnTapOutside,
             decoration: const InputDecoration(
               labelText: 'Base URL',
@@ -193,19 +97,10 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           for (final p in ModelPresets.builtins) _buildPresetTile(p),
           _buildPresetTile(ModelPresets.customPreset),
           const SizedBox(height: 12),
-          if (_isCustom)
+          if (_form.isCustom)
             _buildCustomSection(context)
           else
             _buildParamSection(context, preset),
-          const SizedBox(height: 20),
-          Align(
-            alignment: Alignment.centerRight,
-            child: FilledButton.icon(
-              onPressed: _isSaving ? null : _save,
-              icon: const Icon(Icons.save_outlined, size: 18),
-              label: Text(_isSaving ? '保存中…' : '保存'),
-            ),
-          ),
         ],
       ),
     );
@@ -227,7 +122,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
 
   /// 预设选择卡片（内置只读 / 自定义）。
   Widget _buildPresetTile(ModelPreset preset) {
-    final selected = _selectedPresetId == preset.id;
+    final selected = _form.selectedPresetId == preset.id;
     final isCustom = preset.id == ModelPresets.customId;
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -356,7 +251,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                 const Text('温度', style: TextStyle(fontSize: 14)),
                 const SizedBox(width: 8),
                 Text(
-                  _temperature.toStringAsFixed(1),
+                  _form.temperature.toStringAsFixed(1),
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: Theme.of(context).colorScheme.primary,
@@ -375,12 +270,12 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
               ],
             ),
             Slider(
-              value: _temperature,
+              value: _form.temperature,
               min: 0,
               max: 2,
               divisions: 20,
-              label: _temperature.toStringAsFixed(1),
-              onChanged: (v) => setState(() => _temperature = v),
+              label: _form.temperature.toStringAsFixed(1),
+              onChanged: (v) => setState(() => _form.temperature = v),
             ),
           ],
         ),
@@ -391,13 +286,13 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           children: [
             AppDropdown<String>(
               label: '推理强度（reasoning_effort）',
-              value: _reasoningEffort,
+              value: _form.reasoningEffort,
               items: [
                 for (final e in const ['low', 'high', 'max'])
                   DropdownMenuItem(value: e, child: Text(e)),
               ],
               onChanged: (v) => setState(() {
-                _reasoningEffort = v ?? _reasoningEffort;
+                _form.reasoningEffort = v ?? _form.reasoningEffort;
               }),
             ),
             if (preset.reasoningEffortNote != null)
@@ -416,7 +311,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
-              controller: _maxTokens,
+              controller: _form.maxTokens,
               onTapOutside: unfocusOnTapOutside,
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
@@ -446,7 +341,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         TextField(
-          controller: _customModelName,
+          controller: _form.customModelName,
           onTapOutside: unfocusOnTapOutside,
           decoration: const InputDecoration(
             labelText: '自定义模型名称',
@@ -470,14 +365,15 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
             ),
             TextButton(
               onPressed: () => setState(() {
-                _customRequestBody.text = ModelPresets.defaultCustomRequestBody;
+                _form.customRequestBody.text =
+                    ModelPresets.defaultCustomRequestBody;
               }),
               child: const Text('恢复默认模板'),
             ),
           ],
         ),
         TextField(
-          controller: _customRequestBody,
+          controller: _form.customRequestBody,
           onTapOutside: unfocusOnTapOutside,
           minLines: 10,
           maxLines: 18,

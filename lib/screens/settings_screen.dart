@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import 'licenses_screen.dart';
 import 'update_log_screen.dart';
+import '../providers/ai_settings_provider.dart';
+import '../providers/cloud_sync_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../widgets/ai_settings_form.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
+import '../widgets/settings_form_state.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/ui_settings_form.dart';
 
@@ -15,17 +19,59 @@ import '../widgets/ui_settings_form.dart';
 ///
 /// 5 个子模块：
 /// - AI 选择：模型预设 + 参数（始终可调）+ API 连接；
-/// - UI 设置：全局字体等界面偏好；
+/// - UI 设置：全局字体等界面偏好（即时生效）；
 /// - Mod 管理：查看预置 Mod，创建/编辑/导出/导入自定义 Mod；
 /// - 云同步：WebDAV 云端备份 / 恢复；
 /// - 关于：应用信息。
-class SettingsScreen extends StatelessWidget {
+///
+/// 表单状态（AI 选择 + 云同步）由本页持有，切换面板不丢失；
+/// 右上角「保存」为全局保存：一次性校验并落库全部改动，不退出设置页。
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
   static Future<void> open(BuildContext context) {
     return Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+  }
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late final SettingsFormState _form;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _form = SettingsFormState(
+      ai: context.read<AiSettingsProvider>(),
+      sync: context.read<CloudSyncProvider>(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _form.dispose();
+    super.dispose();
+  }
+
+  /// 全局保存：统一校验并落库 AI 选择 + 云同步，成功后不退出页面。
+  Future<void> _saveAll() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _isSaving = true);
+    final result = await _form.saveAll();
+    if (!mounted) return;
+    setState(() => _isSaving = false);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          result.ok ? '已保存' : '保存失败：${result.errors.join('；')}',
+        ),
+      ),
+    );
   }
 
   @override
@@ -40,16 +86,25 @@ class SettingsScreen extends StatelessWidget {
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
         SettingsNavItem(icon: Icons.info_outline, label: '关于'),
       ],
+      actions: [
+        // 全局保存：对 AI 选择 + 云同步的所有改动统一保存（不退出设置页）。
+        FilledButton.icon(
+          onPressed: _isSaving ? null : _saveAll,
+          icon: const Icon(Icons.save_outlined, size: 18),
+          label: Text(_isSaving ? '保存中…' : '保存'),
+        ),
+        const SizedBox(width: 4),
+      ],
       contentBuilder: (context, index) {
         switch (index) {
           case 0:
-            return const AiSettingsForm();
+            return AiSettingsForm(form: _form);
           case 1:
             return const UiSettingsForm();
           case 2:
             return const ModManagementPanel();
           case 3:
-            return const CloudSyncPanel();
+            return CloudSyncPanel(form: _form);
           default:
             return const _AboutPanel();
         }
