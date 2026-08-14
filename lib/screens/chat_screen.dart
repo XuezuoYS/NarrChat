@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -22,6 +22,7 @@ import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/failed_attempt_bubble.dart';
+import '../widgets/floor_jump_bar.dart';
 import '../widgets/generation_banner.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/raw_dialog.dart';
@@ -41,6 +42,18 @@ const double _kContentMaxWidth = 760;
 
 /// 流式自动跟随滚动：距底部小于该距离视为「位于底部」。
 const double _kAutoScrollThreshold = 80;
+
+/// 楼层跳转：轮起点与视口顶对齐的判定误差（px）。
+/// 小于该值视为「正处于该轮起点」→ 左箭头跳到上一轮，否则跳到当前轮起点。
+const double _kFloorJumpAtStartEpsilon = 4;
+
+/// 楼层跳转：未实测项高度的默认估算（偶数项=用户气泡，奇数项=AI 气泡）。
+/// 仅用于首次跳转的粗定位，随后由实测高度与校准迭代修正。
+const double _kFloorJumpDefaultUserHeight = 48;
+const double _kFloorJumpDefaultAiHeight = 280;
+
+/// 楼层跳转：校准迭代上限（超出即停在估算位置）。
+const int _kFloorJumpMaxRefine = 10;
 
 /// 右侧栏开合动画时长。
 const Duration _kSidebarAnimDuration = Duration(milliseconds: 300);
@@ -105,6 +118,42 @@ class _ChatScreenState extends State<ChatScreen>
   /// 避免固定大留白在默认输入框大小下造成大面积空白。
   final GlobalKey _composerKey = GlobalKey();
   double _composerHeight = 0;
+
+  /// 楼层跳转：悬浮条是否展开（按钮正上方弹出的横向长条浮层）。
+  bool _floorJumpOpen = false;
+
+  /// 楼层跳转：悬浮条在对话区 Stack 中的定位（相对按钮右缘/上方）。
+  /// 用 GlobalKey 帧末实测按钮与对话区的全局位置计算，按钮移动时随重建跟随。
+  final GlobalKey _floorJumpButtonKey = GlobalKey();
+  final GlobalKey _floorJumpStackKey = GlobalKey();
+  double? _floorJumpBarTop;
+  double? _floorJumpBarRight;
+  bool _floorJumpPosPending = false;
+
+  /// 楼层跳转：当前屏幕中的轮次（roundIndex）及是否正处于该轮起点。
+  /// 仅在悬浮条打开期间维护，由帧末检测更新。
+  ({int roundIndex, bool atStart})? _floorJumpCurrent;
+
+  /// 帧末检测守卫：同一帧多次 rebuild 只注册一次回调。
+  bool _floorJumpDetectPending = false;
+
+  /// 楼层跳转：列表项定位缓存，由列表项在帧末「自上报」维护
+  /// （见 [_FloorMeasuredItem]，不使用逐项 GlobalKey）：
+  /// - [_itemOffsets]：item index → 该项起点在滚动坐标系中的偏移（滚动不变，
+  ///   项离开视口后仍有效）；
+  /// - [_itemHeights]：item index → 该项实测高度（未测项用分类型均值估算）。
+  final Map<int, double> _itemOffsets = {};
+  final Map<int, double> _itemHeights = {};
+
+  /// 楼层跳转：当前跳转目标项的**唯一** GlobalKey（仅跳转期间挂载到目标项，
+  /// 供 [RenderAbstractViewport.getOffsetToReveal] 精确对齐；避免逐项建 key）。
+  final GlobalKey _floorJumpTargetKey = GlobalKey();
+  int? _floorJumpTargetIndex;
+
+  /// 缓存失效依据：轮次来源（引用+长度）或窗口宽度变化时清空实测数据。
+  List<Round> _lastRoundsSource = const [];
+  int _lastRoundsCount = 0;
+  double _lastLayoutWidth = 0;
 
   /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
   late final AnimationController _sidebarController;
@@ -218,7 +267,11 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复；
   /// 同时维护「生成结束」红点——滚动回底部即清除。
+  /// 悬浮条打开期间任何滚动（含流式自动跟随）都会刷新中间数字。
   bool _onChatScrollNotification(ScrollNotification notification) {
+    if (_floorJumpOpen) {
+      _scheduleFloorJumpDetect();
+    }
     if (notification is UserScrollNotification) {
       if (notification.direction == ScrollDirection.reverse) {
         // 用户上翻（offset 减小，向历史/顶部方向）→ 已离开底部，暂停自动跟随。
@@ -272,6 +325,335 @@ class _ChatScreenState extends State<ChatScreen>
     if (!_scrollController.hasClients) return true;
     final pos = _scrollController.position;
     return pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 楼层跳转：悬浮条开关 / 当前轮次检测 / 列表项定位与跳转
+  // ---------------------------------------------------------------------------
+
+  /// 当前书籍参与气泡展示的轮次（排除第零轮；DAO 已按 round_index 升序）。
+  List<Round> _chatRoundsNow() =>
+      context.read<RoundProvider>().rounds.where((r) => r.roundIndex > 0).toList();
+
+  void _toggleFloorJump() {
+    if (_floorJumpOpen) {
+      _closeFloorJump();
+    } else {
+      _openFloorJump();
+    }
+  }
+
+  void _openFloorJump() {
+    if (_floorJumpOpen) return;
+    setState(() {
+      _floorJumpOpen = true;
+      // 重新定位：避免沿用上次展开时的旧坐标。
+      _floorJumpBarTop = null;
+      _floorJumpBarRight = null;
+    });
+    // 打开后立即调度帧末检测与定位（需布局完成后读取位置）。
+    _scheduleFloorJumpDetect();
+    _scheduleFloorJumpPosition();
+  }
+
+  /// 帧末调度一次悬浮条定位（同一帧多次触发只注册一次）。
+  void _scheduleFloorJumpPosition() {
+    if (_floorJumpPosPending) return;
+    _floorJumpPosPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _floorJumpPosPending = false;
+      if (!mounted) return;
+      _updateFloorJumpPosition();
+    });
+  }
+
+  /// 实测按钮与对话区的全局位置，计算悬浮条在对话区 Stack 中的
+  /// （top/right）偏移：右缘对齐按钮右缘、悬浮条底边位于按钮顶上方 8px。
+  /// 不使用 CompositedTransformFollower（该组件在 Overlay 布局中会触发
+  /// 「paint transform cannot be reliably computed」断言，见 Flutter 提示）。
+  void _updateFloorJumpPosition() {
+    if (!_floorJumpOpen) return;
+    final btnCtx = _floorJumpButtonKey.currentContext;
+    final stackCtx = _floorJumpStackKey.currentContext;
+    if (btnCtx == null || stackCtx == null) return;
+    final btnBox = btnCtx.findRenderObject() as RenderBox?;
+    final stackBox = stackCtx.findRenderObject() as RenderBox?;
+    if (btnBox == null || stackBox == null) return;
+    if (!btnBox.attached || !stackBox.attached) return;
+    final btnTopLeft = btnBox.localToGlobal(Offset.zero);
+    final stackTopLeft = stackBox.localToGlobal(Offset.zero);
+    // 36(bar高) + 8(间距)。
+    final top = btnTopLeft.dy - stackTopLeft.dy - 44;
+    final right =
+        (stackTopLeft.dx + stackBox.size.width) -
+        (btnTopLeft.dx + btnBox.size.width);
+    if (top != _floorJumpBarTop || right != _floorJumpBarRight) {
+      setState(() {
+        _floorJumpBarTop = top;
+        _floorJumpBarRight = right;
+      });
+    }
+  }
+
+  void _closeFloorJump() {
+    if (!_floorJumpOpen) return;
+    setState(() => _floorJumpOpen = false);
+  }
+
+  /// 帧末调度一次「当前轮次」检测（同一帧多次触发只注册一次）。
+  void _scheduleFloorJumpDetect() {
+    if (_floorJumpDetectPending) return;
+    _floorJumpDetectPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _floorJumpDetectPending = false;
+      if (!mounted) return;
+      _detectFloorJumpCurrent();
+    });
+  }
+
+  /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：
+  /// 记录该项起点在滚动坐标系中的偏移与高度，供检测/跳转使用。
+  /// 偏移由「上报时的视口局部 y + 当时滚动偏移」得到，滚动不变、离开视口后仍有效。
+  void _onItemMeasured(int itemIndex, double viewportTop, double height) {
+    _itemHeights[itemIndex] = height;
+    if (_scrollController.hasClients) {
+      _itemOffsets[itemIndex] = _scrollController.position.pixels + viewportTop;
+    }
+  }
+
+  /// 检测当前屏幕中的轮次。
+  ///
+  /// 当前轮 = 可视内容起始项所属的轮次（首个「底边仍在视口顶以下」的项，
+  /// 其顶部可能已在视口上方）——即用户正在阅读的轮次；atStart 表示该轮
+  /// 起点已与视口顶对齐。
+  ///
+  /// 使用「完整偏移模型」：已上报项用实测偏移，未上报项从最近已上报锚点
+  /// 推算（见 [_modeledItemOffset]）——即使当前轮起点项从未被构建/上报
+  /// （如直接跳转后阅读），也能正确识别当前轮（修复「第 5 轮底部点左箭头
+  /// 跳到第 4 轮」）。
+  void _detectFloorJumpCurrent() {
+    if (!_floorJumpOpen || !_scrollController.hasClients) return;
+    final chatRounds = _chatRoundsNow();
+    if (chatRounds.isEmpty) {
+      _setFloorJumpCurrent(null);
+      return;
+    }
+    final pos = _scrollController.position;
+    final itemCount = chatRounds.length * 2;
+    double heightOf(int idx) => _itemHeights[idx] ?? _avgItemHeightFor(idx);
+    double offsetOf(int idx) => _modeledItemOffset(idx);
+
+    // 可视内容起始项：首个「底边 > 视口顶」的项。
+    int? firstIndex;
+    for (var idx = 0; idx < itemCount; idx++) {
+      if (offsetOf(idx) + heightOf(idx) > pos.pixels) {
+        firstIndex = idx;
+        break;
+      }
+    }
+    // 视口已越过最后一项（末尾虚拟项区域）→ 最后一轮。
+    if (firstIndex == null || firstIndex >= itemCount) {
+      _setFloorJumpCurrent((
+        roundIndex: chatRounds.last.roundIndex,
+        atStart: false,
+      ));
+      return;
+    }
+    final round = chatRounds[firstIndex ~/ 2];
+    final offset = offsetOf(firstIndex);
+    final atStart = firstIndex.isEven &&
+        (offset - pos.pixels).abs() <= _kFloorJumpAtStartEpsilon;
+    _setFloorJumpCurrent((roundIndex: round.roundIndex, atStart: atStart));
+  }
+
+  /// 计算指定列表项起点的滚动偏移（完整偏移模型）：
+  /// - 已上报项：直接返回实测偏移；
+  /// - 未上报项：从最近已上报锚点推算（优先向前找下方锚点，其次上方），
+  ///   间距用已测高度/分类型均值补齐——锚点近、链条短，误差小。
+  double _modeledItemOffset(int itemIndex) {
+    final reported = _itemOffsets[itemIndex];
+    if (reported != null) return reported;
+    int? below; // 最近的已上报且 index < itemIndex
+    int? above; // 最近的已上报且 index > itemIndex
+    for (final e in _itemOffsets.entries) {
+      if (e.key < itemIndex) {
+        if (below == null || e.key > below) below = e.key;
+      } else if (e.key > itemIndex) {
+        if (above == null || e.key < above) above = e.key;
+      }
+    }
+    if (below != null) {
+      return _itemOffsets[below]! + _estimateGap(below, itemIndex);
+    }
+    if (above != null) {
+      return _itemOffsets[above]! - _estimateGap(itemIndex, above);
+    }
+    return _estimateItemOffset(itemIndex);
+  }
+
+  void _setFloorJumpCurrent(({int roundIndex, bool atStart})? value) {
+    final same = value == null
+        ? _floorJumpCurrent == null
+        : _floorJumpCurrent != null &&
+            _floorJumpCurrent!.roundIndex == value.roundIndex &&
+            _floorJumpCurrent!.atStart == value.atStart;
+    if (same) return;
+    setState(() => _floorJumpCurrent = value);
+  }
+
+  /// 把用户输入的轮次解析为实际存在的目标轮（roundIndex 有缺口时向下就近取整）。
+  Round? _resolveFloorTarget(int roundIndex) {
+    final chatRounds = _chatRoundsNow();
+    if (chatRounds.isEmpty) return null;
+    final clamped = roundIndex.clamp(1, chatRounds.last.roundIndex);
+    return chatRounds.lastWhere(
+      (r) => r.roundIndex <= clamped,
+      orElse: () => chatRounds.first,
+    );
+  }
+
+  /// 跳转到指定轮次（用户输入/数字语义：目标轮起点）。
+  void _jumpToFloorRound(int roundIndex) {
+    final target = _resolveFloorTarget(roundIndex);
+    if (target == null) return;
+    final chatRounds = _chatRoundsNow();
+    final position = chatRounds.indexOf(target);
+    if (position < 0) return;
+    _userScrolledAway = true;
+    _jumpToItem(2 * position);
+  }
+
+  /// 左箭头：处于当前轮起点 → 上一轮起点；否则 → 当前轮起点。
+  void _jumpToPrevFloor() {
+    final chatRounds = _chatRoundsNow();
+    if (chatRounds.isEmpty) return;
+    final current = _floorJumpCurrent;
+    if (current == null) return;
+    final position = _chatPositionOfRoundIndex(chatRounds, current.roundIndex);
+    if (position < 0) return;
+    final targetPosition = (current.atStart && position > 0) ? position - 1 : position;
+    _userScrolledAway = true;
+    _jumpToItem(2 * targetPosition);
+  }
+
+  /// 右箭头：下一轮起点；已是最后一轮 → 列表末尾（最后一轮末尾）。
+  void _jumpToNextFloor() {
+    final chatRounds = _chatRoundsNow();
+    if (chatRounds.isEmpty) return;
+    final current = _floorJumpCurrent;
+    if (current == null) return;
+    final position = _chatPositionOfRoundIndex(chatRounds, current.roundIndex);
+    if (position < 0) return;
+    _userScrolledAway = true;
+    if (position < chatRounds.length - 1) {
+      _jumpToItem(2 * (position + 1));
+    } else {
+      _scrollToBottom();
+    }
+  }
+
+  /// 在 chatRounds 中按 roundIndex 查找位置；不存在返回 -1。
+  int _chatPositionOfRoundIndex(List<Round> chatRounds, int roundIndex) {
+    for (var i = 0; i < chatRounds.length; i++) {
+      if (chatRounds[i].roundIndex == roundIndex) return i;
+    }
+    return -1;
+  }
+
+  /// 跳转到指定列表项：标记目标（唯一 GlobalKey 挂载到该项供精确对齐），
+  /// 先按估算偏移粗定位，再帧末校准到精确偏移。
+  void _jumpToItem(int itemIndex) {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    if (_floorJumpTargetIndex != itemIndex) {
+      setState(() => _floorJumpTargetIndex = itemIndex);
+    }
+    final estimate = _modeledItemOffset(itemIndex).clamp(0.0, pos.maxScrollExtent);
+    pos.jumpTo(estimate);
+    _scheduleRefineJump(itemIndex, 0);
+  }
+
+  void _scheduleRefineJump(int itemIndex, int attempt) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _refineJump(itemIndex, attempt);
+    });
+  }
+
+  /// 校准跳转：目标项已构建（唯一 GlobalKey 已挂载）→ 用
+  /// [RenderAbstractViewport.getOffsetToReveal] 精确对齐视口顶；
+  /// 未构建 → 用完整偏移模型估算目标偏移并跳转。每次跳转都会构建目标
+  /// 附近的项，实测高度随之补充、估算误差随迭代收缩（最多
+  /// [_kFloorJumpMaxRefine] 次）。
+  void _refineJump(int itemIndex, int attempt) {
+    if (!_scrollController.hasClients) return;
+    if (attempt > _kFloorJumpMaxRefine) return;
+    final pos = _scrollController.position;
+    final ro = _floorJumpTargetIndex == itemIndex
+        ? _floorJumpTargetKey.currentContext?.findRenderObject() as RenderBox?
+        : null;
+    if (ro != null && ro.attached) {
+      final vp = RenderAbstractViewport.of(ro);
+      final reveal = vp.getOffsetToReveal(ro, 0.0).offset;
+      final target = reveal.clamp(0.0, pos.maxScrollExtent);
+      pos
+          .animateTo(
+            target,
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOut,
+          )
+          .then((_) {
+        // 动画结束后再检测当前轮次：动画中途检测会读到中间位置导致
+        // 「当前轮/是否在起点」短暂失真（驱动悬浮条数字与箭头状态）。
+        if (!mounted) return;
+        try {
+          _detectFloorJumpCurrent();
+        } catch (_) {
+          // 检测仅为状态刷新，任何异常都不应影响跳转结果。
+        }
+      });
+      // 跳转完成：释放目标标记（下次跳转再挂载）。
+      if (_floorJumpTargetIndex == itemIndex) {
+        _floorJumpTargetIndex = null;
+      }
+      return;
+    }
+    // 目标未构建：用完整偏移模型校正方向与距离。
+    pos.jumpTo(_modeledItemOffset(itemIndex).clamp(0.0, pos.maxScrollExtent));
+    _scheduleRefineJump(itemIndex, attempt + 1);
+  }
+
+  /// 估算 [fromIndex, toIndex) 各项高度之和（已测用实测，未测用分类型均值）。
+  double _estimateGap(int fromIndex, int toIndex) {
+    var sum = 0.0;
+    for (var i = fromIndex; i < toIndex; i++) {
+      sum += _itemHeights[i] ?? _avgItemHeightFor(i);
+    }
+    return sum;
+  }
+
+  /// 估算指定列表项在滚动坐标系中的起点偏移：
+  /// 顶部 padding + 前序各项高度（已测用实测，未测用分类型均值）。
+  double _estimateItemOffset(int itemIndex) {
+    var sum = 24.0; // ListView 顶部 padding。
+    for (var i = 0; i < itemIndex; i++) {
+      sum += _itemHeights[i] ?? _avgItemHeightFor(i);
+    }
+    return sum;
+  }
+
+  /// 分类型平均高度：偶数项（用户气泡）小、奇数项（AI 气泡）大，分开估算更准。
+  double _avgItemHeightFor(int itemIndex) {
+    final isUser = itemIndex.isEven;
+    var total = 0.0;
+    var count = 0;
+    for (final e in _itemHeights.entries) {
+      if (e.key.isEven != isUser) continue;
+      total += e.value;
+      count++;
+    }
+    if (count > 0) return total / count;
+    return isUser ? _kFloorJumpDefaultUserHeight : _kFloorJumpDefaultAiHeight;
   }
 
   Future<void> _send() async {
@@ -831,6 +1213,16 @@ class _ChatScreenState extends State<ChatScreen>
     final rounds = roundProvider.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
+    // 楼层跳转：轮次来源（引用+长度）或窗口宽度变化时清空实测数据缓存。
+    if (!identical(rounds, _lastRoundsSource) ||
+        rounds.length != _lastRoundsCount ||
+        (MediaQuery.sizeOf(context).width - _lastLayoutWidth).abs() > 0.5) {
+      _itemHeights.clear();
+      _itemOffsets.clear();
+      _lastRoundsSource = rounds;
+      _lastRoundsCount = rounds.length;
+      _lastLayoutWidth = MediaQuery.sizeOf(context).width;
+    }
     final isSending = roundProvider.isSending;
     final isStreaming = roundProvider.isStreaming;
     final showPending = isSending || isStreaming;
@@ -950,31 +1342,76 @@ class _ChatScreenState extends State<ChatScreen>
             }
           }
           // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
-          return Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
-              child: item,
+          // 楼层跳转：包一层自上报部件（帧末回报该项位置/高度，不使用逐项
+          // GlobalKey）；跳转目标项额外挂载唯一的 [_floorJumpTargetKey]。
+          return _FloorMeasuredItem(
+            itemIndex: index,
+            onReport: _onItemMeasured,
+            child: Center(
+              key: index == _floorJumpTargetIndex
+                  ? _floorJumpTargetKey
+                  : null,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
+                child: item,
+              ),
             ),
           );
         },
       ),
     );
 
+    // 楼层跳转：悬浮条打开时帧末检测当前轮次（驱动中间数字刷新）
+    // 并重新定位（跟随按钮位置变化）。
+    if (_floorJumpOpen) {
+      _scheduleFloorJumpDetect();
+      _scheduleFloorJumpPosition();
+    }
+
+    // 悬浮条数据（楼层跳转）。
+    final chatRoundsNow = chatRounds;
+    final maxFloorRound = chatRoundsNow.isEmpty
+        ? 0
+        : chatRoundsNow.last.roundIndex;
+    final floorCurrent = _floorJumpCurrent;
+    final floorPosition = floorCurrent == null
+        ? -1
+        : _chatPositionOfRoundIndex(chatRoundsNow, floorCurrent.roundIndex);
+    final floorCanPrev = floorCurrent != null &&
+        !(floorCurrent.atStart && floorPosition == 0);
+
     return Stack(
+      key: _floorJumpStackKey,
       children: [
         // 消息区铺满（底部留白避免被悬浮输入面板遮挡）。
+        // 固定 key：浮层开合不重建消息区元素。
+        // Listener 监听消息区的指针/滚轮：悬浮条打开时，用户点击/滑动/滚轮
+        // 消息区即收起悬浮条（自动向下滚动无指针事件，不会误收起）。
         Positioned.fill(
-          child: Container(
-            // 与各边栏一致的内容表面背景。
-            color: context.narrColors.surface,
-            child: chatRounds.isEmpty && !showPending && !showFailure
-                ? _buildEmptyState(context, bookProvider.currentBook)
-                // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
-                : messagesList,
+          key: const Key('chat_messages_area'),
+          child: Listener(
+            onPointerDown: (_) {
+              if (_floorJumpOpen) _closeFloorJump();
+            },
+            onPointerSignal: (event) {
+              if (_floorJumpOpen && event is PointerScrollEvent) {
+                _closeFloorJump();
+              }
+            },
+            child: Container(
+              // 与各边栏一致的内容表面背景。
+              color: context.narrColors.surface,
+              child: chatRounds.isEmpty && !showPending && !showFailure
+                  ? _buildEmptyState(context, bookProvider.currentBook)
+                  // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
+                  : messagesList,
+            ),
           ),
         ),
         // 伪悬浮输入面板：底部覆盖，同色背景遮挡其后的文本（仅留小空隙）。
+        // 固定 key：浮层开合不重建输入面板元素（避免丢失焦点/状态）。
         Positioned(
+          key: const Key('chat_composer_area'),
           left: 0,
           right: 0,
           bottom: 0,
@@ -988,6 +1425,28 @@ class _ChatScreenState extends State<ChatScreen>
             ),
           ),
         ),
+        // 楼层跳转悬浮条：作为对话区 Stack 的悬浮子项（不参与按钮行布局，
+        // 三个按钮的结构与位置不受影响），按按钮实测位置定位在按钮正上方。
+        if (_floorJumpOpen && _floorJumpBarTop != null)
+          Positioned(
+            top: _floorJumpBarTop!,
+            right: _floorJumpBarRight ?? 20,
+            child: _FloorJumpBarAppearance(
+              child: FloorJumpBar(
+                currentRound: floorCurrent?.roundIndex ?? 0,
+                maxRound: maxFloorRound,
+                canPrev: floorCanPrev,
+                onPrev: _jumpToPrevFloor,
+                onNext: _jumpToNextFloor,
+                onJumpTo: (roundIndex) {
+                  _jumpToFloorRound(roundIndex);
+                  // 回车定点跳转后关闭悬浮条（一次性跳转）；
+                  // 左右箭头步进则保持打开便于连续翻阅。
+                  _closeFloorJump();
+                },
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -1098,6 +1557,10 @@ class _ChatScreenState extends State<ChatScreen>
     final isSending = roundProvider.isSending;
     // 宽屏侧栏常驻时无需「打开右侧栏」；窄屏/侧栏收起时保留。
     final showSidebarButton = !(_isWide && _sidebarOpen);
+    // 楼层跳转：无聊天轮次（仅第零轮）时隐藏入口。
+    final chatRoundsNow = roundProvider.rounds
+        .where((r) => r.roundIndex > 0)
+        .toList();
 
     return Container(
       key: _composerKey,
@@ -1109,11 +1572,22 @@ class _ChatScreenState extends State<ChatScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部）。
+              // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部、楼层跳转）。
               // 真悬浮：直接浮于消息区之上，不被底色面板框住。
+              // 楼层跳转悬浮条渲染在对话区 Stack 中（见 _buildChatArea），
+              // 不参与本行布局——三个按钮的结构与位置始终不受影响。
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (chatRoundsNow.isNotEmpty) ...[
+                    _ComposerSquareButton(
+                      key: _floorJumpButtonKey,
+                      icon: Icons.layers_outlined,
+                      tooltip: '楼层跳转',
+                      onPressed: _toggleFloorJump,
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   _ComposerSquareButton(
                     icon: Icons.vertical_align_bottom,
                     tooltip: '滚动到底部',
@@ -1529,6 +2003,109 @@ class _ModeMenuRow extends StatelessWidget {
   }
 }
 
+/// 楼层跳转：悬浮条浮层的「打开动画」外壳。
+///
+/// 浮层插入 Overlay 时播放淡入 + 自下而上滑入（约 200ms），
+/// 使悬浮条打开不再生硬。关闭时浮层直接移除（无需反向动画）。
+class _FloorJumpBarAppearance extends StatefulWidget {
+  final Widget child;
+
+  const _FloorJumpBarAppearance({required this.child});
+
+  @override
+  State<_FloorJumpBarAppearance> createState() => _FloorJumpBarAppearanceState();
+}
+
+class _FloorJumpBarAppearanceState extends State<_FloorJumpBarAppearance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+  );
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+  );
+  late final Animation<Offset> _slide = Tween<Offset>(
+    begin: const Offset(0, 0.2),
+    end: Offset.zero,
+  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// 楼层跳转：列表项自上报部件。
+///
+/// 构建/内容变化后在帧末回报该项「相对视口的顶部偏移」与「高度」
+/// （通过 [onReport]），供楼层跳转检测与定位使用。刻意**不使用逐项
+/// GlobalKey**（避免虚拟化列表中大量 GlobalKey 带来的元素/键冲突风险）：
+/// 部件通过自身 context 找到 RenderBox 计算位置，且仅在帧末、mounted 时
+/// 读取，无需父级持有任何键。
+class _FloorMeasuredItem extends StatefulWidget {
+  final int itemIndex;
+  final void Function(int itemIndex, double viewportTop, double height) onReport;
+  final Widget child;
+
+  const _FloorMeasuredItem({
+    required this.itemIndex,
+    required this.onReport,
+    required this.child,
+  });
+
+  @override
+  State<_FloorMeasuredItem> createState() => _FloorMeasuredItemState();
+}
+
+class _FloorMeasuredItemState extends State<_FloorMeasuredItem> {
+  @override
+  void initState() {
+    super.initState();
+    _scheduleReport();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FloorMeasuredItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 内容/宽度变化导致高度变化时重新上报。
+    _scheduleReport();
+  }
+
+  void _scheduleReport() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ro = context.findRenderObject();
+      if (ro is! RenderBox) return;
+      final vp = RenderAbstractViewport.of(ro);
+      final y = ro.localToGlobal(Offset.zero, ancestor: vp).dy;
+      widget.onReport(widget.itemIndex, y, ro.size.height);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
 /// 输入面板上方的 1:1 方形按钮（40×40）。
 ///
 /// [dotVisible] 为 true 时在右上角显示红点（如滚动到底部按钮在
@@ -1540,6 +2117,7 @@ class _ComposerSquareButton extends StatelessWidget {
   final bool dotVisible;
 
   const _ComposerSquareButton({
+    super.key,
     required this.icon,
     required this.tooltip,
     required this.onPressed,
