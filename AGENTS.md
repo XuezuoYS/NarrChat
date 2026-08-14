@@ -1,3 +1,9 @@
+# IMPORT
+
+- Write your entire chain of thought (reasoning) exclusively in English. Never reason in any other language, even when the user writes in another language.
+- The first word of the whole chain-of-thought block must always be "I'm" — begin your thinking with "I'm ...".
+- In your reasoning process, you **must use** expressions starting with **"I'm"**, rather than "Let me" or "Let's", and this should also be the case in the middle of the sentence.
+
 ### 项目简介
 
 这是一个使用 flutter 编写的，面向 windows 和 android 的 AI 对话式文章生成工具。
