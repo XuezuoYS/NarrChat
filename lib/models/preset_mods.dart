@@ -95,6 +95,21 @@ Response rules:
 ''',
     ),
     Mod(
+      presetKey: 'i_am_deepseek_v4ga',
+      name: '测试让思维链用 I\'am',
+      description: '【警告：易导致破甲失效】尝试让 AI 的思维链用 I am 思考而非 Let me，可能显著改变思维链并提升AI能力，大概率失败，deepseek v4 flash几乎无效，且若此轮启用成功则大概率会使默认破甲失效',
+      postPrompt: '## Your entire thought chain (including reasoning and CoT) **must** start with "I\'m" and it is **prohibited** to include or use the phrase "Let me".',
+      systemPrompt: '''
+# [IMPORTANT]
+- Think (reasoning & CoT) should be expressed in English.
+- Your entire chain of thought (reasoning & CoT) **MUST** start with `I'm` .
+- Your entire reasoning (CoT) **MUST NOT** contain or use the phrase "Let me".
+- Prohibit duplicate requests. Proceed directly to divergence.
+- The wording of the reasoning (CoT) tends to use direct and objective verbs such as "I need", "I will", and "I can".
+## You must replace all the "Let me" with "I am" and "I will".
+''',
+    ),
+    Mod(
       presetKey: 'world_detail',
       name: '世界细节补全',
       description: '补充环境与世界观细节，让场景描写更具体、更有画面感。',
