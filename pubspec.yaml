@@ -43,6 +43,9 @@ dependencies:
   sqflite_common_ffi: ^2.4.2
   http: ^1.6.0
   flutter_markdown: ^0.7.7+1
+  # markdown 包：md 渲染模块直接使用其 ExtensionSet / Element / InlineSyntax
+  # 解析 GitHub Alerts、==高亮== 等语法（flutter_markdown 传递依赖）。
+  markdown: ^7.3.1
   path: ^1.9.1
   flutter_localizations:
     sdk: flutter

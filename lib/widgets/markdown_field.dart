@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 import 'markdown_editing_controller.dart';
+import 'markdown_preview.dart';
 
 /// 支持 Markdown 渲染的文本编辑组件。
 ///
@@ -154,11 +154,9 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
                     )
                   : Padding(
                       padding: const EdgeInsets.all(10),
-                      child: MarkdownBody(
+                      child: MarkdownPreview(
                         data: widget.controller.text,
-                        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                          p: const TextStyle(fontSize: 13, height: 1.5),
-                        ),
+                        base: const TextStyle(fontSize: 13, height: 1.5),
                       ),
                     ),
         ],

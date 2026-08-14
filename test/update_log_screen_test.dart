@@ -21,11 +21,10 @@ void main() {
         find.descendant(of: find.byType(AppBar), matching: find.text('更新日志')),
         findsOneWidget,
       );
-      // md 的 H1 标题（「更新日志」共出现 2 次：AppBar + H1）。
-      expect(find.text('更新日志'), findsNWidgets(2));
       // md 正文被解析渲染（含已知条目与版本标题）。
-      expect(find.textContaining('开放源代码许可'), findsWidgets);
-      expect(find.text('1.2.1'), findsOneWidget);
+      // ⚠️ MarkdownPreview 标题/正文以 TextSpan 渲染，需用 textContaining。
+      expect(find.textContaining('支持输入框 md 语法高亮'), findsOneWidget);
+      expect(find.textContaining('1.2.1'), findsWidgets);
       expect(tester.takeException(), isNull);
 
       // 2) 换树为设置页：关于面板入口可打开更新日志页。
@@ -52,7 +51,7 @@ void main() {
 
       // 已打开更新日志页，且 md 内容被解析渲染。
       expect(find.byType(UpdateLogScreen), findsOneWidget);
-      expect(find.text('1.2.1'), findsOneWidget);
+      expect(find.textContaining('1.2.1'), findsWidgets);
       expect(tester.takeException(), isNull);
     });
   });

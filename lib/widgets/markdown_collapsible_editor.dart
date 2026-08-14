@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 import 'markdown_editing_controller.dart';
+import 'markdown_preview.dart';
 
 /// Markdown 文档树节点。
 class MarkdownNode {
@@ -359,11 +359,9 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
         ..._groupParagraphs(node.contentLines).map(
           (paragraph) => Padding(
             padding: const EdgeInsets.only(left: 12, right: 8, bottom: 4),
-            child: MarkdownBody(
+            child: MarkdownPreview(
               data: paragraph.join('\n'),
-              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                p: const TextStyle(fontSize: 13, height: 1.4),
-              ),
+              base: const TextStyle(fontSize: 13, height: 1.4),
             ),
           ),
         ),
@@ -673,11 +671,9 @@ class _PersonCardState extends State<_PersonCard>
               ..._groupParagraphs(node.contentLines).map(
                 (paragraph) => Padding(
                   padding: const EdgeInsets.only(bottom: 2),
-                  child: MarkdownBody(
+                  child: MarkdownPreview(
                     data: paragraph.join('\n'),
-                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                      p: const TextStyle(fontSize: 13, height: 1.4),
-                    ),
+                    base: const TextStyle(fontSize: 13, height: 1.4),
                   ),
                 ),
               ),

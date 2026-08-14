@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../theme/app_theme.dart';
 import '../widgets/app_empty_hint.dart';
+import '../widgets/markdown_preview.dart';
 
 /// 「更新日志」页：解析根目录 `update_log.md`（已通过 `pubspec.yaml` 声明为
 /// asset）并渲染，开发者维护该文件即可更新页面内容。
@@ -65,17 +65,14 @@ class _UpdateLogScreenState extends State<UpdateLogScreen> {
               ),
             );
           }
-          final theme = Theme.of(context);
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 860),
-                child: MarkdownBody(
+                child: MarkdownPreview(
                   data: content,
-                  styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                    p: const TextStyle(fontSize: 13, height: 1.6),
-                  ),
+                  base: const TextStyle(fontSize: 13, height: 1.6),
                 ),
               ),
             ),
