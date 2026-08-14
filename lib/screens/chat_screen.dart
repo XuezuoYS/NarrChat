@@ -25,6 +25,7 @@ import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/floor_jump_bar.dart';
 import '../widgets/generation_banner.dart';
 import '../widgets/markdown_editing_controller.dart';
+import '../widgets/markdown_preview.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
@@ -2672,12 +2673,13 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
             ),
           ),
           // 折叠：4~5 行固定高度、内部自动滚动；展开：全部内容内联。
+          // 思考内容同样调用统一 Markdown 渲染模块实时渲染。
           if (_expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-              child: SelectableText(
-                widget.content,
-                style: TextStyle(
+              child: MarkdownPreview(
+                data: widget.content,
+                base: TextStyle(
                   fontSize: 13,
                   height: 1.5,
                   color: context.narrColors.textSecondary,
@@ -2690,9 +2692,9 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
               child: SingleChildScrollView(
                 controller: _collapsedController,
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                child: SelectableText(
-                  widget.content,
-                  style: TextStyle(
+                child: MarkdownPreview(
+                  data: widget.content,
+                  base: TextStyle(
                     fontSize: 13,
                     height: 1.5,
                     color: context.narrColors.textSecondary,
@@ -2784,12 +2786,12 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                   ],
                   // 自动重试提示（灰字）：思考/搜索块之后、正文之前。
                   if (retry != null) ...[const SizedBox(height: 8), _RetryStatusText(attempt: retry.$1, total: retry.$2)],
-                  // 剧情正文。
+                  // 剧情正文：调用统一 Markdown 渲染模块实时渲染（含末尾光标）。
                   if (hasContent) ...[
                     if (hasEvents) const Divider(height: 14),
-                    SelectableText(
-                      '$content▍',
-                      style: TextStyle(
+                    MarkdownPreview(
+                      data: '$content▍',
+                      base: TextStyle(
                         fontSize: 15,
                         height: 1.65,
                         color: context.narrColors.textPrimary,

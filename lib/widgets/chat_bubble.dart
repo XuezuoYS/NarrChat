@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'brand_logo.dart';
 import 'bubble_pointer_listener.dart';
+import 'markdown_preview.dart';
 
 /// 聊天气泡。
 ///
@@ -57,6 +58,7 @@ class ChatBubble extends StatelessWidget {
                       : CrossAxisAlignment.start,
                   children: [
                     // 正文：AI 为无气泡纯文本；用户消息带浅色气泡。
+                    // 两者均调用统一 Markdown 渲染模块实时渲染。
                     if (isUser)
                       Container(
                         padding: const EdgeInsets.symmetric(
@@ -65,12 +67,9 @@ class ChatBubble extends StatelessWidget {
                           color: context.narrColors.userBubble,
                           borderRadius: BorderRadius.circular(14),
                         ),
-                        child: SelectableText(
-                          text,
-                          // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
-                          contextMenuBuilder: (context, editableTextState) =>
-                              const SizedBox.shrink(),
-                          style: TextStyle(
+                        child: MarkdownPreview(
+                          data: text,
+                          base: TextStyle(
                             fontSize: 15,
                             height: 1.65,
                             color: context.narrColors.textPrimary,
@@ -78,12 +77,9 @@ class ChatBubble extends StatelessWidget {
                         ),
                       )
                     else
-                      SelectableText(
-                        text,
-                        // 抑制默认右键菜单，统一使用自定义气泡菜单（避免双菜单）。
-                        contextMenuBuilder: (context, editableTextState) =>
-                            const SizedBox.shrink(),
-                        style: TextStyle(
+                      MarkdownPreview(
+                        data: text,
+                        base: TextStyle(
                           fontSize: 15,
                           height: 1.65,
                           color: context.narrColors.textPrimary,
@@ -122,12 +118,9 @@ class ChatBubble extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 4),
-                            SelectableText(
-                              recommendedAction!,
-                              contextMenuBuilder:
-                                  (context, editableTextState) =>
-                                      const SizedBox.shrink(),
-                              style: TextStyle(
+                            MarkdownPreview(
+                              data: recommendedAction!,
+                              base: TextStyle(
                                 fontSize: 13,
                                 height: 1.5,
                                 color: context.narrColors.textSecondary,
