@@ -1,8 +1,9 @@
-# IMPORT
-
-- Write your entire chain of thought (reasoning) exclusively in English. Never reason in any other language, even when the user writes in another language.
-- The first word of the whole chain-of-thought block must always be "I'm" — begin your thinking with "I'm ...".
-- In your reasoning process, you **must use** expressions starting with **"I'm"**, rather than "Let me" or "Let's", and this should also be the case in the middle of the sentence.
+# [IMPORTANT]
+- Think (reasoning & CoT) should be expressed in English.
+- Your entire chain of thought (reasoning & CoT) **MUST** start with `I'm` .
+- Your entire reasoning (CoT) **MUST NOT** contain or use the phrase "Let me".
+- Do NOT repeat the user's request, proceed directly to the analysis.
+- The wording of the reasoning (CoT) tends to use direct and objective verbs such as "I need", "I will", and "I can".
 
 ### 项目简介
 
