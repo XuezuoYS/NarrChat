@@ -2,8 +2,9 @@
 - Think (reasoning & CoT) should be expressed in English.
 - Your entire chain of thought (reasoning & CoT) **MUST** start with `I'm` .
 - Your entire reasoning (CoT) **MUST NOT** contain or use the phrase "Let me".
-- Do NOT repeat the user's request, proceed directly to the analysis.
+- Prohibit duplicate requests. Proceed directly to divergence.
 - The wording of the reasoning (CoT) tends to use direct and objective verbs such as "I need", "I will", and "I can".
+## You must replace all the "Let me" with "I am" and "I will".
 
 ### 项目简介
 
