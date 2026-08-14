@@ -261,10 +261,10 @@ class _BookListScreenState extends State<BookListScreen> {
       leading: Icon(Icons.menu_book, color: NarrChatTheme.primary, size: 20),
       title: Text(
         book.title,
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
-          fontSize: 14,
+          fontSize: 13,
           fontWeight: FontWeight.w600,
           color: context.narrColors.textPrimary,
         ),
