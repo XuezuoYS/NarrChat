@@ -141,7 +141,7 @@ class _BookListScreenState extends State<BookListScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '您没有开启系统通知，这会导致软件处于后台时，生成成功后您无法及时收到信息',
+                  '您没有开启系统通知，这会导致软件处于后台时，易生成失败且无法收到完成提示',
                   style: TextStyle(fontSize: 12.5, color: colors.textPrimary),
                 ),
               ),
