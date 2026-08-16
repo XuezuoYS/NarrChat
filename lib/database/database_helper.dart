@@ -14,7 +14,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 8;
+  static const int _dbVersion = 9;
 
   Database? _database;
 
@@ -86,6 +86,12 @@ class DatabaseHelper {
           );
           await db.execute(
             "ALTER TABLE books ADD COLUMN failed_error_message TEXT DEFAULT ''",
+          );
+        }
+        if (oldVersion < 9) {
+          // 每轮落库模型名（{{model}} 解析值），用于气泡 Token 旁展示。
+          await db.execute(
+            "ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''",
           );
         }
       },
@@ -167,6 +173,7 @@ class DatabaseHelper {
         recommended_action TEXT DEFAULT '',
         tokens_in INTEGER NOT NULL DEFAULT 0,
         tokens_out INTEGER NOT NULL DEFAULT 0,
+        model_name TEXT DEFAULT '',
         created_at DATETIME,
         FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
       )

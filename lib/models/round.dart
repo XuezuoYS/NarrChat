@@ -12,6 +12,9 @@ class Round {
   final String recommendedAction;
   final int tokensIn;
   final int tokensOut;
+
+  /// 本轮实际发送的模型名（`{{model}}` 解析值，如 `deepseek-v4-pro`）。
+  final String modelName;
   final DateTime? createdAt;
 
   const Round({
@@ -27,6 +30,7 @@ class Round {
     this.recommendedAction = '',
     this.tokensIn = 0,
     this.tokensOut = 0,
+    this.modelName = '',
     this.createdAt,
   });
 
@@ -44,6 +48,7 @@ class Round {
       recommendedAction: (map['recommended_action'] as String?) ?? '',
       tokensIn: (map['tokens_in'] as int?) ?? 0,
       tokensOut: (map['tokens_out'] as int?) ?? 0,
+      modelName: (map['model_name'] as String?) ?? '',
       createdAt: map['created_at'] == null
           ? null
           : DateTime.tryParse(map['created_at'] as String),
@@ -64,6 +69,7 @@ class Round {
       'recommended_action': recommendedAction,
       'tokens_in': tokensIn,
       'tokens_out': tokensOut,
+      'model_name': modelName,
       'created_at': createdAt?.toIso8601String(),
     };
   }
@@ -81,6 +87,7 @@ class Round {
     String? recommendedAction,
     int? tokensIn,
     int? tokensOut,
+    String? modelName,
     DateTime? createdAt,
   }) {
     return Round(
@@ -96,6 +103,7 @@ class Round {
       recommendedAction: recommendedAction ?? this.recommendedAction,
       tokensIn: tokensIn ?? this.tokensIn,
       tokensOut: tokensOut ?? this.tokensOut,
+      modelName: modelName ?? this.modelName,
       createdAt: createdAt ?? this.createdAt,
     );
   }

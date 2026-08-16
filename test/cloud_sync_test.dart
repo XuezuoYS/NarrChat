@@ -390,6 +390,7 @@ Future<Database> _createDb() async {
       recommended_action TEXT DEFAULT '',
       tokens_in INTEGER NOT NULL DEFAULT 0,
       tokens_out INTEGER NOT NULL DEFAULT 0,
+      model_name TEXT DEFAULT '',
       created_at DATETIME
     )
   ''');

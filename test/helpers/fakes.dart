@@ -69,6 +69,7 @@ class FakeRoundDao extends RoundDao {
       recommendedAction: round.recommendedAction,
       tokensIn: round.tokensIn,
       tokensOut: round.tokensOut,
+      modelName: round.modelName,
       createdAt: round.createdAt,
     );
     rounds.add(created);
@@ -100,6 +101,7 @@ class FakeRoundDao extends RoundDao {
       recommendedAction: rounds[index].recommendedAction,
       tokensIn: rounds[index].tokensIn,
       tokensOut: rounds[index].tokensOut,
+      modelName: rounds[index].modelName,
       createdAt: rounds[index].createdAt,
     );
     rounds[index] = updated;

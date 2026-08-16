@@ -30,6 +30,15 @@ class AiBubbleActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final modelName = round.modelName.trim();
+    // 模型名（{{model}} 解析值）与 Token 用量放同一「元信息」胶囊内：
+    // 宽度够时单行（模型名在左、Token 在右）；不够时仅把 Token 换到下一行；
+    // 极限挤压时两段各自省略。Wrap 只有两个子项，故最多两行。
+    final metaStyle = TextStyle(
+      fontSize: 11,
+      color: theme.colorScheme.onSurfaceVariant,
+      fontFeatures: [FontFeature.tabularFigures()],
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -40,13 +49,25 @@ class AiBubbleActions extends StatelessWidget {
             color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(
-            '输入 Tokens: ${round.tokensIn}  ·  输出 Tokens: ${round.tokensOut}',
-            style: TextStyle(
-              fontSize: 11,
-              color: theme.colorScheme.onSurfaceVariant,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (modelName.isNotEmpty)
+                Text(
+                  modelName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: metaStyle.copyWith(fontWeight: FontWeight.w600),
+                ),
+              Text(
+                '输入 Tokens: ${round.tokensIn}  ·  输出 Tokens: ${round.tokensOut}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: metaStyle,
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 4),

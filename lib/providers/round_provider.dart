@@ -507,6 +507,8 @@ class RoundProvider extends ChangeNotifier {
         recommendedAction: parsed.recommendedAction,
         tokensIn: result.promptTokens,
         tokensOut: result.completionTokens,
+        // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
+        modelName: values.model,
         createdAt: DateTime.now(),
       );
       final newRoundId = await _dao.insertRound(newRound);
