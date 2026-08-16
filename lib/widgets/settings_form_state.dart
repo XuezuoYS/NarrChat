@@ -83,9 +83,14 @@ class SettingsFormState extends ChangeNotifier {
 
   /// 统一保存全部设置（校验通过后 AI 与云同步并行落库）。
   ///
-  /// 返回失败原因列表；为空表示全部保存成功。校验失败时不执行任何写入。
+  /// 返回失败原因列表与提示列表；[SettingsSaveResult.errors] 为空表示全部保存成功。
+  /// 校验失败时不执行任何写入。
+  ///
+  /// 云同步未填写（服务器地址或登录用户名为空）时不视为保存失败：
+  /// 跳过云同步落库并仅加入提示（如「云同步未填写」），避免保存其它设置被误报失败。
   Future<SettingsSaveResult> saveAll() async {
     final errors = <String>[];
+    final notes = <String>[];
 
     // —— 校验（不落库）——
     final maxTokensValue = effectiveMaxTokens;
@@ -110,7 +115,13 @@ class SettingsFormState extends ChangeNotifier {
     }
     if (errors.isNotEmpty) return SettingsSaveResult(errors: errors);
 
+    // 云同步是否已完整填写（与 CloudSyncProvider.isConfigured 口径一致）。
+    final syncUrl = webdavUrl.text.trim();
+    final syncUsername = webdavUsername.text.trim();
+    final syncConfigured = syncUrl.isNotEmpty && syncUsername.isNotEmpty;
+
     // 并行落库。keep 已由上方校验保证非空（不满足则已提前返回）。
+    // 云同步未填写时不调用 _sync.save（避免留下误报错误态），仅提示。
     final results = await Future.wait([
       _ai.save(
         apiKey: apiKey.text,
@@ -122,23 +133,32 @@ class SettingsFormState extends ChangeNotifier {
         customModelName: customModelName.text,
         customRequestBody: customRequestBody.text,
       ),
-      _sync.save(
-        webdavUrl: webdavUrl.text,
-        webdavUsername: webdavUsername.text,
-        webdavPassword: webdavPassword.text,
-        folder: webdavFolder.text,
-        keepVersions: keep!,
-        autoUpload: autoUpload,
-        userName: webdavUserName.text,
-      ),
+      if (syncConfigured)
+        _sync.save(
+          webdavUrl: webdavUrl.text,
+          webdavUsername: webdavUsername.text,
+          webdavPassword: webdavPassword.text,
+          folder: webdavFolder.text,
+          keepVersions: keep!,
+          autoUpload: autoUpload,
+          userName: webdavUserName.text,
+        ),
     ]);
     if (!results[0]) {
       errors.add('AI 设置保存失败：${_ai.error ?? '未知错误'}');
     }
-    if (!results[1]) {
-      errors.add('云同步保存失败：${_sync.error ?? '未知错误'}');
+    if (syncConfigured) {
+      if (!results[1]) {
+        errors.add('云同步保存失败：${_sync.error ?? '未知错误'}');
+      }
+    } else {
+      notes.add(
+        syncUrl.isEmpty && syncUsername.isEmpty
+            ? '云同步未填写'
+            : '云同步填写不完整，已跳过云同步保存',
+      );
     }
-    return SettingsSaveResult(errors: errors);
+    return SettingsSaveResult(errors: errors, notes: notes);
   }
 
   @override
@@ -159,10 +179,14 @@ class SettingsFormState extends ChangeNotifier {
 }
 
 /// 设置页统一保存结果。
+///
+/// - [errors]：真正的保存失败原因（如 AI / 云同步落库失败），非空即整体失败；
+/// - [notes]：非致命提示（如「云同步未填写」），不影响 [ok] 判定。
 class SettingsSaveResult {
   final List<String> errors;
+  final List<String> notes;
 
-  const SettingsSaveResult({this.errors = const []});
+  const SettingsSaveResult({this.errors = const [], this.notes = const []});
 
   bool get ok => errors.isEmpty;
 }

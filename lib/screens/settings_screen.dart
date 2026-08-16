@@ -65,10 +65,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final result = await _form.saveAll();
     if (!mounted) return;
     setState(() => _isSaving = false);
+    final notes = result.notes;
     messenger.showSnackBar(
       SnackBar(
         content: Text(
-          result.ok ? '已保存' : '保存失败：${result.errors.join('；')}',
+          result.ok
+              ? (notes.isEmpty ? '已保存' : '已保存；${notes.join('；')}')
+              : '保存失败：${result.errors.join('；')}',
         ),
       ),
     );
