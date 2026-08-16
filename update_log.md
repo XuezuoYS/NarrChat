@@ -7,6 +7,7 @@
 - 新增每轮使用模型展示
 - 简化预置 deepseek v4 ga 思考链管理模组
 - **重点** 将 flutter 版本由 3.44.8 升级至 `3.47.0`
+- 修复 Windows 端旧数据库无法读取：数据库迁移改为幂等（若 `rounds` 已存在 `model_name` 列则跳过 ALTER，避免 `duplicate column name` 导致库无法打开）
 
 ### 1.3.0
 
