@@ -183,7 +183,9 @@ class AiSettingsProvider extends ChangeNotifier {
       for (final e in raw)
         AiPlatform.fromJson((e as Map).cast<String, dynamic>()),
     ];
-    _platforms = parsed.isEmpty ? [AiPlatforms.defaultPlatform] : parsed;
+    _platforms = parsed.isEmpty
+        ? [AiPlatforms.defaultPlatform]
+        : _normalizePlatforms(parsed);
     _selectedPlatformId =
         (cfg[_keySelectedPlatformId] as String?) ?? _platforms.first.id;
     if (!_platforms.any((p) => p.id == _selectedPlatformId)) {
@@ -201,8 +203,40 @@ class AiSettingsProvider extends ChangeNotifier {
     }
   }
 
+  /// 归一化平台列表：内置默认平台始终为内置（不可删），并保证其存在。
+  ///
+  /// 防御配置文件中 `isBuiltin` 字段丢失/被篡改为 false（旧结构迁移、手改
+  /// 配置文件等）导致「默认配置可被删除」，以及此前「默认模型可被删除」的
+  /// 问题：默认平台的预置模型若缺失则自动补回。
+  static List<AiPlatform> _normalizePlatforms(List<AiPlatform> platforms) {
+    var list = platforms.map((p) {
+      if (p.id == AiPlatforms.defaultPlatformId) {
+        return p.copyWith(
+          isBuiltin: true,
+          models: _restoreBuiltinModels(p.models),
+        );
+      }
+      return p;
+    }).toList();
+    if (!list.any((p) => p.id == AiPlatforms.defaultPlatformId)) {
+      list = [AiPlatforms.defaultPlatform, ...list];
+    }
+    return list;
+  }
+
+  /// 为内置默认平台补回缺失的预置模型，保证核心模型不被误删后永久丢失。
+  static List<AiModel> _restoreBuiltinModels(List<AiModel> models) {
+    final result = List<AiModel>.from(models);
+    for (final builtin in AiPlatforms.defaultPlatform.models) {
+      if (!result.any((m) => m.id == builtin.id)) {
+        result.add(builtin);
+      }
+    }
+    return result;
+  }
+
   void _applyPlatformsConfig(AiPlatformsConfig config) {
-    _platforms = List.of(config.platforms);
+    _platforms = _normalizePlatforms(List.of(config.platforms));
     _selectedPlatformId = config.selectedPlatformId;
     _selectedModelId = config.selectedModelId;
   }

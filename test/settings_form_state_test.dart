@@ -122,13 +122,13 @@ void main() {
     final result = await form.saveAll();
 
     expect(result.ok, isFalse);
-    expect(result.errors, contains('AI 设置保存失败：未知错误'));
+    expect(result.errors, contains('API 设置保存失败：未知错误'));
     expect(result.notes, contains('云同步未填写'));
     expect(sync.saveCalls, 0);
   });
 
   group('SettingsFormState 平台/模型编辑', () {
-    test('addPlatform：生成自定义平台并选中，API 类型固定为 OpenAI 兼容', () {
+    test('addPlatform：生成自定义平台，API 类型固定为 OpenAI 兼容', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
       final before = form.platforms.length;
@@ -136,14 +136,14 @@ void main() {
       form.addPlatform(name: '我的网关', baseUrl: 'https://gw.example.com');
 
       expect(form.platforms.length, before + 1);
-      final p = form.selectedPlatform;
+      final p = form.platforms.last;
       expect(p.displayName, '我的网关');
       expect(p.baseUrl, 'https://gw.example.com');
       expect(p.apiType.id, ApiType.openAiCompatible.id);
       expect(p.models, isEmpty);
     });
 
-    test('removePlatform：内置平台不可删，最后一个平台不可删', () {
+    test('removePlatform：内置默认平台与最后一个平台不可删', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
       final defaultId = AiPlatforms.defaultPlatformId;
@@ -152,46 +152,73 @@ void main() {
       form.removePlatform(defaultId);
       expect(form.platforms.length, 1);
 
-      // 再添加自定义平台；删除内置（isBuiltin）仍应无效果。
+      // 再添加自定义平台；删除内置默认平台仍应无效果（isBuiltin + id 双保险）。
       form.addPlatform(name: 'p2', baseUrl: 'x');
       form.removePlatform(defaultId);
       expect(form.platforms.length, 2);
       expect(form.platforms.any((p) => p.id == defaultId), isTrue);
+
+      // 删除自定义平台可生效。
+      form.removePlatform(form.platforms.last.id);
+      expect(form.platforms.length, 1);
     });
 
-    test('addModel / removeModel：维护至少一个模型，选中切换正确', () {
+    test('addModel / removeModel：维护至少一个模型（自定义平台）', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
-      final platformId = form.selectedPlatform.id;
-      final before = form.selectedPlatform.models.length;
+      form.addPlatform(name: 'gw', baseUrl: 'x');
+      final platformId = form.platforms.last.id;
+      final before = form.platforms.last.models.length;
 
       form.addModel(platformId, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
-      expect(form.selectedPlatform.models.length, before + 1);
-      expect(form.selectedModel.id, 'gpt-4o-mini');
-      expect(form.selectedModel.shortLabel, 'GPT4O');
+      expect(form.platforms.last.models.length, before + 1);
+      expect(form.platforms.last.modelById('gpt-4o-mini')!.shortLabel, 'GPT4O');
 
       // 删到只剩一个模型后，再删最后一个应无效果（强制 ≥1）。
-      for (final m in [...form.selectedPlatform.models]) {
-        if (form.selectedPlatform.models.length > 1) {
+      for (final m in [...form.platforms.last.models]) {
+        if (form.platforms.last.models.length > 1) {
           form.removeModel(platformId, m.id);
         }
       }
-      expect(form.selectedPlatform.models.length, 1);
-      form.removeModel(platformId, form.selectedPlatform.models.first.id);
-      expect(form.selectedPlatform.models.length, 1);
+      expect(form.platforms.last.models.length, 1);
+      form.removeModel(platformId, form.platforms.last.models.first.id);
+      expect(form.platforms.last.models.length, 1);
     });
 
-    test('修改选中模型参数：同步到工作副本', () {
+    test('内置默认平台：模型不可增删', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
+      final defaultId = AiPlatforms.defaultPlatformId;
+      final before = form.platforms.first.models.length;
 
-      form.setModelTemperature(0.6);
-      form.setModelReasoningEffort('low');
-      form.setModelShortLabel('V4P');
+      // 默认平台不可新增模型。
+      form.addModel(defaultId, id: 'gpt-4o-mini');
+      expect(form.platforms.first.models.length, before);
 
-      expect(form.selectedModel.temperature, 0.6);
-      expect(form.selectedModel.reasoningEffort, 'low');
-      expect(form.selectedModel.shortLabel, 'V4P');
+      // 默认平台不可删除模型（V4 Pro 仍然存在）。
+      form.removeModel(defaultId, 'deepseek-v4-pro');
+      expect(
+        form.platforms.first.models.any((m) => m.id == 'deepseek-v4-pro'),
+        isTrue,
+      );
+    });
+
+    test('updateModel：按模型 id 写回参数（含默认平台模型）', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final platformId = form.platforms.first.id;
+      final model = form.platforms.first.models.first;
+
+      form.updateModel(
+        platformId,
+        model.id,
+        model.copyWith(temperature: 0.6, reasoningEffort: 'low', shortLabel: 'V4P'),
+      );
+
+      final updated = form.platforms.first.modelById(model.id)!;
+      expect(updated.temperature, 0.6);
+      expect(updated.reasoningEffort, 'low');
+      expect(updated.shortLabel, 'V4P');
     });
   });
 }

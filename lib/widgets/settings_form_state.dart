@@ -7,16 +7,21 @@ import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../services/ai_request_body_builder.dart';
 
-/// 设置页全量表单状态（AI 平台/模型 + 云同步）。
+/// 设置页全量表单状态（API 设置 + 云同步）。
 ///
 /// 由 [SettingsScreen] 持有并注入各面板：面板切换时表单状态不丢失，
 /// 右上角「保存」按钮可任意时机统一校验并落库（类似书籍设置的机制）；
 /// 保存成功后不退出设置页，仅弹出成功/失败提示。
 ///
 /// AI 编辑采用「工作副本」：[_working] 为平台/模型列表的不可变快照，
-/// 每次编辑以 `copyWith` 替换，保证输入不互相污染；平台级文本（名称/Base URL）
-/// 与当前选中模型的文本（简写标识/maxTokens/请求体模板）用控制器承载，
-/// 通过 [onChanged] 同步回工作副本。API Key 单独存于控制器（不进入 [AiPlatform]）。
+/// 每次编辑以 `copyWith` 替换，保证输入不互相污染。平台级文本（名称/Base URL）
+/// 用控制器承载，通过 [onChanged] 同步回工作副本；模型参数由各模型自己的
+/// 展开编辑器（`ai_settings_form` 内的 `_ModelSettingsEditor`）就地编辑，并
+/// 通过 [updateModel] 写回工作副本。API Key 单独存于控制器（不进入 [AiPlatform]）。
+///
+/// 本页只做「按平台 + 按模型编辑参数」，**不**在此选择对话所用的模型/平台
+/// （对话目标仍由 [AiSettingsProvider.selectedPlatformId] /
+/// [selectedModelId] 决定，保存时保持不变）。
 class SettingsFormState extends ChangeNotifier {
   SettingsFormState({
     required AiSettingsProvider ai,
@@ -31,15 +36,9 @@ class SettingsFormState extends ChangeNotifier {
         webdavUserName = TextEditingController(text: sync.userName),
         webdavKeepVersions = TextEditingController(text: '${sync.keepVersions}'),
         autoUpload = sync.autoUpload {
-    _selectedPlatformId = ai.platforms.any((p) => p.id == ai.selectedPlatformId)
-        ? ai.selectedPlatformId
-        : _working.first.id;
-    _selectedModelId = ai.selectedModelId;
-    // 为每个平台建立文本控制器，并同步当前选中模型的编辑态。
     for (final p in _working) {
       _ensurePlatformControllers(p.id);
     }
-    _syncSelectedModelEditing();
   }
 
   final AiSettingsProvider _ai;
@@ -49,23 +48,11 @@ class SettingsFormState extends ChangeNotifier {
   // AI 工作副本状态
   // ---------------------------------------------------------------------------
   List<AiPlatform> _working;
-  late String _selectedPlatformId;
-  late String _selectedModelId;
 
   // 平台级文本控制器（keyed by platform id）。
   final Map<String, TextEditingController> _platformNameCtrls = {};
   final Map<String, TextEditingController> _baseUrlCtrls = {};
   final Map<String, TextEditingController> _apiKeyCtrls = {};
-
-  // 当前选中模型的文本控制器。
-  final TextEditingController shortLabelCtrl = TextEditingController();
-  final TextEditingController maxTokensCtrl = TextEditingController();
-  final TextEditingController requestTemplateCtrl = TextEditingController();
-
-  // 当前选中模型的标量参数。
-  double temperature = 1.0;
-  String reasoningEffort = 'high';
-  bool obscureKey = true;
 
   // ---------------------------------------------------------------------------
   // 云同步
@@ -80,36 +67,9 @@ class SettingsFormState extends ChangeNotifier {
   bool obscurePassword = true;
 
   // ---------------------------------------------------------------------------
-  // 派生：AI 选择
+  // 派生：API 设置
   // ---------------------------------------------------------------------------
   List<AiPlatform> get platforms => _working;
-
-  String get selectedPlatformId => _selectedPlatformId;
-  String get selectedModelId => _selectedModelId;
-
-  AiPlatform get selectedPlatform {
-    for (final p in _working) {
-      if (p.id == _selectedPlatformId) return p;
-    }
-    return _working.first;
-  }
-
-  AiModel get selectedModel {
-    if (selectedPlatform.models.isEmpty) {
-      return const AiModel(id: '', temperature: 1.0, reasoningEffort: 'high');
-    }
-    return selectedPlatform.modelOrFirst(_selectedModelId);
-  }
-
-  bool get isCustomPlatform => !selectedPlatform.isBuiltin;
-
-  ApiType get apiType => ApiType.byId(selectedPlatform.apiTypeId);
-
-  int? get effectiveMaxTokens {
-    final text = maxTokensCtrl.text.trim();
-    if (text.isEmpty) return null;
-    return int.tryParse(text);
-  }
 
   TextEditingController nameCtrlFor(String platformId) =>
       _platformNameCtrls[platformId]!;
@@ -117,28 +77,6 @@ class SettingsFormState extends ChangeNotifier {
       _baseUrlCtrls[platformId]!;
   TextEditingController apiKeyCtrlFor(String platformId) =>
       _apiKeyCtrls[platformId]!;
-
-  // ---------------------------------------------------------------------------
-  // 平台 / 模型选择
-  // ---------------------------------------------------------------------------
-  void selectPlatform(String id) {
-    if (!_working.any((p) => p.id == id)) return;
-    _selectedPlatformId = id;
-    _ensurePlatformControllers(id);
-    final platform = selectedPlatform;
-    _selectedModelId = platform.models.isNotEmpty
-        ? platform.models.first.id
-        : '';
-    _syncSelectedModelEditing();
-    notifyListeners();
-  }
-
-  void selectModel(String id) {
-    if (selectedPlatform.modelById(id) == null) return;
-    _selectedModelId = id;
-    _syncSelectedModelEditing();
-    notifyListeners();
-  }
 
   // ---------------------------------------------------------------------------
   // 平台编辑
@@ -163,88 +101,63 @@ class SettingsFormState extends ChangeNotifier {
     );
     _working = [..._working, platform];
     _ensurePlatformControllers(id);
-    _selectedPlatformId = id;
-    _selectedModelId = '';
-    _syncSelectedModelEditing();
     notifyListeners();
   }
 
-  /// 删除平台（内置平台与最后一个平台不可删）。
+  /// 删除平台（内置默认平台与最后一个平台不可删）。
   void removePlatform(String id) {
     if (_working.length <= 1) return;
+    if (id == AiPlatforms.defaultPlatformId) return;
     final platform = _working.firstWhere((p) => p.id == id, orElse: () => _working.first);
     if (platform.isBuiltin) return;
     _working = _working.where((p) => p.id != id).toList();
     _disposePlatformControllers(id);
-    if (_selectedPlatformId == id) {
-      _selectedPlatformId = _working.first.id;
-      _selectedModelId = _working.first.models.isNotEmpty
-          ? _working.first.models.first.id
-          : '';
-    }
-    _syncSelectedModelEditing();
     notifyListeners();
   }
 
   // ---------------------------------------------------------------------------
-  // 模型编辑
+  // 模型编辑（每个模型独立展开编辑）
   // ---------------------------------------------------------------------------
+  /// 添加模型（内置默认平台的模型由预置固定，不可新增）。
   void addModel(String platformId, {required String id, String shortLabel = ''}) {
     if (id.trim().isEmpty) return;
     final index = _working.indexWhere((p) => p.id == platformId);
     if (index < 0) return;
     final platform = _working[index];
+    if (platform.isBuiltin) return;
     if (platform.models.any((m) => m.id == id.trim())) return;
     final model = AiModel(id: id.trim(), shortLabel: shortLabel.trim());
-    final updated = platform.copyWith(models: [...platform.models, model]);
     _working = [..._working];
-    _working[index] = updated;
-    if (_selectedPlatformId == platformId) {
-      _selectedModelId = model.id;
-      _syncSelectedModelEditing();
-    }
+    _working[index] = platform.copyWith(models: [...platform.models, model]);
     notifyListeners();
   }
 
+  /// 删除模型（内置默认平台的模型不可删；每个平台至少保留一个模型）。
   void removeModel(String platformId, String modelId) {
     final index = _working.indexWhere((p) => p.id == platformId);
     if (index < 0) return;
     final platform = _working[index];
+    if (platform.isBuiltin) return;
     if (platform.models.length <= 1) return;
-    final updated = platform.copyWith(
+    _working = [..._working];
+    _working[index] = platform.copyWith(
       models: platform.models.where((m) => m.id != modelId).toList(),
     );
-    _working = [..._working];
-    _working[index] = updated;
-    if (platformId == _selectedPlatformId && _selectedModelId == modelId) {
-      _selectedModelId = updated.models.first.id;
-      _syncSelectedModelEditing();
-    }
     notifyListeners();
   }
 
-  void setModelShortLabel(String value) {
-    _replaceSelectedModel((m) => m.copyWith(shortLabel: value));
-  }
-
-  void setModelMaxTokens(String value) {
-    _replaceSelectedModel(
-      (m) => m.copyWith(maxTokens: int.tryParse(value.trim())),
-    );
-  }
-
-  void setModelRequestTemplate(String value) {
-    _replaceSelectedModel((m) => m.copyWith(requestTemplate: value));
-  }
-
-  void setModelTemperature(double value) {
-    temperature = value;
-    _replaceSelectedModel((m) => m.copyWith(temperature: value));
-  }
-
-  void setModelReasoningEffort(String value) {
-    reasoningEffort = value;
-    _replaceSelectedModel((m) => m.copyWith(reasoningEffort: value));
+  /// 用编辑后的模型替换工作副本中的同名模型（用于模型展开编辑器写回）。
+  void updateModel(String platformId, String modelId, AiModel model) {
+    final index = _working.indexWhere((p) => p.id == platformId);
+    if (index < 0) return;
+    final platform = _working[index];
+    final modelIndex = platform.models.indexWhere((m) => m.id == modelId);
+    if (modelIndex < 0) return;
+    final newModels = [...platform.models];
+    newModels[modelIndex] = model;
+    _working = [..._working];
+    _working[index] = platform.copyWith(models: newModels);
+    notifyListeners();
   }
 
   // ---------------------------------------------------------------------------
@@ -256,36 +169,33 @@ class SettingsFormState extends ChangeNotifier {
 
     // —— 校验（不落库）——
     if (_working.isEmpty) {
-      errors.add('AI 设置：至少需要保留一个平台');
+      errors.add('API 设置：至少需要保留一个平台');
     }
     for (var i = 0; i < _working.length; i++) {
       final p = _working[i];
       if (p.displayName.trim().isEmpty) {
-        errors.add('AI 设置：平台「${p.displayName}」名称不能为空');
+        errors.add('API 设置：平台「${p.displayName}」名称不能为空');
       }
       if (p.models.isEmpty) {
-        errors.add('AI 设置：平台「${_displayPlatformName(p)}」至少需要一个模型');
+        errors.add('API 设置：平台「${_displayPlatformName(p)}」至少需要一个模型');
         continue;
       }
       for (final m in p.models) {
         if (m.id.trim().isEmpty) {
-          errors.add('AI 设置：模型名称不能为空');
+          errors.add('API 设置：模型名称不能为空');
+        }
+        if (m.maxTokens != null && m.maxTokens! <= 0) {
+          errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：最大输出 Tokens 需为正整数或留空');
         }
         final template = m.requestTemplate;
         if (template != null && template.trim().isNotEmpty) {
           try {
             AiRequestBodyBuilder.validateCustomTemplate(template);
           } on FormatException catch (e) {
-            errors.add('AI 设置（${_displayPlatformName(p)}/${m.id}）：${e.message}');
+            errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：${e.message}');
           }
         }
       }
-    }
-    if (errors.isNotEmpty) return SettingsSaveResult(errors: errors);
-
-    final maxTokensValue = effectiveMaxTokens;
-    if (maxTokensValue != null && maxTokensValue <= 0) {
-      errors.add('AI 设置：最大输出 Tokens 需为正整数或留空');
     }
     if (errors.isNotEmpty) return SettingsSaveResult(errors: errors);
 
@@ -306,10 +216,11 @@ class SettingsFormState extends ChangeNotifier {
     };
 
     final results = await Future.wait([
+      // 对话目标（平台/模型）不因本页改动而变化：沿用 Provider 当前选中项。
       _ai.save(
         platforms: _working,
-        selectedPlatformId: _selectedPlatformId,
-        selectedModelId: _selectedModelId,
+        selectedPlatformId: _ai.selectedPlatformId,
+        selectedModelId: _ai.selectedModelId,
         apiKeys: apiKeys,
       ),
       if (syncConfigured)
@@ -324,7 +235,7 @@ class SettingsFormState extends ChangeNotifier {
         ),
     ]);
     if (!results[0]) {
-      errors.add('AI 设置保存失败：${_ai.error ?? '未知错误'}');
+      errors.add('API 设置保存失败：${_ai.error ?? '未知错误'}');
     }
     if (syncConfigured) {
       if (!results[1]) {
@@ -368,15 +279,6 @@ class SettingsFormState extends ChangeNotifier {
     _apiKeyCtrls.remove(id)?.dispose();
   }
 
-  void _syncSelectedModelEditing() {
-    final m = selectedModel;
-    temperature = m.temperature;
-    reasoningEffort = m.reasoningEffort;
-    shortLabelCtrl.text = m.shortLabel;
-    maxTokensCtrl.text = m.maxTokens?.toString() ?? '';
-    requestTemplateCtrl.text = m.requestTemplate ?? '';
-  }
-
   void _replacePlatform(
     String id,
     AiPlatform Function(AiPlatform) fn,
@@ -388,27 +290,11 @@ class SettingsFormState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _replaceSelectedModel(AiModel Function(AiModel) fn) {
-    final platformIndex = _working.indexWhere((p) => p.id == _selectedPlatformId);
-    if (platformIndex < 0) return;
-    final platform = _working[platformIndex];
-    final modelIndex = platform.models.indexWhere((m) => m.id == _selectedModelId);
-    if (modelIndex < 0) return;
-    final newModels = [...platform.models];
-    newModels[modelIndex] = fn(newModels[modelIndex]);
-    _working = [..._working];
-    _working[platformIndex] = platform.copyWith(models: newModels);
-    notifyListeners();
-  }
-
   String _displayPlatformName(AiPlatform p) =>
       p.displayName.trim().isEmpty ? '(未命名)' : p.displayName.trim();
 
   @override
   void dispose() {
-    shortLabelCtrl.dispose();
-    maxTokensCtrl.dispose();
-    requestTemplateCtrl.dispose();
     for (final c in _platformNameCtrls.values) {
       c.dispose();
     }
@@ -430,7 +316,7 @@ class SettingsFormState extends ChangeNotifier {
 
 /// 设置页统一保存结果。
 ///
-/// - [errors]：真正的保存失败原因（如 AI / 云同步落库失败），非空即整体失败；
+/// - [errors]：真正的保存失败原因（如 API 设置 / 云同步落库失败），非空即整体失败；
 /// - [notes]：非致命提示（如「云同步未填写」），不影响 [ok] 判定。
 class SettingsSaveResult {
   final List<String> errors;

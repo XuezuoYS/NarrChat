@@ -18,13 +18,13 @@ import '../widgets/ui_settings_form.dart';
 /// 全窗口设置界面。
 ///
 /// 5 个子模块：
-/// - AI 选择：模型预设 + 参数（始终可调）+ API 连接；
+/// - API设置：平台/连接 + 各模型参数（始终可调）；
 /// - UI 设置：全局字体等界面偏好（即时生效）；
 /// - Mod 管理：查看预置 Mod，创建/编辑/导出/导入自定义 Mod；
 /// - 云同步：WebDAV 云端备份 / 恢复；
 /// - 关于：应用信息。
 ///
-/// 表单状态（AI 选择 + 云同步）由本页持有，切换面板不丢失；
+/// 表单状态（API设置 + 云同步）由本页持有，切换面板不丢失；
 /// 右上角「保存」为全局保存：一次性校验并落库全部改动，不退出设置页。
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -58,7 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  /// 全局保存：统一校验并落库 AI 选择 + 云同步，成功后不退出页面。
+  /// 全局保存：统一校验并落库 API设置 + 云同步，成功后不退出页面。
   Future<void> _saveAll() async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _isSaving = true);
@@ -83,14 +83,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       title: '设置',
       icon: Icons.settings,
       navItems: const [
-        SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'AI 选择'),
+        SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'API设置'),
         SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),
         SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
         SettingsNavItem(icon: Icons.info_outline, label: '关于'),
       ],
       actions: [
-        // 全局保存：对 AI 选择 + 云同步的所有改动统一保存（不退出设置页）。
+        // 全局保存：对 API设置 + 云同步的所有改动统一保存（不退出设置页）。
         FilledButton.icon(
           onPressed: _isSaving ? null : _saveAll,
           icon: const Icon(Icons.save_outlined, size: 18),

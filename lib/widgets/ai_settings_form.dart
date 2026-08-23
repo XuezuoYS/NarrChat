@@ -7,14 +7,25 @@ import '../utils/focus_utils.dart';
 import 'app_menu.dart';
 import 'settings_form_state.dart';
 
-/// 「AI 选择」设置面板。
+/// 「API设置」设置面板。
 ///
-/// 结构参考 DeepSeek Harness 的 `providers[].models[]`：
-/// - **平台**：内置默认（DeepSeek 开放平台，不可删）+ 用户自定义平台；
-///   每个平台各自持有 API Key / Base URL / API 类型（当前仅 OpenAI 兼容）与模型列表；
-/// - **模型**：每个平台下的一张模型列表，模型含简写标识 / 温度 / 推理强度 /
-///   最大输出 Tokens，可选自定义请求体 JSON 模板；
-///   能力表（流式 / 思考 / 联网搜索）来自平台接入协议，只读展示。
+/// 以「平台 → 模型」两级可展开树组织（参考 DeepSeek Harness 的
+/// `providers[].models[]`）：
+///
+/// ```
+/// 默认API（DeepSeek 开放平台）                 ▸
+/// | API Key / Base URL / API 类型 等连接设置
+/// | 模型1                                     ▸
+/// | | 模型1 的简写标识 / 温度 / 推理强度 / ...
+/// 自定义API1                                  ▸
+/// | ...
+/// ```
+///
+/// - 每个【平台】是一个可展开条目，展开后显示该平台的连接设置与模型列表；
+/// - 每个【模型】是其下面的一个可展开条目，展开后显示该模型的参数设置；
+/// - 内置默认平台不可删、其模型不可增删（仅可编辑参数）；自定义平台可增删模型、可删平台。
+///
+/// 本面板只做「按平台 + 按模型编辑参数」，不在此选择对话所用的模型/平台。
 ///
 /// 表单值由外层 [SettingsFormState] 持有（切换面板不丢失），
 /// 由设置页右上角「保存」统一校验并落库；保存后不退出设置页。
@@ -30,15 +41,8 @@ class AiSettingsForm extends StatefulWidget {
 class _AiSettingsFormState extends State<AiSettingsForm> {
   SettingsFormState get _form => widget.form;
 
-  /// 已明文显示 API Key 的平台 id 集合。
-  final Set<String> _revealedKeys = {};
-
-  void _selectPlatform(String id) => setState(() => _form.selectPlatform(id));
-
-  void _selectModel(String id) => setState(() => _form.selectModel(id));
-
   // ---------------------------------------------------------------------------
-  // 添加 / 删除平台
+  // 添加自定义平台
   // ---------------------------------------------------------------------------
   Future<void> _addPlatform() async {
     final result = await showDialog<_AddedPlatform>(
@@ -46,76 +50,9 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
       builder: (_) => const _AddPlatformDialog(),
     );
     if (result == null || !mounted) return;
-    setState(() {
-      _form.addPlatform(name: result.name, baseUrl: result.baseUrl);
-      _form.apiKeyCtrlFor(_form.selectedPlatformId).text = result.apiKey;
-    });
-  }
-
-  void _removePlatform() {
-    final p = _form.selectedPlatform;
-    if (p.isBuiltin) return;
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除平台'),
-        content: Text('确定删除平台「${p.displayName}」吗？该平台下的全部模型配置将一并删除。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              setState(() => _form.removePlatform(p.id));
-            },
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // 添加 / 删除模型
-  // ---------------------------------------------------------------------------
-  Future<void> _addModel() async {
-    final platform = _form.selectedPlatform;
-    final result = await showDialog<_AddedModel>(
-      context: context,
-      builder: (_) => const _AddModelDialog(),
-    );
-    if (result == null || !mounted) return;
-    setState(() {
-      _form.addModel(platform.id, id: result.id, shortLabel: result.shortLabel);
-    });
-  }
-
-  void _removeModel() {
-    final platform = _form.selectedPlatform;
-    final model = _form.selectedModel;
-    if (platform.models.length <= 1) return;
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除模型'),
-        content: Text('确定删除模型「${model.displayLabel}」吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              setState(() => _form.removeModel(platform.id, model.id));
-            },
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
+    _form.addPlatform(name: result.name, baseUrl: result.baseUrl);
+    // 把对话框里输入的 API Key 写入新平台（列表末尾）的控制器。
+    _form.apiKeyCtrlFor(_form.platforms.last.id).text = result.apiKey;
   }
 
   // ---------------------------------------------------------------------------
@@ -123,54 +60,205 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
   // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final platform = _form.selectedPlatform;
-    return SingleChildScrollView(
+    // 监听表单状态：平台/模型编辑写回（addModel / removeModel / updateModel /
+    // setPlatformName / setPlatformBaseUrl 等）触发 _form 通知，这里重建以刷新。
+    return ListenableBuilder(
+      listenable: _form,
+      builder: (context, _) {
+        final platforms = _form.platforms;
+        return SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'API设置',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '按「平台 → 模型」组织：展开平台查看其连接设置与模型列表；'
+                '内置默认（DeepSeek 开放平台）不可删、其模型不可增删（仅可编辑参数）；'
+                '自定义平台可增删模型。本页不选择对话所用的模型。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 20),
+              for (var i = 0; i < platforms.length; i++)
+                _PlatformExpandableItem(
+                  key: ValueKey('platform-${platforms[i].id}'),
+                  form: _form,
+                  platform: platforms[i],
+                  // 默认展开第一个平台（通常为内置默认），便于直接看到其设置。
+                  initiallyExpanded: i == 0,
+                ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _addPlatform,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('添加自定义平台'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 通用可展开卡片：模型名/平台名 header + 展开箭头 + 可展开内容（带左侧竖线引导）
+// ---------------------------------------------------------------------------
+class ExpandableCard extends StatefulWidget {
+  final Widget title;
+
+  /// 展开后显示的内容。
+  final Widget child;
+
+  /// 是否默认展开。
+  final bool initiallyExpanded;
+
+  const ExpandableCard({
+    super.key,
+    required this.title,
+    required this.child,
+    this.initiallyExpanded = false,
+  });
+
+  @override
+  State<ExpandableCard> createState() => _ExpandableCardState();
+}
+
+class _ExpandableCardState extends State<ExpandableCard> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final outlineVariant = Theme.of(context).colorScheme.outlineVariant;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 0,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: outlineVariant),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'AI 选择',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '按平台 + 模型组织：每个平台（默认 DeepSeek 开放平台或自定义平台）'
-            '独立持有连接配置与自己的模型列表；模型可设置简写标识、温度、推理强度等参数。',
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+              child: Row(
+                children: [
+                  Expanded(child: widget.title),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 20),
-          _sectionTitle(context, '平台'),
-          for (final p in _form.platforms) _buildPlatformTile(context, p),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: _addPlatform,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('添加自定义平台'),
+          if (_expanded)
+            Container(
+              // 左侧竖线引导，模拟「| 设置项……」的缩进层级。
+              decoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(color: outlineVariant, width: 2),
+                ),
+              ),
+              padding: const EdgeInsets.fromLTRB(16, 8, 12, 12),
+              child: widget.child,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 平台可展开条目：连接设置 + 模型列表（自定义平台可增删模型、删平台）
+// ---------------------------------------------------------------------------
+class _PlatformExpandableItem extends StatelessWidget {
+  final SettingsFormState form;
+  final AiPlatform platform;
+  final bool initiallyExpanded;
+
+  const _PlatformExpandableItem({
+    super.key,
+    required this.form,
+    required this.platform,
+    this.initiallyExpanded = false,
+  });
+
+  bool get _isCustom => !platform.isBuiltin;
+
+  @override
+  Widget build(BuildContext context) {
+    final onSurfaceVariant = Theme.of(context).colorScheme.onSurfaceVariant;
+    return ExpandableCard(
+      initiallyExpanded: initiallyExpanded,
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              platform.displayName,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
           ),
-          const SizedBox(height: 20),
-          _sectionTitle(context, '连接设置（${platform.displayName}）'),
-          _buildConnectionSection(context, platform),
-          const SizedBox(height: 20),
-          _sectionTitle(context, '模型设置'),
-          for (final m in platform.models) _buildModelTile(context, m),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: _addModel,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('添加模型'),
+          Text(
+            platform.isBuiltin ? '内置' : '自定义',
+            style: TextStyle(fontSize: 11, color: onSurfaceVariant),
           ),
-          const SizedBox(height: 12),
-          if (platform.models.isNotEmpty) _buildModelEditor(context),
-          if (!platform.isBuiltin) ...[
-            const SizedBox(height: 20),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 8),
+          _PlatformSettings(form: form, platform: platform),
+          const SizedBox(height: 16),
+          const Text(
+            '模型',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          if (platform.models.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无模型${_isCustom ? '，点击下方「添加模型」。' : '。'}',
+                style: TextStyle(fontSize: 12, color: onSurfaceVariant),
+              ),
+            )
+          else
+            for (final m in platform.models)
+              _ModelExpandableItem(
+                key: ValueKey('model-${platform.id}-${m.id}'),
+                form: form,
+                platform: platform,
+                model: m,
+              ),
+          if (_isCustom) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => _openAddModel(context),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('添加模型'),
+            ),
+            const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
-                onPressed: _removePlatform,
+                onPressed: () => _confirmRemovePlatform(context),
                 icon: Icon(
                   Icons.delete_outline,
                   size: 18,
@@ -188,112 +276,70 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
     );
   }
 
-  Widget _sectionTitle(BuildContext context, String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w700,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-      ),
+  Future<void> _openAddModel(BuildContext context) async {
+    final result = await showDialog<_AddedModel>(
+      context: context,
+      builder: (_) => const _AddModelDialog(),
     );
+    if (result == null) return;
+    form.addModel(platform.id, id: result.id, shortLabel: result.shortLabel);
   }
 
-  // ---------------------------------------------------------------------------
-  // 平台选择卡片
-  // ---------------------------------------------------------------------------
-  Widget _buildPlatformTile(BuildContext context, AiPlatform platform) {
-    final selected = _form.selectedPlatformId == platform.id;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(
-          color: selected
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.outlineVariant,
-          width: selected ? 1.6 : 1,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => _selectPlatform(platform.id),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Row(
-            children: [
-              Icon(
-                selected
-                    ? Icons.radio_button_checked
-                    : Icons.radio_button_unchecked,
-                size: 20,
-                color: selected
-                    ? Theme.of(context).colorScheme.primary
-                    : Theme.of(context).colorScheme.outline,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            text: platform.displayName,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurface,
-                            ),
-                          ),
-                          TextSpan(
-                            text: platform.isBuiltin
-                                ? '  内置 · ${platformModelsCountLabel(platform)}'
-                                : '  自定义 · ${platform.apiType.displayName}',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-            ],
+  Future<void> _confirmRemovePlatform(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除平台'),
+        content: Text('确定删除平台「${platform.displayName}」吗？该平台下的全部模型配置将一并删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
           ),
-        ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              form.removePlatform(platform.id);
+            },
+            child: const Text('删除'),
+          ),
+        ],
       ),
     );
   }
+}
 
-  String platformModelsCountLabel(AiPlatform platform) {
-    return '${platform.models.length} 个模型';
-  }
+// ---------------------------------------------------------------------------
+// 平台的连接设置：API 类型 + Base URL + API Key（自定义平台额外含平台名）
+// ---------------------------------------------------------------------------
+class _PlatformSettings extends StatelessWidget {
+  final SettingsFormState form;
+  final AiPlatform platform;
 
-  // ---------------------------------------------------------------------------
-  // 连接设置
-  // ---------------------------------------------------------------------------
-  Widget _buildConnectionSection(BuildContext context, AiPlatform platform) {
-    final apiType = _form.apiType;
+  const _PlatformSettings({required this.form, required this.platform});
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (!platform.isBuiltin) ...[
+          TextField(
+            controller: form.nameCtrlFor(platform.id),
+            onTapOutside: unfocusOnTapOutside,
+            onChanged: (v) => form.setPlatformName(platform.id, v),
+            decoration: const InputDecoration(
+              labelText: '平台名称',
+              hintText: '如 我的网关',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         AppDropdown<String>(
           label: 'API 类型',
-          value: apiType.id,
+          value: platform.apiType.id,
           items: [
             for (final t in ApiType.all)
               DropdownMenuItem(value: t.id, child: Text(t.displayName)),
@@ -302,8 +348,9 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
         ),
         const SizedBox(height: 12),
         TextField(
-          controller: _form.baseUrlCtrlFor(platform.id),
+          controller: form.baseUrlCtrlFor(platform.id),
           onTapOutside: unfocusOnTapOutside,
+          onChanged: (v) => form.setPlatformBaseUrl(platform.id, v),
           decoration: const InputDecoration(
             labelText: 'Base URL',
             hintText: 'https://api.deepseek.com',
@@ -312,126 +359,129 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           ),
         ),
         const SizedBox(height: 12),
-        TextField(
-          controller: _form.apiKeyCtrlFor(platform.id),
-          onTapOutside: unfocusOnTapOutside,
-          obscureText: !_revealedKeys.contains(platform.id),
-          enableSuggestions: false,
-          autocorrect: false,
-          decoration: InputDecoration(
-            labelText: 'API Key',
-            hintText: 'sk-…（保存至系统安全存储）',
-            border: const OutlineInputBorder(),
-            isDense: true,
-            suffixIcon: IconButton(
-              icon: Icon(
-                _revealedKeys.contains(platform.id)
-                    ? Icons.visibility_off
-                    : Icons.visibility,
-              ),
-              tooltip: _revealedKeys.contains(platform.id) ? '隐藏' : '显示',
-              onPressed: () => setState(() {
-                if (_revealedKeys.contains(platform.id)) {
-                  _revealedKeys.remove(platform.id);
-                } else {
-                  _revealedKeys.add(platform.id);
-                }
-              }),
-            ),
-          ),
-        ),
+        _ApiKeyField(controller: form.apiKeyCtrlFor(platform.id)),
       ],
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // 模型选择卡片
-  // ---------------------------------------------------------------------------
-  Widget _buildModelTile(BuildContext context, AiModel model) {
-    final selected = _form.selectedModel.id == model.id;
-    final hasTemplate = (model.requestTemplate ?? '').trim().isNotEmpty;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(
-          color: selected
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.outlineVariant,
-          width: selected ? 1.6 : 1,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => _selectModel(model.id),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Row(
-            children: [
-              Icon(
-                selected
-                    ? Icons.radio_button_checked
-                    : Icons.radio_button_unchecked,
-                size: 20,
-                color: selected
-                    ? Theme.of(context).colorScheme.primary
-                    : Theme.of(context).colorScheme.outline,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: model.displayLabel,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
-                      TextSpan(
-                        text: hasTemplate ? '  ${model.id} · 自定义请求体' : '  ${model.id}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              SizedBox(
-                width: 32,
-                height: 32,
-                child: IconButton(
-                  icon: Icon(
-                    Icons.remove_circle_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                  tooltip: '删除模型',
-                  onPressed: _form.selectedPlatform.models.length <= 1
-                      ? null
-                      : () => _removeModelFor(context, model),
-                ),
-              ),
-            ],
-          ),
+// ---------------------------------------------------------------------------
+// API Key 输入框（自行管理明文/隐藏，独立可复用）
+// ---------------------------------------------------------------------------
+class _ApiKeyField extends StatefulWidget {
+  final TextEditingController controller;
+
+  const _ApiKeyField({required this.controller});
+
+  @override
+  State<_ApiKeyField> createState() => _ApiKeyFieldState();
+}
+
+class _ApiKeyFieldState extends State<_ApiKeyField> {
+  bool _obscured = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: widget.controller,
+      onTapOutside: unfocusOnTapOutside,
+      obscureText: _obscured,
+      enableSuggestions: false,
+      autocorrect: false,
+      decoration: InputDecoration(
+        labelText: 'API Key',
+        hintText: 'sk-…（保存至系统安全存储）',
+        border: const OutlineInputBorder(),
+        isDense: true,
+        suffixIcon: IconButton(
+          icon: Icon(_obscured ? Icons.visibility_off : Icons.visibility),
+          tooltip: _obscured ? '显示' : '隐藏',
+          onPressed: () => setState(() => _obscured = !_obscured),
         ),
       ),
     );
   }
+}
 
-  void _removeModelFor(BuildContext context, AiModel model) {
-    final platform = _form.selectedPlatform;
-    if (platform.models.length <= 1) return;
-    showDialog<void>(
+// ---------------------------------------------------------------------------
+// 模型可展开条目：模型名 + 删除按钮（自定义平台）→ 缩进展示该模型设置
+// ---------------------------------------------------------------------------
+class _ModelExpandableItem extends StatelessWidget {
+  final SettingsFormState form;
+  final AiPlatform platform;
+  final AiModel model;
+
+  const _ModelExpandableItem({
+    super.key,
+    required this.form,
+    required this.platform,
+    required this.model,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTemplate = (model.requestTemplate ?? '').trim().isNotEmpty;
+    // 内置默认平台的模型不可删；自定义平台模型删到仅剩一个时也不可删。
+    final canDelete = !platform.isBuiltin && platform.models.length > 1;
+    return ExpandableCard(
+      title: Row(
+        children: [
+          Expanded(
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: model.displayLabel,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  TextSpan(
+                    text: hasTemplate
+                        ? '  ${model.id} · 自定义请求体'
+                        : '  ${model.id}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (canDelete)
+            SizedBox(
+              width: 32,
+              height: 32,
+              child: IconButton(
+                icon: Icon(
+                  Icons.remove_circle_outline,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+                tooltip: '删除模型',
+                onPressed: () => _confirmRemoveModel(context),
+              ),
+            ),
+        ],
+      ),
+      child: _ModelSettingsEditor(
+        form: form,
+        platformId: platform.id,
+        model: model,
+        apiType: platform.apiType,
+      ),
+    );
+  }
+
+  Future<void> _confirmRemoveModel(BuildContext context) async {
+    await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除模型'),
@@ -444,7 +494,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
-              setState(() => _form.removeModel(platform.id, model.id));
+              form.removeModel(platform.id, model.id);
             },
             child: const Text('删除'),
           ),
@@ -452,49 +502,80 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
       ),
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // 选中模型参数编辑
-  // ---------------------------------------------------------------------------
-  Widget _buildModelEditor(BuildContext context) {
-    final platform = _form.selectedPlatform;
-    final model = _form.selectedModel;
-    final apiType = _form.apiType;
+// ---------------------------------------------------------------------------
+// 单个模型的设置编辑器（每个模型各自展开，独立编辑自己的参数）
+// ---------------------------------------------------------------------------
+class _ModelSettingsEditor extends StatefulWidget {
+  final SettingsFormState form;
+  final String platformId;
+  final AiModel model;
+  final ApiType apiType;
+
+  const _ModelSettingsEditor({
+    required this.form,
+    required this.platformId,
+    required this.model,
+    required this.apiType,
+  });
+
+  @override
+  State<_ModelSettingsEditor> createState() => _ModelSettingsEditorState();
+}
+
+class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
+  late final TextEditingController _shortLabelCtrl;
+  late final TextEditingController _maxTokensCtrl;
+  late final TextEditingController _requestTemplateCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _shortLabelCtrl = TextEditingController(text: widget.model.shortLabel);
+    _maxTokensCtrl = TextEditingController(
+      text: widget.model.maxTokens?.toString() ?? '',
+    );
+    _requestTemplateCtrl = TextEditingController(
+      text: widget.model.requestTemplate ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _shortLabelCtrl.dispose();
+    _maxTokensCtrl.dispose();
+    _requestTemplateCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 从工作副本取当前模型，避免连续编辑时基于旧快照丢更新。
+  AiModel? _currentModel() {
+    for (final p in widget.form.platforms) {
+      if (p.id != widget.platformId) continue;
+      return p.modelById(widget.model.id);
+    }
+    return null;
+  }
+
+  void _update(AiModel Function(AiModel) fn) {
+    final current = _currentModel();
+    if (current == null) return;
+    widget.form.updateModel(widget.platformId, widget.model.id, fn(current));
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final outline = Theme.of(context).colorScheme.outline;
+    final apiType = widget.apiType;
+    final model = _currentModel() ?? widget.model;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '${model.displayLabel} · 参数',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-            ),
-            if (platform.models.isNotEmpty)
-              IconButton(
-                icon: Icon(
-                  Icons.remove_circle_outline,
-                  size: 20,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                tooltip: '删除模型',
-                onPressed: platform.models.length <= 1
-                    ? null
-                    : () => _removeModel(),
-              ),
-          ],
-        ),
-        const SizedBox(height: 12),
         TextField(
-          controller: _form.shortLabelCtrl,
+          controller: _shortLabelCtrl,
           onTapOutside: unfocusOnTapOutside,
-          onChanged: (v) => setState(() => _form.setModelShortLabel(v)),
+          onChanged: (v) => _update((m) => m.copyWith(shortLabel: v)),
           decoration: const InputDecoration(
             labelText: '简写标识（对话框显示，留空用模型名）',
             hintText: '如 V4F',
@@ -513,7 +594,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
             const Text('温度', style: TextStyle(fontSize: 14)),
             const SizedBox(width: 8),
             Text(
-              _form.temperature.toStringAsFixed(1),
+              model.temperature.toStringAsFixed(1),
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.primary,
@@ -532,12 +613,12 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           ],
         ),
         Slider(
-          value: _form.temperature,
+          value: model.temperature,
           min: 0,
           max: 2,
           divisions: 20,
-          label: _form.temperature.toStringAsFixed(1),
-          onChanged: (v) => setState(() => _form.setModelTemperature(v)),
+          label: model.temperature.toStringAsFixed(1),
+          onChanged: (v) => _update((m) => m.copyWith(temperature: v)),
         ),
         const SizedBox(height: 4),
         Column(
@@ -545,14 +626,14 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           children: [
             AppDropdown<String>(
               label: '推理强度（reasoning_effort）',
-              value: _form.reasoningEffort,
+              value: model.reasoningEffort,
               items: [
                 for (final e in const ['low', 'high', 'max'])
                   DropdownMenuItem(value: e, child: Text(e)),
               ],
-              onChanged: (v) => setState(() {
-                if (v != null) _form.setModelReasoningEffort(v);
-              }),
+              onChanged: (v) {
+                if (v != null) _update((m) => m.copyWith(reasoningEffort: v));
+              },
             ),
             if (apiType.reasoningEffortNote != null)
               Padding(
@@ -569,10 +650,12 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
-              controller: _form.maxTokensCtrl,
+              controller: _maxTokensCtrl,
               onTapOutside: unfocusOnTapOutside,
               keyboardType: TextInputType.number,
-              onChanged: (v) => setState(() => _form.setModelMaxTokens(v)),
+              onChanged: (v) => _update(
+                (m) => m.copyWith(maxTokens: int.tryParse(v.trim())),
+              ),
               decoration: const InputDecoration(
                 labelText: '最大输出 Tokens（留空自动）',
                 hintText: '如 4096',
@@ -604,19 +687,24 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
               ),
             ),
             TextButton(
-              onPressed: () => setState(() {
-                _form.setModelRequestTemplate(
-                  AiRequestBodyBuilder.defaultCustomRequestBody,
+              onPressed: () {
+                _requestTemplateCtrl.text =
+                    AiRequestBodyBuilder.defaultCustomRequestBody;
+                _update(
+                  (m) => m.copyWith(
+                    requestTemplate:
+                        AiRequestBodyBuilder.defaultCustomRequestBody,
+                  ),
                 );
-              }),
+              },
               child: const Text('插入默认模板'),
             ),
           ],
         ),
         TextField(
-          controller: _form.requestTemplateCtrl,
+          controller: _requestTemplateCtrl,
           onTapOutside: unfocusOnTapOutside,
-          onChanged: (v) => setState(() => _form.setModelRequestTemplate(v)),
+          onChanged: (v) => _update((m) => m.copyWith(requestTemplate: v)),
           minLines: 8,
           maxLines: 16,
           style: const TextStyle(
