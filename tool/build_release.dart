@@ -23,6 +23,7 @@
 // 未安装时自动降级为仅产出 ZIP 便携包。
 //
 // 依赖：dev_dependencies 中的 archive 包（纯 Dart 打 ZIP，无需系统工具）。
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -152,11 +153,60 @@ Never _fail(String message) {
 
 /// 交互模式下等待用户按键后退出，避免双击 .bat 时窗口一闪而过。
 /// CI / 管道输入（无终端）时自动跳过，不阻塞。
+/// 个别非交互上下文 `hasTerminal` 为真但句柄无效（读取抛 StdinException），
+/// 静默跳过以免成功构建后因伪异常以退出码 1 结束。
 void _waitForExit() {
   if (!stdin.hasTerminal) return;
   stdout.writeln();
   stdout.write('按回车键退出...');
-  stdin.readLineSync();
+  try {
+    stdin.readLineSync();
+  } catch (_) {
+    // 句柄无效 / 非交互：跳过等待，不抛异常。
+  }
+}
+
+/// 终端 `\|/-` 转圈指示器：构建（如 Gradle `assembleRelease`）可能长时间无输出，
+/// 用转圈告知用户「仍在运行而非卡死」。仅当 stdout 是真实终端时启用；
+/// 打印真实输出前先 [clearAndPrint] 清掉转圈行，避免与内容叠在一起。
+class _TtySpinner {
+  _TtySpinner(this.label);
+
+  final String label;
+
+  static const List<String> _frames = ['\\', '|', '/', '-'];
+
+  Timer? _timer;
+  int _frame = 0;
+  bool _on = false;
+
+  void start() {
+    _on = true;
+    _frame = 0;
+    _tick();
+    _timer = Timer.periodic(const Duration(milliseconds: 120), (_) {
+      _frame = (_frame + 1) % _frames.length;
+      _tick();
+    });
+  }
+
+  void _tick() => stdout.write('\r${_frames[_frame]} $label');
+
+  /// 打印真实输出前清空当前转圈行（`\r` 回行首 + 空格覆盖 + 回行首）。
+  void clear() {
+    if (!_on) return;
+    stdout.write('\r${' ' * (label.length + 4)}\r');
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+    if (_on) {
+      clear();
+      stdout.write('\r');
+      _on = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +674,9 @@ List<String> _flutterVersionDefine() {
 }
 
 /// 实时输出 flutter 构建日志，返回退出码。
+///
+/// 构建可能长时间无输出，用 `\|/-` 转圈指示仍在运行（仅真实终端启用；
+/// CI / 管道输出时自动禁用，不污染日志）。
 Future<int> _runFlutterLive(List<String> args) async {
   final Process process;
   try {
@@ -631,9 +684,24 @@ Future<int> _runFlutterLive(List<String> args) async {
   } on ProcessException catch (e) {
     _fail('无法启动 flutter 命令：${e.message}（请确认 Flutter 已加入 PATH）');
   }
-  process.stdout.transform(utf8.decoder).listen((s) => stdout.write(s));
-  process.stderr.transform(utf8.decoder).listen((s) => stderr.write(s));
-  return process.exitCode;
+
+  final spinner = stdout.hasTerminal ? _TtySpinner('构建中') : null;
+  spinner?.start();
+
+  void emit(Stream<List<int>> stream, IOSink out) {
+    stream.transform(utf8.decoder).listen((s) {
+      spinner?.clear();
+      out.write(s);
+    });
+  }
+
+  emit(process.stdout, stdout);
+  emit(process.stderr, stderr);
+
+  final code = await process.exitCode;
+  spinner?.stop();
+  if (stdout.hasTerminal) stdout.writeln();
+  return code;
 }
 
 // ---------------------------------------------------------------------------
