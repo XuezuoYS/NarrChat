@@ -77,6 +77,15 @@ class SettingsFormState extends ChangeNotifier {
   /// 更新单张图片大小上限（MB）并持久化。
   void setMaxImageSizeMB(int mb) => _ai.setMaxImageSizeMB(mb);
 
+  /// 是否在导入时自动把 `.jpg` 转换为 `.jpeg`（默认关闭）。
+  bool get convertJpgToJpeg => _ai.convertJpgToJpeg;
+
+  /// 更新「jpg→jpeg 自动转换」开关并持久化；同时触发本表单重建以刷新开关视觉状态。
+  void setConvertJpgToJpeg(bool value) {
+    _ai.setConvertJpgToJpeg(value);
+    notifyListeners();
+  }
+
   TextEditingController nameCtrlFor(String platformId) =>
       _platformNameCtrls[platformId]!;
   TextEditingController baseUrlCtrlFor(String platformId) =>

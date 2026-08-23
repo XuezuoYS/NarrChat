@@ -19,9 +19,26 @@ Widget _buildApp(SettingsFormState form) {
   );
 }
 
+/// 「jpg→jpeg」开关测试用替身：仅内存态写回，不触碰
+/// LocalConfigService 真实文件 I/O（widget 测试处于 FakeAsync 区域，
+/// 真实文件 I/O 不会完成，会让测试挂起）。
+class _NoPersistAiSettingsProvider extends AiSettingsProvider {
+  bool _flag = false;
+
+  @override
+  bool get convertJpgToJpeg => _flag;
+
+  @override
+  Future<bool> setConvertJpgToJpeg(bool value) async {
+    _flag = value;
+    notifyListeners();
+    return true;
+  }
+}
+
 void main() {
   testWidgets('默认平台自动展开：连接设置 + 模型列表，且无添加/删除模型入口', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
@@ -31,6 +48,20 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('API设置'), findsOneWidget);
+    // 图片设置 与 模型设置 两个节标题。
+    expect(find.text('图片设置'), findsOneWidget);
+    expect(find.text('模型设置'), findsOneWidget);
+    // 图片设置：大小上限 + 「jpg→jpeg 自动转换」开关（默认关闭）。
+    expect(find.text('单张图片大小上限（超过将提示文件过大）'), findsOneWidget);
+    expect(find.text('自动将 .jpg 转换为 .jpeg'), findsOneWidget);
+    expect(
+      find.text('由于 Deepseek-V4-Flash-Vision-Exp 不支持 jpg，因此提供此选项进行格式转换'),
+      findsOneWidget,
+    );
+    final toggle = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '自动将 .jpg 转换为 .jpeg'),
+    );
+    expect(toggle.value, isFalse); // 默认关闭
     // 默认平台 header（首个平台，自动展开）。
     expect(find.text('默认（DeepSeek 开放平台）'), findsOneWidget);
     expect(find.text('内置'), findsOneWidget);
@@ -57,7 +88,7 @@ void main() {
   });
 
   testWidgets('添加自定义平台：仅 OpenAI 兼容；展开后可添加模型、可删除平台', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
@@ -110,7 +141,7 @@ void main() {
   });
 
   testWidgets('展开模型不崩溃，且可编辑该模型参数', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
@@ -148,7 +179,7 @@ void main() {
   });
 
   testWidgets('预设模型：可调配功能只读，用户不可更改', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
@@ -164,15 +195,19 @@ void main() {
 
     expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
     expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsOneWidget);
-    // 三个能力开关存在，且均为禁用只读态。
-    expect(find.byType(SwitchListTile), findsNWidgets(4));
-    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
-    expect(switches.every((s) => s.onChanged == null), isTrue);
+    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个；其中仅图片开关可编辑，
+    // 4 个能力开关（预设模型）均为禁用只读态。
+    final switches = tester
+        .widgetList<SwitchListTile>(find.byType(SwitchListTile))
+        .toList();
+    expect(switches.length, 5);
+    expect(switches.where((s) => s.onChanged == null).length, 4);
+    expect(switches.where((s) => s.onChanged != null).length, 1);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('自定义模型：可自行设置可调配功能', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
@@ -191,8 +226,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 三个能力开关存在且可编辑。
-    expect(find.byType(SwitchListTile), findsNWidgets(4));
+    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个，均可编辑。
+    expect(find.byType(SwitchListTile), findsNWidgets(5));
     final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
     expect(switches.every((s) => s.onChanged != null), isTrue);
 
@@ -201,6 +236,30 @@ void main() {
     await tester.pump();
 
     expect(form.platforms.last.modelById('gpt-4o-mini')!.supportsSearch, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('图片设置：点击「jpg→jpeg 自动转换」开关可开启并写回表单状态', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(
+      ai: _NoPersistAiSettingsProvider(),
+      sync: CloudSyncProvider(),
+    );
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+
+    expect(form.convertJpgToJpeg, isFalse);
+    final toggleFinder = find.widgetWithText(SwitchListTile, '自动将 .jpg 转换为 .jpeg');
+    expect(tester.widget<SwitchListTile>(toggleFinder).value, isFalse);
+
+    await tester.tap(toggleFinder);
+    await tester.pump();
+
+    expect(form.convertJpgToJpeg, isTrue);
+    expect(tester.widget<SwitchListTile>(toggleFinder).value, isTrue);
     expect(tester.takeException(), isNull);
   });
 }

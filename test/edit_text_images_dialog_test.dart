@@ -27,6 +27,7 @@ void main() {
                     allowImages: true,
                     imageImport: fake,
                     maxImageSizeMB: 16,
+                    convertJpgToJpeg: true,
                   );
                 },
                 child: const Text('open'),
@@ -54,6 +55,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(fake.calls, 1);
     expect(fake.lastSizeLimitMb, 16);
+    expect(fake.lastConvertJpgToJpeg, isTrue); // 透传「jpg→jpeg 转换」开关
     expect(find.byType(ImageThumbnail), findsOneWidget);
 
     // 编辑文本并保存。

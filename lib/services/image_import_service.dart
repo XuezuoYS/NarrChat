@@ -24,9 +24,11 @@ abstract class ImageImportService {
   ///
   /// - 仅接受 `png / jpg / jpeg`；
   /// - 超过 [sizeLimitMb] 的图片跳过并写入 [ImageImportResult.warnings]；
+  /// - [convertJpgToJpeg] 为 true 时把 `.jpg` 落盘为 `.jpeg`；
   /// - [onProgress] 每处理完一张回调（`done / total`）。
   Future<ImageImportResult> importImages({
     required int sizeLimitMb,
+    bool convertJpgToJpeg = false,
     void Function(int done, int total)? onProgress,
   });
 }
@@ -36,6 +38,7 @@ class PickerImageImportService implements ImageImportService {
   @override
   Future<ImageImportResult> importImages({
     required int sizeLimitMb,
+    bool convertJpgToJpeg = false,
     void Function(int done, int total)? onProgress,
   }) async {
     final result = await fp.FilePicker.platform.pickFiles(
@@ -64,7 +67,13 @@ class PickerImageImportService implements ImageImportService {
           continue;
         }
         final bytes = await file.readAsBytes();
-        saved.add(await ImageStore.saveBytes(bytes, filename: path));
+        saved.add(
+          await ImageStore.saveBytes(
+            bytes,
+            filename: path,
+            convertJpgToJpeg: convertJpgToJpeg,
+          ),
+        );
       } catch (e) {
         warnings.add('「${f.name}」导入失败：$e');
       } finally {

@@ -17,6 +17,7 @@ class EditTextImagesResult {
 ///
 /// - [allowImages] 为 false 时隐藏图片区（退化为纯文本编辑）；
 /// - [imageImport] 与 [maxImageSizeMB] 用于「添加图片」（新增图片经哈希去重落盘）；
+/// - [convertJpgToJpeg] 为 true 时把导入的 `.jpg` 落盘为 `.jpeg`；
 /// - 取消返回 null；保存返回 [EditTextImagesResult]。
 Future<EditTextImagesResult?> showEditTextImagesDialog(
   BuildContext context, {
@@ -26,6 +27,7 @@ Future<EditTextImagesResult?> showEditTextImagesDialog(
   required bool allowImages,
   required ImageImportService imageImport,
   required int maxImageSizeMB,
+  bool convertJpgToJpeg = false,
 }) {
   return showDialog<EditTextImagesResult>(
     context: context,
@@ -36,6 +38,7 @@ Future<EditTextImagesResult?> showEditTextImagesDialog(
       allowImages: allowImages,
       imageImport: imageImport,
       maxImageSizeMB: maxImageSizeMB,
+      convertJpgToJpeg: convertJpgToJpeg,
     ),
   );
 }
@@ -47,6 +50,7 @@ class _EditTextImagesDialog extends StatefulWidget {
   final bool allowImages;
   final ImageImportService imageImport;
   final int maxImageSizeMB;
+  final bool convertJpgToJpeg;
 
   const _EditTextImagesDialog({
     required this.title,
@@ -55,6 +59,7 @@ class _EditTextImagesDialog extends StatefulWidget {
     required this.allowImages,
     required this.imageImport,
     required this.maxImageSizeMB,
+    this.convertJpgToJpeg = false,
   });
 
   @override
@@ -90,6 +95,7 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
     try {
       final result = await widget.imageImport.importImages(
         sizeLimitMb: widget.maxImageSizeMB,
+        convertJpgToJpeg: widget.convertJpgToJpeg,
         onProgress: (done, total) {
           if (!mounted) return;
           setState(() {

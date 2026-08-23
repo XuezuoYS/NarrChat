@@ -752,6 +752,7 @@ class _ChatScreenState extends State<ChatScreen>
     try {
       final result = await service.importImages(
         sizeLimitMb: ai.maxImageSizeMB,
+        convertJpgToJpeg: ai.convertJpgToJpeg,
         onProgress: (done, total) {
           if (!mounted) return;
           setState(() {
@@ -818,7 +819,13 @@ class _ChatScreenState extends State<ChatScreen>
           );
         } else {
           final bytes = await file.readAsBytes();
-          saved.add(await ImageStore.saveBytes(bytes, filename: f.path));
+          saved.add(
+            await ImageStore.saveBytes(
+              bytes,
+              filename: f.path,
+              convertJpgToJpeg: ai.convertJpgToJpeg,
+            ),
+          );
         }
       } catch (e) {
         warnings.add('「${f.name}」导入失败：$e');
@@ -890,6 +897,7 @@ class _ChatScreenState extends State<ChatScreen>
         allowImages: true,
         imageImport: context.read<ImageImportService>(),
         maxImageSizeMB: ai.maxImageSizeMB,
+        convertJpgToJpeg: ai.convertJpgToJpeg,
       );
     } else {
       String? edited;
@@ -1124,6 +1132,7 @@ class _ChatScreenState extends State<ChatScreen>
         allowImages: true,
         imageImport: context.read<ImageImportService>(),
         maxImageSizeMB: ai.maxImageSizeMB,
+        convertJpgToJpeg: ai.convertJpgToJpeg,
       );
     } else {
       String? edited;

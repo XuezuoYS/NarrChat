@@ -47,6 +47,36 @@ void main() {
     expect(ImageStore.normalizeExt('b.JPEG'), 'jpeg');
   });
 
+  test('saveBytes：开启 jpg→jpeg 转换时 .jpg 落盘为 .jpeg，未开启/非 jpg 不变', () async {
+    final bytes = Uint8List.fromList(List.generate(64, (i) => i % 256));
+
+    // 开启转换：.jpg → 存为 .jpeg，内容不改变。
+    final converted = await ImageStore.saveBytes(
+      bytes,
+      filename: 'a.jpg',
+      convertJpgToJpeg: true,
+    );
+    expect(converted, endsWith('.jpeg'));
+    expect(await File(await ImageStore.resolveAbsolute(converted)).readAsBytes(),
+        bytes);
+
+    // 未开启：.jpg 保持 .jpg（默认行为不变）。
+    final kept = await ImageStore.saveBytes(
+      bytes,
+      filename: 'a.jpg',
+      convertJpgToJpeg: false,
+    );
+    expect(kept, endsWith('.jpg'));
+
+    // 开启转换但对 .png 无影响。
+    final png = await ImageStore.saveBytes(
+      bytes,
+      filename: 'a.png',
+      convertJpgToJpeg: true,
+    );
+    expect(png, endsWith('.png'));
+  });
+
   test('resolveAbsolute / fileNameOf', () async {
     final rel = await ImageStore.saveBytes(
       Uint8List.fromList([1, 2, 3]),

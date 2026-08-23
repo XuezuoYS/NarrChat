@@ -58,8 +58,17 @@ class ImageStore {
   /// 保存图片字节，按内容哈希命名；同内容已存在则直接复用（去重）。
   ///
   /// 返回应写入数据库的相对路径（`img/<hash>.<ext>`）。
-  static Future<String> saveBytes(Uint8List bytes, {required String filename}) async {
-    final ext = normalizeExt(filename);
+  ///
+  /// [convertJpgToJpeg] 为 true 且源文件为 `.jpg` 时，落盘扩展名改写为 `.jpeg`
+  /// （`.jpg` / `.jpeg` 同为 JPEG 编码，仅改扩展名以匹配 `data:image/jpeg`，
+  /// 供不支持 `image/jpg` 的识别接口使用；无重编码、无质量损失）。
+  static Future<String> saveBytes(
+    Uint8List bytes, {
+    required String filename,
+    bool convertJpgToJpeg = false,
+  }) async {
+    final srcExt = normalizeExt(filename);
+    final ext = (convertJpgToJpeg && srcExt == 'jpg') ? 'jpeg' : srcExt;
     final digest = sha256.convert(bytes).toString();
     final relPath = '$relativeDir/$digest.$ext';
     final file = await _file(relPath);

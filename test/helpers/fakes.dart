@@ -284,15 +284,18 @@ class FakeImageImportService implements ImageImportService {
   List<ImageImportResult> results;
   int calls = 0;
   int? lastSizeLimitMb;
+  bool? lastConvertJpgToJpeg;
   int _next = 0;
 
   @override
   Future<ImageImportResult> importImages({
     required int sizeLimitMb,
+    bool convertJpgToJpeg = false,
     void Function(int done, int total)? onProgress,
   }) async {
     calls++;
     lastSizeLimitMb = sizeLimitMb;
+    lastConvertJpgToJpeg = convertJpgToJpeg;
     if (_next >= results.length) return const ImageImportResult();
     return results[_next++];
   }

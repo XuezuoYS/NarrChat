@@ -44,6 +44,7 @@ class AiSettingsProvider extends ChangeNotifier {
   static const String _keyLastStreaming = 'lastStreaming';
   static const String _keyLastSearch = 'lastSearch';
   static const String _keyMaxImageSizeMB = 'maxImageSizeMB';
+  static const String _keyConvertJpgToJpeg = 'convertJpgToJpeg';
 
   // ---- 旧版（v2：selectedPreset 结构）配置键，用于迁移 ----
   static const String _keyBaseUrl = 'baseUrl';
@@ -72,6 +73,10 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 单张图片大小上限（MB），导入时校验；默认 16，可在设置中调整。
   int _maxImageSizeMB = 16;
 
+  /// 是否把导入的 `.jpg` 自动转换为 `.jpeg`（Deepseek-V4-Flash-Vision-Exp 不支持 jpg）；
+  /// 默认关闭。
+  bool _convertJpgToJpeg = false;
+
   bool _isLoading = false;
   String? _error;
 
@@ -87,6 +92,9 @@ class AiSettingsProvider extends ChangeNotifier {
 
   /// 单张图片大小上限（MB，默认 16，可设置调整）。
   int get maxImageSizeMB => _maxImageSizeMB;
+
+  /// 是否把导入的 `.jpg` 自动转换为 `.jpeg`（默认关闭）。
+  bool get convertJpgToJpeg => _convertJpgToJpeg;
 
   /// 当前选中的平台（未知回退平台列表第一个）。
   AiPlatform get selectedPlatform {
@@ -179,6 +187,7 @@ class AiSettingsProvider extends ChangeNotifier {
       await _loadApiKeys(cfg);
       _maxImageSizeMB =
           (cfg[_keyMaxImageSizeMB] as num?)?.toInt() ?? _maxImageSizeMB;
+      _convertJpgToJpeg = (cfg[_keyConvertJpgToJpeg] as bool?) ?? false;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -497,6 +506,22 @@ class AiSettingsProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await LocalConfigService.update({_keyMaxImageSizeMB: value});
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// 设置「导入时自动将 .jpg 转换为 .jpeg」开关，并持久化。
+  ///
+  /// 先乐观更新 UI 再异步持久化：即便磁盘写入慢或失败，界面也会立即反馈。
+  Future<bool> setConvertJpgToJpeg(bool value) async {
+    _convertJpgToJpeg = value;
+    notifyListeners();
+    try {
+      await LocalConfigService.update({_keyConvertJpgToJpeg: value});
       return true;
     } catch (e) {
       _error = e.toString();

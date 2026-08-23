@@ -127,7 +127,34 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                   ),
                 ],
               ),
+              const SizedBox(height: 4),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text(
+                  '自动将 .jpg 转换为 .jpeg',
+                  style: TextStyle(fontSize: 14),
+                ),
+                subtitle: Text(
+                  '由于 Deepseek-V4-Flash-Vision-Exp 不支持 jpg，因此提供此选项进行格式转换',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                value: _form.convertJpgToJpeg,
+                onChanged: _form.setConvertJpgToJpeg,
+              ),
               const SizedBox(height: 20),
+              Text(
+                '模型设置',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 6),
               for (var i = 0; i < platforms.length; i++)
                 _PlatformExpandableItem(
                   key: ValueKey('platform-${platforms[i].id}'),
