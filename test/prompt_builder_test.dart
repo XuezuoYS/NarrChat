@@ -13,7 +13,7 @@ void main() {
   group('PromptBuilder', () {
     const builder = PromptBuilder();
 
-    const _book = Book(
+    const book = Book(
       id: 1,
       title: '测试书',
       category: '玄幻',
@@ -26,7 +26,7 @@ void main() {
       roleHierarchy: '主角 > 女主角 > NPC',
     );
 
-    const _lastRound = Round(
+    const lastRound = Round(
       id: 1,
       bookId: 1,
       roundIndex: 1,
@@ -39,8 +39,8 @@ void main() {
     );
 
     PromptBundle buildBundle() => builder.build(
-          book: _book,
-          lastRound: _lastRound,
+          book: book,
+          lastRound: lastRound,
           userInput: '我走向主殿，想要拜见掌门。',
           worldBookEntries: '青云宗是北域第一大派。',
         );
@@ -220,7 +220,7 @@ void main() {
 
     test('无上一轮时用户提示词声明由 AI 依据背景设定确定时间格式', () {
       final user = builder.build(
-        book: _book,
+        book: book,
         userInput: '我走向主殿，想要拜见掌门。',
       ).userPrompt;
       expect(user, contains('【上轮时间】'));
@@ -230,7 +230,7 @@ void main() {
 
     test('历史轮次按 API 要求组装为 user/assistant 交替 messages', () {
       final history = PromptBuilder.buildHistoryMessages(const [
-        _lastRound,
+        lastRound,
         Round(
           id: 2,
           bookId: 1,

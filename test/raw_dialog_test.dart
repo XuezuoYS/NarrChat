@@ -7,7 +7,6 @@ import 'package:http/testing.dart';
 import 'package:narrchat/models/agent_event.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/raw_exchange.dart';
-import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
