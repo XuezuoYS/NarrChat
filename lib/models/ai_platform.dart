@@ -25,6 +25,16 @@ class AiModel {
   /// 非空时以模板直发，否则按所属平台 [AiPlatform.apiType] 的规则构建。
   final String? requestTemplate;
 
+  // ---- 可调配功能（能力表，决定 Chat 页对话框内可用的模式与发送参数）----
+  /// 是否支持流式输出。
+  final bool supportsStreaming;
+
+  /// 是否支持思考模式。
+  final bool supportsThinking;
+
+  /// 是否支持联网搜索。
+  final bool supportsSearch;
+
   const AiModel({
     required this.id,
     this.shortLabel = '',
@@ -32,6 +42,9 @@ class AiModel {
     this.reasoningEffort = 'high',
     this.maxTokens,
     this.requestTemplate,
+    this.supportsStreaming = true,
+    this.supportsThinking = true,
+    this.supportsSearch = true,
   });
 
   /// 对话框显示名：简写标识非空用简写标识，否则回退模型名（[id]）。
@@ -44,6 +57,9 @@ class AiModel {
     String? reasoningEffort,
     int? maxTokens,
     String? requestTemplate,
+    bool? supportsStreaming,
+    bool? supportsThinking,
+    bool? supportsSearch,
   }) {
     return AiModel(
       id: id ?? this.id,
@@ -52,6 +68,9 @@ class AiModel {
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
       maxTokens: maxTokens ?? this.maxTokens,
       requestTemplate: requestTemplate ?? this.requestTemplate,
+      supportsStreaming: supportsStreaming ?? this.supportsStreaming,
+      supportsThinking: supportsThinking ?? this.supportsThinking,
+      supportsSearch: supportsSearch ?? this.supportsSearch,
     );
   }
 
@@ -61,6 +80,9 @@ class AiModel {
       'shortLabel': shortLabel,
       'temperature': temperature,
       'reasoningEffort': reasoningEffort,
+      'supportsStreaming': supportsStreaming,
+      'supportsThinking': supportsThinking,
+      'supportsSearch': supportsSearch,
       if (maxTokens != null && maxTokens! > 0) 'maxTokens': maxTokens,
       if (requestTemplate != null && requestTemplate!.trim().isNotEmpty)
         'requestTemplate': requestTemplate,
@@ -75,6 +97,9 @@ class AiModel {
       reasoningEffort: json['reasoningEffort'] as String? ?? 'high',
       maxTokens: (json['maxTokens'] as num?)?.toInt(),
       requestTemplate: json['requestTemplate'] as String?,
+      supportsStreaming: json['supportsStreaming'] as bool? ?? true,
+      supportsThinking: json['supportsThinking'] as bool? ?? true,
+      supportsSearch: json['supportsSearch'] as bool? ?? true,
     );
   }
 }

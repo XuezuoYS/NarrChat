@@ -103,10 +103,10 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 当前平台接入协议 id。
   String get apiTypeId => selectedPlatform.apiTypeId;
 
-  /// 当前平台能力表（来自接入协议）。
-  bool get supportsStreaming => selectedPlatform.apiType.supportsStreaming;
-  bool get supportsThinking => selectedPlatform.apiType.supportsThinking;
-  bool get supportsSearch => selectedPlatform.apiType.supportsSearch;
+  /// 当前模型能力表（决定 Chat 页对话框内可用的模式）。
+  bool get supportsStreaming => selectedModel.supportsStreaming;
+  bool get supportsThinking => selectedModel.supportsThinking;
+  bool get supportsSearch => selectedModel.supportsSearch;
 
   /// 当前模型有效温度。
   double get temperature => selectedModel.temperature;

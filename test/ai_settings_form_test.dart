@@ -142,4 +142,61 @@ void main() {
     expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('预设模型：可调配功能只读，用户不可更改', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+
+    // 展开默认平台第一个模型（deepseek-v4-pro，内置预设）。
+    await tester.tap(
+      find.textContaining('deepseek-v4-pro', findRichText: true).first,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
+    expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsOneWidget);
+    // 三个能力开关存在，且均为禁用只读态。
+    expect(find.byType(SwitchListTile), findsNWidgets(3));
+    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
+    expect(switches.every((s) => s.onChanged == null), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('自定义模型：可自行设置可调配功能', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+    addTearDown(form.dispose);
+    form.addPlatform(name: 'gw', baseUrl: 'x');
+    form.addModel(form.platforms.last.id, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+
+    // 展开自定义平台。
+    await tester.tap(find.text('gw'));
+    await tester.pumpAndSettle();
+    // 展开自定义模型。
+    await tester.tap(
+      find.textContaining('gpt-4o-mini', findRichText: true).first,
+    );
+    await tester.pumpAndSettle();
+
+    // 三个能力开关存在且可编辑。
+    expect(find.byType(SwitchListTile), findsNWidgets(3));
+    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
+    expect(switches.every((s) => s.onChanged != null), isTrue);
+
+    // 关闭「联网搜索」：写回工作副本。
+    await tester.tap(find.widgetWithText(SwitchListTile, '联网搜索'));
+    await tester.pump();
+
+    expect(form.platforms.last.modelById('gpt-4o-mini')!.supportsSearch, isFalse);
+    expect(tester.takeException(), isNull);
+  });
 }

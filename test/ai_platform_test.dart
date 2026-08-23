@@ -51,7 +51,7 @@ void main() {
       expect(plain.displayLabel, 'm2');
     });
 
-    test('toJson/fromJson 往返（maxTokens 为空不落盘）', () {
+    test('toJson/fromJson 往返（maxTokens 为空不落盘，能力表一致）', () {
       final model = AiModel(
         id: 'm1',
         shortLabel: 'V4F',
@@ -59,6 +59,9 @@ void main() {
         reasoningEffort: 'low',
         maxTokens: 2048,
         requestTemplate: '{"model": {{model}}}',
+        supportsStreaming: false,
+        supportsThinking: true,
+        supportsSearch: false,
       );
       final parsed = AiModel.fromJson(model.toJson());
       expect(parsed.id, 'm1');
@@ -67,15 +70,30 @@ void main() {
       expect(parsed.reasoningEffort, 'low');
       expect(parsed.maxTokens, 2048);
       expect(parsed.requestTemplate, '{"model": {{model}}}');
+      expect(parsed.supportsStreaming, isFalse);
+      expect(parsed.supportsThinking, isTrue);
+      expect(parsed.supportsSearch, isFalse);
 
       final noMax = AiModel(id: 'm2', temperature: 1.0);
       expect(noMax.toJson().containsKey('maxTokens'), isFalse);
       expect(AiModel.fromJson(noMax.toJson()).maxTokens, isNull);
     });
+
+    test('能力表默认全开，copyWith 可改', () {
+      const model = AiModel(id: 'm1');
+      expect(model.supportsStreaming, isTrue);
+      expect(model.supportsThinking, isTrue);
+      expect(model.supportsSearch, isTrue);
+
+      final changed = model.copyWith(supportsStreaming: false, supportsSearch: false);
+      expect(changed.supportsStreaming, isFalse);
+      expect(changed.supportsThinking, isTrue);
+      expect(changed.supportsSearch, isFalse);
+    });
   });
 
   group('AiPlatform', () {
-    test('默认平台：预置 Pro / Flash，能力来自接入协议', () {
+    test('默认平台：预置 Pro / Flash，默认模型能力全开', () {
       final platform = AiPlatforms.defaultPlatform;
       expect(platform.isBuiltin, isTrue);
       expect(platform.apiType.id, ApiType.openAiCompatible.id);

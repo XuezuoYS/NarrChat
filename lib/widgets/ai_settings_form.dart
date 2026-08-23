@@ -476,6 +476,7 @@ class _ModelExpandableItem extends StatelessWidget {
         platformId: platform.id,
         model: model,
         apiType: platform.apiType,
+        canEditCapabilities: !platform.isBuiltin,
       ),
     );
   }
@@ -513,11 +514,16 @@ class _ModelSettingsEditor extends StatefulWidget {
   final AiModel model;
   final ApiType apiType;
 
+  /// 是否可自行设置「可调配功能」（流式 / 思考 / 联网搜索）。
+  /// 内置默认平台的预设模型为 false（固定不可改），用户自定义模型为 true。
+  final bool canEditCapabilities;
+
   const _ModelSettingsEditor({
     required this.form,
     required this.platformId,
     required this.model,
     required this.apiType,
+    required this.canEditCapabilities,
   });
 
   @override
@@ -564,6 +570,17 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     widget.form.updateModel(widget.platformId, widget.model.id, fn(current));
   }
 
+  /// 可调配功能的开关行；预设模型（[canEditCapabilities] 为 false）时为禁用只读态。
+  Widget _capabilitySwitch(String label, bool value, ValueChanged<bool> onChanged) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text(label, style: const TextStyle(fontSize: 14)),
+      value: value,
+      onChanged: widget.canEditCapabilities ? onChanged : null,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final outline = Theme.of(context).colorScheme.outline;
@@ -589,6 +606,39 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
           style: TextStyle(fontSize: 11, color: outline),
         ),
         const SizedBox(height: 16),
+        Text(
+          '可调配功能（Chat 页对话框内可选）',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
+        const SizedBox(height: 4),
+        _capabilitySwitch(
+          '流式',
+          model.supportsStreaming,
+          (v) => _update((m) => m.copyWith(supportsStreaming: v)),
+        ),
+        _capabilitySwitch(
+          '思考',
+          model.supportsThinking,
+          (v) => _update((m) => m.copyWith(supportsThinking: v)),
+        ),
+        _capabilitySwitch(
+          '联网搜索',
+          model.supportsSearch,
+          (v) => _update((m) => m.copyWith(supportsSearch: v)),
+        ),
+        if (!widget.canEditCapabilities)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              '预设模型的能力由平台固定，用户不可更改。',
+              style: TextStyle(fontSize: 11, color: outline),
+            ),
+          ),
+        const SizedBox(height: 12),
         Row(
           children: [
             const Text('温度', style: TextStyle(fontSize: 14)),

@@ -50,10 +50,10 @@ class AiPlatforms {
   /// 回退使用的参考模型（用于无设置注入的测试 / 降级路径）。
   static AiModel get defaultModel => deepseekV4Pro;
 
-  /// 回退使用的能力：联网搜索。
-  static bool get defaultSupportsSearch => ApiType.openAiCompatible.supportsSearch;
+  /// 回退使用的能力：联网搜索（取自默认模型能力）。
+  static bool get defaultSupportsSearch => defaultModel.supportsSearch;
 
-  /// 回退使用的默认思考 / 流式值。
-  static bool get defaultThinking => true;
-  static bool get defaultStreaming => true;
+  /// 回退使用的默认思考 / 流式值（取自默认模型能力）。
+  static bool get defaultThinking => defaultModel.supportsThinking;
+  static bool get defaultStreaming => defaultModel.supportsStreaming;
 }
