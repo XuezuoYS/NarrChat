@@ -25,6 +25,18 @@
 
 - 所有多行输入框都需要支持 md 高亮解析，详见 `lib/widgets/markdown_editing_controller.dart`
 
+## 运行 Flutter / Dart 命令的权限与审批
+
+- 顶层 `flutter` / `dart` 命令（`flutter analyze`、`flutter test`、`flutter pub get`、
+  `flutter precache` 等）通常需要访问**工作区之外**的资源：pub 缓存、Flutter SDK / engine
+  工件、网络下载。在受限沙箱（`workspace-write`）下这些访问会被挡住，命令会长时间空转或超时。
+- 因此，需要运行这类命令时，**直接向用户发起单次权限申请**（单次审批），说明越权访问的原因
+  （例如「需要访问工作区外的 pub 缓存 / Flutter SDK 并联网」），由用户审查后批准权限再执行。
+- 每次命令只申请一次授权；一次审批仅对当次命令生效，后续再需越权运行其它命令时须再次申请。
+- 若用户未授予完整权限：改用离线 / 已缓存方式（如 `flutter test --no-pub`）或改用不触碰工作区外
+  资源的替代检查手段，并向用户说明为何无法直接运行，**不要**在受限沙箱下反复等待超时。
+
+
 ## 测试规范
 
 所有功能改动必须配套新增 / 更新测试（`flutter test` 全绿后方可提交）。
