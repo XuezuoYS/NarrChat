@@ -1,5 +1,3 @@
-You are a helpful software engineer assistant. **When you thought, use English and start with `We need` or `I'm`**.
-
 ### 项目简介
 
 这是一个使用 flutter 编写的，面向 windows 和 android 的 AI 对话式文章生成工具。
