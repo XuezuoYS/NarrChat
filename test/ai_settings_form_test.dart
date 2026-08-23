@@ -46,6 +46,10 @@ void main() {
       find.textContaining('deepseek-v4-flash', findRichText: true),
       findsWidgets,
     );
+    expect(
+      find.textContaining('deepseek-v4-flash-vision-exp', findRichText: true),
+      findsWidgets,
+    );
     expect(find.text('添加自定义平台'), findsOneWidget);
     // 内置默认平台无「添加模型」入口。
     expect(find.text('添加模型'), findsNothing);
@@ -161,7 +165,7 @@ void main() {
     expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
     expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsOneWidget);
     // 三个能力开关存在，且均为禁用只读态。
-    expect(find.byType(SwitchListTile), findsNWidgets(3));
+    expect(find.byType(SwitchListTile), findsNWidgets(4));
     final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
     expect(switches.every((s) => s.onChanged == null), isTrue);
     expect(tester.takeException(), isNull);
@@ -188,7 +192,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 三个能力开关存在且可编辑。
-    expect(find.byType(SwitchListTile), findsNWidgets(3));
+    expect(find.byType(SwitchListTile), findsNWidgets(4));
     final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
     expect(switches.every((s) => s.onChanged != null), isTrue);
 

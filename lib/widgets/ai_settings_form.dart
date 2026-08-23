@@ -514,7 +514,7 @@ class _ModelSettingsEditor extends StatefulWidget {
   final AiModel model;
   final ApiType apiType;
 
-  /// 是否可自行设置「可调配功能」（流式 / 思考 / 联网搜索）。
+  /// 是否可自行设置「可调配功能」（流式 / 思考 / 联网搜索 / 识图）。
   /// 内置默认平台的预设模型为 false（固定不可改），用户自定义模型为 true。
   final bool canEditCapabilities;
 
@@ -629,6 +629,11 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
           '联网搜索',
           model.supportsSearch,
           (v) => _update((m) => m.copyWith(supportsSearch: v)),
+        ),
+        _capabilitySwitch(
+          '识图',
+          model.supportsVision,
+          (v) => _update((m) => m.copyWith(supportsVision: v)),
         ),
         if (!widget.canEditCapabilities)
           Padding(

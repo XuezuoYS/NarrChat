@@ -4,8 +4,8 @@ import 'app_config.dart';
 
 /// 内置默认平台与模型相关的默认值。
 ///
-/// 默认平台为「DeepSeek 开放平台」（OpenAI 兼容接入），预置 v4 Pro / v4 Flash 两个模型；
-/// 未来新增内置平台只需在此追加，无需改动 UI 或构建器。
+/// 默认平台为「DeepSeek 开放平台」（OpenAI 兼容接入），预置 v4 Pro / v4 Flash /
+/// v4 Flash Vision Exp（识图）三个模型；未来新增内置模型只需在此追加，无需改动 UI 或构建器。
 class AiPlatforms {
   AiPlatforms._();
 
@@ -26,6 +26,17 @@ class AiPlatforms {
     reasoningEffort: 'high',
   );
 
+  /// 预置 DeepSeek V4 Flash Vision Exp 模型（识图，多模态视觉模型）。
+  static const AiModel deepseekV4FlashVisionExp = AiModel(
+    id: 'deepseek-v4-flash-vision-exp',
+    temperature: 1.0,
+    reasoningEffort: 'high',
+    supportsStreaming: true,
+    supportsThinking: true,
+    supportsSearch: true,
+    supportsVision: true,
+  );
+
   /// 默认平台（DeepSeek 开放平台）。
   static AiPlatform buildDefaultPlatform() {
     return AiPlatform(
@@ -34,7 +45,7 @@ class AiPlatforms {
       apiType: ApiType.openAiCompatible,
       baseUrl: AppConfig.defaultApiBaseUrlEffective,
       isBuiltin: true,
-      models: const [deepseekV4Pro, deepseekV4Flash],
+      models: const [deepseekV4Pro, deepseekV4Flash, deepseekV4FlashVisionExp],
     );
   }
 

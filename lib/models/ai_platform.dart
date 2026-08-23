@@ -35,6 +35,9 @@ class AiModel {
   /// 是否支持联网搜索。
   final bool supportsSearch;
 
+  /// 是否支持识图（多模态视觉输入）。识图逻辑后续接入，当前仅作能力开关。
+  final bool supportsVision;
+
   const AiModel({
     required this.id,
     this.shortLabel = '',
@@ -45,6 +48,7 @@ class AiModel {
     this.supportsStreaming = true,
     this.supportsThinking = true,
     this.supportsSearch = true,
+    this.supportsVision = false,
   });
 
   /// 对话框显示名：简写标识非空用简写标识，否则回退模型名（[id]）。
@@ -60,6 +64,7 @@ class AiModel {
     bool? supportsStreaming,
     bool? supportsThinking,
     bool? supportsSearch,
+    bool? supportsVision,
   }) {
     return AiModel(
       id: id ?? this.id,
@@ -71,6 +76,7 @@ class AiModel {
       supportsStreaming: supportsStreaming ?? this.supportsStreaming,
       supportsThinking: supportsThinking ?? this.supportsThinking,
       supportsSearch: supportsSearch ?? this.supportsSearch,
+      supportsVision: supportsVision ?? this.supportsVision,
     );
   }
 
@@ -83,6 +89,7 @@ class AiModel {
       'supportsStreaming': supportsStreaming,
       'supportsThinking': supportsThinking,
       'supportsSearch': supportsSearch,
+      'supportsVision': supportsVision,
       if (maxTokens != null && maxTokens! > 0) 'maxTokens': maxTokens,
       if (requestTemplate != null && requestTemplate!.trim().isNotEmpty)
         'requestTemplate': requestTemplate,
@@ -100,6 +107,7 @@ class AiModel {
       supportsStreaming: json['supportsStreaming'] as bool? ?? true,
       supportsThinking: json['supportsThinking'] as bool? ?? true,
       supportsSearch: json['supportsSearch'] as bool? ?? true,
+      supportsVision: json['supportsVision'] as bool? ?? false,
     );
   }
 }

@@ -62,6 +62,7 @@ void main() {
         supportsStreaming: false,
         supportsThinking: true,
         supportsSearch: false,
+        supportsVision: true,
       );
       final parsed = AiModel.fromJson(model.toJson());
       expect(parsed.id, 'm1');
@@ -73,35 +74,49 @@ void main() {
       expect(parsed.supportsStreaming, isFalse);
       expect(parsed.supportsThinking, isTrue);
       expect(parsed.supportsSearch, isFalse);
+      expect(parsed.supportsVision, isTrue);
 
       final noMax = AiModel(id: 'm2', temperature: 1.0);
       expect(noMax.toJson().containsKey('maxTokens'), isFalse);
       expect(AiModel.fromJson(noMax.toJson()).maxTokens, isNull);
     });
 
-    test('能力表默认全开，copyWith 可改', () {
+    test('能力表默认：流式/思考/搜索开、识图关；copyWith 可改', () {
       const model = AiModel(id: 'm1');
       expect(model.supportsStreaming, isTrue);
       expect(model.supportsThinking, isTrue);
       expect(model.supportsSearch, isTrue);
+      expect(model.supportsVision, isFalse);
 
-      final changed = model.copyWith(supportsStreaming: false, supportsSearch: false);
+      final changed = model.copyWith(
+        supportsStreaming: false,
+        supportsSearch: false,
+        supportsVision: true,
+      );
       expect(changed.supportsStreaming, isFalse);
       expect(changed.supportsThinking, isTrue);
       expect(changed.supportsSearch, isFalse);
+      expect(changed.supportsVision, isTrue);
     });
   });
 
   group('AiPlatform', () {
-    test('默认平台：预置 Pro / Flash，默认模型能力全开', () {
+    test('默认平台：预置 Pro / Flash / Vision Exp，默认模型能力全开', () {
       final platform = AiPlatforms.defaultPlatform;
       expect(platform.isBuiltin, isTrue);
       expect(platform.apiType.id, ApiType.openAiCompatible.id);
-      expect(platform.models.map((m) => m.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+      expect(
+        platform.models.map((m) => m.id),
+        ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+      );
       expect(platform.defaultModel.id, 'deepseek-v4-pro');
       expect(platform.modelOrFirst('不存在').id, 'deepseek-v4-pro');
       expect(AiPlatforms.defaultModelId, 'deepseek-v4-pro');
       expect(AiPlatforms.defaultSupportsSearch, isTrue);
+      // 识图能力：Vision Exp 模型开启，Pro / Flash 关闭。
+      expect(platform.modelById('deepseek-v4-flash-vision-exp')!.supportsVision, isTrue);
+      expect(platform.modelById('deepseek-v4-pro')!.supportsVision, isFalse);
+      expect(platform.modelById('deepseek-v4-flash')!.supportsVision, isFalse);
     });
   });
 

@@ -42,7 +42,7 @@ void main() {
       expect(config.selectedModelId, 'my-model');
       final model = platform.modelById('my-model')!;
       expect(model.requestTemplate, '{"model": {{model}}}');
-      expect(platform.models.length, 3); // pro + flash + my-model
+      expect(platform.models.length, 4); // pro + flash + vision-exp + my-model
     });
 
     test('无自定义时选中回退到默认平台模型', () {
@@ -88,7 +88,7 @@ void main() {
     test('model 为空 → 回退默认平台默认模型', () {
       final config = AiSettingsProvider.migrateFromV1({'model': ''});
       expect(config.selectedModelId, AiPlatforms.defaultModelId);
-      expect(config.platforms.single.models.length, 2);
+      expect(config.platforms.single.models.length, 3);
     });
   });
 }
