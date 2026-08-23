@@ -59,6 +59,8 @@ dependencies:
   desktop_drop: ^0.6.1
   crypto: ^3.0.6
   archive: ^4.0.9
+  # 图片查看：全屏可缩放（双指放大可扩展至全屏）+ 左右滑动切换同一轮的多张图。
+  photo_view: ^0.15.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
