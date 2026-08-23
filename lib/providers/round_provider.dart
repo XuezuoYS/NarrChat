@@ -3,8 +3,8 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../config/ai_platforms.dart';
 import '../config/app_config.dart';
-import '../config/model_presets.dart';
 import '../database/book_dao.dart';
 import '../database/round_dao.dart';
 import '../models/agent_event.dart';
@@ -399,8 +399,8 @@ class RoundProvider extends ChangeNotifier {
       // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
       // 无设置注入时按预设能力回退（仅测试/降级路径）。
       final useSearch = settings == null
-          ? ModelPresets.defaultPreset.supportsSearch
-          : (settings.selectedPreset.supportsSearch && settings.lastSearch);
+          ? AiPlatforms.defaultSupportsSearch
+          : (settings.supportsSearch && settings.lastSearch);
       if (useStream) {
         gen.isStreaming = true;
         gen.streamingContent = '';
@@ -412,7 +412,7 @@ class RoundProvider extends ChangeNotifier {
       final values = AiRequestValues(
         model: (settings?.model.trim().isNotEmpty ?? false)
             ? settings!.model
-            : ModelPresets.defaultPreset.modelId,
+            : AiPlatforms.defaultModelId,
         messages: [
           {'role': 'system', 'content': prompts.systemPrompt},
           ...historyMessages,
@@ -420,7 +420,7 @@ class RoundProvider extends ChangeNotifier {
         ],
         temperature: settings?.temperature ?? 1.0,
         thinking:
-            settings?.thinking ?? ModelPresets.defaultPreset.defaultThinking,
+            settings?.thinking ?? AiPlatforms.defaultThinking,
         reasoningEffort:
             settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
         maxTokens: settings?.maxTokens,
@@ -429,7 +429,7 @@ class RoundProvider extends ChangeNotifier {
       );
       final requestBody = settings == null
           ? AiRequestBodyBuilder.buildPresetBody(
-              rules: ModelPresets.defaultPreset.requestRules,
+              rules: AiPlatforms.defaultRules,
               values: values,
             )
           : settings.buildRequestBody(values);
@@ -670,11 +670,11 @@ class RoundProvider extends ChangeNotifier {
         final values = AiRequestValues(
           model: (settings?.model.trim().isNotEmpty ?? false)
               ? settings!.model
-              : ModelPresets.defaultPreset.modelId,
+              : AiPlatforms.defaultModelId,
           messages: messages,
           temperature: settings?.temperature ?? 1.0,
           thinking:
-              settings?.thinking ?? ModelPresets.defaultPreset.defaultThinking,
+              settings?.thinking ?? AiPlatforms.defaultThinking,
           reasoningEffort:
               settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
           maxTokens: settings?.maxTokens,
@@ -683,7 +683,7 @@ class RoundProvider extends ChangeNotifier {
         );
         return settings == null
             ? AiRequestBodyBuilder.buildPresetBody(
-                rules: ModelPresets.defaultPreset.requestRules,
+                rules: AiPlatforms.defaultRules,
                 values: values,
               )
             : settings.buildRequestBody(values);

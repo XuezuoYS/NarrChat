@@ -8,7 +8,7 @@ import 'package:narrchat/services/prompt_builder.dart';
 /// PromptBuilder 组装逻辑单元测试（原 widget_test.dart 拆分而来：
 /// 仅保留 PromptBuilder 组；WorldBookScanner / Constants / AiResponseParser
 /// 分别迁移至 world_book_scanner_test.dart / constants_test.dart /
-/// ai_response_parser_test.dart，AppConfig 断言并入 model_preset_test.dart）。
+/// ai_response_parser_test.dart，AppConfig 断言并入 ai_platform_test.dart）。
 void main() {
   group('PromptBuilder', () {
     const builder = PromptBuilder();

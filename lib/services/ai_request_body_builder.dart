@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import '../models/model_preset.dart';
+import '../models/api_type.dart';
 
 /// 请求体构建所需的动态值（由调用方按当前设置与每轮选项组装）。
 class AiRequestValues {
@@ -70,6 +70,21 @@ class AiRequestBodyBuilder {
     placeholderMaxTokens,
     placeholderTools,
   ];
+
+  /// 默认自定义请求体模板（OpenAI 兼容格式）。
+  ///
+  /// 占位符代表 JSON 编码后的值（无需额外引号）：
+  /// `{{model}}` / `{{messages}}` / `{{stream}}` / `{{temperature}}` /
+  /// `{{thinking_type}}` / `{{reasoning_effort}}` / `{{max_tokens}}` / `{{tools}}`。
+  static const String defaultCustomRequestBody = '''
+{
+  "model": {{model}},
+  "messages": {{messages}},
+  "stream": {{stream}},
+  "temperature": {{temperature}},
+  "max_tokens": {{max_tokens}}
+}
+''';
 
   /// 值为 null 时移除顶层键的哨兵（如未设置最大 Tokens / 本轮无工具）。
   static const Object _omit = Object();

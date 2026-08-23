@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/config/model_presets.dart';
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
@@ -38,6 +38,6 @@ void main() {
 
     final ok = await provider.sendRound(userInput: '你好', book: book);
     expect(ok, isTrue);
-    expect(dao.rounds.single.modelName, ModelPresets.defaultPreset.modelId);
+    expect(dao.rounds.single.modelName, AiPlatforms.defaultModelId);
   });
 }

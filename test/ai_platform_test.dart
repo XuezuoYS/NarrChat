@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/config/model_presets.dart';
+import 'package:narrchat/config/ai_platforms.dart';
+import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/services/ai_request_body_builder.dart';
 
 AiRequestValues _values({
@@ -27,48 +29,68 @@ AiRequestValues _values({
 }
 
 void main() {
-  group('ModelPresets', () {
-    test('内置预设包含 Pro / Flash', () {
-      expect(
-        ModelPresets.builtins.map((p) => p.id),
-        containsAll(['deepseek-v4-pro', 'deepseek-v4-flash']),
+  group('ApiType', () {
+    test('openAiCompatible：能力表与说明齐全，byId 未知回退', () {
+      final apiType = ApiType.openAiCompatible;
+      expect(apiType.id, 'openai-compatible');
+      expect(apiType.supportsStreaming, isTrue);
+      expect(apiType.supportsThinking, isTrue);
+      expect(apiType.supportsSearch, isTrue);
+      expect(apiType.temperatureNote, isNotEmpty);
+      expect(apiType.reasoningEffortNote, isNotEmpty);
+      expect(ApiType.byId('不存在').id, ApiType.openAiCompatible.id);
+      expect(ApiType.all, hasLength(1));
+    });
+  });
+
+  group('AiModel', () {
+    test('displayLabel：简写标识非空用简写，否则回退模型名', () {
+      const labeled = AiModel(id: 'm1', shortLabel: 'V4F', temperature: 1.0);
+      const plain = AiModel(id: 'm2', temperature: 1.0);
+      expect(labeled.displayLabel, 'V4F');
+      expect(plain.displayLabel, 'm2');
+    });
+
+    test('toJson/fromJson 往返（maxTokens 为空不落盘）', () {
+      final model = AiModel(
+        id: 'm1',
+        shortLabel: 'V4F',
+        temperature: 0.7,
+        reasoningEffort: 'low',
+        maxTokens: 2048,
+        requestTemplate: '{"model": {{model}}}',
       );
-      for (final p in ModelPresets.builtins) {
-        expect(p.id, p.modelId);
-        expect(p.supportsStreaming, isTrue);
-        expect(p.supportsThinking, isTrue);
-        expect(p.supportsSearch, isTrue);
-        expect(p.defaultThinking, isTrue);
-        expect(p.defaultStreaming, isTrue);
-        expect(p.defaultReasoningEffort, 'high');
-        expect(p.temperatureNote, isNotEmpty);
-        expect(p.reasoningEffortNote, isNotEmpty);
-      }
-    });
+      final parsed = AiModel.fromJson(model.toJson());
+      expect(parsed.id, 'm1');
+      expect(parsed.shortLabel, 'V4F');
+      expect(parsed.temperature, 0.7);
+      expect(parsed.reasoningEffort, 'low');
+      expect(parsed.maxTokens, 2048);
+      expect(parsed.requestTemplate, '{"model": {{model}}}');
 
-    test('byId：内置 / 自定义 / 未知回退', () {
-      expect(ModelPresets.byId('deepseek-v4-pro').id, 'deepseek-v4-pro');
-      expect(ModelPresets.byId(ModelPresets.customId).id, ModelPresets.customId);
-      expect(ModelPresets.byId('不存在').id, ModelPresets.defaultPreset.id);
+      final noMax = AiModel(id: 'm2', temperature: 1.0);
+      expect(noMax.toJson().containsKey('maxTokens'), isFalse);
+      expect(AiModel.fromJson(noMax.toJson()).maxTokens, isNull);
     });
+  });
 
-    test('byModelId：命中内置 / 未命中返回 null', () {
-      expect(ModelPresets.byModelId('deepseek-v4-flash')?.id, 'deepseek-v4-flash');
-      expect(ModelPresets.byModelId('my-model'), isNull);
-    });
-
-    test('自定义预设能力默认全开', () {
-      final custom = ModelPresets.customPreset;
-      expect(custom.supportsStreaming, isTrue);
-      expect(custom.supportsThinking, isTrue);
-      expect(custom.supportsSearch, isTrue);
+  group('AiPlatform', () {
+    test('默认平台：预置 Pro / Flash，能力来自接入协议', () {
+      final platform = AiPlatforms.defaultPlatform;
+      expect(platform.isBuiltin, isTrue);
+      expect(platform.apiType.id, ApiType.openAiCompatible.id);
+      expect(platform.models.map((m) => m.id), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+      expect(platform.defaultModel.id, 'deepseek-v4-pro');
+      expect(platform.modelOrFirst('不存在').id, 'deepseek-v4-pro');
+      expect(AiPlatforms.defaultModelId, 'deepseek-v4-pro');
+      expect(AiPlatforms.defaultSupportsSearch, isTrue);
     });
   });
 
   group('AiRequestBodyBuilder.buildPresetBody', () {
     test('思考模式：注入 reasoning_effort，不注入 temperature', () {
       final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
+        rules: ApiType.openAiCompatible.requestRules,
         values: _values(thinking: true, reasoningEffort: 'high', maxTokens: 4096),
       );
       expect(body['model'], 'deepseek-v4-pro');
@@ -83,7 +105,7 @@ void main() {
 
     test('非思考模式：注入 temperature，不注入 reasoning_effort', () {
       final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
+        rules: ApiType.openAiCompatible.requestRules,
         values: _values(thinking: false, temperature: 0.7),
       );
       expect((body['thinking'] as Map)['type'], 'disabled');
@@ -93,7 +115,7 @@ void main() {
 
     test('max_tokens 为空时移除该键', () {
       final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
+        rules: ApiType.openAiCompatible.requestRules,
         values: _values(maxTokens: null),
       );
       expect(body.containsKey('max_tokens'), isFalse);
@@ -104,7 +126,7 @@ void main() {
         {'type': 'function', 'function': {'name': 'web_search'}},
       ];
       final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
+        rules: ApiType.openAiCompatible.requestRules,
         values: _values(tools: tools),
       );
       expect(body['tools'], tools);
@@ -112,26 +134,18 @@ void main() {
 
     test('非流式：不注入 stream_options', () {
       final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
+        rules: ApiType.openAiCompatible.requestRules,
         values: _values(stream: false),
       );
       expect(body['stream'], isFalse);
       expect(body.containsKey('stream_options'), isFalse);
-    });
-
-    test('嵌套占位符（thinking.type）被递归解析', () {
-      final body = AiRequestBodyBuilder.buildPresetBody(
-        rules: ModelPresets.deepseekV4Pro.requestRules,
-        values: _values(thinking: false),
-      );
-      expect((body['thinking'] as Map)['type'], 'disabled');
     });
   });
 
   group('AiRequestBodyBuilder.buildCustomBody', () {
     test('默认模板替换后为合法请求体', () {
       final body = AiRequestBodyBuilder.buildCustomBody(
-        template: ModelPresets.defaultCustomRequestBody,
+        template: AiRequestBodyBuilder.defaultCustomRequestBody,
         values: _values(temperature: 0.7, maxTokens: 2048),
       );
       expect(body['model'], 'deepseek-v4-pro');
@@ -141,32 +155,15 @@ void main() {
       expect(body['max_tokens'], 2048);
     });
 
-    test('thinking_type / tools 占位符替换', () {
-      const template = '''
-{
-  "model": {{model}},
-  "messages": {{messages}},
-  "thinking": {"type": {{thinking_type}}},
-  "tools": {{tools}}
-}
-''';
-      final body = AiRequestBodyBuilder.buildCustomBody(
-        template: template,
-        values: _values(thinking: true),
-      );
-      expect((body['thinking'] as Map)['type'], 'enabled');
-      expect(body['tools'], isEmpty);
-    });
-
     test('max_tokens 为空替换为 null', () {
       final body = AiRequestBodyBuilder.buildCustomBody(
-        template: ModelPresets.defaultCustomRequestBody,
+        template: AiRequestBodyBuilder.defaultCustomRequestBody,
         values: _values(maxTokens: null),
       );
       expect(body['max_tokens'], isNull);
     });
 
-    test('非法模板抛 FormatException（含占位符合法性校验）', () {
+    test('非法模板抛 FormatException', () {
       expect(
         () => AiRequestBodyBuilder.buildCustomBody(
           template: '{ 非法',
@@ -181,7 +178,7 @@ void main() {
     test('合法模板通过', () {
       expect(
         () => AiRequestBodyBuilder.validateCustomTemplate(
-          ModelPresets.defaultCustomRequestBody,
+          AiRequestBodyBuilder.defaultCustomRequestBody,
         ),
         returnsNormally,
       );

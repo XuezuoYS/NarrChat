@@ -1,4 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/config/ai_platforms.dart';
+import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
@@ -15,14 +18,10 @@ class _FakeAiSettingsProvider extends AiSettingsProvider {
 
   @override
   Future<bool> save({
-    required String apiKey,
-    required String baseUrl,
-    required String selectedPresetId,
-    required double temperature,
-    required String reasoningEffort,
-    required int? maxTokens,
-    required String customModelName,
-    required String customRequestBody,
+    required List<AiPlatform> platforms,
+    required String selectedPlatformId,
+    required String selectedModelId,
+    required Map<String, String> apiKeys,
   }) async {
     saveCalls++;
     return saveResult;
@@ -126,5 +125,73 @@ void main() {
     expect(result.errors, contains('AI 设置保存失败：未知错误'));
     expect(result.notes, contains('云同步未填写'));
     expect(sync.saveCalls, 0);
+  });
+
+  group('SettingsFormState 平台/模型编辑', () {
+    test('addPlatform：生成自定义平台并选中，API 类型固定为 OpenAI 兼容', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final before = form.platforms.length;
+
+      form.addPlatform(name: '我的网关', baseUrl: 'https://gw.example.com');
+
+      expect(form.platforms.length, before + 1);
+      final p = form.selectedPlatform;
+      expect(p.displayName, '我的网关');
+      expect(p.baseUrl, 'https://gw.example.com');
+      expect(p.apiType.id, ApiType.openAiCompatible.id);
+      expect(p.models, isEmpty);
+    });
+
+    test('removePlatform：内置平台不可删，最后一个平台不可删', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final defaultId = AiPlatforms.defaultPlatformId;
+
+      // 仅默认平台（唯一）时删除应无效果。
+      form.removePlatform(defaultId);
+      expect(form.platforms.length, 1);
+
+      // 再添加自定义平台；删除内置（isBuiltin）仍应无效果。
+      form.addPlatform(name: 'p2', baseUrl: 'x');
+      form.removePlatform(defaultId);
+      expect(form.platforms.length, 2);
+      expect(form.platforms.any((p) => p.id == defaultId), isTrue);
+    });
+
+    test('addModel / removeModel：维护至少一个模型，选中切换正确', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final platformId = form.selectedPlatform.id;
+      final before = form.selectedPlatform.models.length;
+
+      form.addModel(platformId, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
+      expect(form.selectedPlatform.models.length, before + 1);
+      expect(form.selectedModel.id, 'gpt-4o-mini');
+      expect(form.selectedModel.shortLabel, 'GPT4O');
+
+      // 删到只剩一个模型后，再删最后一个应无效果（强制 ≥1）。
+      for (final m in [...form.selectedPlatform.models]) {
+        if (form.selectedPlatform.models.length > 1) {
+          form.removeModel(platformId, m.id);
+        }
+      }
+      expect(form.selectedPlatform.models.length, 1);
+      form.removeModel(platformId, form.selectedPlatform.models.first.id);
+      expect(form.selectedPlatform.models.length, 1);
+    });
+
+    test('修改选中模型参数：同步到工作副本', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+
+      form.setModelTemperature(0.6);
+      form.setModelReasoningEffort('low');
+      form.setModelShortLabel('V4P');
+
+      expect(form.selectedModel.temperature, 0.6);
+      expect(form.selectedModel.reasoningEffort, 'low');
+      expect(form.selectedModel.shortLabel, 'V4P');
+    });
   });
 }

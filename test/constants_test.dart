@@ -4,7 +4,7 @@ import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/utils/constants.dart';
 
 /// Constants 工具单元测试（原 widget_test.dart 拆分而来；
-/// AppConfig 断言已在 model_preset_test.dart 中覆盖）。
+/// AppConfig 断言已在 ai_platform_test.dart 中覆盖）。
 void main() {
   group('Constants', () {
     test('默认角色层级', () {

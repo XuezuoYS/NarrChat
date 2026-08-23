@@ -7,7 +7,6 @@ import 'package:provider/provider.dart';
 import '../config/chat_route.dart';
 import '../models/agent_event.dart';
 import '../models/book.dart';
-import '../models/model_preset.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
@@ -1655,7 +1654,6 @@ class _ChatScreenState extends State<ChatScreen>
     bool isSending,
   ) {
     final aiSettings = context.watch<AiSettingsProvider>();
-    final preset = aiSettings.selectedPreset;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -1699,7 +1697,9 @@ class _ChatScreenState extends State<ChatScreen>
             child: Row(
               children: [
                 _ChatModeDropdown(
-                  preset: preset,
+                  supportsThinking: aiSettings.supportsThinking,
+                  supportsStreaming: aiSettings.supportsStreaming,
+                  supportsSearch: aiSettings.supportsSearch,
                   thinking: aiSettings.thinking,
                   streaming: aiSettings.streaming,
                   search: aiSettings.lastSearch,
@@ -1785,7 +1785,9 @@ class _ChatScreenState extends State<ChatScreen>
 /// - 展开为复选菜单，切换后保持展开可连续操作；
 /// - 联网搜索行始终显示 BETA 试验版二级提示（启用=警告色，未启用=灰）。
 class _ChatModeDropdown extends StatelessWidget {
-  final ModelPreset preset;
+  final bool supportsThinking;
+  final bool supportsStreaming;
+  final bool supportsSearch;
   final bool thinking;
   final bool streaming;
   final bool search;
@@ -1794,7 +1796,9 @@ class _ChatModeDropdown extends StatelessWidget {
   final ValueChanged<bool> onSearchChanged;
 
   const _ChatModeDropdown({
-    required this.preset,
+    required this.supportsThinking,
+    required this.supportsStreaming,
+    required this.supportsSearch,
     required this.thinking,
     required this.streaming,
     required this.search,
@@ -1805,9 +1809,9 @@ class _ChatModeDropdown extends StatelessWidget {
 
   /// 摘要各段（顺序：流式 | 思考 | 搜索(BETA)）。
   List<String> get _activeParts => [
-        if (preset.supportsStreaming && streaming) '流式',
-        if (preset.supportsThinking && thinking) '思考',
-        if (preset.supportsSearch && search) '搜索(BETA)',
+        if (supportsStreaming && streaming) '流式',
+        if (supportsThinking && thinking) '思考',
+        if (supportsSearch && search) '搜索(BETA)',
       ];
 
   @override
@@ -1818,9 +1822,9 @@ class _ChatModeDropdown extends StatelessWidget {
     final parts = _activeParts;
     // 触发按钮态：流式/思考任一启用 → 主题蓝；仅搜索启用 → 警告黄；全关 → 灰。
     final blueActive =
-        (preset.supportsStreaming && streaming) ||
-        (preset.supportsThinking && thinking);
-    final searchOnlyActive = !blueActive && preset.supportsSearch && search;
+        (supportsStreaming && streaming) ||
+        (supportsThinking && thinking);
+    final searchOnlyActive = !blueActive && supportsSearch && search;
     final triggerActive = blueActive || searchOnlyActive;
     final Color triggerColor = blueActive
         ? scheme.primary
@@ -1838,19 +1842,19 @@ class _ChatModeDropdown extends StatelessWidget {
         ),
       ),
       menuChildren: [
-        if (preset.supportsThinking)
+        if (supportsThinking)
           _ModeMenuRow(
             label: '思考',
             active: thinking,
             onChanged: onThinkingChanged,
           ),
-        if (preset.supportsStreaming)
+        if (supportsStreaming)
           _ModeMenuRow(
             label: '流式',
             active: streaming,
             onChanged: onStreamingChanged,
           ),
-        if (preset.supportsSearch)
+        if (supportsSearch)
           _ModeMenuRow(
             label: '搜索',
             active: search,

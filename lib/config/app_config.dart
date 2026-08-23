@@ -1,4 +1,4 @@
-import 'model_presets.dart';
+import 'ai_platforms.dart';
 
 /// 应用全局配置。
 ///
@@ -26,9 +26,9 @@ class AppConfig {
   /// 默认模型名称（DeepSeek 官方模型 ID）。
   static const String defaultModelName = 'deepseek-v4-flash';
 
-  /// 内置支持的模型列表（来自模型预设，可在设置中选择，也支持自定义输入）。
+  /// 内置支持的模型列表（来自默认平台，可在设置中选择，也支持自定义输入）。
   static List<String> get supportedModels => [
-    for (final p in ModelPresets.builtins) p.modelId,
+    for (final m in AiPlatforms.defaultPlatform.models) m.id,
   ];
 
   /// 思考强度档位（`reasoning_effort`，官方取值）。
