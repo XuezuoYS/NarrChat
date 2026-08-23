@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../config/chat_route.dart';
 import '../models/agent_event.dart';
+import '../models/ai_platform.dart';
 import '../models/book.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
@@ -1691,56 +1692,97 @@ class _ChatScreenState extends State<ChatScreen>
             ),
             onSubmitted: (_) => _send(),
           ),
-          // 底部行：左下角选项下拉 + 右下角发送/停止。
+          // 底部行：左下角功能选择栏 + 中间空隙 + 右下角模型选择 + 发送/停止。
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-            child: Row(
-              children: [
-                _ChatModeDropdown(
-                  supportsThinking: aiSettings.supportsThinking,
-                  supportsStreaming: aiSettings.supportsStreaming,
-                  supportsSearch: aiSettings.supportsSearch,
-                  thinking: aiSettings.thinking,
-                  streaming: aiSettings.streaming,
-                  search: aiSettings.lastSearch,
-                  onThinkingChanged: (v) => _setPerRoundOptions(thinking: v),
-                  onStreamingChanged: (v) =>
-                      _setPerRoundOptions(streaming: v),
-                  onSearchChanged: (v) => _setPerRoundOptions(search: v),
-                ),
-                const Spacer(),
-                SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: IconButton.filled(
-                    // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
-                    onPressed: isSending
-                        ? roundProvider.cancelGeneration
-                        : _send,
-                    tooltip: isSending ? '停止生成' : '发送',
-                    style: IconButton.styleFrom(
-                      backgroundColor: NarrChatTheme.primary,
-                      disabledBackgroundColor: Theme.of(
-                        context,
-                      ).colorScheme.outline,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                const sendWidth = 36.0;
+                const endGap = 8.0;
+                // 留给「左/右两个区域」的可用宽度（去掉发送按钮与其左侧固定间距）。
+                final available = (constraints.maxWidth - sendWidth - endGap)
+                    .clamp(0.0, double.infinity);
+                return Row(
+                  children: [
+                    // 左侧功能选择栏：最长 2/3，单行溢出省略，左对齐。
+                    ConstrainedBox(
+                      constraints:
+                          BoxConstraints(maxWidth: available * (2 / 3)),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: 1,
+                        heightFactor: 1,
+                        child: _ChatModeDropdown(
+                          supportsThinking: aiSettings.supportsThinking,
+                          supportsStreaming: aiSettings.supportsStreaming,
+                          supportsSearch: aiSettings.supportsSearch,
+                          thinking: aiSettings.thinking,
+                          streaming: aiSettings.streaming,
+                          search: aiSettings.lastSearch,
+                          onThinkingChanged: (v) =>
+                              _setPerRoundOptions(thinking: v),
+                          onStreamingChanged: (v) =>
+                              _setPerRoundOptions(streaming: v),
+                          onSearchChanged: (v) =>
+                              _setPerRoundOptions(search: v),
+                        ),
+                      ),
                     ),
-                    icon: isSending
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(
-                            Icons.arrow_upward,
-                            size: 18,
-                            color: Colors.white,
-                          ),
-                  ),
-                ),
-              ],
+                    // 中间空隙：左右都未达到上限时的弹性空间。
+                    const Spacer(),
+                    // 右侧模型选择器：最长 1/3，右对齐，灰色，单行溢出省略。
+                    ConstrainedBox(
+                      constraints:
+                          BoxConstraints(maxWidth: available * (1 / 3)),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        widthFactor: 1,
+                        heightFactor: 1,
+                        child: _ModelSelector(
+                          label: aiSettings.selectedModel.displayLabel,
+                          platforms: aiSettings.platforms,
+                          selectedPlatformId: aiSettings.selectedPlatformId,
+                          selectedModelId: aiSettings.selectedModelId,
+                          onSelect: (platformId, modelId) =>
+                              aiSettings.setSelectedModel(platformId, modelId),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: endGap),
+                    SizedBox(
+                      width: sendWidth,
+                      height: 36,
+                      child: IconButton.filled(
+                        // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
+                        onPressed: isSending
+                            ? roundProvider.cancelGeneration
+                            : _send,
+                        tooltip: isSending ? '停止生成' : '发送',
+                        style: IconButton.styleFrom(
+                          backgroundColor: NarrChatTheme.primary,
+                          disabledBackgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.outline,
+                        ),
+                        icon: isSending
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.arrow_upward,
+                                size: 18,
+                                color: Colors.white,
+                              ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ],
@@ -1893,27 +1935,32 @@ class _ChatModeDropdown extends StatelessWidget {
               children: [
                 Icon(Icons.tune, size: 14, color: triggerColor),
                 const SizedBox(width: 6),
-                // 摘要：分段渲染，搜索(BETA) 用警告色（不加粗）；无启用项时显示「无」。
-                Text.rich(
-                  TextSpan(
-                    children: parts.isEmpty
-                        ? const [TextSpan(text: '无')]
-                        : [
-                            for (var i = 0; i < parts.length; i++) ...[
-                              if (i > 0) const TextSpan(text: ' | '),
-                              TextSpan(
-                                text: parts[i],
-                                style: TextStyle(
-                                  color: parts[i] == '搜索(BETA)'
-                                      ? warningColor
-                                      : triggerColor,
-                                  fontWeight: FontWeight.w500,
+                // 摘要：分段渲染，搜索(BETA) 用警告色（不加粗）；无启用项时显示「无」；
+                // 单行溢出省略（受外层 2/3 宽度上限约束）。
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: parts.isEmpty
+                          ? const [TextSpan(text: '无')]
+                          : [
+                              for (var i = 0; i < parts.length; i++) ...[
+                                if (i > 0) const TextSpan(text: ' | '),
+                                TextSpan(
+                                  text: parts[i],
+                                  style: TextStyle(
+                                    color: parts[i] == '搜索(BETA)'
+                                        ? warningColor
+                                        : triggerColor,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
-                              ),
+                              ],
                             ],
-                          ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: triggerColor),
                   ),
-                  style: TextStyle(fontSize: 12, color: triggerColor),
                 ),
                 const SizedBox(width: 6),
                 Icon(
@@ -1929,6 +1976,113 @@ class _ChatModeDropdown extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// 右下角模型选择器：显示当前模型名（灰色、单行省略），点击弹出菜单切换对话模型。
+class _ModelSelector extends StatelessWidget {
+  final String label;
+  final List<AiPlatform> platforms;
+  final String selectedPlatformId;
+  final String selectedModelId;
+  final void Function(String platformId, String modelId) onSelect;
+
+  const _ModelSelector({
+    required this.label,
+    required this.platforms,
+    required this.selectedPlatformId,
+    required this.selectedModelId,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final gray = Theme.of(context).colorScheme.onSurfaceVariant;
+    return MenuAnchor(
+      animated: true,
+      style: MenuStyle(
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+      menuChildren: [
+        for (final platform in platforms) ..._platformMenuItems(platform, gray),
+      ],
+      builder: (context, controller, _) {
+        return InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            if (controller.isOpen) {
+              controller.close();
+            } else {
+              controller.open();
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: gray),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.arrow_drop_down, size: 18, color: gray),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _platformMenuItems(AiPlatform platform, Color gray) {
+    final isSelectedPlatform = platform.id == selectedPlatformId;
+    return [
+      // 平台分组标题（非交互项）。
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Text(
+          platform.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: gray,
+          ),
+        ),
+      ),
+      for (final model in platform.models)
+        MenuItemButton(
+          onPressed: () => onSelect(platform.id, model.id),
+          child: Row(
+            children: [
+              Icon(
+                isSelectedPlatform && model.id == selectedModelId
+                    ? Icons.check
+                    : Icons.label_outline,
+                size: 16,
+                color: gray,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  model.displayLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
   }
 }
 

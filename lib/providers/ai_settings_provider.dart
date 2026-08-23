@@ -480,6 +480,29 @@ class AiSettingsProvider extends ChangeNotifier {
     }
   }
 
+  /// 切换当前对话所用模型（跨平台），并持久化选中项。
+  ///
+  /// 由 Chat 页右下角模型选择器调用；模型/平台需已存在，否则返回 false 不变更。
+  Future<bool> setSelectedModel(String platformId, String modelId) async {
+    if (!_platforms.any((p) => p.id == platformId)) return false;
+    final platform = _platforms.firstWhere((p) => p.id == platformId);
+    if (platform.modelById(modelId) == null) return false;
+    _selectedPlatformId = platformId;
+    _selectedModelId = modelId;
+    notifyListeners();
+    try {
+      await LocalConfigService.update({
+        _keySelectedPlatformId: platformId,
+        _keySelectedModelId: modelId,
+      });
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// 清除已保存的当前平台 API Key（安全存储）。
   Future<void> clearApiKey() async {
     try {

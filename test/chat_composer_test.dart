@@ -317,4 +317,24 @@ void main() {
     await tester.pumpAndSettle();
     expect(redDot(), findsNothing);
   });
+
+  testWidgets('右下角模型选择器：显示当前模型，可在菜单中切换', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(tester, settings: settings);
+
+    // 当前模型（默认 deepseek-v4-pro，无简写标识时显示模型名）。
+    expect(find.text('deepseek-v4-pro'), findsWidgets);
+
+    // 打开模型菜单。
+    await tester.tap(find.text('deepseek-v4-pro').first);
+    await tester.pumpAndSettle();
+
+    // 菜单含其它模型。
+    expect(find.text('deepseek-v4-flash'), findsWidgets);
+
+    // 切换到 flash。
+    await tester.tap(find.text('deepseek-v4-flash').last);
+    await tester.pumpAndSettle();
+    expect(settings.selectedModelId, 'deepseek-v4-flash');
+  });
 }
