@@ -146,7 +146,8 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
             child: ImagePreviewStrip(
               images: List.of(_images),
               size: 72,
-              onTapImage: (rel) => showImageViewer(context, rel),
+              onTapImage: (_, i) =>
+                  showImageViewer(context, List.of(_images), i),
               onRemove: (rel) => setState(() => _images.remove(rel)),
             ),
           ),

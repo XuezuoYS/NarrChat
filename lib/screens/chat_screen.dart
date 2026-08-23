@@ -1931,7 +1931,8 @@ class _ChatScreenState extends State<ChatScreen>
                   key: const Key('composer_image_strip'),
                   images: List.of(_pendingImages),
                   size: 72,
-                  onTapImage: (rel) => showImageViewer(context, rel),
+                  onTapImage: (_, i) =>
+                      showImageViewer(context, List.of(_pendingImages), i),
                   onRemove: _removePendingImage,
                 ),
               ),

@@ -67,7 +67,7 @@ class ChatBubble extends StatelessWidget {
                       ImagePreviewStrip(
                         images: images,
                         size: 72,
-                        onTapImage: (rel) => showImageViewer(context, rel),
+                        onTapImage: (_, i) => showImageViewer(context, images, i),
                       ),
                       const SizedBox(height: 8),
                     ],

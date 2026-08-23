@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:photo_view/photo_view_gallery.dart';
 
 import '../services/image_store.dart';
 
@@ -160,8 +162,8 @@ class _RemoveBadge extends StatelessWidget {
 class ImagePreviewStrip extends StatelessWidget {
   final List<String> images;
 
-  /// 点击单张图片回调。为空则仅缩略图。
-  final void Function(String relPath)? onTapImage;
+  /// 点击单张图片回调（`relPath` + 所在序号）。为空则仅缩略图。
+  final void Function(String relPath, int index)? onTapImage;
 
   /// 每张图的可选删除回调。
   final void Function(String relPath)? onRemove;
@@ -191,7 +193,8 @@ class ImagePreviewStrip extends StatelessWidget {
           return ImageThumbnail(
             relPath: rel,
             size: size,
-            onTap: onTapImage == null ? null : () => onTapImage!(rel),
+            onTap:
+                onTapImage == null ? null : () => onTapImage!(rel, i),
             onRemove: onRemove == null ? null : () => onRemove!(rel),
           );
         },
@@ -201,23 +204,63 @@ class ImagePreviewStrip extends StatelessWidget {
 }
 
 /// 打开全屏图片查看页。
-Future<void> showImageViewer(BuildContext context, String relPath) {
+///
+/// [images] 为当前一组图片（同一轮次的全部图片），[initialIndex] 为点击的那张序号。
+/// 查看器支持左右滑动切换图片（在图片未放大时）、双指放大（放大后可扩展到铺满全屏并平移）。
+Future<void> showImageViewer(
+  BuildContext context,
+  List<String> images,
+  int initialIndex,
+) {
   return Navigator.of(context).push(
-    MaterialPageRoute(builder: (_) => ImageViewerPage(relPath: relPath)),
+    MaterialPageRoute(
+      builder: (_) => ImageViewerPage(images: images, initialIndex: initialIndex),
+    ),
   );
 }
 
-/// 全屏图片查看页：点击 / 拖拽缩放（InteractiveViewer），右上角关闭。
+/// 全屏图片查看页：左右滑动切换 + 双指缩放（photo_view）。
 ///
-/// - 单击图片或空白区域（非按钮）退出查看器；
-/// - 底部提供「保存到本地」按钮：通过系统保存面板选取目标路径并复制图片。
-class ImageViewerPage extends StatelessWidget {
-  final String relPath;
+/// - 未放大时左右滑动 → 上一张 / 下一张；放大后可平移查看、缩回后再滑动切换；
+/// - 双指缩放可扩展至铺满全屏（覆盖画面），不再被“原比例留黑边”限制；
+/// - 顶部显示页码（如 2/5）与关闭按钮，底部提供「保存到本地」；
+/// - 单击图片或空白区域（非按钮）退出查看器。
+class ImageViewerPage extends StatefulWidget {
+  final List<String> images;
+  final int initialIndex;
 
-  const ImageViewerPage({super.key, required this.relPath});
+  const ImageViewerPage({super.key, required this.images, this.initialIndex = 0});
+
+  @override
+  State<ImageViewerPage> createState() => _ImageViewerPageState();
+}
+
+class _ImageViewerPageState extends State<ImageViewerPage> {
+  late final PageController _pageController =
+      PageController(initialPage: widget.initialIndex);
+  late int _index = widget.initialIndex;
+
+  // 一次性解析全部绝对路径（相对 `img/...` → 磁盘路径）。
+  // 单个解析失败（如测试环境无 path_provider）时回退相对路径，交由
+  // PhotoView 的 errorBuilder 显示占位，避免整批失败导致无限加载转圈。
+  late final Future<List<String>> _absPaths = Future.wait(
+    widget.images.map((rel) async {
+      try {
+        return await ImageStore.resolveAbsolute(rel);
+      } catch (_) {
+        return rel;
+      }
+    }),
+  );
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
 
   /// 将图片复制到用户选择的本地路径（取消返回 null；失败给出提示）。
-  Future<void> _save(BuildContext context, String absPath) async {
+  Future<void> _save(BuildContext context, String relPath, String absPath) async {
     final file = File(absPath);
     if (!file.existsSync()) {
       if (context.mounted) {
@@ -255,69 +298,105 @@ class ImageViewerPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        // 单击图片 / 空白区域退出查看器；按钮命中优先于背景单击，不会误关。
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => Navigator.of(context).pop(),
-          child: FutureBuilder<String>(
-            future: ImageStore.resolveAbsolute(relPath),
-            builder: (context, snapshot) {
-              final Widget imageArea;
-              if (snapshot.hasError) {
-                imageArea = Center(child: _MissingImage(relPath));
-              } else {
-                final file = File(snapshot.data ?? '');
-                imageArea = Center(
-                  child: file.existsSync()
-                      ? InteractiveViewer(
-                          minScale: 0.5,
-                          maxScale: 5,
-                          child: Image.file(file, fit: BoxFit.contain),
-                        )
-                      : _MissingImage(relPath),
-                );
-              }
-              final absPath = snapshot.data;
-              return Stack(
-                children: [
-                  Positioned.fill(child: imageArea),
-                  // 右上角关闭按钮。
-                  Positioned(
-                    top: 0,
-                    right: 0,
-                    child: IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      tooltip: '关闭',
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ),
-                  // 底部「保存到本地」按钮。
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            backgroundColor: Colors.white24,
-                            foregroundColor: Colors.white,
-                            side: BorderSide.none,
+        child: FutureBuilder<List<String>>(
+          future: _absPaths,
+          builder: (context, snapshot) {
+            final absPaths = snapshot.data;
+            return Stack(
+              children: [
+                // 图片画布：PhotoViewGallery（左右滑动换图 + 双指缩放；单击退出）。
+                Positioned.fill(
+                  child: absPaths == null
+                      ? const Center(
+                          child: Icon(
+                            Icons.image_outlined,
+                            color: Colors.white24,
+                            size: 48,
                           ),
-                          icon: const Icon(Icons.download_outlined),
-                          label: const Text('保存到本地'),
-                          onPressed: absPath == null
-                              ? null
-                              : () => _save(context, absPath),
+                        )
+                      : PhotoViewGallery(
+                          pageController: _pageController,
+                          backgroundDecoration: const BoxDecoration(color: Colors.black),
+                          onPageChanged: (i) => setState(() => _index = i),
+                          pageOptions: [
+                            for (var i = 0; i < widget.images.length; i++)
+                              PhotoViewGalleryPageOptions(
+                                imageProvider: FileImage(File(absPaths[i])),
+                                errorBuilder: (context, error, stackTrace) =>
+                                    _MissingImage(widget.images[i]),
+                                // 初始整图可见（contained）；双指放大可扩展到铺满全屏并继续放大。
+                                minScale: PhotoViewComputedScale.contained,
+                                maxScale: PhotoViewComputedScale.covered * 3,
+                                // 单击图片/空白区域退出查看器（不影响双指缩放与左右滑动）。
+                                onTapUp: (ctx, _, _) =>
+                                    Navigator.of(ctx).pop(),
+                              ),
+                          ],
+                        ),
+                ),
+                // 顶部页码指示（如 2/5）。
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '${_index + 1}/${widget.images.length}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ],
-              );
-            },
-          ),
+                ),
+                // 右上角关闭按钮。
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+                // 底部「保存到本地」按钮。
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: Colors.white24,
+                          foregroundColor: Colors.white,
+                          side: BorderSide.none,
+                        ),
+                        icon: const Icon(Icons.download_outlined),
+                        label: const Text('保存到本地'),
+                        onPressed: absPaths == null
+                            ? null
+                            : () =>
+                                _save(context, widget.images[_index], absPaths[_index]),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
