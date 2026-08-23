@@ -124,6 +124,11 @@ class _MissingImage extends StatelessWidget {
 }
 
 /// 缩略图右上角的删除小圆钮。
+///
+/// 注意：不能用 `Ink(decoration: ...)` 绘制圆钮背景——`Ink` 会把装饰画到最近的
+/// `Material` 上，而该 `Material` 在图片之下，导致圆钮的圆底/描边/阴影被图片盖住
+/// 而“不生效”。这里改用 `Material` 本体承载颜色/圆角描边/阴影，作为真实 widget
+/// 绘制在图片之上，`InkWell` 让点击水波显示在圆钮上。
 class _RemoveBadge extends StatelessWidget {
   final VoidCallback onPressed;
 
@@ -131,15 +136,19 @@ class _RemoveBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onPressed,
-      child: Ink(
-        decoration: ShapeDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          shape: const CircleBorder(),
-        ),
-        child: const Padding(
-          padding: EdgeInsets.all(2),
+    return Material(
+      color: Colors.black.withValues(alpha: 0.2),
+      elevation: 2,
+      shape: const CircleBorder(
+        // side: BorderSide(color: Colors.black, width: 0),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onPressed,
+        customBorder: const CircleBorder(),
+        child: const SizedBox(
+          width: 18,
+          height: 18,
           child: Icon(Icons.close, size: 12, color: Colors.white),
         ),
       ),
