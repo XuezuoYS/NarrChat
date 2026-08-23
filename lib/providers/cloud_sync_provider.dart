@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../services/backup_image_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/database_merge_service.dart';
 import '../services/local_config_service.dart';
@@ -32,9 +33,11 @@ class CloudSyncProvider extends ChangeNotifier {
   static const String _keyKeepVersions = 'webdavKeepVersions';
   static const String _keyAutoUpload = 'webdavAutoUpload';
   static const String _keyUserName = 'webdavUserName';
+  static const String _keyImageKeepVersions = 'imageKeepVersions';
 
   static const String defaultFolder = 'narrchat';
   static const int defaultKeepVersions = 5;
+  static const int defaultImageKeepVersions = 1;
   static const String defaultUserName = 'user';
 
   String _webdavUrl = '';
@@ -42,6 +45,7 @@ class CloudSyncProvider extends ChangeNotifier {
   String _webdavPassword = '';
   String _folder = defaultFolder;
   int _keepVersions = defaultKeepVersions;
+  int _imageKeepVersions = defaultImageKeepVersions;
   bool _autoUpload = false;
   String _userName = defaultUserName;
 
@@ -50,11 +54,17 @@ class CloudSyncProvider extends ChangeNotifier {
   List<WebDavFile> _backups = [];
   bool _backupsLoaded = false;
 
+  // 图片备份（独立于数据库备份）。
+  List<WebDavFile> _imageBackups = [];
+  bool _imageBackupsLoaded = false;
+  bool _imageBusy = false;
+
   String get webdavUrl => _webdavUrl;
   String get webdavUsername => _webdavUsername;
   String get webdavPassword => _webdavPassword;
   String get folder => _folder;
   int get keepVersions => _keepVersions;
+  int get imageKeepVersions => _imageKeepVersions;
   bool get autoUpload => _autoUpload;
   String get userName => _userName;
 
@@ -64,6 +74,11 @@ class CloudSyncProvider extends ChangeNotifier {
   /// 云端备份列表（按修改时间新 → 旧）。
   List<WebDavFile> get backups => List.unmodifiable(_backups);
   bool get backupsLoaded => _backupsLoaded;
+
+  /// 云端图片备份列表。
+  List<WebDavFile> get imageBackups => List.unmodifiable(_imageBackups);
+  bool get imageBackupsLoaded => _imageBackupsLoaded;
+  bool get isImageBackupBusy => _imageBusy;
 
   /// WebDAV 配置是否已就绪（地址与登录用户名均非空）。
   bool get isConfigured =>
@@ -84,6 +99,8 @@ class CloudSyncProvider extends ChangeNotifier {
       _folder = (cfg[_keyFolder] as String?) ?? defaultFolder;
       _keepVersions =
           (cfg[_keyKeepVersions] as num?)?.toInt() ?? defaultKeepVersions;
+      _imageKeepVersions =
+          (cfg[_keyImageKeepVersions] as num?)?.toInt() ?? defaultImageKeepVersions;
       _autoUpload = (cfg[_keyAutoUpload] as bool?) ?? false;
       _userName = (cfg[_keyUserName] as String?) ?? defaultUserName;
     } catch (e) {
@@ -253,6 +270,110 @@ class CloudSyncProvider extends ChangeNotifier {
       _isBusy = false;
       notifyListeners();
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 图片备份（WebDAV，独立于数据库备份）
+  // ---------------------------------------------------------------------------
+
+  /// 设置图片备份保留版本数（1 ~ 99），并持久化。
+  Future<bool> setImageKeepVersions(int value) async {
+    final v = value.clamp(1, 99);
+    _imageKeepVersions = v;
+    notifyListeners();
+    try {
+      await LocalConfigService.update({_keyImageKeepVersions: v});
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// 上传本地 `img/` 目录为 zip 备份。[onProgress] 汇报进度（`progress` 为 null 表示不确定）。
+  Future<bool> uploadImageBackup({
+    void Function(double? progress, String message)? onProgress,
+  }) async {
+    if (_imageBusy) return false;
+    _imageBusy = true;
+    _error = null;
+    notifyListeners();
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      await BackupImageService.uploadImageBackup(
+        dav: dav,
+        folder: _folder.trim(),
+        userName: _userName,
+        keepVersions: _imageKeepVersions,
+        onProgress: onProgress,
+      );
+      await _loadImageBackups(dav);
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      dav?.close();
+      _imageBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 刷新云端图片备份列表。
+  Future<void> refreshImageBackups() async {
+    if (_imageBusy) return;
+    _imageBusy = true;
+    _error = null;
+    notifyListeners();
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      await _loadImageBackups(dav);
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      dav?.close();
+      _imageBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 下载指定图片备份 zip 并解压到本地 `img/`。
+  Future<bool> downloadImageBackup(
+    String name, {
+    void Function(double? progress, String message)? onProgress,
+  }) async {
+    if (_imageBusy) return false;
+    _imageBusy = true;
+    _error = null;
+    notifyListeners();
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      await BackupImageService.downloadImageBackup(
+        dav: dav,
+        folder: _folder.trim(),
+        name: name,
+        onProgress: onProgress,
+      );
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      dav?.close();
+      _imageBusy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _loadImageBackups(WebDavService dav) async {
+    final files = await dav.list(_folder.trim());
+    _imageBackups = BackupImageService.matchImageBackups(files)
+      ..sort(BackupImageService.compareBackups);
+    _imageBackupsLoaded = true;
   }
 
   /// 测试 WebDAV 连接：用传入的表单值（无需先保存）创建/检查目录并列出条目。

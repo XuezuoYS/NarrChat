@@ -8,6 +8,7 @@ import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 
 /// 公共测试替身（Fakes）。
@@ -71,6 +72,8 @@ class FakeRoundDao extends RoundDao {
       tokensOut: round.tokensOut,
       modelName: round.modelName,
       createdAt: round.createdAt,
+      userImages: List.of(round.userImages),
+      aiImages: List.of(round.aiImages),
     );
     rounds.add(created);
     return created.id!;
@@ -103,6 +106,8 @@ class FakeRoundDao extends RoundDao {
       tokensOut: rounds[index].tokensOut,
       modelName: rounds[index].modelName,
       createdAt: rounds[index].createdAt,
+      userImages: rounds[index].userImages,
+      aiImages: rounds[index].aiImages,
     );
     rounds[index] = updated;
     return 1;
@@ -269,4 +274,26 @@ class FakeNotificationBackend implements NotificationBackend {
 
   /// 模拟用户点击通知。
   void tap(int bookId) => onTap?.call(bookId);
+}
+
+/// 可控图片导入替身：按 [results] 顺序返回结果，并记录调用次数与参数。
+class FakeImageImportService implements ImageImportService {
+  FakeImageImportService({this.results = const []});
+
+  /// 每次调用返回的结果（按序读取；耗尽后返回空结果）。不做突变，兼容只读列表。
+  List<ImageImportResult> results;
+  int calls = 0;
+  int? lastSizeLimitMb;
+  int _next = 0;
+
+  @override
+  Future<ImageImportResult> importImages({
+    required int sizeLimitMb,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    calls++;
+    lastSizeLimitMb = sizeLimitMb;
+    if (_next >= results.length) return const ImageImportResult();
+    return results[_next++];
+  }
 }

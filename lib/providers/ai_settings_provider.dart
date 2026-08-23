@@ -43,6 +43,7 @@ class AiSettingsProvider extends ChangeNotifier {
   static const String _keyLastThinking = 'lastThinking';
   static const String _keyLastStreaming = 'lastStreaming';
   static const String _keyLastSearch = 'lastSearch';
+  static const String _keyMaxImageSizeMB = 'maxImageSizeMB';
 
   // ---- 旧版（v2：selectedPreset 结构）配置键，用于迁移 ----
   static const String _keyBaseUrl = 'baseUrl';
@@ -68,6 +69,9 @@ class AiSettingsProvider extends ChangeNotifier {
   bool _lastStreaming = true;
   bool _lastSearch = false;
 
+  /// 单张图片大小上限（MB），导入时校验；默认 16，可在设置中调整。
+  int _maxImageSizeMB = 16;
+
   bool _isLoading = false;
   String? _error;
 
@@ -80,6 +84,9 @@ class AiSettingsProvider extends ChangeNotifier {
   bool get lastSearch => _lastSearch;
   bool get isLoading => _isLoading;
   String? get error => _error;
+
+  /// 单张图片大小上限（MB，默认 16，可设置调整）。
+  int get maxImageSizeMB => _maxImageSizeMB;
 
   /// 当前选中的平台（未知回退平台列表第一个）。
   AiPlatform get selectedPlatform {
@@ -107,6 +114,7 @@ class AiSettingsProvider extends ChangeNotifier {
   bool get supportsStreaming => selectedModel.supportsStreaming;
   bool get supportsThinking => selectedModel.supportsThinking;
   bool get supportsSearch => selectedModel.supportsSearch;
+  bool get supportsVision => selectedModel.supportsVision;
 
   /// 当前模型有效温度。
   double get temperature => selectedModel.temperature;
@@ -169,6 +177,8 @@ class AiSettingsProvider extends ChangeNotifier {
         await _persistPlatformsConfig(migrated);
       }
       await _loadApiKeys(cfg);
+      _maxImageSizeMB =
+          (cfg[_keyMaxImageSizeMB] as num?)?.toInt() ?? _maxImageSizeMB;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -472,6 +482,21 @@ class AiSettingsProvider extends ChangeNotifier {
         _keyLastStreaming: _lastStreaming,
         _keyLastSearch: _lastSearch,
       });
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// 设置单张图片大小上限（MB，用于导入校验），并持久化。
+  Future<bool> setMaxImageSizeMB(int mb) async {
+    final value = mb < 1 ? 1 : mb;
+    _maxImageSizeMB = value;
+    notifyListeners();
+    try {
+      await LocalConfigService.update({_keyMaxImageSizeMB: value});
       return true;
     } catch (e) {
       _error = e.toString();

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/ai_platform.dart';
 import '../models/api_type.dart';
@@ -84,6 +85,47 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                   fontSize: 12,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '图片设置',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '单张图片大小上限（超过将提示文件过大）',
+                      style: TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 96,
+                    child: TextFormField(
+                      initialValue: '${_form.maxImageSizeMB}',
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      onChanged: (v) {
+                        final n = int.tryParse(v);
+                        if (n != null) _form.setMaxImageSizeMB(n);
+                      },
+                      decoration: const InputDecoration(
+                        hintText: '16',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                        suffixText: 'MB',
+                        counterText: '',
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 20),
               for (var i = 0; i < platforms.length; i++)

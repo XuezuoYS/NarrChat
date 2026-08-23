@@ -32,9 +32,14 @@ class CloudSyncPanel extends StatefulWidget {
 class _CloudSyncPanelState extends State<CloudSyncPanel> {
   SettingsFormState get _form => widget.form;
 
+  /// 图片备份保留版本数（默认 1），即时生效。
+  final TextEditingController _imageKeepVersionsCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
+    _imageKeepVersionsCtrl.text =
+        '${context.read<CloudSyncProvider>().imageKeepVersions}';
     final provider = context.read<CloudSyncProvider>();
     // 已配置 WebDAV 时，进入面板自动刷新云端备份列表。
     // 使用 post-frame 回调，避免在 build/initState 阶段触发 notifyListeners。
@@ -106,6 +111,51 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     if (provider.error != null) {
       _showSnack('刷新失败：${provider.error}');
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 图片备份
+  // ---------------------------------------------------------------------------
+  Future<void> _uploadImageBackup() async {
+    final provider = context.read<CloudSyncProvider>();
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _BackupProgressDialog(
+        title: '备份图片',
+        task: (onProgress) => provider.uploadImageBackup(onProgress: onProgress),
+      ),
+    );
+    if (!mounted || !provider.isConfigured) return;
+    _showSnack(
+      (ok ?? false) ? '图片备份成功' : '图片备份失败：${provider.error ?? '未知错误'}',
+    );
+  }
+
+  Future<void> _refreshImageBackups() async {
+    final provider = context.read<CloudSyncProvider>();
+    await provider.refreshImageBackups();
+    if (!mounted) return;
+    if (provider.error != null) {
+      _showSnack('刷新图片备份失败：${provider.error}');
+    }
+  }
+
+  Future<void> _downloadImageBackup(WebDavFile file) async {
+    final provider = context.read<CloudSyncProvider>();
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _BackupProgressDialog(
+        title: '下载图片备份',
+        task: (onProgress) =>
+            provider.downloadImageBackup(file.name, onProgress: onProgress),
+      ),
+    );
+    if (!mounted) return;
+    _showSnack(
+      (ok ?? false) ? '图片恢复成功' : '图片恢复失败：${provider.error ?? '未知错误'}',
+    );
   }
 
   Future<void> _testConnection() async {
@@ -389,6 +439,74 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           const SizedBox(height: 8),
         ],
         if (provider.backupsLoaded) _buildBackupList(context, provider),
+        const Divider(height: 32),
+        // ---------- 图片备份 ----------
+        Text(
+          '图片备份',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: colors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '把本地图片目录 img/ 打包为 zip 单独备份（与数据库备份互不影响）。',
+          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            FilledButton.icon(
+              onPressed: provider.isConfigured && !provider.isImageBackupBusy
+                  ? _uploadImageBackup
+                  : null,
+              icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+              label: const Text('备份图片'),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton.icon(
+              onPressed: provider.isConfigured && !provider.isImageBackupBusy
+                  ? _refreshImageBackups
+                  : null,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('刷新图片'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            const SizedBox(
+              width: 88,
+              child: Text('保留历史版本', style: TextStyle(fontSize: 13)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: _imageKeepVersionsCtrl,
+                keyboardType: TextInputType.number,
+                onChanged: (v) {
+                  final n = int.tryParse(v);
+                  if (n != null) {
+                    context.read<CloudSyncProvider>().setImageKeepVersions(n);
+                  }
+                },
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                maxLength: 2,
+                decoration: const InputDecoration(
+                  hintText: '1',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                  counterText: '',
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (provider.imageBackupsLoaded)
+          _buildImageBackupList(context, provider),
       ],
     );
   }
@@ -461,6 +579,68 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                   icon: const Icon(Icons.cloud_download_outlined, size: 20),
                   color: Theme.of(context).colorScheme.primary,
                   onPressed: provider.isBusy ? null : () => _download(file),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildImageBackupList(
+    BuildContext context,
+    CloudSyncProvider provider,
+  ) {
+    final colors = context.narrColors;
+    if (provider.imageBackups.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colors.background,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.divider),
+        ),
+        child: Text(
+          '云端暂无图片备份，点击「备份图片」上传当前 img/ 目录。',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, color: colors.textSecondary),
+        ),
+      );
+    }
+    return Column(
+      children: [
+        for (final file in provider.imageBackups)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: colors.background,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: colors.divider),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.image_outlined, size: 20, color: colors.textSecondary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    file.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '下载并恢复此图片备份',
+                  icon: const Icon(Icons.cloud_download_outlined, size: 20),
+                  color: Theme.of(context).colorScheme.primary,
+                  onPressed: provider.isImageBackupBusy
+                      ? null
+                      : () => _downloadImageBackup(file),
                 ),
               ],
             ),
@@ -598,6 +778,57 @@ class _OptionTile extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 备份 / 下载进度对话框：执行任务并随 [onProgress] 实时更新进度与文字描述，
+/// 完成后自动关闭并返回成功与否。
+class _BackupProgressDialog extends StatefulWidget {
+  final String title;
+  final Future<bool> Function(void Function(double?, String) onProgress) task;
+
+  const _BackupProgressDialog({required this.title, required this.task});
+
+  @override
+  State<_BackupProgressDialog> createState() => _BackupProgressDialogState();
+}
+
+class _BackupProgressDialogState extends State<_BackupProgressDialog> {
+  double? _progress;
+  String _message = '处理中…';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _run());
+  }
+
+  Future<void> _run() async {
+    final ok = await widget.task((p, m) {
+      if (mounted) {
+        setState(() {
+          _progress = p;
+          _message = m;
+        });
+      }
+    });
+    if (mounted) Navigator.of(context).pop(ok);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_message),
+          const SizedBox(height: 12),
+          LinearProgressIndicator(value: _progress),
         ],
       ),
     );

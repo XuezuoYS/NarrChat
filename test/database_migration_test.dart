@@ -127,6 +127,45 @@ void main() {
     await db.close();
   });
 
+  test('v9→v10 迁移新增 user_images / ai_images 列且数据保留', () async {
+    final path = _newDbPath();
+
+    final db9 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 8, onCreate: _createV8Schema),
+    );
+    // 模拟 v9：先补上 model_name 列（前一版本迁移），此时无 user_images/ai_images。
+    await db9.execute("ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''");
+    await db9.insert('rounds', {
+      'book_id': 1,
+      'round_index': 1,
+      'user_input': '看图',
+      'ai_narrative': '正文',
+      'tokens_in': 1,
+      'tokens_out': 2,
+      'created_at': DateTime(2026, 8, 16).toIso8601String(),
+    });
+    await db9.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+    final cols = await db.rawQuery('PRAGMA table_info(rounds)');
+    expect(cols.map((c) => c['name']), contains('user_images'));
+    expect(cols.map((c) => c['name']), contains('ai_images'));
+    final round = (await db.rawQuery('SELECT * FROM rounds')).first;
+    expect(round['user_input'], '看图');
+    expect(round['user_images'], '[]');
+    expect(round['ai_images'], '[]');
+    await db.close();
+  });
+
   test('v5→当前版本全链路迁移（含 rounds 重建）成功且数据保留', () async {
     final path = _newDbPath();
 

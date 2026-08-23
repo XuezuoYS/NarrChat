@@ -15,7 +15,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 9;
+  static const int _dbVersion = 10;
 
   Database? _database;
 
@@ -137,6 +137,21 @@ class DatabaseHelper {
             "ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''",
           );
         }
+        if (oldVersion < 10) {
+          // 图片模块：每轮用户消息 / AI 返回附带的图片（相对路径 JSON 数组）。
+          await _addColumnIfMissing(
+            db,
+            'rounds',
+            'user_images',
+            "ALTER TABLE rounds ADD COLUMN user_images TEXT NOT NULL DEFAULT '[]'",
+          );
+          await _addColumnIfMissing(
+            db,
+            'rounds',
+            'ai_images',
+            "ALTER TABLE rounds ADD COLUMN ai_images TEXT NOT NULL DEFAULT '[]'",
+          );
+        }
   }
 
   /// 判断 [table] 是否已包含 [column] 列。
@@ -240,6 +255,8 @@ class DatabaseHelper {
         tokens_in INTEGER NOT NULL DEFAULT 0,
         tokens_out INTEGER NOT NULL DEFAULT 0,
         model_name TEXT DEFAULT '',
+        user_images TEXT NOT NULL DEFAULT '[]',
+        ai_images TEXT NOT NULL DEFAULT '[]',
         created_at DATETIME,
         FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
       )

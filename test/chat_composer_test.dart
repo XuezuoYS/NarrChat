@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/image_preview.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -336,5 +339,156 @@ void main() {
     await tester.tap(find.text('deepseek-v4-flash').last);
     await tester.pumpAndSettle();
     expect(settings.selectedModelId, 'deepseek-v4-flash');
+  });
+
+  testWidgets('识图模型：功能菜单出现「导入图片」', (tester) async {
+    final settings = AiSettingsProvider();
+    // 不 await：FakeAsync 下真实文件 I/O 的 Future 不会完成，但内存态同步生效。
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-flash-vision-exp',
+    );
+    await pumpChatScreen(tester, settings: settings);
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+
+    expect(find.text('导入图片'), findsOneWidget);
+  });
+
+  testWidgets('非识图模型：功能菜单不出现「导入图片」', (tester) async {
+    // 默认选中 deepseek-v4-pro（supportsVision=false）。
+    await pumpChatScreen(tester);
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+
+    expect(find.text('导入图片'), findsNothing);
+  });
+
+  testWidgets('识图模型：点击「导入图片」调用导入服务（默认 16MB）', (tester) async {
+    final settings = AiSettingsProvider();
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-flash-vision-exp',
+    );
+    final imageImport = FakeImageImportService(
+      results: [const ImageImportResult(paths: ['img/aaa.png'])],
+    );
+    await pumpChatScreen(tester, settings: settings, imageImport: imageImport);
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    expect(find.text('导入图片'), findsOneWidget);
+
+    await tester.tap(find.text('导入图片'));
+    await tester.pumpAndSettle();
+
+    expect(imageImport.calls, 1);
+    expect(imageImport.lastSizeLimitMb, 16);
+  });
+
+  testWidgets('待发送图片条：位于输入框上方且靠左（不再居中）', (tester) async {
+    final settings = AiSettingsProvider();
+    // 不 await：FakeAsync 下真实文件 I/O 的 Future 不会完成，但内存态同步生效。
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-flash-vision-exp',
+    );
+    final imageImport = FakeImageImportService(
+      results: [const ImageImportResult(paths: ['img/aaa.png'])],
+    );
+    await pumpChatScreen(tester, settings: settings, imageImport: imageImport);
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入图片'));
+    await tester.pumpAndSettle();
+
+    final strip = find.byKey(const Key('composer_image_strip'));
+    expect(strip, findsOneWidget);
+    final stripRect = tester.getTopLeft(strip);
+    final fieldRect = tester.getTopLeft(composerField());
+    // 缩略条在输入框上方。
+    expect(stripRect.dy, lessThan(fieldRect.dy));
+    // 靠左对齐输入框左缘（允许 14px 内容边距），而非居中。
+    expect((stripRect.dx - fieldRect.dx).abs(), lessThan(40));
+  });
+
+  testWidgets('发送后：待发送图片立即清空并上屏至用户气泡', (tester) async {
+    final settings = AiSettingsProvider();
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-flash-vision-exp',
+    );
+    final imageImport = FakeImageImportService(
+      results: [const ImageImportResult(paths: ['img/aaa.png'])],
+    );
+    final rp = await pumpChatScreen(
+      tester,
+      settings: settings,
+      imageImport: imageImport,
+    );
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入图片'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('composer_image_strip')), findsOneWidget);
+
+    await tester.enterText(composerField(), '看图');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+
+    // 发送瞬间：输入框待发送条清空（图片已与文字同帧上屏）。
+    expect(find.byKey(const Key('composer_image_strip')), findsNothing);
+
+    await waitSendDone(tester, rp);
+    // 生成结束：用户气泡带图片（缩略条存在于气泡内）。
+    expect(find.byType(ImagePreviewStrip), findsOneWidget);
+  });
+
+  testWidgets('生成过程中：用户气泡即显示图片（无需等生成结束）', (tester) async {
+    final settings = AiSettingsProvider();
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-flash-vision-exp',
+    );
+    final imageImport = FakeImageImportService(
+      results: [const ImageImportResult(paths: ['img/aaa.png'])],
+    );
+    final ai = FakeStreamingAiService();
+    final rp = await pumpChatScreen(
+      tester,
+      settings: settings,
+      imageImport: imageImport,
+      ai: ai,
+    );
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入图片'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('composer_image_strip')), findsOneWidget);
+
+    await tester.enterText(composerField(), '看图');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+
+    // 生成中：输入卡待发送条清空，用户气泡（含文字与图片）已上屏。
+    expect(find.byKey(const Key('composer_image_strip')), findsNothing);
+    expect(find.byType(ImagePreviewStrip), findsOneWidget);
+    expect(find.text('看图'), findsOneWidget);
+
+    // 流式进行中，气泡持续带图片。
+    ai.emit('第一句');
+    await tester.pump();
+    expect(find.byType(ImagePreviewStrip), findsOneWidget);
+
+    ai.complete();
+    for (var i = 0; i < 20 && rp.isSending; i++) {
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
   });
 }

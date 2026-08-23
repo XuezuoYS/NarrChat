@@ -1,3 +1,6 @@
+import 'dart:io' show File, Platform;
+
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport, ScrollDirection;
@@ -15,15 +18,19 @@ import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../services/html_search_service.dart';
+import '../services/image_import_service.dart';
+import '../services/image_store.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/edit_text_images_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/floor_jump_bar.dart';
 import '../widgets/generation_banner.dart';
+import '../widgets/image_preview.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
 import '../widgets/raw_dialog.dart';
@@ -90,6 +97,25 @@ class _ChatScreenState extends State<ChatScreen>
   /// 主输入框控制器：支持 Markdown 语法高亮（继承 TextEditingController）。
   final MarkdownEditingController _inputController = MarkdownEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  /// 当前待发送的用户消息附件（图片，相对路径 `img/<hash>.<ext>`）。
+  final List<String> _pendingImages = [];
+
+  /// 已发送、正在生成中的用户消息附件（图片相对路径）。
+  ///
+  /// 发送瞬间把 [_pendingImages] 转入本列表：输入框待发送条立即清空，
+  /// 而生成中的用户气泡仍能带上这些图片（与文字同帧上屏）。
+  List<String> _sendingImages = [];
+
+  /// 是否正在导入图片（展示进度条 UI）。
+  bool _isImportingImages = false;
+
+  /// 导入进度（已处理 / 总数），用于进度条。
+  int _importDone = 0;
+  int _importTotal = 0;
+
+  /// 是否正拖拽图片到输入区（Windows 桌面拖拽提示浮层）。
+  bool _dragTargeted = false;
 
   bool _drawerOpen = false;
 
@@ -657,6 +683,25 @@ class _ChatScreenState extends State<ChatScreen>
     return isUser ? _kFloorJumpDefaultUserHeight : _kFloorJumpDefaultAiHeight;
   }
 
+  /// 开始一次生成：把本次应携带的图片设为「生成中」用户气泡的内容，
+  /// 并复位自动跟随 / 新内容状态、滚动到底部。
+  ///
+  /// 供 发送 / 修改并重新提问 / 重新提问 / 失败重试 等所有生成入口复用，
+  /// 确保「生成一开始气泡就带图片」。不触碰待发送附件 [_pendingImages]
+  /// （发送方由调用处自行清空，其它场景保留未发送的图片）。
+  void _startGeneration({required List<String> images}) {
+    setState(() => _sendingImages = List.of(images));
+    _userScrolledAway = false;
+    _newContentDot = false;
+    _scrollToBottom();
+  }
+
+  /// 结束一次生成：清空「生成中」气泡图片占位，并对底部滚动 / 红点统一收尾。
+  void _endGeneration() {
+    if (mounted) setState(() => _sendingImages.clear());
+    _onGenerationFinished();
+  }
+
   Future<void> _send() async {
     final input = _inputController.text.trim();
     if (input.isEmpty) return;
@@ -666,13 +711,17 @@ class _ChatScreenState extends State<ChatScreen>
     // 生成期间防重复提交（输入框 onSubmitted 回车也可能触发 _send）。
     if (roundProvider.isSending) return;
 
+    // 发送：先把待发送图片上屏到「生成中」用户气泡，同时立即清空输入框附件。
+    final images = List<String>.from(_pendingImages);
+    _startGeneration(images: images);
+    setState(() => _pendingImages.clear());
     _inputController.clear();
-    // 发送新消息时恢复自动跟随（用户重新回到最新内容），并清除旧的「有新内容」红点。
-    _userScrolledAway = false;
-    _newContentDot = false;
-    _scrollToBottom();
 
-    final ok = await roundProvider.sendRound(userInput: input, book: book);
+    final ok = await roundProvider.sendRound(
+      userInput: input,
+      book: book,
+      userImages: images,
+    );
 
     if (!ok && mounted && roundProvider.error != null) {
       // 请求失败已以「失败条目」气泡落库（用户输入 + 红框），不再弹消息提示；
@@ -685,39 +734,180 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       );
     }
-    // 本轮生成结束（无论成败）统一收尾：在底部则跟随新内容，离开底部则提示红点。
-    _onGenerationFinished();
+    _endGeneration();
+  }
+
+  /// 打开平台文件选择器导入图片（仅识图模型可用）。
+  ///
+  /// 校验大小上限并去重落盘，成功后加入当前待发送附件；失败/超限给出提示。
+  Future<void> _importImages() async {
+    final ai = context.read<AiSettingsProvider>();
+    if (!ai.supportsVision) return;
+    final service = context.read<ImageImportService>();
+    setState(() {
+      _isImportingImages = true;
+      _importDone = 0;
+      _importTotal = 0;
+    });
+    try {
+      final result = await service.importImages(
+        sizeLimitMb: ai.maxImageSizeMB,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _importDone = done;
+            _importTotal = total;
+          });
+        },
+      );
+      if (!mounted) return;
+      if (result.paths.isNotEmpty) {
+        setState(() => _pendingImages.addAll(result.paths));
+      }
+      if (result.warnings.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.warnings.join('\n'))),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImportingImages = false;
+          _importDone = 0;
+          _importTotal = 0;
+        });
+      }
+    }
+  }
+
+  /// 从待发送附件中移除一张图片。
+  void _removePendingImage(String relPath) {
+    setState(() => _pendingImages.remove(relPath));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Windows 拖拽导入
+  // ---------------------------------------------------------------------------
+  void _onDragEntered() => setState(() => _dragTargeted = true);
+
+  void _onDragExited() => setState(() => _dragTargeted = false);
+
+  /// 拖拽文件到输入区：按大小上限校验并以哈希去重保存（仅识图模型）。
+  Future<void> _onDragDone(DropDoneDetails details) async {
+    _onDragExited();
+    final ai = context.read<AiSettingsProvider>();
+    if (!ai.supportsVision) return;
+    final files = details.files;
+    if (files.isEmpty) return;
+    final maxBytes = ai.maxImageSizeMB * 1024 * 1024;
+    setState(() {
+      _isImportingImages = true;
+      _importDone = 0;
+      _importTotal = files.length;
+    });
+    final saved = <String>[];
+    final warnings = <String>[];
+    for (var i = 0; i < files.length; i++) {
+      final f = files[i];
+      try {
+        final file = File(f.path);
+        final size = await file.length();
+        if (size > maxBytes) {
+          warnings.add(
+            '「${f.name}」超过 ${ai.maxImageSizeMB}MB，请压缩后重试。',
+          );
+        } else {
+          final bytes = await file.readAsBytes();
+          saved.add(await ImageStore.saveBytes(bytes, filename: f.path));
+        }
+      } catch (e) {
+        warnings.add('「${f.name}」导入失败：$e');
+      }
+      if (mounted) {
+        setState(() {
+          _importDone = i + 1;
+          _importTotal = files.length;
+        });
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _pendingImages.addAll(saved);
+      _isImportingImages = false;
+    });
+    if (warnings.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(warnings.join('\n'))),
+      );
+    }
+  }
+
+  /// 桌面端（Windows）把输入卡包进拖拽目标；其它平台原样返回。
+  Widget _dropTargetWrap(Widget child) {
+    if (!Platform.isWindows) return child;
+    return Stack(
+      children: [
+        DropTarget(
+          onDragEntered: (_) => _onDragEntered(),
+          onDragExited: (_) => _onDragExited(),
+          onDragDone: _onDragDone,
+          child: child,
+        ),
+        if (_dragTargeted)
+          Positioned.fill(child: _DragToImportHint()),
+      ],
+    );
   }
 
   /// 重新提问失败条目：以失败时的输入重新生成（sendRound 会先清空失败条目）。
+  ///
+  /// 失败条目不携带图片，故「生成中」气泡不带图片；不触碰待发送附件。
   Future<void> _retryFailure() async {
     final rp = context.read<RoundProvider>();
     final input = rp.failedUserInput;
     if (input.isEmpty || rp.isSending) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    _userScrolledAway = false;
+    _startGeneration(images: const []);
     await rp.sendRound(userInput: input, book: book);
-    _scrollToBottom();
+    _endGeneration();
   }
 
-  /// 修改并重新提问失败条目：编辑失败时的输入后重新生成。
+  /// 修改并重新提问失败条目：编辑失败时的输入后重新生成（识图模型可增删图片）。
   Future<void> _editAndRetryFailure() async {
     final rp = context.read<RoundProvider>();
     final input = rp.failedUserInput;
     if (input.isEmpty || rp.isSending) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    String? edited;
-    await _showEditTextDialog(
-      title: '修改并重新提问',
-      initial: input,
-      onSave: (text) async => edited = text,
+    final ai = context.read<AiSettingsProvider>();
+    EditTextImagesResult? result;
+    if (ai.supportsVision) {
+      result = await showEditTextImagesDialog(
+        context,
+        title: '修改并重新提问',
+        initial: input,
+        allowImages: true,
+        imageImport: context.read<ImageImportService>(),
+        maxImageSizeMB: ai.maxImageSizeMB,
+      );
+    } else {
+      String? edited;
+      await _showEditTextDialog(
+        title: '修改并重新提问',
+        initial: input,
+        onSave: (text) async => edited = text,
+      );
+      if (edited != null) result = EditTextImagesResult(edited!, const []);
+    }
+    if (result == null || !mounted) return;
+    _startGeneration(images: result.images);
+    await rp.sendRound(
+      userInput: result.text,
+      book: book,
+      userImages: result.images,
     );
-    if (edited == null || !mounted) return;
-    _userScrolledAway = false;
-    await rp.sendRound(userInput: edited!, book: book);
-    _scrollToBottom();
+    _endGeneration();
   }
 
   /// 清除失败条目。
@@ -918,21 +1108,34 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
-  /// 修改用户输入并重新提问：先编辑该轮输入，保存后删除本轮及后续所有轮次，
-  /// 再以修改后的输入重新生成（替换而非追加）。
+  /// 修改用户输入并重新提问：先编辑该轮输入（识图模型可增删图片），保存后
+  /// 删除本轮及后续所有轮次，再以修改后的输入重新生成（替换而非追加）。
   Future<void> _handleEditAndReAsk(Round round) async {
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    String? edited;
-    await _showEditTextDialog(
-      title: '修改并重新提问（第 ${round.roundIndex} 轮）',
-      initial: round.userInput,
-      // 仅记录修改后的文本；落库由 editAndReAsk 统一处理，避免重复写库。
-      onSave: (text) async {
-        edited = text;
-      },
-    );
-    if (edited == null || !mounted) return;
+    final ai = context.read<AiSettingsProvider>();
+    EditTextImagesResult? result;
+    if (ai.supportsVision) {
+      result = await showEditTextImagesDialog(
+        context,
+        title: '修改并重新提问（第 ${round.roundIndex} 轮）',
+        initial: round.userInput,
+        initialImages: round.userImages,
+        allowImages: true,
+        imageImport: context.read<ImageImportService>(),
+        maxImageSizeMB: ai.maxImageSizeMB,
+      );
+    } else {
+      String? edited;
+      await _showEditTextDialog(
+        title: '修改并重新提问（第 ${round.roundIndex} 轮）',
+        initial: round.userInput,
+        // 仅记录修改后的文本；落库由 editAndReAsk 统一处理，避免重复写库。
+        onSave: (text) async => edited = text,
+      );
+      if (edited != null) result = EditTextImagesResult(edited!, const []);
+    }
+    if (result == null || !mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -953,12 +1156,15 @@ class _ChatScreenState extends State<ChatScreen>
       ),
     );
     if (confirmed != true || !mounted) return;
+    // 重新生成开始即把图片送入「生成中」用户气泡（替换修改后的图片）。
+    _startGeneration(images: result.images);
     await context.read<RoundProvider>().editAndReAsk(
       round,
-      edited!,
+      result.text,
       book: book,
+      images: result.images,
     );
-    _scrollToBottom();
+    _endGeneration();
   }
 
   /// 重新提问（与「刷新本轮」合并）：删除本轮及后续所有轮次，
@@ -968,8 +1174,10 @@ class _ChatScreenState extends State<ChatScreen>
     if (!ok || !mounted) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
+    // 重新生成开始即把该轮图片送入「生成中」用户气泡。
+    _startGeneration(images: round.userImages);
     await context.read<RoundProvider>().refreshRound(round, book: book);
-    _scrollToBottom();
+    _endGeneration();
   }
 
   bool get _isWide {
@@ -1294,7 +1502,11 @@ class _ChatScreenState extends State<ChatScreen>
             // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: ChatBubble(isUser: true, text: pendingInput),
+              child: ChatBubble(
+                isUser: true,
+                text: pendingInput,
+                images: List.of(_sendingImages),
+              ),
             );
           } else if (showPending &&
               index == virtualBase + (showPendingUser ? 1 : 0)) {
@@ -1314,6 +1526,7 @@ class _ChatScreenState extends State<ChatScreen>
                 child: ChatBubble(
                   isUser: true,
                   text: round.userInput,
+                  images: round.userImages,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
                 ),
@@ -1326,6 +1539,7 @@ class _ChatScreenState extends State<ChatScreen>
                   text: round.aiNarrative.isEmpty
                       ? '（AI 未返回剧情正文）'
                       : round.aiNarrative,
+                  images: round.aiImages,
                   recommendedAction: round.recommendedAction,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
@@ -1611,7 +1825,9 @@ class _ChatScreenState extends State<ChatScreen>
                 width: double.infinity,
                 color: context.narrColors.surface,
                 padding: const EdgeInsets.only(bottom: 12),
-                child: _buildComposerCard(context, roundProvider, isSending),
+                child: _dropTargetWrap(
+                  _buildComposerCard(context, roundProvider, isSending),
+                ),
               ),
             ],
           ),
@@ -1670,7 +1886,47 @@ class _ChatScreenState extends State<ChatScreen>
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 待发送图片缩略条 + 导入进度：置于输入框上方、靠左，
+          // 避免图片卡片在输入框下方居中而显得突兀。
+          if (_isImportingImages)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    _importTotal > 0
+                        ? '正在导入图片 $_importDone/$_importTotal…'
+                        : '正在导入图片…',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: context.narrColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  // 用户可感知进度条（总数为 0 时为静态 0，避免不确定动画悬挂）。
+                  LinearProgressIndicator(
+                    value: _importTotal > 0 ? _importDone / _importTotal : 0,
+                  ),
+                ],
+              ),
+            )
+          else if (_pendingImages.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: ImagePreviewStrip(
+                  key: const Key('composer_image_strip'),
+                  images: List.of(_pendingImages),
+                  size: 72,
+                  onTapImage: (rel) => showImageViewer(context, rel),
+                  onRemove: _removePendingImage,
+                ),
+              ),
+            ),
           TextField(
             controller: _inputController,
             onTapOutside: unfocusOnTapOutside,
@@ -1716,6 +1972,7 @@ class _ChatScreenState extends State<ChatScreen>
                           supportsThinking: aiSettings.supportsThinking,
                           supportsStreaming: aiSettings.supportsStreaming,
                           supportsSearch: aiSettings.supportsSearch,
+                          supportsVision: aiSettings.supportsVision,
                           thinking: aiSettings.thinking,
                           streaming: aiSettings.streaming,
                           search: aiSettings.lastSearch,
@@ -1725,6 +1982,7 @@ class _ChatScreenState extends State<ChatScreen>
                               _setPerRoundOptions(streaming: v),
                           onSearchChanged: (v) =>
                               _setPerRoundOptions(search: v),
+                          onImportImages: _importImages,
                         ),
                       ),
                     ),
@@ -1820,33 +2078,69 @@ class _ChatScreenState extends State<ChatScreen>
   }
 }
 
+/// 拖拽图片进入输入区时显示的「松开以导入」提示浮层。
+class _DragToImportHint extends StatelessWidget {
+  const _DragToImportHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      alignment: Alignment.center,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.image_outlined, color: scheme.onPrimaryContainer),
+          const SizedBox(width: 8),
+          Text(
+            '松开以导入图片',
+            style: TextStyle(
+              color: scheme.onPrimaryContainer,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 聊天模式选项下拉（复用原每轮选项开关的视觉）。
 ///
 /// - 收起时显示当前启用选项摘要（如「无」「流式 | 思考 | 搜索(BETA)」，
 ///   搜索段用警告色，不加粗）；流式/思考启用时触发按钮为主题蓝边框+文字；
 /// - 展开为复选菜单，切换后保持展开可连续操作；
-/// - 联网搜索行始终显示 BETA 试验版二级提示（启用=警告色，未启用=灰）。
+/// - 联网搜索行始终显示 BETA 试验版二级提示（启用=警告色，未启用=灰）；
+/// - 模型支持识图时，菜单底部提供「导入图片」入口。
 class _ChatModeDropdown extends StatelessWidget {
   final bool supportsThinking;
   final bool supportsStreaming;
   final bool supportsSearch;
+  final bool supportsVision;
   final bool thinking;
   final bool streaming;
   final bool search;
   final ValueChanged<bool> onThinkingChanged;
   final ValueChanged<bool> onStreamingChanged;
   final ValueChanged<bool> onSearchChanged;
+  final VoidCallback onImportImages;
 
   const _ChatModeDropdown({
     required this.supportsThinking,
     required this.supportsStreaming,
     required this.supportsSearch,
+    required this.supportsVision,
     required this.thinking,
     required this.streaming,
     required this.search,
     required this.onThinkingChanged,
     required this.onStreamingChanged,
     required this.onSearchChanged,
+    required this.onImportImages,
   });
 
   /// 摘要各段（顺序：流式 | 思考 | 搜索(BETA)）。
@@ -1907,6 +2201,15 @@ class _ChatModeDropdown extends StatelessWidget {
             subtitle: '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗',
             subtitleColor: search ? warningColor : scheme.onSurfaceVariant,
           ),
+        if (supportsVision) ...[
+          const Divider(height: 8),
+          MenuItemButton(
+            closeOnActivate: false,
+            leadingIcon: Icon(Icons.image_outlined, size: 18),
+            onPressed: onImportImages,
+            child: const Text('导入图片'),
+          ),
+        ],
       ],
       builder: (context, controller, _) {
         return InkWell(

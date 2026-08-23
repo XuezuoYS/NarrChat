@@ -40,4 +40,54 @@ void main() {
     expect(ok, isTrue);
     expect(dao.rounds.single.modelName, AiPlatforms.defaultModelId);
   });
+
+  test('sendRound 落库用户图片：userImages 随轮次持久化（供气泡与历史回放）', () async {
+    final dao = FakeRoundDao();
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(books: [book]),
+      aiService: ToggleAiService(),
+      aiSettingsProvider: AiSettingsProvider(),
+    );
+
+    final images = ['img/aaa.png', 'img/bbb.jpg'];
+    final ok = await provider.sendRound(
+      userInput: '看图',
+      book: book,
+      userImages: images,
+    );
+    expect(ok, isTrue);
+    expect(dao.rounds, hasLength(1));
+    expect(dao.rounds.single.userImages, images);
+    expect(dao.rounds.single.aiImages, isEmpty);
+  });
+
+  test('editAndReAsk：以修改后的图片重新生成并落库', () async {
+    final dao = FakeRoundDao();
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(books: [book]),
+      aiService: ToggleAiService(),
+      aiSettingsProvider: AiSettingsProvider(),
+    );
+    await provider.loadRounds(1);
+    await provider.sendRound(
+      userInput: '原始输入',
+      book: book,
+      userImages: ['img/old.png'],
+    );
+    // loadRounds 会创建「第零轮」，故取 round_index == 1 的脚本轮。
+    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+
+    await provider.editAndReAsk(
+      round,
+      '修改后输入',
+      book: book,
+      images: ['img/new.png'],
+    );
+
+    final last = dao.rounds.last;
+    expect(last.userInput, '修改后输入');
+    expect(last.userImages, ['img/new.png']);
+  });
 }

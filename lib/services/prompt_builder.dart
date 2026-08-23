@@ -79,11 +79,21 @@ class PromptBuilder {
   /// 将历史轮次组装为 OpenAI 兼容的 `messages` 数组片段：
   /// 每轮一条 `user`（用户输入）+ 一条 `assistant`（AI 剧情正文），按时间顺序排列。
   /// 调用方应将其插入 `system` 消息之后、当前轮 `user` 消息之前。
-  static List<Map<String, String>> buildHistoryMessages(List<Round> rounds) {
-    final result = <Map<String, String>>[];
+  ///
+  /// [imagePartsFor] 非空时，若某轮用户消息存在图片（该回调返回图片 parts），
+  /// 其 `content` 变为「文本 + 图片数组」（OpenAI 兼容 vision 格式）；否则为纯文本。
+  static List<Map<String, dynamic>> buildHistoryMessages(
+    List<Round> rounds, {
+    List<Map<String, dynamic>> Function(Round round)? imagePartsFor,
+  }) {
+    final result = <Map<String, dynamic>>[];
     for (final r in rounds) {
       if (r.userInput.trim().isNotEmpty) {
-        result.add({'role': 'user', 'content': r.userInput});
+        final imageParts = imagePartsFor?.call(r) ?? const [];
+        result.add({
+          'role': 'user',
+          'content': _contentWithImages(r.userInput, imageParts),
+        });
       }
       result.add({
         'role': 'assistant',
@@ -91,6 +101,19 @@ class PromptBuilder {
       });
     }
     return result;
+  }
+
+  /// 组装单条用户消息的 `content`：无图片为纯文本字符串，有图片为
+  /// `[{"type":"text",…},{"type":"image_url",…}]` 数组。
+  static Object _contentWithImages(
+    String text,
+    List<Map<String, dynamic>> imageParts,
+  ) {
+    if (imageParts.isEmpty) return text;
+    return [
+      {'type': 'text', 'text': text},
+      ...imageParts,
+    ];
   }
 
   String _buildSystem({

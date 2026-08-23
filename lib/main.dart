@@ -18,6 +18,7 @@ import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
 import 'services/manual_licenses_service.dart';
+import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
 import 'services/system_fonts_service.dart';
 import 'theme/app_theme.dart';
@@ -143,6 +144,9 @@ class NarrChatApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: roundProvider),
         ChangeNotifierProvider.value(value: notificationSettingsProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
+        Provider<ImageImportService>(
+          create: (_) => PickerImageImportService(),
+        ),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
       child: Consumer<UiSettingsProvider>(

@@ -254,6 +254,33 @@ void main() {
       expect(history.single['role'], 'assistant');
     });
 
+    test('历史用户消息带图时 content 变为「文本 + 图片数组」（vision）', () {
+      final history = PromptBuilder.buildHistoryMessages(
+        const [
+          Round(
+            bookId: 1,
+            roundIndex: 1,
+            userInput: '看图',
+            userImages: ['img/a.png'],
+          ),
+        ],
+        imagePartsFor: (r) => [
+          {
+            'type': 'image_url',
+            'image_url': {
+              'url': 'data:image/png;base64,AA==',
+              'detail': 'high',
+            },
+          },
+        ],
+      );
+      final userMsg = history[0];
+      expect(userMsg['role'], 'user');
+      final content = userMsg['content'] as List;
+      expect(content[0], {'type': 'text', 'text': '看图'});
+      expect((content[1] as Map)['type'], 'image_url');
+    });
+
     test('解析器可按新顺序完整解析 AI 返回', () {
       const raw = '''
 ## 剧情演绎

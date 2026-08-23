@@ -70,4 +70,41 @@ void main() {
     await tester.pump();
     expect(menuCount, 1);
   });
+
+  testWidgets('带图气泡：正文上方显示图片预览，缺失文件显示占位', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: NarrChatTheme.light,
+        home: Scaffold(
+          body: Center(
+            child: ChatBubble(
+              isUser: false,
+              text: '测试消息内容',
+              images: ['img/a.png'],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 正文仍在。
+    expect(find.text('测试消息内容'), findsOneWidget);
+    // 解析失败（无真实文件）→ 灰色占位：损坏图标 + 文件名 + 「图片已丢失」。
+    expect(find.text('a.png'), findsOneWidget);
+    expect(find.text('图片已丢失'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('无图气泡：不渲染图片预览条', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: NarrChatTheme.light,
+        home: Scaffold(
+          body: Center(child: ChatBubble(isUser: false, text: '纯文本')),
+        ),
+      ),
+    );
+    expect(find.text('图片已丢失'), findsNothing);
+  });
 }

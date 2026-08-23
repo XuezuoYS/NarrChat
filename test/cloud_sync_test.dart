@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:narrchat/services/backup_image_service.dart';
 import 'package:narrchat/services/cloud_sync_service.dart';
 import 'package:narrchat/services/database_merge_service.dart';
 import 'package:narrchat/services/webdav_service.dart';
@@ -350,6 +351,35 @@ void main() {
         await local.close();
         await backup.close();
       }
+    });
+  });
+
+  group('BackupImageService（图片 zip 备份命名 / 匹配）', () {
+    test('文件名格式与时间戳、非法字符替换', () {
+      final name = BackupImageService.buildImageBackupFileName(
+        '张三/user',
+        DateTime(2026, 8, 16, 10, 30, 5),
+      );
+      expect(name, 'img_张三_user_20260816_103005.zip');
+      expect(BackupImageService.backupNameRegex.hasMatch(name), isTrue);
+    });
+
+    test('matchImageBackups：仅匹配本应用图片备份', () {
+      final files = [
+        const WebDavFile(name: 'narrchat_user_20260816_103005.db'),
+        const WebDavFile(name: 'img_张三_user_20260816_103005.zip'),
+        const WebDavFile(name: 'other.txt'),
+      ];
+      final matched = BackupImageService.matchImageBackups(files);
+      expect(matched, hasLength(1));
+      expect(matched.single.name, 'img_张三_user_20260816_103005.zip');
+    });
+
+    test('compareBackups：按修改时间新 → 旧，无时间按名字倒序', () {
+      final a = const WebDavFile(name: 'img_u_20260816_100000.zip');
+      final b = const WebDavFile(name: 'img_u_20260816_110000.zip');
+      expect(BackupImageService.compareBackups(a, b), greaterThan(0));
+      expect(BackupImageService.compareBackups(b, a), lessThan(0));
     });
   });
 }

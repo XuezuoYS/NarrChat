@@ -134,6 +134,62 @@ void main() {
       expect(spans[1].style?.backgroundColor, isNull); // 中间空格普通
       expect(spans[2].style?.backgroundColor, const Color(0xFFFFB74D));
     });
+
+    test('extractRawImages 提取 data URL 并估算字节数', () {
+      final urls = extractRawImages(
+        '{"url":"data:image/png;base64,AA=="}',
+      );
+      expect(urls, hasLength(1));
+      expect(urls[0].index, 1);
+      expect(urls[0].ext, 'png');
+      expect(urls[0].data, 'data:image/png;base64,AA==');
+      expect(urls[0].byteLength, 1);
+    });
+
+    test('extractRawImages：多张图片按出现顺序编号', () {
+      const text = '{"a":"data:image/jpg;base64,AA==","b":"data:image/png;base64,foobar"}';
+      final urls = extractRawImages(text);
+      expect(urls, hasLength(2));
+      expect(urls[0].index, 1);
+      expect(urls[0].ext, 'jpg');
+      expect(urls[1].index, 2);
+      expect(urls[1].ext, 'png');
+    });
+
+    test('collapseRawImages 折叠为短占位符，无图原样返回', () {
+      const raw = '{"url":"data:image/png;base64,AA=="}';
+      final collapsed = collapseRawImages(raw, extractRawImages(raw));
+      expect(collapsed, contains('「图像 1 · png · base64 已折叠」'));
+      expect(collapsed, isNot(contains('AA==')));
+      expect(collapseRawImages('无图', const []), '无图');
+    });
+
+    test('extractRawImages 处理超长 base64 不触发 StackOverflowError', () {
+      // 之前用 RegExp 会因贪婪量词扫描超长 base64 而栈溢出，此处线性扫描应安全。
+      final bigB64 = base64Encode(List<int>.filled(6_000_000, 7));
+      final raw = '{"url":"data:image/png;base64,$bigB64"}';
+      final imgs = extractRawImages(raw);
+      expect(imgs, hasLength(1));
+      expect(imgs.single.data.length, greaterThan(bigB64.length));
+      // 折叠后文本远短于原始 base64。
+      final collapsed = collapseRawImages(raw, imgs);
+      expect(collapsed.length, lessThan(200));
+      // base64 起始偏移 = 前缀长度（{"url":"data:image/ 为 8 字符 + 资源 11 + ext 3 + ;base64, 8 = 30）。
+      expect(imgs.single.start, 8);
+      expect(imgs.single.end, bigB64.length + 30);
+    });
+
+    test('extractRawImages 优先匹配最近一次 data URL（多张按序）', () {
+      const raw =
+          '{"a":"data:image/jpg;base64,AAAA"}'
+          '{"b":"data:image/png;base64,BBBB"}';
+      final imgs = extractRawImages(raw);
+      expect(imgs, hasLength(2));
+      expect(imgs[0].index, 1);
+      expect(imgs[0].ext, 'jpg');
+      expect(imgs[1].index, 2);
+      expect(imgs[1].ext, 'png');
+    });
   });
 
   group('RoundProvider RAW 捕获', () {
@@ -524,6 +580,65 @@ void main() {
       final after = plainOf(0);
       expect(after.contains(r'\n'), isFalse);
       expect(after, contains('\n'));
+    });
+
+    testWidgets('请求体含图片：折叠长 base64 并显示二级「图像 N 个」', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody:
+              '{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}',
+          thinking: '',
+          search: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      // 默认全部折叠：无可选中文本、无「图像」二级菜单。
+      expect(find.byType(SelectableText), findsNothing);
+      expect(find.text('图像 1 个（base64 已折叠）'), findsNothing);
+
+      // 展开请求体：出现折叠占位文本与「图像 1 个」二级菜单。
+      await tester.tap(find.text('【请求体 1】'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsOneWidget);
+      expect(find.text('图像 1 个（base64 已折叠）'), findsOneWidget);
+
+      // 点开头像二级菜单：出现图片详情（扩展名 / 字节数）与完整 data URL。
+      await tester.tap(find.text('图像 1 个（base64 已折叠）'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsNWidgets(2));
+      expect(find.text('图 1 · png · 1 B'), findsOneWidget);
+    });
+
+    testWidgets('超长 base64：展开二级菜单渲染截断预览 + 复制按钮，而非完整 base64', (tester) async {
+      final bigB64 = base64Encode(List<int>.filled(100000, 7));
+      final exchanges = [
+        RawExchange(
+          requestBody:
+              '{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,$bigB64"}}]}',
+          thinking: '',
+          search: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('【请求体 1】'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('图像 1 个（base64 已折叠）'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('图 1 · png ·'), findsOneWidget);
+      // 截断预览：出现「共 N 字符」，而不是完整 base64。
+      expect(find.textContaining('共 '), findsOneWidget);
+      expect(find.byIcon(Icons.copy), findsOneWidget);
     });
   });
 }

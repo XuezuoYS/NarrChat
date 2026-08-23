@@ -31,5 +31,26 @@ void main() {
       // 未指定时保留原值。
       expect(updated.copyWith().modelName, 'deepseek-v4-flash');
     });
+
+    test('userImages / aiImages：json 数组往返，空数组兼容历史数据', () {
+      final round = Round.fromMap(const {
+        'book_id': 1,
+        'round_index': 1,
+        'user_images': '["img/a.png","img/b.jpg"]',
+        'ai_images': '["img/c.jpeg"]',
+      });
+      expect(round.userImages, ['img/a.png', 'img/b.jpg']);
+      expect(round.aiImages, ['img/c.jpeg']);
+      final map = round.toMap();
+      expect(map['user_images'], '["img/a.png","img/b.jpg"]');
+      expect(map['ai_images'], '["img/c.jpeg"]');
+
+      // 历史数据无该列（null）/空值时默认空数组。
+      final legacy = Round.fromMap(const {'book_id': 1, 'round_index': 1});
+      expect(legacy.userImages, isEmpty);
+      expect(legacy.aiImages, isEmpty);
+      expect(legacy.toMap()['user_images'], '[]');
+      expect(legacy.toMap()['ai_images'], '[]');
+    });
   });
 }

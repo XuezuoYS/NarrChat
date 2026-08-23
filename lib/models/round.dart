@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// 轮次模型，对应数据库 `rounds` 表，通过 [bookId] 关联书籍。
 class Round {
   final int? id;
@@ -17,6 +19,12 @@ class Round {
   final String modelName;
   final DateTime? createdAt;
 
+  /// 用户消息附带的图片（相对路径数组，`img/<hash>.png`）。
+  final List<String> userImages;
+
+  /// AI 返回附带的图片（相对路径数组；为未来图像生成预留，本轮仅存储/展示）。
+  final List<String> aiImages;
+
   const Round({
     this.id,
     required this.bookId,
@@ -32,6 +40,8 @@ class Round {
     this.tokensOut = 0,
     this.modelName = '',
     this.createdAt,
+    this.userImages = const [],
+    this.aiImages = const [],
   });
 
   factory Round.fromMap(Map<String, Object?> map) {
@@ -52,6 +62,8 @@ class Round {
       createdAt: map['created_at'] == null
           ? null
           : DateTime.tryParse(map['created_at'] as String),
+      userImages: _decodeImages(map['user_images']),
+      aiImages: _decodeImages(map['ai_images']),
     );
   }
 
@@ -70,8 +82,23 @@ class Round {
       'tokens_in': tokensIn,
       'tokens_out': tokensOut,
       'model_name': modelName,
+      'user_images': jsonEncode(userImages),
+      'ai_images': jsonEncode(aiImages),
       'created_at': createdAt?.toIso8601String(),
     };
+  }
+
+  static List<String> _decodeImages(Object? raw) {
+    if (raw is! String || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {
+      // 非法 JSON 视为空。
+    }
+    return const [];
   }
 
   Round copyWith({
@@ -89,6 +116,8 @@ class Round {
     int? tokensOut,
     String? modelName,
     DateTime? createdAt,
+    List<String>? userImages,
+    List<String>? aiImages,
   }) {
     return Round(
       id: id ?? this.id,
@@ -105,6 +134,8 @@ class Round {
       tokensOut: tokensOut ?? this.tokensOut,
       modelName: modelName ?? this.modelName,
       createdAt: createdAt ?? this.createdAt,
+      userImages: userImages ?? this.userImages,
+      aiImages: aiImages ?? this.aiImages,
     );
   }
 }

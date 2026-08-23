@@ -1,7 +1,127 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/raw_exchange.dart';
 import '../utils/focus_utils.dart';
+
+/// 从文本中提取一个 base64 图片 data URL（用于 RAW 请求体中折叠长图）。
+class RawImageData {
+  /// 在文本中出现的顺序（1 起）。
+  final int index;
+
+  /// 图片扩展名（如 `png`）。
+  final String ext;
+
+  /// 完整 data URL（`data:image/<ext>;base64,<…>`）。
+  final String data;
+
+  /// 估计的原始字节数。
+  final int byteLength;
+
+  /// 在源文本中的起始偏移。
+  final int start;
+
+  /// 在源文本中的结束偏移（不含）。
+  final int end;
+
+  const RawImageData({
+    required this.index,
+    required this.ext,
+    required this.data,
+    required this.byteLength,
+    required this.start,
+    required this.end,
+  });
+}
+
+/// 判断代码单元是否为 base64 字符（A-Z a-z 0-9 + / =）。
+bool _isBase64CodeUnit(int cu) =>
+    (cu >= 0x41 && cu <= 0x5A) ||
+    (cu >= 0x61 && cu <= 0x7A) ||
+    (cu >= 0x30 && cu <= 0x39) ||
+    cu == 0x2B || // '+'
+    cu == 0x2F || // '/'
+    cu == 0x3D; // '='
+
+/// 把文本中的转义序列展开为真实换行 / 制表符（供「转译换行符」选项）。
+///
+/// 与「转义」相反：将 JSON 等原文里的 `\n` / `\r\n` / `\t` 字面量
+/// 还原为实际换行 / 制表符，便于直接阅读内容（如请求体中 messages 的换行）。
+/// 纯函数，便于测试。
+String expandEscapes(String text) {
+  return text
+      .replaceAll(r'\r\n', '\n')
+      .replaceAll(r'\n', '\n')
+      .replaceAll(r'\r', '\n')
+      .replaceAll(r'\t', '\t');
+}
+
+/// 提取文本中的全部 `data:image/<ext>;base64,<…>` data URL（按出现顺序）。
+///
+/// 纯函数，便于测试。
+///
+/// 说明：这里刻意不使用 `RegExp`，因为 Dart 的正则引擎在贪婪量词（`+`）
+/// 扫描超长 base64（可达数 MB）时会在内部递归匹配而导致 `StackOverflowError`；
+/// 用 `indexOf` 线性扫描可安全处理任意长度。
+List<RawImageData> extractRawImages(String text) {
+  const prefix = 'data:image/';
+  const sep = ';base64,';
+  final n = text.length;
+  final result = <RawImageData>[];
+  var index = 0;
+  var searchStart = 0;
+  while (true) {
+    final p = text.indexOf(prefix, searchStart);
+    if (p < 0) break;
+    final sepIdx = text.indexOf(sep, p + prefix.length);
+    if (sepIdx < 0) break;
+    final ext = text.substring(p + prefix.length, sepIdx).toLowerCase();
+    final b64Start = sepIdx + sep.length;
+    var end = b64Start;
+    while (end < n && _isBase64CodeUnit(text.codeUnitAt(end))) {
+      end++;
+    }
+    if (end > b64Start) {
+      final b64 = text.substring(b64Start, end);
+      final padding = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0);
+      result.add(
+        RawImageData(
+          index: ++index,
+          ext: ext,
+          data: text.substring(p, end),
+          byteLength: (b64.length * 3) ~/ 4 - padding,
+          start: p,
+          end: end,
+        ),
+      );
+    }
+    // 推进搜索起点：正常在 base64 结尾之后继续；否则跳到分隔符之后，避免死循环。
+    searchStart = end > b64Start ? end : sepIdx + 1;
+  }
+  return result;
+}
+
+/// 把文本中的每个图片 data URL 替换为短占位符（`「图像 N · ext · base64 已折叠」`）。
+///
+/// 仅替换匹配区间本身，JSON 的引号/结构保持不变；无图片时原样返回。
+/// [images] 假定来自对同一 [text] 调用 [extractRawImages] 的结果。纯函数。
+String collapseRawImages(String text, List<RawImageData> images) {
+  if (images.isEmpty) return text;
+  var result = text;
+  // 从后往前替换，避免前面的替换位移后续匹配区间。
+  for (var i = images.length - 1; i >= 0; i--) {
+    final img = images[i];
+    if (img.start < 0 || img.end > result.length || img.start >= img.end) {
+      continue;
+    }
+    result = result.replaceRange(
+      img.start,
+      img.end,
+      '「图像 ${img.index} · ${img.ext} · base64 已折叠」',
+    );
+  }
+  return result;
+}
 
 /// 打开 RAW 对话框。
 ///
@@ -18,19 +138,6 @@ void showRawDataDialog(
     context: context,
     builder: (_) => RawDialog(exchanges: exchanges, failedError: failedError),
   );
-}
-
-/// 把文本中的转义序列展开为真实换行 / 制表符（供「转译换行符」选项）。
-///
-/// 与「转义」相反：将 JSON 等原文里的 `\n` / `\r\n` / `\t` 字面量
-/// 还原为实际换行 / 制表符，便于直接阅读内容（如请求体中 messages 的换行）。
-/// 纯函数，便于测试。
-String expandEscapes(String text) {
-  return text
-      .replaceAll(r'\r\n', '\n')
-      .replaceAll(r'\n', '\n')
-      .replaceAll(r'\r', '\n')
-      .replaceAll(r'\t', '\t');
 }
 
 /// 计算 [query] 在 [text] 中的匹配次数（大小写不敏感；空查询返回 0）。
@@ -163,6 +270,17 @@ class _RawDialogState extends State<RawDialog> {
   /// 按「转译换行符」开关转译后的展示文本（开启 = 展开转义序列）。
   String _display(String text) => _escapeNewlines ? expandEscapes(text) : text;
 
+  /// 请求体展示文本：先按开关转译，再把长图片 data URL 折叠为短占位符，
+  /// 避免 base64 撑满对话框（图片详情收进二级扩展菜单）。
+  String _requestDisplay(RawExchange ex) {
+    final text = _display(ex.requestBody);
+    return collapseRawImages(text, extractRawImages(text));
+  }
+
+  /// 请求体文本中引用的图片 data URL 列表（用于二级扩展菜单）。
+  List<RawImageData> _requestImages(RawExchange ex) =>
+      extractRawImages(_display(ex.requestBody));
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -179,7 +297,7 @@ class _RawDialogState extends State<RawDialog> {
   void _forEachBlock(void Function(int blockIndex, String text, bool mono) fn) {
     var blockIndex = 0;
     for (final ex in widget.exchanges) {
-      fn(blockIndex++, _display(ex.requestBody), true);
+      fn(blockIndex++, _requestDisplay(ex), true);
       if (_hasReturn(ex)) {
         fn(blockIndex++, _display(ex.thinking), false);
         fn(blockIndex++, _display(ex.search), false);
@@ -524,11 +642,12 @@ class _RawDialogState extends State<RawDialog> {
   ) {
     final scheme = Theme.of(context).colorScheme;
     final requestBlockIndex = blockIndex;
+    final requestImages = _requestImages(ex);
     final children = <Widget>[
-      // 请求体：可折叠块（默认折叠）。
+      // 请求体：可折叠块（默认折叠，长图片 data URL 折叠为短占位符）。
       _CollapsibleBlock(
         label: '【请求体 ${index + 1}】',
-        text: _display(ex.requestBody),
+        text: _requestDisplay(ex),
         query: _query,
         mono: true,
         expanded: _expandedBlocks.contains(requestBlockIndex),
@@ -539,6 +658,9 @@ class _RawDialogState extends State<RawDialog> {
           () => GlobalKey(),
         ),
       ),
+      // 请求体展开且含图片时，追加「图像 N 个」二级扩展菜单展示 base64。
+      if (requestImages.isNotEmpty && _expandedBlocks.contains(requestBlockIndex))
+        _ImageListBlock(images: requestImages),
       const SizedBox(height: 10),
       // AI 返回：分组标签 + 三个可折叠块。
       Text(
@@ -718,6 +840,126 @@ class _CollapsibleBlock extends StatelessWidget {
           ],
         ],
       ],
+    );
+  }
+}
+
+/// 图片 data URL 二级扩展菜单：展示请求体中引用的每张图片元数据与截断预览。
+///
+/// 默认折叠；展开后显示 `图 n · ext · 字节数`、一段截断预览与
+/// 「复制完整 data URL」按钮。**不直接渲染完整 base64** —— 单张图片 base64
+/// 可达数 MB，直接交给文本排版会卡死界面。
+class _ImageListBlock extends StatefulWidget {
+  final List<RawImageData> images;
+
+  const _ImageListBlock({required this.images});
+
+  @override
+  State<_ImageListBlock> createState() => _ImageListBlockState();
+}
+
+class _ImageListBlockState extends State<_ImageListBlock> {
+  bool _expanded = false;
+
+  String _fmtBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  /// 截断预览：超长 base64 只显示前 120 个字符，避免大文本排版卡死。
+  String _preview(RawImageData img) {
+    const maxLen = 120;
+    if (img.data.length <= maxLen) return img.data;
+    return '${img.data.substring(0, maxLen)}…（共 ${img.data.length} 字符）';
+  }
+
+  Future<void> _copy(BuildContext context, String data) async {
+    await Clipboard.setData(ClipboardData(text: data));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制完整 data URL')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final mono = TextStyle(
+      fontSize: 11,
+      height: 1.5,
+      fontFamily: 'monospace',
+      color: scheme.onSurfaceVariant,
+    );
+    final header = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          _expanded ? Icons.expand_more : Icons.chevron_right,
+          size: 16,
+          color: scheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 2),
+        Text(
+          '图像 ${widget.images.length} 个（base64 已折叠）',
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w600,
+            color: scheme.onSurface,
+          ),
+        ),
+      ],
+    );
+    final entries = [
+      for (final img in widget.images) ...[
+        Text(
+          '图 ${img.index} · ${img.ext} · ${_fmtBytes(img.byteLength)}',
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            color: scheme.onSurface,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: SelectableText(_preview(img), style: mono, maxLines: 2),
+            ),
+            IconButton(
+              icon: const Icon(Icons.copy, size: 16),
+              tooltip: '复制完整 data URL',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _copy(context, img.data),
+            ),
+          ],
+        ),
+        if (img != widget.images.last) const SizedBox(height: 10),
+      ],
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(left: 34, top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: header,
+            ),
+          ),
+          if (_expanded) ...[
+            const SizedBox(height: 6),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: entries,
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

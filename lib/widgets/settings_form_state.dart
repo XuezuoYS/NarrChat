@@ -71,6 +71,12 @@ class SettingsFormState extends ChangeNotifier {
   // ---------------------------------------------------------------------------
   List<AiPlatform> get platforms => _working;
 
+  /// 单张图片大小上限（MB，默认 16，可在设置中调整）。
+  int get maxImageSizeMB => _ai.maxImageSizeMB;
+
+  /// 更新单张图片大小上限（MB）并持久化。
+  void setMaxImageSizeMB(int mb) => _ai.setMaxImageSizeMB(mb);
+
   TextEditingController nameCtrlFor(String platformId) =>
       _platformNameCtrls[platformId]!;
   TextEditingController baseUrlCtrlFor(String platformId) =>

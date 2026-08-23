@@ -1,0 +1,204 @@
+import 'package:flutter/material.dart';
+
+import '../services/image_import_service.dart';
+import '../utils/focus_utils.dart';
+import 'image_preview.dart';
+import 'markdown_editing_controller.dart';
+
+/// 「修改并重新提问」对话框的返回结果：编辑后的文本 + 图片相对路径列表。
+class EditTextImagesResult {
+  final String text;
+  final List<String> images;
+
+  const EditTextImagesResult(this.text, this.images);
+}
+
+/// 打开「编辑文本 + 图片」对话框（识图模型可增删图片）。
+///
+/// - [allowImages] 为 false 时隐藏图片区（退化为纯文本编辑）；
+/// - [imageImport] 与 [maxImageSizeMB] 用于「添加图片」（新增图片经哈希去重落盘）；
+/// - 取消返回 null；保存返回 [EditTextImagesResult]。
+Future<EditTextImagesResult?> showEditTextImagesDialog(
+  BuildContext context, {
+  required String title,
+  required String initial,
+  List<String> initialImages = const [],
+  required bool allowImages,
+  required ImageImportService imageImport,
+  required int maxImageSizeMB,
+}) {
+  return showDialog<EditTextImagesResult>(
+    context: context,
+    builder: (ctx) => _EditTextImagesDialog(
+      title: title,
+      initial: initial,
+      initialImages: initialImages,
+      allowImages: allowImages,
+      imageImport: imageImport,
+      maxImageSizeMB: maxImageSizeMB,
+    ),
+  );
+}
+
+class _EditTextImagesDialog extends StatefulWidget {
+  final String title;
+  final String initial;
+  final List<String> initialImages;
+  final bool allowImages;
+  final ImageImportService imageImport;
+  final int maxImageSizeMB;
+
+  const _EditTextImagesDialog({
+    required this.title,
+    required this.initial,
+    required this.initialImages,
+    required this.allowImages,
+    required this.imageImport,
+    required this.maxImageSizeMB,
+  });
+
+  @override
+  State<_EditTextImagesDialog> createState() => _EditTextImagesDialogState();
+}
+
+class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
+  late final MarkdownEditingController _controller;
+  late final List<String> _images;
+  bool _importing = false;
+  int _importDone = 0;
+  int _importTotal = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = MarkdownEditingController(text: widget.initial);
+    _images = List.of(widget.initialImages);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _import() async {
+    setState(() {
+      _importing = true;
+      _importDone = 0;
+      _importTotal = 0;
+    });
+    try {
+      final result = await widget.imageImport.importImages(
+        sizeLimitMb: widget.maxImageSizeMB,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _importDone = done;
+            _importTotal = total;
+          });
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _images.addAll(result.paths);
+        _importing = false;
+      });
+      if (result.warnings.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.warnings.join('\n'))),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _importing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('图片导入失败：$e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final content = <Widget>[
+      TextField(
+        controller: _controller,
+        onTapOutside: unfocusOnTapOutside,
+        minLines: 10,
+        maxLines: null,
+        style: const TextStyle(fontSize: 13, height: 1.5),
+        decoration: const InputDecoration(hintText: '内容'),
+      ),
+    ];
+
+    if (widget.allowImages) {
+      if (_images.isNotEmpty) {
+        content.addAll([
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 72,
+            child: ImagePreviewStrip(
+              images: List.of(_images),
+              size: 72,
+              onTapImage: (rel) => showImageViewer(context, rel),
+              onRemove: (rel) => setState(() => _images.remove(rel)),
+            ),
+          ),
+        ]);
+      }
+      content
+        ..add(const SizedBox(height: 12))
+        ..add(
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _importing ? null : _import,
+                icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+                label: const Text('添加图片'),
+              ),
+              const SizedBox(width: 8),
+              if (_importing)
+                Expanded(
+                  child: Text(
+                    _importTotal > 0
+                        ? '正在导入 $_importDone/$_importTotal…'
+                        : '正在导入…',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+    }
+
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: content,
+        )),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(
+            EditTextImagesResult(
+              _controller.text,
+              widget.allowImages ? List.of(_images) : const [],
+            ),
+          ),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}

@@ -19,6 +19,7 @@ import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
 import '../services/html_search_service.dart';
+import '../services/image_store.dart';
 import '../services/prompt_builder.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
@@ -330,6 +331,7 @@ class RoundProvider extends ChangeNotifier {
   Future<bool> sendRound({
     required String userInput,
     Book? book,
+    List<String>? userImages,
   }) async {
     final b = book;
     if (b == null || b.id == null) {
@@ -393,7 +395,24 @@ class RoundProvider extends ChangeNotifier {
 
       // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
       // 而非拼入本次 Prompt 文本。
-      final historyMessages = PromptBuilder.buildHistoryMessages(recentRounds);
+      final supportsVision = settings?.supportsVision ?? false;
+      // 预读取本轮及历史用户消息所需图片为 base64 data URL（仅识图模型）。
+      final imageDataUrls = supportsVision
+          ? await _collectImageDataUrls(recentRounds, userImages)
+          : const <String, String>{};
+      final historyMessages = PromptBuilder.buildHistoryMessages(
+        recentRounds,
+        imagePartsFor: supportsVision
+            ? (r) => _imagePartsFor(r, imageDataUrls)
+            : null,
+      );
+      final userContent = supportsVision
+          ? _userContentWithImages(
+              prompts.userPrompt,
+              userImages,
+              imageDataUrls,
+            )
+          : prompts.userPrompt;
 
       final useStream = settings?.streaming ?? true;
       // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
@@ -416,7 +435,7 @@ class RoundProvider extends ChangeNotifier {
         messages: [
           {'role': 'system', 'content': prompts.systemPrompt},
           ...historyMessages,
-          {'role': 'user', 'content': prompts.userPrompt},
+          {'role': 'user', 'content': userContent},
         ],
         temperature: settings?.temperature ?? 1.0,
         thinking:
@@ -453,7 +472,7 @@ class RoundProvider extends ChangeNotifier {
                     'content': '${prompts.systemPrompt}\n\n$_searchInstruction',
                   },
                   ...historyMessages,
-                  {'role': 'user', 'content': prompts.userPrompt},
+                  {'role': 'user', 'content': userContent},
                 ],
                 useStream: useStream,
                 onChunk: onChunk,
@@ -509,6 +528,8 @@ class RoundProvider extends ChangeNotifier {
         tokensOut: result.completionTokens,
         // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
         modelName: values.model,
+        // 用户消息附带的图片（相对路径），随轮次落库，供气泡展示与历史回放。
+        userImages: userImages ?? const [],
         createdAt: DateTime.now(),
       );
       final newRoundId = await _dao.insertRound(newRound);
@@ -655,6 +676,76 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// 首轮带 `web_search` 工具调用模型；若模型请求搜索则执行并把结果
   /// 回传，直至模型返回最终内容（6 区块）或达到最大迭代次数。
+  // ---------------------------------------------------------------------------
+  // 图片 → OpenAI 兼容 vision content（base64 data URL）
+  // ---------------------------------------------------------------------------
+
+  /// 收集本轮及历史轮次用户消息所需图片的 data URL（按相对路径缓存）。
+  ///
+  /// 仅被识图模型调用；缺失文件跳过（不阻断发送，UI 侧以占位图提示）。
+  Future<Map<String, String>> _collectImageDataUrls(
+    List<Round> historyRounds,
+    List<String>? currentImages,
+  ) async {
+    final paths = <String>{
+      ...?currentImages,
+      for (final r in historyRounds) ...r.userImages,
+    };
+    final result = <String, String>{};
+    for (final path in paths) {
+      try {
+        result[path] = await _imageDataUrl(path);
+      } catch (_) {
+        // 文件缺失 / 读取失败：跳过，避免整请求失败。
+      }
+    }
+    return result;
+  }
+
+  /// 单个图片 → data URL（`data:image/<ext>;base64,<…>`）。
+  Future<String> _imageDataUrl(String relPath) async {
+    final bytes = await ImageStore.readBytes(relPath);
+    final ext = ImageStore.normalizeExt(relPath);
+    return 'data:image/$ext;base64,${base64Encode(bytes)}';
+  }
+
+  /// 为某历史轮次用户消息构造图片 parts（无可用图片则返回空）。
+  List<Map<String, dynamic>> _imagePartsFor(
+    Round round,
+    Map<String, String> dataUrls,
+  ) {
+    return [
+      for (final path in round.userImages)
+        if (dataUrls.containsKey(path))
+          {
+            'type': 'image_url',
+            'image_url': {'url': dataUrls[path]!, 'detail': 'high'},
+          },
+    ];
+  }
+
+  /// 组装当前用户消息 `content`：有图片为数组，否则为纯文本字符串。
+  Object _userContentWithImages(
+    String text,
+    List<String>? userImages,
+    Map<String, String> dataUrls,
+  ) {
+    final parts = <Map<String, dynamic>>[];
+    for (final path in (userImages ?? const [])) {
+      if (dataUrls.containsKey(path)) {
+        parts.add({
+          'type': 'image_url',
+          'image_url': {'url': dataUrls[path]!, 'detail': 'high'},
+        });
+      }
+    }
+    if (parts.isEmpty) return text;
+    return [
+      {'type': 'text', 'text': text},
+      ...parts,
+    ];
+  }
+
   Future<AiCallResult> _runAgent({
     required AiSettingsProvider? settings,
     required String apiBaseUrl,
@@ -904,19 +995,28 @@ class RoundProvider extends ChangeNotifier {
     final b = book;
     if (b == null || b.id == null || _gen(b.id!).isSending) return;
     await deleteRound(round, deleteFollowing: true);
-    await sendRound(userInput: round.userInput, book: b);
+    await sendRound(
+      userInput: round.userInput,
+      book: b,
+      userImages: round.userImages,
+    );
   }
 
   /// 修改并重新提问：
   /// 1. 更新该轮的用户输入；
   /// 2. 删除本轮及后续所有轮次；
   /// 3. 以修改后的输入重新请求 AI（替换原轮次及后续，而非追加新轮次）。
-  Future<void> editAndReAsk(Round round, String editedInput, {Book? book}) async {
+  Future<void> editAndReAsk(
+    Round round,
+    String editedInput, {
+    Book? book,
+    List<String>? images,
+  }) async {
     final b = book;
     if (b == null || b.id == null || _gen(b.id!).isSending) return;
     await updateUserInput(round.id!, editedInput);
     await deleteRound(round, deleteFollowing: true);
-    await sendRound(userInput: editedInput, book: b);
+    await sendRound(userInput: editedInput, book: b, userImages: images);
   }
 
   /// 编辑 AI 正文（长按/右键 → 编辑正文）。
