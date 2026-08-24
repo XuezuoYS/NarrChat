@@ -183,6 +183,9 @@ class _WarmImageViewerWindowAppState extends State<WarmImageViewerWindowApp> {
 
   Future<void> _showLoaded() async {
     try {
+      // 预热窗口在启动时创建并保持隐藏，其尺寸可能未在创建时正确生效；
+      // 因此在显示时重新强制正确尺寸并居中，避免 release 安装版出现尺寸/布局异常。
+      await windowManager.setSize(const Size(960, 720));
       await windowManager.center();
       await windowManager.show();
       await windowManager.focus();
