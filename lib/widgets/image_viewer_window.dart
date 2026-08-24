@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
@@ -19,9 +20,18 @@ class ImageWindowArgs {
   final List<String> images;
   final int index;
 
-  const ImageWindowArgs({required this.images, required this.index});
+  /// 是否为「预热常驻」查看器窗口：`true` 时子窗口进入常驻监听模式，
+  /// 等待主窗口通过命令通道送入图片组（此时 [images] 可为空）。
+  final bool warm;
 
-  String encode() => jsonEncode({'images': images, 'index': index});
+  const ImageWindowArgs({
+    required this.images,
+    required this.index,
+    this.warm = false,
+  });
+
+  String encode() =>
+      jsonEncode({'images': images, 'index': index, if (warm) 'warm': true});
 
   /// 从 JSON 字符串解析；格式不符返回 null。
   static ImageWindowArgs? tryDecode(String raw) {
@@ -29,13 +39,36 @@ class ImageWindowArgs {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
       final images = (decoded['images'] as List<dynamic>?)?.cast<String>();
-      if (images == null || images.isEmpty) return null;
+      final warm = decoded['warm'] == true;
+      // 非预热窗口必须携带非空图片；预热窗口允许空列表（等待后续 load 命令）。
+      if (images == null || (images.isEmpty && !warm)) return null;
       final index = (decoded['index'] as num?)?.toInt() ?? 0;
-      return ImageWindowArgs(images: images, index: index);
+      return ImageWindowArgs(images: images, index: index, warm: warm);
     } catch (_) {
       return null;
     }
   }
+}
+
+/// 一条「加载图片组」命令的解析结果（主窗口 → 预热查看器窗口）。
+class ImageViewerLoadParams {
+  final List<String> images;
+  final int index;
+
+  const ImageViewerLoadParams(this.images, this.index);
+}
+
+/// 解析主窗口从命令通道送达的 `load` 载荷；格式不符返回 null。
+ImageViewerLoadParams? tryDecodeLoadPayload(dynamic payload) {
+  if (payload is! Map) return null;
+  final raw = payload['images'];
+  // 立即校验元素类型，避免 `.cast<String>()` 的惰性视图把非字符串列表放行。
+  if (raw is! List || raw.isEmpty || !raw.every((e) => e is String)) {
+    return null;
+  }
+  final images = raw.cast<String>();
+  final index = (payload['index'] as num?)?.toInt() ?? 0;
+  return ImageViewerLoadParams(images, index);
 }
 
 /// 子窗口入口：设置窗口尺寸/居中后运行查看器 App。
@@ -56,6 +89,204 @@ Future<void> runImageViewerWindowApp(ImageWindowArgs args) async {
     },
   );
   runApp(ImageViewerWindowApp(args: args));
+}
+
+/// 图片查看器「预热常驻窗口」入口：配置窗口尺寸/居中（但保持隐藏），
+/// 随后进入常驻监听模式，等待主窗口送入图片组。
+///
+/// 由主窗口 `main()` 检测到本窗口是「预热标记」子窗口时调用。
+Future<void> runWarmImageViewerWindowApp() async {
+  // 只配置窗口（尺寸/居中/黑色背景/隐藏系统标题栏），不 show，保持隐藏，
+  // 由收到 `load` 命令时的 WarmImageViewerWindowApp 再显示。
+  windowManager.waitUntilReadyToShow(
+    const WindowOptions(
+      title: 'NarrChat 图像查看器',
+      size: Size(960, 720),
+      center: true,
+      backgroundColor: Colors.black,
+      titleBarStyle: TitleBarStyle.hidden,
+    ),
+    () async {},
+  );
+  runApp(const WarmImageViewerWindowApp());
+}
+
+/// 预热常驻查看器窗口：注册「load」命令处理器，收到后加载图片组并显示。
+///
+/// 窗口初始为隐藏，本地无状态；每次 `load` 换一组新图片（用新 Key 重建
+/// [DesktopImageViewer]），在窗口内完成显示与聚焦，避免主窗口「先 show 空窗口」。
+class WarmImageViewerWindowApp extends StatefulWidget {
+  const WarmImageViewerWindowApp({super.key});
+
+  @override
+  State<WarmImageViewerWindowApp> createState() =>
+      _WarmImageViewerWindowAppState();
+}
+
+class _WarmImageViewerWindowAppState extends State<WarmImageViewerWindowApp> {
+  List<String> _images = const [];
+  int _index = 0;
+  int _rev = 0;
+
+  final _WindowHideOnCloseListener _closeListener =
+      _WindowHideOnCloseListener();
+
+  @override
+  void initState() {
+    super.initState();
+    _setupWindowBehavior();
+    _registerHandler();
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(_closeListener);
+    super.dispose();
+  }
+
+  /// 复用窗口的关键：拦截关闭信号（X / Alt+F4 / 任务栏关闭 / 标题栏关闭按钮），
+  /// 改为「隐藏」而非「销毁」，从而保留引擎，保证下次开图能直接复用（QQ 等软件的做法）。
+  Future<void> _setupWindowBehavior() async {
+    try {
+      await windowManager.setPreventClose(true);
+      windowManager.addListener(_closeListener);
+    } catch (_) {
+      // 窗口管理器未就绪时忽略。
+    }
+  }
+
+  Future<void> _registerHandler() async {
+    try {
+      final controller = await WindowController.fromCurrentEngine();
+      await controller.setWindowMethodHandler((call) async {
+        if (call.method != 'load') {
+          return <String, dynamic>{'ok': false};
+        }
+        final params = tryDecodeLoadPayload(call.arguments);
+        if (params == null) {
+          return <String, dynamic>{'ok': false};
+        }
+        if (mounted) {
+          setState(() {
+            _images = params.images;
+            _index = params.index;
+            _rev++;
+          });
+          await _showLoaded();
+        }
+        return <String, dynamic>{'ok': true};
+      });
+    } catch (e) {
+      debugPrint('查看器窗口注册命令处理器失败: $e');
+    }
+  }
+
+  Future<void> _showLoaded() async {
+    try {
+      await windowManager.center();
+      await windowManager.show();
+      await windowManager.focus();
+    } catch (_) {
+      // 窗口管理器未就绪时忽略，不阻塞查看器。
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'NarrChat - 图片查看',
+      theme: ThemeData(brightness: Brightness.dark),
+      home: _images.isEmpty
+          ? const ColoredBox(color: Colors.black)
+          : DesktopImageViewer(
+              key: ValueKey<int>(_rev),
+              images: _images,
+              initialIndex: _index,
+            ),
+    );
+  }
+}
+
+/// 把「关闭」转成「隐藏」的窗口监听器：用于预热复用的查看器窗口，
+/// 关闭时保留引擎与窗口，而非销毁，从而保证下次开图可复用。
+class _WindowHideOnCloseListener with WindowListener {
+  @override
+  void onWindowClose() {
+    // 隐藏而非关闭，保留预热引擎。
+    windowManager.hide();
+  }
+}
+
+/// 图片查看器「预热常驻窗口」管理。
+///
+/// 主窗口启动后（或首次用到时）提前创建一个隐藏的查看器窗口并复用：
+/// 之后的每次开图只需向它发送 `load` 命令，省去每次重新创建 engine +
+/// 重跑 `main()` 的冷启动开销。
+///
+/// 复用窗口在「关闭」时会被转换为「隐藏」（见 [_WindowHideOnCloseListener]），
+/// 从而保留引擎与命令通道，正常流程下窗口永不销毁、可无限次复用。
+/// 仅当引擎意外销毁时，才会在下次 `open` 用「全新 create（新 windowId → 新命令通道）」
+/// 重建兜底，规避同一通道重复注册导致的 `CHANNEL_LIMIT_REACHED` / `CHANNEL_MODE_CONFLICT`。
+class ImageViewerWindowManager {
+  ImageViewerWindowManager._();
+
+  static WindowController? _controller;
+  static bool _listening = false;
+
+  /// 确保存在一个隐藏的预热查看器窗口；已存在则直接成功。
+  static Future<bool> warm() async {
+    if (_controller != null) return true;
+    try {
+      _controller = await WindowController.create(
+        WindowConfiguration(
+          arguments:
+              const ImageWindowArgs(images: [], index: 0, warm: true).encode(),
+          hiddenAtLaunch: true,
+        ),
+      );
+      _listenWindowsChanged();
+      return true;
+    } catch (e) {
+      debugPrint('预热图片查看器窗口失败: $e');
+      return false;
+    }
+  }
+
+  /// 让预热窗口加载 [images]/[index]；窗口未就绪或已销毁时返回 false（调用方回退一次性创建）。
+  static Future<bool> open(List<String> images, int index) async {
+    try {
+      await warm();
+      final controller = _controller;
+      if (controller == null) return false;
+      await controller.invokeMethod('load', <String, dynamic>{
+        'images': images,
+        'index': index,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('复用预热图片查看器窗口失败，回退一次性创建: $e');
+      return false;
+    }
+  }
+
+  /// 监听窗口列表变化：预热窗口被关闭（engine 销毁）时置空，下次 open 重建。
+  static void _listenWindowsChanged() {
+    if (_listening) return;
+    _listening = true;
+    onWindowsChanged.listen((_) async {
+      final current = _controller;
+      if (current == null) return;
+      try {
+        final all = await WindowController.getAll();
+        if (!all.any((w) => w.windowId == current.windowId)) {
+          _controller = null;
+        }
+      } catch (_) {
+        // 通道不可用（如测试环境）时忽略。
+      }
+    });
+  }
 }
 
 /// 图片查看器子窗口应用（最小化，仅查看器，不初始化业务数据）。

@@ -105,6 +105,11 @@ Future<void> main() async {
   );
   // 冷启动点通知：首帧后跳转到对应书的 chat 页。
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Windows 主窗口：首帧后预热一个隐藏的图片查看器窗口并复用，
+    // 省去每次开图都重新创建 engine + 重跑 main() 的冷启动开销。
+    if (Platform.isWindows) {
+      unawaited(ImageViewerWindowManager.warm());
+    }
     unawaited(notificationService.handleLaunchNotificationIfAny());
   });
 }
@@ -117,7 +122,12 @@ Future<bool> _runAsImageViewerWindowIfNeeded() async {
     final controller = await WindowController.fromCurrentEngine();
     final args = ImageWindowArgs.tryDecode(controller.arguments);
     if (args != null) {
-      await runImageViewerWindowApp(args);
+      if (args.warm) {
+        // 预热常驻查看器窗口：进入监听模式，等待主窗口送入图片组。
+        await runWarmImageViewerWindowApp();
+      } else {
+        await runImageViewerWindowApp(args);
+      }
       return true;
     }
   } catch (_) {

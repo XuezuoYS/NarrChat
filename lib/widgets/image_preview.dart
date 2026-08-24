@@ -228,6 +228,9 @@ Future<void> showImageViewer(
 
 /// 尝试打开桌面端独立图片查看器窗口；成功返回 true，失败返回 false（调用方回退到应用内查看器）。
 Future<bool> _tryOpenImageViewerWindow(List<String> images, int initialIndex) async {
+  // 优先复用「预热常驻」查看器窗口（省去每次重新创建 engine 的冷启动）；
+  // 未就绪 / 窗口已销毁时返回 false，走下方一次性创建兜底。
+  if (await ImageViewerWindowManager.open(images, initialIndex)) return true;
   try {
     await WindowController.create(
       WindowConfiguration(

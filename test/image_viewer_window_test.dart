@@ -148,5 +148,42 @@ void main() {
       expect(ImageWindowArgs.tryDecode(''), isNull);
       expect(ImageWindowArgs.tryDecode('{"images":["a.png"]}'), isNotNull);
     });
+
+    test('warm 预热窗口编码 / 解码往返一致（允许空图片列表）', () {
+      const args = ImageWindowArgs(images: [], index: 0, warm: true);
+      final decoded = ImageWindowArgs.tryDecode(args.encode());
+      expect(decoded, isNotNull);
+      expect(decoded!.warm, isTrue);
+      expect(decoded.images, isEmpty);
+      expect(decoded.index, 0);
+    });
+
+    test('非 warm 窗口解码时 warm 为 false', () {
+      final decoded = ImageWindowArgs.tryDecode('{"images":["a.png"],"index":2}');
+      expect(decoded!.warm, isFalse);
+      expect(decoded.index, 2);
+    });
+  });
+
+  group('tryDecodeLoadPayload', () {
+    test('合法载荷解析出图片组与序号', () {
+      final params =
+          tryDecodeLoadPayload({'images': ['a.png', 'b.png'], 'index': 3});
+      expect(params, isNotNull);
+      expect(params!.images, ['a.png', 'b.png']);
+      expect(params.index, 3);
+    });
+
+    test('缺省 index 默认为 0', () {
+      final params = tryDecodeLoadPayload({'images': ['a.png']});
+      expect(params!.index, 0);
+    });
+
+    test('非 map / 空图片列表 / 非字符串列表返回 null', () {
+      expect(tryDecodeLoadPayload(null), isNull);
+      expect(tryDecodeLoadPayload('x'), isNull);
+      expect(tryDecodeLoadPayload({'images': <String>[]}), isNull);
+      expect(tryDecodeLoadPayload({'images': [1, 2]}), isNull);
+    });
   });
 }
