@@ -126,6 +126,16 @@ Matrix4 zoomAt(
   return m.multiplied(zoom);
 }
 
+/// 生成「整图缩放至适配视口并居中」的矩阵（contain）。
+Matrix4 _fitMatrix(Size viewport, Size img) {
+  final scale = fitScale(viewport.width, viewport.height, img.width, img.height);
+  final tx = (viewport.width - img.width * scale) / 2;
+  final ty = (viewport.height - img.height * scale) / 2;
+  return Matrix4.identity()
+    ..translateByDouble(tx, ty, 0, 1)
+    ..scaleByDouble(scale, scale, 1, 1);
+}
+
 /// 把矩阵的平移钳制在「图片内容不脱离视口」的范围内：
 /// - 某轴内容尺寸 ≤ 视口 → 在该轴居中（缩小到适配时的居中黑边）；
 /// - 某轴内容尺寸 > 视口 → 平移限制在 [viewLen - contentLen, 0]，避免放大后拖出黑边。
@@ -176,7 +186,14 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
 
   String? _absPath;
   bool _missing = false;
+  Size? _imageSize;
+  Size _viewport = Size.zero;
+  double _fitScale = 0.01;
+  bool _needsFit = true;
   String _title = 'NarrChat 图像查看器';
+
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageListener;
 
   @override
   void initState() {
@@ -186,8 +203,19 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
 
   @override
   void dispose() {
+    _removeImageListener();
     _transform.dispose();
     super.dispose();
+  }
+
+  void _removeImageListener() {
+    final stream = _imageStream;
+    final listener = _imageListener;
+    if (stream != null && listener != null) {
+      stream.removeListener(listener);
+    }
+    _imageStream = null;
+    _imageListener = null;
   }
 
   /// 更新窗口标题为「NarrChat 图像查看器 - {当前图片文件名}」。
@@ -202,10 +230,13 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   }
 
   Future<void> _loadCurrent() async {
+    _removeImageListener();
     _updateTitle();
     setState(() {
       _absPath = null;
       _missing = false;
+      _imageSize = null;
+      _needsFit = true;
       _transform.value = Matrix4.identity();
     });
     String abs;
@@ -215,7 +246,34 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
       abs = widget.images[_index];
     }
     if (!mounted) return;
-    setState(() => _absPath = abs);
+    final provider = FileImage(File(abs));
+    final stream = provider.resolve(ImageConfiguration.empty);
+    final listener = ImageStreamListener(
+      (info, _) {
+        if (!mounted) return;
+        setState(() {
+          _absPath = abs;
+          // 用「逻辑尺寸」（物理像素 / scale），与 Image 实际渲染尺寸一致。
+          _imageSize = Size(
+            info.image.width / info.scale,
+            info.image.height / info.scale,
+          );
+          _needsFit = true;
+        });
+      },
+      onError: (_, _) {
+        if (!mounted) return;
+        setState(() {
+          _absPath = abs;
+          _imageSize = null;
+          _missing = true;
+          _needsFit = false;
+        });
+      },
+    );
+    stream.addListener(listener);
+    _imageStream = stream;
+    _imageListener = listener;
   }
 
   void _prev() {
@@ -224,6 +282,8 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
       _index--;
       _absPath = null;
       _missing = false;
+      _imageSize = null;
+      _needsFit = true;
       _transform.value = Matrix4.identity();
     });
     _loadCurrent();
@@ -235,22 +295,34 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
       _index++;
       _absPath = null;
       _missing = false;
+      _imageSize = null;
+      _needsFit = true;
       _transform.value = Matrix4.identity();
     });
     _loadCurrent();
   }
 
-  /// 鼠标滚轮缩放（围绕光标），最小到 1.0（即 FittedBox/自适配态，不缩到更小）。
+  /// 鼠标滚轮缩放（围绕光标），最小到适配态（不缩到更小），随后按图片内容钳制平移。
   void _onWheel(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
+    final img = _imageSize;
+    if (img == null || _viewport == Size.zero) return;
     final factor = event.scrollDelta.dy < 0 ? 1.15 : 0.87;
     _transform.value = zoomAt(
       _transform.value,
       event.localPosition,
       factor,
-      minScale: 1.0,
+      minScale: _fitScale,
       maxScale: _maxScale,
     );
+    _transform.value = clampTransform(_transform.value, _viewport, img);
+  }
+
+  /// 拖动/缩放结束后按图片内容钳制平移，避免放大后拖出黑边。
+  void _clampNow() {
+    final img = _imageSize;
+    if (img == null || _viewport == Size.zero) return;
+    _transform.value = clampTransform(_transform.value, _viewport, img);
   }
 
   @override
@@ -267,116 +339,151 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
               onClose: () => windowManager.close(),
             ),
             Expanded(
-              child: Stack(
-                children: [
-                  // 图片：InteractiveViewer(constrained:true) + Image(fit:contain)：
-                  // Flutter 自带「适配视口并居中」，初始视图不会出现缩小/偏移；
-                  // 滚轮缩放/拖动平移由 InteractiveViewer 处理。
-                  Positioned.fill(
-                    child: Listener(
-                      onPointerSignal: _onWheel,
-                      child: _missing
-                          ? const Center(
-                              child: Icon(
-                                Icons.image_outlined,
-                                color: Colors.white24,
-                                size: 48,
-                              ),
-                            )
-                          : _absPath == null
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  _viewport = Size(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
+                  _applyFitOrClamp();
+                  return Stack(
+                    children: [
+                      // 图片：InteractiveViewer(constrained:false) + Image 按固有尺寸布局，
+                      // 由控制器矩阵缩放/平移；滚轮缩放 + 内容钳制保证「放大到足够填充后贴边、不出现黑边」。
+                      Positioned.fill(
+                        child: Listener(
+                          onPointerSignal: _onWheel,
+                          child: _missing
                               ? const Center(
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white38,
+                                  child: Icon(
+                                    Icons.image_outlined,
+                                    color: Colors.white24,
+                                    size: 48,
                                   ),
                                 )
-                              : InteractiveViewer(
-                                  transformationController: _transform,
-                                  constrained: true,
-                                  minScale: 1.0,
-                                  maxScale: _maxScale,
-                                  child: Image.file(
-                                    File(_absPath!),
-                                    fit: BoxFit.contain,
-                                    errorBuilder: (_, _, _) => MissingImage(
-                                      widget.images[_index],
+                              : _absPath == null
+                                  ? const Center(
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white38,
+                                      ),
+                                    )
+                                  : InteractiveViewer(
+                                      transformationController: _transform,
+                                      constrained: false,
+                                      minScale: _fitScale,
+                                      maxScale: _maxScale,
+                                      boundaryMargin:
+                                          const EdgeInsets.all(double.infinity),
+                                      onInteractionUpdate: (_) => _clampNow(),
+                                      child: Image.file(
+                                        File(_absPath!),
+                                        fit: BoxFit.contain,
+                                        errorBuilder: (_, _, _) =>
+                                            MissingImage(
+                                                widget.images[_index]),
+                                      ),
                                     ),
-                                  ),
+                        ),
+                      ),
+                      // 左右方向箭头。
+                      _ArrowButton(
+                        icon: Icons.chevron_left,
+                        enabled: _index > 0,
+                        tooltip: '上一张',
+                        onPressed: _prev,
+                      ),
+                      _ArrowButton(
+                        icon: Icons.chevron_right,
+                        enabled: _index < widget.images.length - 1,
+                        tooltip: '下一张',
+                        onPressed: _next,
+                      ),
+                      // 页码指示。
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '${_index + 1}/${widget.images.length}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
                                 ),
-                    ),
-                  ),
-                  // 左右方向箭头。
-                  _ArrowButton(
-                    icon: Icons.chevron_left,
-                    enabled: _index > 0,
-                    tooltip: '上一张',
-                    onPressed: _prev,
-                  ),
-                  _ArrowButton(
-                    icon: Icons.chevron_right,
-                    enabled: _index < widget.images.length - 1,
-                    tooltip: '下一张',
-                    onPressed: _next,
-                  ),
-                  // 页码指示。
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '${_index + 1}/${widget.images.length}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                  // 底部「保存到本地」按钮。
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            backgroundColor: Colors.white24,
-                            foregroundColor: Colors.white,
-                            side: BorderSide.none,
+                      // 底部「保存到本地」按钮。
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                backgroundColor: Colors.white24,
+                                foregroundColor: Colors.white,
+                                side: BorderSide.none,
+                              ),
+                              icon: const Icon(Icons.download_outlined),
+                              label: const Text('保存到本地'),
+                              onPressed: _absPath == null
+                                  ? null
+                                  : () => saveImageFile(
+                                        context,
+                                        relPath: widget.images[_index],
+                                        absPath: _absPath!,
+                                      ),
+                            ),
                           ),
-                          icon: const Icon(Icons.download_outlined),
-                          label: const Text('保存到本地'),
-                          onPressed: _absPath == null
-                              ? null
-                              : () => saveImageFile(
-                                    context,
-                                    relPath: widget.images[_index],
-                                    absPath: _absPath!,
-                                  ),
                         ),
                       ),
-                    ),
-                  ),
-                ],
+                    ],
+                  );
+                },
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  /// 在 build 内同步应用「适配/钳制」：
+  /// - 未放大（或缩到适配）→ 复位为适配 + 居中；
+  /// - 已放大 → 按图片内容钳制平移（边缘贴窗，不出现黑边）。
+  void _applyFitOrClamp() {
+    final img = _imageSize;
+    if (img == null || _viewport == Size.zero) return;
+    if (!_needsFit) return;
+    final newFit = fitScale(
+      _viewport.width,
+      _viewport.height,
+      img.width,
+      img.height,
+    );
+    _fitScale = newFit;
+    final currentScale = imageScale(_transform.value);
+    if (_needsFit || currentScale <= newFit + 1e-6) {
+      // 初始（图片刚加载）一律复位为适配 + 居中；此后若缩到适配也复位。
+      _transform.value = _fitMatrix(_viewport, img);
+      _needsFit = false;
+    } else {
+      _transform.value = clampTransform(_transform.value, _viewport, img);
+    }
   }
 }
 
