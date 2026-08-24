@@ -188,6 +188,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   bool _missing = false;
   Size? _imageSize;
   Size _viewport = Size.zero;
+  Size _lastViewport = Size.zero;
   double _fitScale = 0.01;
   bool _needsFit = true;
   String _title = 'NarrChat 图像查看器';
@@ -485,7 +486,6 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   void _applyFitOrClamp() {
     final img = _imageSize;
     if (img == null || _viewport == Size.zero) return;
-    if (!_needsFit) return;
     final newFit = fitScale(
       _viewport.width,
       _viewport.height,
@@ -493,13 +493,12 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
       img.height,
     );
     _fitScale = newFit;
-    final currentScale = imageScale(_transform.value);
-    if (_needsFit || currentScale <= newFit + 1e-6) {
-      // 初始（图片刚加载）一律复位为适配 + 居中；此后若缩到适配也复位。
+    // 窗口尺寸变化或首次加载 → 重新「适配并居中」到当前视口。
+    final resized = _lastViewport != _viewport;
+    _lastViewport = _viewport;
+    if (_needsFit || resized) {
       _transform.value = _fitMatrix(_viewport, img);
       _needsFit = false;
-    } else {
-      _transform.value = clampTransform(_transform.value, _viewport, img);
     }
   }
 }
