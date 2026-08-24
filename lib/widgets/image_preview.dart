@@ -285,12 +285,28 @@ Future<void> saveImageFile(
   }
 }
 
+/// 移动端图片查看器「单击」决策：未放大（initial）时单击退出，否则缩回未放大。
+///
+/// QQ 手机端体验：未放大单击关闭预览；放大状态单击即回到未放大。
+bool shouldExitPreviewOnTap(PhotoViewScaleState state) =>
+    state == PhotoViewScaleState.initial;
+
+/// 移动端图片查看器「双击」循环：未放大→铺满放大；任意放大态→回到未放大。
+///
+/// 覆盖 photo_view 默认（initial→covering→originalSize→initial 的多级循环），
+/// 改成「未放大双击放大、放大双击一定回到未放大」的单级循环。
+PhotoViewScaleState mobileDoubleTapCycle(PhotoViewScaleState state) =>
+    state == PhotoViewScaleState.initial
+        ? PhotoViewScaleState.covering
+        : PhotoViewScaleState.initial;
+
 /// 全屏图片查看页：左右滑动切换 + 双指缩放（photo_view）。
 ///
 /// - 未放大时左右滑动 → 上一张 / 下一张；放大后可平移查看、缩回后再滑动切换；
 /// - 双指缩放可扩展至铺满全屏（覆盖画面），不再被“原比例留黑边”限制；
 /// - 顶部显示页码（如 2/5）与关闭按钮，底部提供「保存到本地」；
-/// - 单击图片或空白区域（非按钮）退出查看器。
+/// - 单击：未放大→退出查看器；放大状态→缩回未放大（QQ 手机端体验）；
+/// - 双击：未放大→放大；放大状态→缩回未放大（QQ 手机端体验）。
 class ImageViewerPage extends StatefulWidget {
   final List<String> images;
   final int initialIndex;
@@ -305,6 +321,10 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   late final PageController _pageController =
       PageController(initialPage: widget.initialIndex);
   late int _index = widget.initialIndex;
+
+  // 每个页面一个缩放状态控制器，用于单击时判断「是否放大」并驱动「缩回未放大」。
+  late final List<PhotoViewScaleStateController> _scaleControllers =
+      List.generate(widget.images.length, (_) => PhotoViewScaleStateController());
 
   // 一次性解析全部绝对路径（相对 `img/...` → 磁盘路径）。
   // 单个解析失败（如测试环境无 path_provider）时回退相对路径，交由
@@ -322,6 +342,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   @override
   void dispose() {
     _pageController.dispose();
+    for (final c in _scaleControllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -363,9 +386,20 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                                 // 初始整图可见（contained）；双指放大可扩展到铺满全屏并继续放大。
                                 minScale: PhotoViewComputedScale.contained,
                                 maxScale: PhotoViewComputedScale.covered * 3,
-                                // 单击图片/空白区域退出查看器（不影响双指缩放与左右滑动）。
-                                onTapUp: (ctx, _, _) =>
-                                    Navigator.of(ctx).pop(),
+                                // 每页独立缩放状态：单击据此判断「放大态→缩回」还是「未放大→退出」。
+                                scaleStateController: _scaleControllers[i],
+                                // 双击：未放大→铺满放大；任意放大态→回到未放大（QQ 手机端体验）。
+                                scaleStateCycle: mobileDoubleTapCycle,
+                                // 单击：未放大→退出查看器；放大状态→缩回未放大（QQ 手机端体验）。
+                                onTapUp: (ctx, _, _) {
+                                  if (shouldExitPreviewOnTap(
+                                      _scaleControllers[_index].scaleState)) {
+                                    Navigator.of(ctx).pop();
+                                  } else {
+                                    _scaleControllers[_index].scaleState =
+                                        PhotoViewScaleState.initial;
+                                  }
+                                },
                               ),
                           ],
                         ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/widgets/image_preview.dart';
+import 'package:photo_view/photo_view.dart' show PhotoViewScaleState;
 
 /// [ImageViewerPage]（photo_view 全屏查看器）测试。
 ///
@@ -59,5 +60,40 @@ void main() {
     // 多张图时仍提供保存 / 关闭。
     expect(find.text('保存到本地'), findsOneWidget);
     expect(find.byIcon(Icons.close), findsOneWidget);
+  });
+
+  // 移动端 QQ 式单击/双击决策（纯函数，隔离可测）。
+  // 说明：photo_view 的缩放/滑动/手势需图片真实加载后才挂载，而 widget 测试中
+  // `ImageStore.resolveAbsolute`（真实文件 I/O）无法推进，故用纯函数覆盖「缩放状态→行为」
+  // 的核心判断；真实触屏手势行为需上 Android 真机验证。
+  group('移动端缩放单击/双击决策', () {
+    test('未放大单击 → 退出', () {
+      expect(shouldExitPreviewOnTap(PhotoViewScaleState.initial), isTrue);
+    });
+
+    test('任意放大状态单击 → 缩回（不退出）', () {
+      expect(shouldExitPreviewOnTap(PhotoViewScaleState.covering), isFalse);
+      expect(shouldExitPreviewOnTap(PhotoViewScaleState.zoomedIn), isFalse);
+      expect(shouldExitPreviewOnTap(PhotoViewScaleState.zoomedOut), isFalse);
+      expect(shouldExitPreviewOnTap(PhotoViewScaleState.originalSize), isFalse);
+    });
+
+    test('双击：未放大 → 铺满放大', () {
+      expect(
+        mobileDoubleTapCycle(PhotoViewScaleState.initial),
+        PhotoViewScaleState.covering,
+      );
+    });
+
+    test('双击：任意放大态 → 回到未放大', () {
+      expect(mobileDoubleTapCycle(PhotoViewScaleState.covering),
+          PhotoViewScaleState.initial);
+      expect(mobileDoubleTapCycle(PhotoViewScaleState.zoomedIn),
+          PhotoViewScaleState.initial);
+      expect(mobileDoubleTapCycle(PhotoViewScaleState.zoomedOut),
+          PhotoViewScaleState.initial);
+      expect(mobileDoubleTapCycle(PhotoViewScaleState.originalSize),
+          PhotoViewScaleState.initial);
+    });
   });
 }
