@@ -318,11 +318,16 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
     _transform.value = clampTransform(_transform.value, _viewport, img);
   }
 
-  /// 拖动/缩放结束后按图片内容钳制平移，避免放大后拖出黑边。
-  void _clampNow() {
+  /// 鼠标拖动平移：每次移动先按拖拽增量平移，再实时钳制到图片内容范围。
+  void _onPanUpdate(DragUpdateDetails details) {
     final img = _imageSize;
     if (img == null || _viewport == Size.zero) return;
-    _transform.value = clampTransform(_transform.value, _viewport, img);
+    _transform.value = clampTransform(
+      _transform.value.clone()
+        ..translateByDouble(details.delta.dx, details.delta.dy, 0, 1),
+      _viewport,
+      img,
+    );
   }
 
   @override
@@ -348,41 +353,53 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                   _applyFitOrClamp();
                   return Stack(
                     children: [
-                      // 图片：InteractiveViewer(constrained:false) + Image 按固有尺寸布局，
-                      // 由控制器矩阵缩放/平移；滚轮缩放 + 内容钳制保证「放大到足够填充后贴边、不出现黑边」。
+                      // 图片：InteractiveViewer(constrained:false) 仅作显示（保持图片固有尺寸、
+                      // 应用控制器矩阵、并裁剪到视口）；其手势全部禁用。
+                      // 手势层以 opaque 位于其上：GestureDetector 接拖动、Listener 接滚轮，
+                      // 每次移动都用 clampTransform 精确钳制（未填满轴居中、放大轴贴边），
+                      // 不与 InteractiveViewer 手势互相拉扯 → 无漂移、无黑边。
                       Positioned.fill(
-                        child: Listener(
-                          onPointerSignal: _onWheel,
-                          child: _missing
-                              ? const Center(
-                                  child: Icon(
-                                    Icons.image_outlined,
-                                    color: Colors.white24,
-                                    size: 48,
-                                  ),
-                                )
-                              : _absPath == null
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: _missing
                                   ? const Center(
-                                      child: CircularProgressIndicator(
-                                        color: Colors.white38,
+                                      child: Icon(
+                                        Icons.image_outlined,
+                                        color: Colors.white24,
+                                        size: 48,
                                       ),
                                     )
-                                  : InteractiveViewer(
-                                      transformationController: _transform,
-                                      constrained: false,
-                                      minScale: _fitScale,
-                                      maxScale: _maxScale,
-                                      boundaryMargin:
-                                          const EdgeInsets.all(double.infinity),
-                                      onInteractionUpdate: (_) => _clampNow(),
-                                      child: Image.file(
-                                        File(_absPath!),
-                                        fit: BoxFit.contain,
-                                        errorBuilder: (_, _, _) =>
-                                            MissingImage(
-                                                widget.images[_index]),
-                                      ),
-                                    ),
+                                  : _absPath == null
+                                      ? const Center(
+                                          child: CircularProgressIndicator(
+                                            color: Colors.white38,
+                                          ),
+                                        )
+                                      : InteractiveViewer(
+                                          transformationController: _transform,
+                                          constrained: false,
+                                          panEnabled: false,
+                                          scaleEnabled: false,
+                                          child: Image.file(
+                                            File(_absPath!),
+                                            fit: BoxFit.contain,
+                                            errorBuilder: (_, _, _) =>
+                                                MissingImage(
+                                                    widget.images[_index]),
+                                          ),
+                                        ),
+                            ),
+                            Positioned.fill(
+                              child: Listener(
+                                onPointerSignal: _onWheel,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onPanUpdate: _onPanUpdate,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       // 左右方向箭头。
