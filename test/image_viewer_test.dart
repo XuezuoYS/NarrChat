@@ -7,10 +7,13 @@ import 'package:narrchat/widgets/image_preview.dart';
 /// 验证可靠可测的部分：查看器结构（「保存到本地 / 关闭 / 页码指示」）与多图支持
 /// （页码 `N/M` 反映传入图片数，即需求点 2 的滑动切换框架）。
 ///
-/// 说明：photo_view 的缩放 / 左右滑动切换需图片真实加载后才挂载手势；而
-/// `ImageStore.resolveAbsolute` 在 widget 测试（FakeAsync）中会因真实文件 I/O
-/// （`Directory.create`）不推进而挂起，故无法在 widget 测试中真正渲染图片库并拖拽换页。
-/// 这些交互是 photo_view 上游已测试的行为，此处以结构断言覆盖。
+/// 说明：
+/// - 这里直接构造并 push `ImageViewerPage`（应用内查看器路由）：`showImageViewer`
+///   在 Windows 上会走独立窗口分支（FakeAsync 下跨窗口通道不响应），故不通过它。
+/// - photo_view 的缩放 / 左右滑动切换需图片真实加载后才挂载手势；而
+///   `ImageStore.resolveAbsolute` 在 widget 测试（FakeAsync）中会因真实文件 I/O
+///   （`Directory.create`）不推进而挂起，故无法在 widget 测试中真正渲染图片库并拖拽换页。
+///   这些交互是 photo_view 上游已测试的行为，此处以结构断言覆盖。
 void main() {
   Widget buildApp(List<String> images) {
     return MaterialApp(
@@ -18,7 +21,12 @@ void main() {
         body: Builder(
           builder: (ctx) => Center(
             child: TextButton(
-              onPressed: () => showImageViewer(ctx, images, 0),
+              onPressed: () => Navigator.of(ctx).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      ImageViewerPage(images: images, initialIndex: 0),
+                ),
+              ),
               child: const Text('open'),
             ),
           ),

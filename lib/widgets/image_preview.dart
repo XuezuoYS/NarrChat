@@ -1,11 +1,13 @@
 import 'dart:io';
 
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 
 import '../services/image_store.dart';
+import 'image_viewer_window.dart';
 
 /// 图片缩略图：解析相对路径 → 显示图片；文件缺失显示灰色占位块
 /// （破损图标 + 原文件名 + 「图片已丢失」）。
@@ -39,7 +41,7 @@ class ImageThumbnail extends StatelessWidget {
         builder: (context, snapshot) {
           final Widget inner;
           if (snapshot.hasError) {
-            inner = _MissingImage(relPath);
+            inner = MissingImage(relPath);
           } else {
             inner = _FileImage(absPath: snapshot.data ?? '', relPath: relPath);
           }
@@ -74,7 +76,7 @@ class _FileImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final file = File(absPath);
-    if (!file.existsSync()) return _MissingImage(relPath);
+    if (!file.existsSync()) return MissingImage(relPath);
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),
       child: Image.file(
@@ -82,17 +84,17 @@ class _FileImage extends StatelessWidget {
         fit: BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        errorBuilder: (_, _, _) => _MissingImage(relPath),
+        errorBuilder: (_, _, _) => MissingImage(relPath),
       ),
     );
   }
 }
 
 /// 文件缺失 / 读取失败的灰色占位块。
-class _MissingImage extends StatelessWidget {
+class MissingImage extends StatelessWidget {
   final String relPath;
 
-  const _MissingImage(this.relPath);
+  const MissingImage(this.relPath, {super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -203,20 +205,81 @@ class ImagePreviewStrip extends StatelessWidget {
   }
 }
 
-/// 打开全屏图片查看页。
+/// 打开图片查看器。
 ///
 /// [images] 为当前一组图片（同一轮次的全部图片），[initialIndex] 为点击的那张序号。
-/// 查看器支持左右滑动切换图片（在图片未放大时）、双指放大（放大后可扩展到铺满全屏并平移）。
+/// - Windows 桌面端：打开**独立系统窗口**（左右箭头 + 滚轮缩放 + 拖动平移）；
+/// - 其它平台：主窗口内 photo_view 查看器（左右滑动 + 双指缩放）。
 Future<void> showImageViewer(
   BuildContext context,
   List<String> images,
   int initialIndex,
-) {
-  return Navigator.of(context).push(
+) async {
+  if (Platform.isWindows && await _tryOpenImageViewerWindow(images, initialIndex)) {
+    return;
+  }
+  if (!context.mounted) return;
+  await Navigator.of(context).push(
     MaterialPageRoute(
       builder: (_) => ImageViewerPage(images: images, initialIndex: initialIndex),
     ),
   );
+}
+
+/// 尝试打开桌面端独立图片查看器窗口；成功返回 true，失败返回 false（调用方回退到应用内查看器）。
+Future<bool> _tryOpenImageViewerWindow(List<String> images, int initialIndex) async {
+  try {
+    await WindowController.create(
+      WindowConfiguration(
+        arguments:
+            ImageWindowArgs(images: images, index: initialIndex).encode(),
+        hiddenAtLaunch: true,
+      ),
+    );
+    return true;
+  } catch (e) {
+    debugPrint('打开图片查看器窗口失败，回退到应用内查看器: $e');
+    return false;
+  }
+}
+
+/// 将图片复制到用户选择的本地路径（取消返回 null；失败给出提示）。
+/// 供移动端应用内查看器与桌面端独立窗口查看器复用。
+Future<void> saveImageFile(
+  BuildContext context, {
+  required String relPath,
+  required String absPath,
+}) async {
+  final file = File(absPath);
+  if (!file.existsSync()) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('图片文件已丢失，无法保存')),
+      );
+    }
+    return;
+  }
+  final name = ImageStore.fileNameOf(relPath);
+  final outPath = await FilePicker.platform.saveFile(
+    dialogTitle: '保存图片',
+    fileName: name.isEmpty ? 'image.png' : name,
+    type: FileType.image,
+  );
+  if (outPath == null || !context.mounted) return;
+  try {
+    await file.copy(outPath);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已保存到 $outPath')),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败，请重试')),
+      );
+    }
+  }
 }
 
 /// 全屏图片查看页：左右滑动切换 + 双指缩放（photo_view）。
@@ -259,39 +322,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     super.dispose();
   }
 
-  /// 将图片复制到用户选择的本地路径（取消返回 null；失败给出提示）。
-  Future<void> _save(BuildContext context, String relPath, String absPath) async {
-    final file = File(absPath);
-    if (!file.existsSync()) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('图片文件已丢失，无法保存')),
-        );
-      }
-      return;
-    }
-    final name = ImageStore.fileNameOf(relPath);
-    final outPath = await FilePicker.platform.saveFile(
-      dialogTitle: '保存图片',
-      fileName: name.isEmpty ? 'image.png' : name,
-      type: FileType.image,
-    );
-    if (outPath == null || !context.mounted) return;
-    try {
-      await file.copy(outPath);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已保存到 $outPath')),
-        );
-      }
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败，请重试')),
-        );
-      }
-    }
-  }
+  /// 将图片复制到用户选择的本地路径（复用共享 [saveImageFile]）。
+  Future<void> _save(BuildContext context, String relPath, String absPath) =>
+      saveImageFile(context, relPath: relPath, absPath: absPath);
 
   @override
   Widget build(BuildContext context) {
@@ -323,7 +356,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                               PhotoViewGalleryPageOptions(
                                 imageProvider: FileImage(File(absPaths[i])),
                                 errorBuilder: (context, error, stackTrace) =>
-                                    _MissingImage(widget.images[i]),
+                                    MissingImage(widget.images[i]),
                                 // 初始整图可见（contained）；双指放大可扩展到铺满全屏并继续放大。
                                 minScale: PhotoViewComputedScale.contained,
                                 maxScale: PhotoViewComputedScale.covered * 3,

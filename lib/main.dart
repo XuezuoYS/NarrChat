@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
@@ -23,12 +24,15 @@ import 'services/notification_service.dart';
 import 'services/system_fonts_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
+import 'widgets/image_viewer_window.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 桌面端：初始化窗口管理器（通知点击后把窗口恢复到前台）。
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
+    // 若是「图片查看器」独立子窗口，则运行最小查看器并结束（不再初始化业务数据）。
+    if (await _runAsImageViewerWindowIfNeeded()) return;
   }
   // 提前初始化数据库（桌面端会在此处完成 FFI 工厂切换），
   // 失败时不阻塞启动，后续请求会重试并暴露错误。
@@ -103,6 +107,23 @@ Future<void> main() async {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(notificationService.handleLaunchNotificationIfAny());
   });
+}
+
+/// 若当前窗口是「图片查看器」独立子窗口（由 desktop_multi_window 以非空 arguments 创建），
+/// 则运行最小查看器 App 并返回 true；否则返回 false 走正常主窗口流程。
+/// 主窗口的 `fromCurrentEngine()` 无入参（空 arguments）或调用失败时，均视为主窗口。
+Future<bool> _runAsImageViewerWindowIfNeeded() async {
+  try {
+    final controller = await WindowController.fromCurrentEngine();
+    final args = ImageWindowArgs.tryDecode(controller.arguments);
+    if (args != null) {
+      await runImageViewerWindowApp(args);
+      return true;
+    }
+  } catch (_) {
+    // 主窗口 / 无法识别：走正常流程。
+  }
+  return false;
 }
 
 class NarrChatApp extends StatelessWidget {
