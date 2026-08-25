@@ -45,6 +45,9 @@ class ImageStore {
     return dir;
   }
 
+  /// img 目录（不存在则创建）。供「存储管理」列出 / 管理本地图片。
+  static Future<Directory> imgDirectory() => _imgDir();
+
   static Future<File> _file(String relPath) async {
     // 仅允许 img 目录下的相对路径，防止路径逃逸。
     final normalized = relPath.replaceAll('\\', '/');

@@ -1,0 +1,396 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../screens/image_gallery_page.dart';
+import '../services/storage_service.dart';
+import '../theme/app_theme.dart';
+import '../utils/focus_utils.dart';
+import '../utils/formats.dart';
+
+/// 设置页「存储管理」面板。
+///
+/// - **本地数据库导出**：展示数据库路径 / 大小 / 修改时间，选择目标文件夹并
+///   以自定义文件名导出（SQLite 开启 WAL 时会连同 `-wal`/`-shm` 一并复制）。
+/// - **本地图片管理**：列出 `img/` 目录下全部图片（按修改时间倒序），提供
+///   全屏查看、删除（带确认）与刷新，并显示图片总数与占用空间。
+class StorageManagementPanel extends StatefulWidget {
+  /// 目录选择回调（测试注入替身；缺省用 [FilePicker.platform.getDirectoryPath]）。
+  final Future<String?> Function()? directoryPicker;
+
+  const StorageManagementPanel({super.key, this.directoryPicker});
+
+  @override
+  State<StorageManagementPanel> createState() =>
+      _StorageManagementPanelState();
+}
+
+class _StorageManagementPanelState extends State<StorageManagementPanel> {
+  late Future<StorageDbInfo?> _dbFuture;
+  // 图片列表用状态持有（而非 FutureBuilder 换 future），删除/刷新后重载更确定。
+  List<StorageImageInfo>? _images;
+  bool _imagesLoading = true;
+  bool _exporting = false;
+
+  StorageService get _service => context.read<StorageService>();
+
+  @override
+  void initState() {
+    super.initState();
+    _dbFuture = _service.dbInfo();
+    _loadImages();
+  }
+
+  /// 重新加载图片列表（加载中置 loading，完成后写回状态）。
+  void _loadImages() {
+    setState(() => _imagesLoading = true);
+    _loadImagesAsync();
+  }
+
+  Future<void> _loadImagesAsync() async {
+    try {
+      final list = await _service.listImages();
+      if (mounted) {
+        setState(() {
+          _images = list;
+          _imagesLoading = false;
+        });
+      }
+    } catch (_) {
+      // 读取失败：置空，避免挂在加载态。
+      if (mounted) {
+        setState(() {
+          _images = const [];
+          _imagesLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<String?> _pickDirectory() {
+    final custom = widget.directoryPicker;
+    if (custom != null) return custom();
+    return FilePicker.platform.getDirectoryPath(dialogTitle: '选择数据库导出文件夹');
+  }
+
+  String _defaultExportName() {
+    final now = DateTime.now();
+    final ts =
+        '${now.year}-${Formats.two(now.month)}-${Formats.two(now.day)}_'
+        '${Formats.two(now.hour)}-${Formats.two(now.minute)}-${Formats.two(now.second)}';
+    return 'narrchat_$ts.db';
+  }
+
+  /// 弹出「导出文件名」对话框，返回规范化后的文件名（取消返回 null）。
+  Future<String?> _askExportName() async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => _ExportNameDialog(initialName: _defaultExportName()),
+    );
+    if (result == null) return null;
+    var name = result.trim();
+    if (name.isEmpty) return null;
+    if (!name.toLowerCase().endsWith('.db')) name = '$name.db';
+    return name;
+  }
+
+  Future<void> _exportDatabase() async {
+    final dirPath = await _pickDirectory();
+    if (dirPath == null || !mounted) return;
+    final name = await _askExportName();
+    if (name == null || !mounted) return;
+    setState(() => _exporting = true);
+    String message;
+    try {
+      final target = await _service.exportDatabase(
+        targetDirPath: dirPath,
+        fileName: name,
+      );
+      message = '数据库已导出到 $target';
+    } catch (e) {
+      message = '数据库导出失败：$e';
+    }
+    if (mounted) {
+      setState(() => _exporting = false);
+      _snack(message);
+    }
+  }
+
+  Future<void> _refresh() async {
+    _loadImages();
+  }
+
+  void _snack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          '存储管理',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '导出本地数据库到指定位置，或按修改时间浏览、查看与清理本地图片。',
+          style: TextStyle(fontSize: 12, color: colors.textSecondary),
+        ),
+        const SizedBox(height: 20),
+        // ---------- 本地数据库导出 ----------
+        _SectionHeader(
+          icon: Icons.storage_outlined,
+          title: '本地数据库导出',
+          subtitle: '把当前书籍及剧情的 sqlite 数据库复制到你选择的文件夹。',
+        ),
+        const SizedBox(height: 12),
+        FutureBuilder<StorageDbInfo?>(
+          future: _dbFuture,
+          builder: (context, snapshot) {
+            return _Card(
+              child: snapshot.connectionState != ConnectionState.done
+                  ? const LinearProgressIndicator(minHeight: 2)
+                  : _buildDbContent(context, snapshot.data),
+            );
+          },
+        ),
+        const SizedBox(height: 24),
+        // ---------- 本地图片管理 ----------
+        _SectionHeader(
+          icon: Icons.photo_library_outlined,
+          title: '本地图片管理',
+          subtitle: '按修改时间浏览、查看与清理本地图片。',
+        ),
+        const SizedBox(height: 12),
+        _buildImageEntry(context),
+      ],
+    );
+  }
+
+  Future<void> _openGallery() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ImageGalleryPage()),
+    );
+    // 返回后刷新图片统计（可能已删除）。
+    if (mounted) _refresh();
+  }
+
+  Widget _buildImageEntry(BuildContext context) {
+    final colors = context.narrColors;
+    String summary;
+    if (_imagesLoading) {
+      summary = '加载中…';
+    } else {
+      final images = _images ?? const <StorageImageInfo>[];
+      final total = images.fold<int>(0, (s, i) => s + i.size);
+      summary = images.isEmpty
+          ? '暂无本地图片'
+          : '共 ${images.length} 张 · 合计 ${Formats.formatBytes(total)}';
+    }
+    return Material(
+      color: colors.background,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: colors.divider),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: _openGallery,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Row(
+            children: [
+              Icon(
+                Icons.photo_library_outlined,
+                size: 20,
+                color: colors.textSecondary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  summary,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: colors.textPrimary),
+                ),
+              ),
+              Icon(Icons.chevron_right, size: 20, color: colors.textSecondary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDbContent(BuildContext context, StorageDbInfo? db) {
+    final colors = context.narrColors;
+    if (db == null) {
+      return Text(
+        '本地数据库暂不可用。',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, color: colors.textSecondary),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.dns_outlined, size: 20, color: colors.textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                db.path,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: colors.textPrimary),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '大小 ${Formats.formatBytes(db.size)} · '
+          '修改于 ${Formats.formatDateTime(db.modified)}',
+          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            onPressed: _exporting ? null : _exportDatabase,
+            icon: const Icon(Icons.upload_file_outlined, size: 18),
+            label: Text(_exporting ? '导出中…' : '导出数据库'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: NarrChatTheme.primary),
+        const SizedBox(width: 8),
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: colors.textPrimary,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            subtitle,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 通用卡片容器。
+class _Card extends StatelessWidget {
+  final Widget child;
+
+  const _Card({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.divider),
+      ),
+      child: child,
+    );
+  }
+}
+
+/// 导出文件名对话框：自持 controller，避免关闭动画期间被外部 dispose。
+class _ExportNameDialog extends StatefulWidget {
+  final String initialName;
+
+  const _ExportNameDialog({required this.initialName});
+
+  @override
+  State<_ExportNameDialog> createState() => _ExportNameDialogState();
+}
+
+class _ExportNameDialogState extends State<_ExportNameDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialName);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('导出数据库'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _controller,
+            onTapOutside: unfocusOnTapOutside,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: '导出文件名',
+              hintText: 'narrchat_2026-01-01_12-00-00.db',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '文件将保存到你选择的文件夹。',
+            style: TextStyle(
+              fontSize: 11,
+              color: context.narrColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('导出'),
+        ),
+      ],
+    );
+  }
+}

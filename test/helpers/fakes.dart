@@ -12,6 +12,8 @@ import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/services/storage_service.dart';
+import 'package:path/path.dart' as p;
 
 /// 公共测试替身（Fakes）。
 ///
@@ -331,5 +333,52 @@ class FakeClipboardPasteService implements ClipboardPasteService {
     }
     if (imagePng == null) return const ClipboardImageResult();
     return const ClipboardImageResult(relPath: 'img/pasted.png');
+  }
+}
+
+/// 可控存储管理替身：返回预设数据并记录导出 / 删除调用。
+class FakeStorageService implements StorageService {
+  FakeStorageService({this.db, this.images = const []});
+
+  StorageDbInfo? db;
+  List<StorageImageInfo> images;
+  int deleteCalls = 0;
+  List<String> deleted = [];
+  String? exportedTo;
+  String? exportedName;
+  List<String>? exportedImages;
+  String? exportedImagesTo;
+
+  @override
+  Future<StorageDbInfo?> dbInfo() async => db;
+
+  @override
+  Future<List<StorageImageInfo>> listImages() async => List.of(images);
+
+  @override
+  Future<String> exportDatabase({
+    required String targetDirPath,
+    required String fileName,
+  }) async {
+    exportedTo = targetDirPath;
+    exportedName = fileName;
+    return p.join(targetDirPath, fileName);
+  }
+
+  @override
+  Future<void> deleteImage(String relPath) async {
+    deleteCalls++;
+    deleted.add(relPath);
+    images = images.where((i) => i.relPath != relPath).toList();
+  }
+
+  @override
+  Future<int> exportImages({
+    required List<String> relPaths,
+    required String targetDirPath,
+  }) async {
+    exportedImages = List.of(relPaths);
+    exportedImagesTo = targetDirPath;
+    return relPaths.length;
   }
 }

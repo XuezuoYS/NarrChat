@@ -13,6 +13,7 @@ import '../widgets/cloud_sync_panel.dart';
 import '../widgets/mod_management_panel.dart';
 import '../widgets/settings_form_state.dart';
 import '../widgets/settings_shell.dart';
+import '../widgets/storage_management_panel.dart';
 import '../widgets/ui_settings_form.dart';
 
 /// 全窗口设置界面。
@@ -87,6 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),
         SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
+        SettingsNavItem(icon: Icons.storage_outlined, label: '存储管理'),
         SettingsNavItem(icon: Icons.info_outline, label: '关于'),
       ],
       actions: [
@@ -108,6 +110,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             return const ModManagementPanel();
           case 3:
             return CloudSyncPanel(form: _form);
+          case 4:
+            return const StorageManagementPanel();
           default:
             return const _AboutPanel();
         }
