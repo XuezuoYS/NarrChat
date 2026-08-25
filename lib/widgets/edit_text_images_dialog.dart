@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../services/clipboard_paste_service.dart';
 import '../services/image_import_service.dart';
 import '../utils/focus_utils.dart';
 import 'image_preview.dart';
 import 'markdown_editing_controller.dart';
+import 'text_field_context_menu.dart';
 
 /// 「修改并重新提问」对话框的返回结果：编辑后的文本 + 图片相对路径列表。
 class EditTextImagesResult {
@@ -123,17 +126,47 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
     }
   }
 
+  /// 从剪贴板粘贴：文本插入光标处；图片按 [allowImages] 开关加入图片列表。
+  ///
+  /// 供 Ctrl+V 与右键菜单「粘贴」复用（见 [textFieldContextMenuBuilder]），
+  /// 统一走 [pasteIntoTextInput] 处理文本 / 图片与超限 / 非识图提示。
+  Future<void> _pasteFromClipboard() async {
+    final service = context.read<ClipboardPasteService>();
+    // 先取 messenger，避免异步后使用失效的 context。
+    final messenger = ScaffoldMessenger.of(context);
+    await pasteIntoTextInput(
+      service: service,
+      controller: _controller,
+      acceptImages: widget.allowImages,
+      imageSizeLimitMb: widget.maxImageSizeMB,
+      convertJpgToJpeg: widget.convertJpgToJpeg,
+      onImageAdded: (rel) {
+        if (mounted) setState(() => _images.add(rel));
+      },
+      onNotice: (msg) => messenger.showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final content = <Widget>[
-      TextField(
-        controller: _controller,
-        onTapOutside: unfocusOnTapOutside,
-        minLines: 10,
-        maxLines: null,
-        style: const TextStyle(fontSize: 13, height: 1.5),
-        decoration: const InputDecoration(hintText: '内容'),
+      // 粘贴：Ctrl+V 与右键菜单「粘贴」共用 _pasteFromClipboard。
+      CallbackShortcuts(
+        bindings: textFieldPasteBindings(onPaste: _pasteFromClipboard),
+        child: TextField(
+          controller: _controller,
+          onTapOutside: unfocusOnTapOutside,
+          minLines: 10,
+          maxLines: null,
+          style: const TextStyle(fontSize: 13, height: 1.5),
+          decoration: const InputDecoration(hintText: '内容'),
+          contextMenuBuilder: textFieldContextMenuBuilder(
+            onPaste: _pasteFromClipboard,
+          ),
+        ),
       ),
     ];
 

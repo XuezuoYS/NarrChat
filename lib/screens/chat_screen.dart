@@ -17,6 +17,7 @@ import '../providers/book_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../services/clipboard_paste_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_import_service.dart';
 import '../services/image_store.dart';
@@ -36,6 +37,7 @@ import '../widgets/markdown_preview.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
+import '../widgets/text_field_context_menu.dart';
 import 'book_settings_screen.dart';
 import 'settings_screen.dart';
 
@@ -784,6 +786,30 @@ class _ChatScreenState extends State<ChatScreen>
   /// 从待发送附件中移除一张图片。
   void _removePendingImage(String relPath) {
     setState(() => _pendingImages.remove(relPath));
+  }
+
+  /// 从剪贴板粘贴到输入框：文本插入光标处；图片按识图门控加入待发送附件。
+  ///
+  /// 供 Ctrl+V 与右键菜单「粘贴」复用（见 [textFieldContextMenuBuilder]），
+  /// 统一走 [pasteIntoTextInput] 处理文本 / 图片与超限 / 非识图提示。
+  Future<void> _pasteFromClipboard() async {
+    final service = context.read<ClipboardPasteService>();
+    final ai = context.read<AiSettingsProvider>();
+    // 先取 messenger，避免异步后使用失效的 context。
+    final messenger = ScaffoldMessenger.of(context);
+    await pasteIntoTextInput(
+      service: service,
+      controller: _inputController,
+      acceptImages: ai.supportsVision,
+      imageSizeLimitMb: ai.maxImageSizeMB,
+      convertJpgToJpeg: ai.convertJpgToJpeg,
+      onImageAdded: (rel) {
+        if (mounted) setState(() => _pendingImages.add(rel));
+      },
+      onNotice: (msg) => messenger.showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1937,26 +1963,33 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               ),
             ),
-          TextField(
-            controller: _inputController,
-            onTapOutside: unfocusOnTapOutside,
-            minLines: 3,
-            maxLines: 8,
-            style: TextStyle(
-              fontSize: 15,
-              height: 1.5,
-              color: context.narrColors.textPrimary,
+          // 粘贴：Ctrl+V 与右键菜单「粘贴」共用 _pasteFromClipboard。
+          CallbackShortcuts(
+            bindings: textFieldPasteBindings(onPaste: _pasteFromClipboard),
+            child: TextField(
+              controller: _inputController,
+              onTapOutside: unfocusOnTapOutside,
+              minLines: 3,
+              maxLines: 8,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                color: context.narrColors.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: '输入你的行动或对话…',
+                hintStyle: TextStyle(color: context.narrColors.placeholder),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                filled: false,
+                contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+              ),
+              contextMenuBuilder: textFieldContextMenuBuilder(
+                onPaste: _pasteFromClipboard,
+              ),
+              onSubmitted: (_) => _send(),
             ),
-            decoration: InputDecoration(
-              hintText: '输入你的行动或对话…',
-              hintStyle: TextStyle(color: context.narrColors.placeholder),
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              filled: false,
-              contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
-            ),
-            onSubmitted: (_) => _send(),
           ),
           // 底部行：左下角功能选择栏 + 中间空隙 + 右下角模型选择 + 发送/停止。
           Padding(

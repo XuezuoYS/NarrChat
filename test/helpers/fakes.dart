@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
@@ -8,6 +9,7 @@ import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 
@@ -298,5 +300,36 @@ class FakeImageImportService implements ImageImportService {
     lastConvertJpgToJpeg = convertJpgToJpeg;
     if (_next >= results.length) return const ImageImportResult();
     return results[_next++];
+  }
+}
+
+/// 可控剪贴板替身：按 [text] / [imagePng] 返回文本与图片（PNG 字节）。
+///
+/// - [imagePng] 非空：表示剪贴板含图片，[readImagePng] 返回固定的
+///   `img/pasted.png`（无需真实落盘，避免触碰真实文件系统）；
+/// - [imageWarning] 非空：优先返回超限/失败提示（模拟「读图成功但被拒」）。
+class FakeClipboardPasteService implements ClipboardPasteService {
+  FakeClipboardPasteService({this.text, this.imagePng, this.imageWarning});
+
+  String? text;
+  Uint8List? imagePng;
+  String? imageWarning;
+
+  @override
+  Future<String?> readText() async => text;
+
+  @override
+  Future<bool> hasImage() async => imagePng != null || imageWarning != null;
+
+  @override
+  Future<ClipboardImageResult> readImagePng({
+    required int sizeLimitMb,
+    required bool convertJpgToJpeg,
+  }) async {
+    if (imageWarning != null) {
+      return ClipboardImageResult(warning: imageWarning);
+    }
+    if (imagePng == null) return const ClipboardImageResult();
+    return const ClipboardImageResult(relPath: 'img/pasted.png');
   }
 }

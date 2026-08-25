@@ -54,9 +54,12 @@ dependencies:
   fast_gbk: ^1.0.0
   flutter_local_notifications: ^22.3.0
   window_manager: ^0.5.2
-  # 图片模块：平台文件选择（Windows/Android）、桌面拖拽、SHA-256 哈希、ZIP 备份。
+  # 图片模块：平台文件选择（Windows/Android）、桌面拖拽、剪贴板图片读取、
+  # SHA-256 哈希、ZIP 备份。
   file_picker: ^8.1.7
   desktop_drop: ^0.8.0
+  # 剪贴板图片读取（Ctrl+V / 右键粘贴图片）：Windows/Android 等桌面/移动端读 PNG。
+  pasteboard: ^0.4.0
   crypto: ^3.0.6
   archive: ^4.0.9
   # 图片查看：全屏可缩放（双指放大可扩展至全屏）+ 左右滑动切换同一轮的多张图。

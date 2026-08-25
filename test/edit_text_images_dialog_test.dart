@@ -1,8 +1,12 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/widgets/edit_text_images_dialog.dart';
 import 'package:narrchat/widgets/image_preview.dart';
+import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
@@ -13,24 +17,27 @@ void main() {
       results: [const ImageImportResult(paths: ['img/b.png'])],
     );
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (ctx) => Center(
-              child: TextButton(
-                onPressed: () async {
-                  captured = await showEditTextImagesDialog(
-                    ctx,
-                    title: '修改并重新提问',
-                    initial: '你好',
-                    initialImages: ['img/a.png'],
-                    allowImages: true,
-                    imageImport: fake,
-                    maxImageSizeMB: 16,
-                    convertJpgToJpeg: true,
-                  );
-                },
-                child: const Text('open'),
+      Provider<ClipboardPasteService>(
+        create: (_) => FakeClipboardPasteService(),
+        child: MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (ctx) => Center(
+                child: TextButton(
+                  onPressed: () async {
+                    captured = await showEditTextImagesDialog(
+                      ctx,
+                      title: '修改并重新提问',
+                      initial: '你好',
+                      initialImages: ['img/a.png'],
+                      allowImages: true,
+                      imageImport: fake,
+                      maxImageSizeMB: 16,
+                      convertJpgToJpeg: true,
+                    );
+                  },
+                  child: const Text('open'),
+                ),
               ),
             ),
           ),
@@ -71,22 +78,25 @@ void main() {
   testWidgets('非识图：隐藏图片区与「添加图片」按钮，仅文本编辑', (tester) async {
     EditTextImagesResult? captured;
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (ctx) => Center(
-              child: TextButton(
-                onPressed: () async {
-                  captured = await showEditTextImagesDialog(
-                    ctx,
-                    title: '修改并重新提问',
-                    initial: '原始文本',
-                    allowImages: false,
-                    imageImport: FakeImageImportService(),
-                    maxImageSizeMB: 16,
-                  );
-                },
-                child: const Text('open'),
+      Provider<ClipboardPasteService>(
+        create: (_) => FakeClipboardPasteService(),
+        child: MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (ctx) => Center(
+                child: TextButton(
+                  onPressed: () async {
+                    captured = await showEditTextImagesDialog(
+                      ctx,
+                      title: '修改并重新提问',
+                      initial: '原始文本',
+                      allowImages: false,
+                      imageImport: FakeImageImportService(),
+                      maxImageSizeMB: 16,
+                    );
+                  },
+                  child: const Text('open'),
+                ),
               ),
             ),
           ),
@@ -104,5 +114,46 @@ void main() {
     expect(captured, isNotNull);
     expect(captured!.text, '原始文本');
     expect(captured!.images, isEmpty);
+  });
+
+  testWidgets('识图：右键粘贴图片加入图片列表', (tester) async {
+    await tester.pumpWidget(
+      Provider<ClipboardPasteService>(
+        create: (_) => FakeClipboardPasteService(
+          imagePng: Uint8List.fromList([0, 1, 2]),
+        ),
+        child: MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (ctx) => Center(
+                child: TextButton(
+                  onPressed: () async {
+                    await showEditTextImagesDialog(
+                      ctx,
+                      title: '修改并重新提问',
+                      initial: '',
+                      allowImages: true,
+                      imageImport: FakeImageImportService(),
+                      maxImageSizeMB: 16,
+                    );
+                  },
+                  child: const Text('open'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    // 长按输入框 → 右键菜单 → 粘贴图片。
+    await tester.longPress(find.byType(TextField));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('粘贴'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImageThumbnail), findsOneWidget);
   });
 }

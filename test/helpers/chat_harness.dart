@@ -11,6 +11,7 @@ import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -47,6 +48,7 @@ Future<RoundProvider> pumpChatScreen(
   FakeWorldBookDao? worldBookDao,
   AiSettingsProvider? settings,
   ImageImportService? imageImport,
+  ClipboardPasteService? clipboardPaste,
   void Function(int bookId, String bookTitle)? onGenerationCompleted,
   Duration retryDelay = const Duration(milliseconds: 800),
   int seedRounds = 0,
@@ -96,6 +98,9 @@ Future<RoundProvider> pumpChatScreen(
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
         Provider<ImageImportService>(
           create: (_) => imageImport ?? FakeImageImportService(),
+        ),
+        Provider<ClipboardPasteService>(
+          create: (_) => clipboardPaste ?? FakeClipboardPasteService(),
         ),
       ],
       child: MaterialApp(

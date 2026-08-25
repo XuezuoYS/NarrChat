@@ -18,6 +18,7 @@ import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
+import 'services/clipboard_paste_service.dart';
 import 'services/manual_licenses_service.dart';
 import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
@@ -177,6 +178,10 @@ class NarrChatApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
         Provider<ImageImportService>(
           create: (_) => PickerImageImportService(),
+        ),
+        // 剪贴板读取（输入框 Ctrl+V / 右键粘贴，含图片）。
+        Provider<ClipboardPasteService>(
+          create: (_) => const SystemClipboardPasteService(),
         ),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
