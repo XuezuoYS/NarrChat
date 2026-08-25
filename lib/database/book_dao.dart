@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import 'database_helper.dart';
@@ -65,7 +67,11 @@ class BookDao {
     final db = await _helper.database;
     final rows = await db.query(
       'books',
-      columns: ['failed_user_input', 'failed_error_message'],
+      columns: [
+        'failed_user_input',
+        'failed_error_message',
+        'failed_user_images',
+      ],
       where: 'id = ?',
       whereArgs: [bookId],
       limit: 1,
@@ -75,12 +81,13 @@ class BookDao {
     return FailedAttempt(
       userInput: (row['failed_user_input'] as String?) ?? '',
       errorMessage: (row['failed_error_message'] as String?) ?? '',
+      userImages: _decodeImages(row['failed_user_images']),
     );
   }
 
   /// 写入本书的「失败条目」（空条目即清空）。
   ///
-  /// 仅更新这两列，与 [Book] 内容列互不干扰：`insertBook` / `updateBook`
+  /// 仅更新这三列，与 [Book] 内容列互不干扰：`insertBook` / `updateBook`
   /// 的写 map 不含失败列，因此书籍编辑保存不会覆盖失败条目。
   Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
     final db = await _helper.database;
@@ -89,9 +96,24 @@ class BookDao {
       {
         'failed_user_input': attempt.userInput,
         'failed_error_message': attempt.errorMessage,
+        'failed_user_images': jsonEncode(attempt.userImages),
       },
       where: 'id = ?',
       whereArgs: [bookId],
     );
+  }
+
+  /// 解析 JSON 数组字符串（相对路径列表）；非法 / 空视为无图片。
+  static List<String> _decodeImages(Object? raw) {
+    if (raw is! String || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {
+      // 非法 JSON 视为空。
+    }
+    return const [];
   }
 }

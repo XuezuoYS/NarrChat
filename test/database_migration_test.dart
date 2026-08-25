@@ -166,6 +166,43 @@ void main() {
     await db.close();
   });
 
+  test('v10→v11 迁移新增 failed_user_images 列且失败条目数据保留', () async {
+    final path = _newDbPath();
+
+    final db10 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 10, onCreate: _createV10Schema),
+    );
+    await db10.insert('books', {
+      'title': '书E',
+      'category': '玄幻',
+      'base_setting': '设定',
+      'failed_user_input': '带图失败',
+      'failed_error_message': '模拟失败',
+    });
+    await db10.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+    final bookCols = (await db.rawQuery('PRAGMA table_info(books)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(bookCols, contains('failed_user_images'));
+    final book = (await db.rawQuery('SELECT * FROM books')).first;
+    expect(book['failed_user_input'], '带图失败');
+    expect(book['failed_error_message'], '模拟失败');
+    // 新列默认空图片数组（历史失败条目不丢数据）。
+    expect(book['failed_user_images'], '[]');
+    await db.close();
+  });
+
   test('v5→当前版本全链路迁移（含 rounds 重建）成功且数据保留', () async {
     final path = _newDbPath();
 
@@ -266,9 +303,55 @@ String _newDbPath() {
   return p.join(dir.path, 'narrchat.db');
 }
 
-/// 历史 v8 schema（books 含 v3/v4/v8 列；rounds 不含 model_name）。
-Future<void> _createV8Schema(Database db, int version) async {
+/// 历史 v10 schema（books 含 failed_user_input/error；rounds 含
+/// model_name/user_images/ai_images，尚无 failed_user_images）。
+Future<void> _createV10Schema(Database db, int version) async {
   await db.execute('''
+    CREATE TABLE books (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      category TEXT DEFAULT '',
+      base_setting TEXT DEFAULT '',
+      writing_requirements TEXT DEFAULT '',
+      writing_style TEXT DEFAULT '',
+      global_pre_prompt TEXT DEFAULT '',
+      global_post_prompt TEXT DEFAULT '',
+      history_rounds INTEGER NOT NULL DEFAULT 1,
+      role_hierarchy TEXT DEFAULT '',
+      role_hierarchy_detail TEXT DEFAULT '',
+      failed_user_input TEXT DEFAULT '',
+      failed_error_message TEXT DEFAULT ''
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE rounds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_id INTEGER NOT NULL,
+      round_index INTEGER NOT NULL,
+      user_input TEXT DEFAULT '',
+      ai_narrative TEXT DEFAULT '',
+      world_state TEXT DEFAULT '',
+      character_state TEXT DEFAULT '',
+      memory_summary TEXT DEFAULT '',
+      current_time TEXT DEFAULT '',
+      recommended_action TEXT DEFAULT '',
+      tokens_in INTEGER NOT NULL DEFAULT 0,
+      tokens_out INTEGER NOT NULL DEFAULT 0,
+      model_name TEXT DEFAULT '',
+      user_images TEXT NOT NULL DEFAULT '[]',
+      ai_images TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME,
+      FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX idx_rounds_book_index ON rounds (book_id, round_index)',
+  );
+  await _createCommonTables(db);
+}
+
+/// 历史 v8 schema（books 含 v3/v4/v8 列；rounds 不含 model_name）。
+Future<void> _createV8Schema(Database db, int version) async {  await db.execute('''
     CREATE TABLE books (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,

@@ -96,7 +96,7 @@ class FailedAttemptBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // 用户输入气泡（无独立菜单，由外层统一处理）。
-          ChatBubble(isUser: true, text: attempt.userInput),
+          ChatBubble(isUser: true, text: attempt.userInput, images: attempt.userImages),
           const SizedBox(height: 12),
           Align(
             alignment: Alignment.centerLeft,

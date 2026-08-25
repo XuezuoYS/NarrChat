@@ -15,7 +15,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 10;
+  static const int _dbVersion = 11;
 
   Database? _database;
 
@@ -152,6 +152,15 @@ class DatabaseHelper {
             "ALTER TABLE rounds ADD COLUMN ai_images TEXT NOT NULL DEFAULT '[]'",
           );
         }
+        if (oldVersion < 11) {
+          // 失败条目随书持久化其用户消息图片：失败后气泡保留展示并供重新提问复用。
+          await _addColumnIfMissing(
+            db,
+            'books',
+            'failed_user_images',
+            "ALTER TABLE books ADD COLUMN failed_user_images TEXT NOT NULL DEFAULT '[]'",
+          );
+        }
   }
 
   /// 判断 [table] 是否已包含 [column] 列。
@@ -234,7 +243,8 @@ class DatabaseHelper {
         role_hierarchy TEXT DEFAULT '',
         role_hierarchy_detail TEXT DEFAULT '',
         failed_user_input TEXT DEFAULT '',
-        failed_error_message TEXT DEFAULT ''
+        failed_error_message TEXT DEFAULT '',
+        failed_user_images TEXT NOT NULL DEFAULT '[]'
       )
     ''');
   }

@@ -892,17 +892,18 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 重新提问失败条目：以失败时的输入重新生成（sendRound 会先清空失败条目）。
+  /// 重新提问失败条目：以失败时的输入与图片重新生成（sendRound 会先清空失败条目）。
   ///
-  /// 失败条目不携带图片，故「生成中」气泡不带图片；不触碰待发送附件。
+  /// 失败条目携带图片（识图模型）时，「生成中」气泡随之带图；不触碰待发送附件。
   Future<void> _retryFailure() async {
     final rp = context.read<RoundProvider>();
     final input = rp.failedUserInput;
+    final images = rp.failedUserImages;
     if (input.isEmpty || rp.isSending) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    _startGeneration(images: const []);
-    await rp.sendRound(userInput: input, book: book);
+    _startGeneration(images: images);
+    await rp.sendRound(userInput: input, book: book, userImages: images);
     _endGeneration();
   }
 
@@ -920,6 +921,7 @@ class _ChatScreenState extends State<ChatScreen>
         context,
         title: '修改并重新提问',
         initial: input,
+        initialImages: rp.failedUserImages,
         allowImages: true,
         imageImport: context.read<ImageImportService>(),
         maxImageSizeMB: ai.maxImageSizeMB,

@@ -221,6 +221,9 @@ class RoundProvider extends ChangeNotifier {
   /// 失败条目的用户输入（空串 = 无）。
   String get failedUserInput => failedAttempt.userInput;
 
+  /// 失败条目附带的用户消息图片（相对路径；为空 = 无图片）。
+  List<String> get failedUserImages => failedAttempt.userImages;
+
   /// 失败条目的错误信息（空串 = 用户中断「已截断」）。
   String get failedErrorMessage => failedAttempt.errorMessage;
 
@@ -504,7 +507,10 @@ class RoundProvider extends ChangeNotifier {
         gen.failedRawExchanges = List.of(gen.rawExchanges);
         await _setFailedAttempt(
           b.id!,
-          FailedAttempt(userInput: userInput),
+          FailedAttempt(
+          userInput: userInput,
+          userImages: userImages ?? const [],
+        ),
         );
         return false;
       }
@@ -560,7 +566,10 @@ class RoundProvider extends ChangeNotifier {
       gen.failedRawExchanges = List.of(gen.rawExchanges);
       await _setFailedAttempt(
         b.id!,
-        FailedAttempt(userInput: userInput),
+        FailedAttempt(
+          userInput: userInput,
+          userImages: userImages ?? const [],
+        ),
       );
       return false;
     } catch (e) {
@@ -571,7 +580,11 @@ class RoundProvider extends ChangeNotifier {
       gen.failedRawExchanges = List.of(gen.rawExchanges);
       final saved = await _setFailedAttempt(
         b.id!,
-        FailedAttempt(userInput: userInput, errorMessage: e.toString()),
+        FailedAttempt(
+          userInput: userInput,
+          errorMessage: e.toString(),
+          userImages: userImages ?? const [],
+        ),
       );
       // 仅当失败条目落库也失败时才暴露原因（UI 兜底提示并恢复输入）。
       _error = saved ? null : e.toString();

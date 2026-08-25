@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/widgets/image_preview.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -328,6 +329,34 @@ void main() {
       expect(bookDao.failed.isEmpty, isTrue);
       expect(find.text('已截断'), findsNothing);
       expect(find.text('生成失败'), findsNothing);
+    });
+
+    testWidgets('失败保留用户消息图片：失败条目携带图片且失败气泡展示', (tester) async {
+      final bookDao = FakeBookDao();
+      final dao = FakeRoundDao();
+      final ai = ToggleAiService()..fail = true;
+      final roundProvider = await pumpChatScreen(
+        tester,
+        ai: ai,
+        bookDao: bookDao,
+        roundDao: dao,
+      );
+
+      final sendFuture = roundProvider.sendRound(
+        userInput: '带图失败',
+        book: book,
+        userImages: ['img/a.png'],
+      );
+      await waitSendDone(tester, roundProvider);
+
+      expect(await sendFuture, isFalse);
+      // 失败条目保留图片（内存 + 提供者暴露）。
+      expect(bookDao.failed.userImages, ['img/a.png']);
+      expect(roundProvider.failedUserImages, ['img/a.png']);
+      expect(bookDao.failed.hasImages, isTrue);
+      // 失败气泡展示图片缩略条 + 用户输入文本。
+      expect(find.byType(ImagePreviewStrip), findsOneWidget);
+      expect(find.text('带图失败'), findsOneWidget);
     });
   });
 }
