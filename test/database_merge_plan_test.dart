@@ -180,6 +180,7 @@ void main() {
           local,
           plan,
           {plan.entries.single.title: MergeBookDecision.keepImported},
+          const {},
         );
 
         expect(result.booksReplaced, 1);
@@ -222,6 +223,7 @@ void main() {
           local,
           plan,
           {plan.entries.single.title: MergeBookDecision.keepLocal},
+          const {},
         );
 
         expect(result.isEmpty, isTrue);
@@ -250,6 +252,7 @@ void main() {
           local,
           plan,
           {entry.title: MergeBookDecision.keepImported},
+          const {},
         );
         final localBooks = await local.query('books');
         expect(localBooks, hasLength(1));
@@ -279,9 +282,122 @@ void main() {
           {
             for (final e in plan.entries) e.title: e.suggestedDecision,
           },
+          const {},
         );
         expect(result.isEmpty, isTrue);
         expect(await local.query('books'), hasLength(2));
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+  });
+
+  group('DatabaseMergeService.buildPlan（Mod）', () {
+    test('Mod 分类：冲突 / 仅导入有 / 仅本地有 / 两者全一致', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        await local.insert('mods', {'name': 'M', 'description': '本地'});
+        await backup.insert('mods', {'name': 'M', 'description': '云端'});
+        await backup.insert('mods', {'name': '云Mod'});
+        await local.insert('mods', {'name': '本地Mod'});
+        await local.insert('mods', {'name': '同', 'description': 'x'});
+        await backup.insert('mods', {'name': '同', 'description': 'x'});
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        expect(plan.modConflictCount, 1);
+        expect(plan.modImportOnlyCount, 1);
+        expect(plan.modLocalOnlyCount, 1);
+        expect(plan.modIdenticalCount, 1);
+        final byName = {for (final m in plan.modEntries) m.name: m.status};
+        expect(byName['M'], ModMergeStatus.conflict);
+        expect(byName['云Mod'], ModMergeStatus.importOnly);
+        expect(byName['本地Mod'], ModMergeStatus.localOnly);
+        expect(byName['同'], ModMergeStatus.identical);
+        // Mod 无时间可对比，冲突默认保留云端。
+        expect(
+          plan.modEntries.firstWhere((m) => m.name == 'M').defaultDecision,
+          ModMergeDecision.import,
+        );
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+  });
+
+  group('DatabaseMergeService.applyPlan（Mod）', () {
+    test('冲突 Mod 默认导入：用云端内容覆盖本地同名 Mod', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        await local.insert('mods', {'name': 'M', 'description': '本地描述'});
+        await backup.insert('mods', {'name': 'M', 'description': '云端描述'});
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          const {},
+          const {},
+        );
+
+        expect(result.modsReplaced, 1);
+        final mods = await local.query('mods');
+        expect(mods, hasLength(1));
+        expect(mods.single['description'], '云端描述');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('冲突 Mod 重命名：另存为「{原名} - 导入」，本地同名 Mod 保留', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        await local.insert('mods', {'name': 'M', 'description': '本地'});
+        await backup.insert('mods', {'name': 'M', 'description': '云端'});
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          const {},
+          {'M': ModMergeDecision.rename},
+        );
+
+        expect(result.modsRenamed, 1);
+        final mods = await local.query('mods');
+        expect(mods, hasLength(2));
+        expect(mods.map((m) => m['name']).toSet(), {'M', 'M - 导入'});
+        final renamed = mods.firstWhere((m) => m['name'] == 'M - 导入');
+        expect(renamed['description'], '云端');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('冲突 Mod 保留本地：本地不变', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        await local.insert('mods', {'name': 'M', 'description': '本地'});
+        await backup.insert('mods', {'name': 'M', 'description': '云端'});
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          const {},
+          {'M': ModMergeDecision.keepLocal},
+        );
+
+        expect(result.isEmpty, isTrue);
+        final mods = await local.query('mods');
+        expect(mods.single['description'], '本地');
       } finally {
         await local.close();
         await backup.close();

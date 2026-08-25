@@ -22,13 +22,21 @@ class DatabaseMergeResult {
   /// 因用户选择或既有状态而跳过的书籍数（保留本地/取消导入）。
   int booksSkipped = 0;
 
+  /// 冲突 mod「保留云端」覆盖本地同名 mod 的次数。
+  int modsReplaced = 0;
+
+  /// 冲突 mod「重命名为 {原名} - 导入」另存新 mod 的次数。
+  int modsRenamed = 0;
+
   bool get isEmpty =>
       booksAdded == 0 &&
       modsAdded == 0 &&
       roundsAdded == 0 &&
       worldBookAdded == 0 &&
       bookModsAdded == 0 &&
-      booksReplaced == 0;
+      booksReplaced == 0 &&
+      modsReplaced == 0 &&
+      modsRenamed == 0;
 }
 
 /// 数据库合并服务：把一份备份库（`narrchat.db` 副本）以合并决策页的形式导入本地用户库。
@@ -156,51 +164,75 @@ class DatabaseMergeService {
       return a.title.compareTo(b.title);
     });
 
-    return DatabaseMergePlan(entries: entries);
+    // 合并计划同样包含 Mod：与书一致，按名称判同（Mod 不记录修改时间，
+    // 无自动对比，默认保留云端；仅在「全本地/全导入」批量选项下变化）。
+    final backupModByName = _indexModsByName(backupMods);
+    final localModByName = _indexModsByName(localMods);
+    final allModNames = <String>{
+      ...backupModByName.keys,
+      ...localModByName.keys,
+    };
+    final modEntries = <ModMergeEntry>[];
+    for (final name in allModNames) {
+      final backupMod = backupModByName[name];
+      final localMod = localModByName[name];
+      final imported = backupMod == null ? null : _buildModSide(backupMod);
+      final local = localMod == null ? null : _buildModSide(localMod);
+
+      final ModMergeStatus status;
+      if (imported != null && local != null) {
+        status = imported.fingerprint == local.fingerprint
+            ? ModMergeStatus.identical
+            : ModMergeStatus.conflict;
+      } else if (imported != null) {
+        status = ModMergeStatus.importOnly;
+      } else {
+        status = ModMergeStatus.localOnly;
+      }
+
+      modEntries.add(
+        ModMergeEntry(
+          name: name,
+          status: status,
+          imported: imported,
+          local: local,
+          defaultDecision: _modDefaultDecision(status),
+        ),
+      );
+    }
+    final modRank = {
+      ModMergeStatus.conflict: 0,
+      ModMergeStatus.importOnly: 1,
+      ModMergeStatus.localOnly: 2,
+      ModMergeStatus.identical: 3,
+    };
+    modEntries.sort((a, b) {
+      final byRank = (modRank[a.status]!).compareTo(modRank[b.status]!);
+      if (byRank != 0) return byRank;
+      return a.name.compareTo(b.name);
+    });
+
+    return DatabaseMergePlan(entries: entries, modEntries: modEntries);
   }
 
-  /// 按用户的逐书决策把 [plan] 落地进 [local]（整本替换语义）。
+  /// 按用户的逐书 / 逐 Mod 决策把 [plan] 落地进 [local]。
   @visibleForTesting
   static Future<DatabaseMergeResult> applyPlan(
     Database local,
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> decisions,
+    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, ModMergeDecision> modDecisions,
   ) async {
     final result = DatabaseMergeResult();
     await local.transaction((txn) async {
-      // 1. 汇总所有会被导入的书侧，先对 Mod 按名称并集，建立 oldModId → localModId。
-      final localModRows = await txn.query('mods');
-      final modNameToId = <String, int>{
-        for (final m in localModRows)
-          if ((m['name'] as String? ?? '').trim().isNotEmpty)
-            (m['name'] as String? ?? '').trim(): m['id'] as int,
-      };
-      final modIdMap = <int, int>{};
-
-      for (final entry in plan.entries) {
-        final imported = entry.imported;
-        if (imported == null) continue;
-        final decision = decisions[entry.title] ?? entry.suggestedDecision;
-        if (_shouldImport(entry.status, decision)) {
-          for (final mod in imported.mods.values) {
-            final name = (mod['name'] as String? ?? '').trim();
-            if (name.isEmpty) continue;
-            final oldModId = mod['id'] as int?;
-            if (oldModId == null) continue;
-            if (modNameToId.containsKey(name)) {
-              modIdMap[oldModId] = modNameToId[name]!;
-            } else if (!modIdMap.containsKey(oldModId)) {
-              final newId = await txn.insert(
-                'mods',
-                Map<String, Object?>.from(mod)..remove('id'),
-              );
-              modNameToId[name] = newId;
-              modIdMap[oldModId] = newId;
-              result.modsAdded++;
-            }
-          }
-        }
-      }
+      // 1. 先落地 Mod 决策，得到「云端 Mod 名 → 本地 Mod id」映射，
+      //    供导入书时解析其 book_mods 引用。
+      final cloudModNameToId = await _applyModDecisions(
+        txn,
+        plan,
+        modDecisions,
+        result,
+      );
 
       // 2. 逐书落地。
       for (final entry in plan.entries) {
@@ -209,14 +241,15 @@ class DatabaseMergeService {
             status == MergeBookStatus.identical) {
           continue;
         }
-        final decision = decisions[entry.title] ?? entry.suggestedDecision;
+        final decision =
+            bookDecisions[entry.title] ?? entry.suggestedDecision;
 
         if (status == MergeBookStatus.importOnly) {
           // 仅导入有的书始终导入，不支持取消。
           await _insertImportedBook(
             txn,
             entry.imported!,
-            modIdMap,
+            cloudModNameToId,
             result,
           );
           continue;
@@ -228,7 +261,7 @@ class DatabaseMergeService {
           continue;
         }
         await _deleteLocalBookByTitle(txn, entry.title);
-        await _insertImportedBook(txn, entry.imported!, modIdMap, result);
+        await _insertImportedBook(txn, entry.imported!, cloudModNameToId, result);
         result.booksReplaced++;
       }
     });
@@ -238,26 +271,101 @@ class DatabaseMergeService {
   /// 把 [plan] 按决策落地进应用本地库（[DatabaseHelper]）。
   static Future<DatabaseMergeResult> applyPlanIntoLocal(
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> decisions,
+    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, ModMergeDecision> modDecisions,
   ) async {
     final local = await DatabaseHelper.instance.database;
-    return applyPlan(local, plan, decisions);
+    return applyPlan(local, plan, bookDecisions, modDecisions);
   }
 
   // ---------------------------------------------------------------------------
   // 内部工具
   // ---------------------------------------------------------------------------
 
-  static bool _shouldImport(MergeBookStatus status, MergeBookDecision decision) {
-    if (status == MergeBookStatus.localOnly ||
-        status == MergeBookStatus.identical) {
-      return false;
+  /// 落地 Mod 决策，返回「云端 Mod 名 → 本地 Mod id」映射（供导入书解析 book_mods）。
+  static Future<Map<String, int>> _applyModDecisions(
+    DatabaseExecutor txn,
+    DatabaseMergePlan plan,
+    Map<String, ModMergeDecision> modDecisions,
+    DatabaseMergeResult result,
+  ) async {
+    final cloudNameToId = <String, int>{};
+    final localModRows = await txn.query('mods');
+    final localNameToId = <String, int>{
+      for (final m in localModRows)
+        if ((m['name'] as String? ?? '').trim().isNotEmpty)
+          (m['name'] as String? ?? '').trim(): m['id'] as int,
+    };
+
+    for (final e in plan.modEntries) {
+      final defaultDecision = e.defaultDecision;
+      final decision = modDecisions[e.name] ?? defaultDecision;
+      switch (e.status) {
+        case ModMergeStatus.localOnly:
+        case ModMergeStatus.identical:
+          final lid = localNameToId[e.name];
+          if (lid != null) cloudNameToId[e.name] = lid;
+          break;
+        case ModMergeStatus.importOnly:
+          // 仅导入有的 Mod 始终导入。
+          final row = e.imported!.mod;
+          final newId = await txn.insert(
+            'mods',
+            Map<String, Object?>.from(row)..remove('id'),
+          );
+          localNameToId[e.name] = newId;
+          cloudNameToId[e.name] = newId;
+          result.modsAdded++;
+          break;
+        case ModMergeStatus.conflict:
+          switch (decision) {
+            case ModMergeDecision.keepLocal:
+              final lid = localNameToId[e.name];
+              if (lid != null) cloudNameToId[e.name] = lid;
+              break;
+            case ModMergeDecision.import:
+              // 用云端内容覆盖本地同名 Mod（就地更新，id 不变，引用不失效）。
+              final row = e.imported!.mod;
+              final lid = localNameToId[e.name];
+              int modId;
+              if (lid != null) {
+                await txn.update(
+                  'mods',
+                  Map<String, Object?>.from(row)..remove('id'),
+                  where: 'id = ?',
+                  whereArgs: [lid],
+                );
+                modId = lid;
+              } else {
+                modId = await txn.insert(
+                  'mods',
+                  Map<String, Object?>.from(row)..remove('id'),
+                );
+                localNameToId[e.name] = modId;
+                result.modsAdded++;
+              }
+              cloudNameToId[e.name] = modId;
+              result.modsReplaced++;
+              break;
+            case ModMergeDecision.rename:
+              // 重命名为「{原名} - 导入」另存为新 Mod，本地同名 Mod 保留。
+              final renamed = '${e.name} - 导入';
+              final row = e.imported!.mod;
+              final newId = await txn.insert(
+                'mods',
+                Map<String, Object?>.from(row)
+                  ..remove('id')
+                  ..['name'] = renamed,
+              );
+              localNameToId[renamed] = newId;
+              cloudNameToId[e.name] = newId;
+              result.modsRenamed++;
+              break;
+          }
+          break;
+      }
     }
-    // 仅导入有的书始终导入。
-    if (status == MergeBookStatus.importOnly) {
-      return true;
-    }
-    return decision == MergeBookDecision.keepImported;
+    return cloudNameToId;
   }
 
   /// 删除本地库中与 [title]（去首尾空白判同）匹配的书籍及其整棵子树。
@@ -288,10 +396,12 @@ class DatabaseMergeService {
   }
 
   /// 整本插入导入侧书籍快照（设置字段 + 轮次 + 世界书 + 书-Mod 配置）。
+  ///
+  /// [cloudModNameToId]：云端 Mod 名 → 本地 Mod id（由 [applyPlan] 先落地 Mod 决策得到）。
   static Future<void> _insertImportedBook(
     DatabaseExecutor txn,
     BookMergeSide side,
-    Map<int, int> modIdMap,
+    Map<String, int> cloudModNameToId,
     DatabaseMergeResult result,
   ) async {
     final bookMap = side.book.toMap()..remove('id');
@@ -320,10 +430,12 @@ class DatabaseMergeService {
     }
 
     for (final bm in side.bookMods) {
+      final cloudName = (side.mods[bm.modId]?['name'] as String? ?? '').trim();
+      final modId = cloudName.isEmpty ? null : cloudModNameToId[cloudName];
       await txn.insert('book_mods', {
         'book_id': newBookId,
         'preset_key': bm.presetKey,
-        'mod_id': bm.modId != null ? modIdMap[bm.modId] : null,
+        'mod_id': modId,
         'sort_order': bm.sortOrder,
         'is_enabled': bm.isEnabled,
       });
@@ -505,6 +617,51 @@ class DatabaseMergeService {
     return map;
   }
 
+  static Map<String, Map<String, Object?>> _indexModsByName(
+    List<Map<String, Object?>> rows,
+  ) {
+    final map = <String, Map<String, Object?>>{};
+    for (final m in rows) {
+      final name = (m['name'] as String? ?? '').trim();
+      if (name.isEmpty) continue; // 无名 Mod 不参与合并。
+      map[name] = m;
+    }
+    return map;
+  }
+
+  static ModMergeSide _buildModSide(Map<String, Object?> row) {
+    return ModMergeSide(
+      mod: Map<String, Object?>.from(row),
+      dbId: row['id'] as int?,
+      fingerprint: _modFingerprint(row),
+    );
+  }
+
+  /// 与行 id 无关的 Mod 内容指纹（任一字段不同则指纹不同）。
+  static String _modFingerprint(Map<String, Object?> row) {
+    return jsonEncode([
+      (row['name'] as String? ?? '').trim(),
+      row['description'],
+      row['pre_prompt'],
+      row['post_prompt'],
+      row['system_prompt'],
+      row['world_book'],
+      row['created_at'],
+      row['updated_at'],
+    ]);
+  }
+
+  /// Mod 默认决策：无时间可对比，冲突 / 仅导入有默认保留云端；
+  /// 仅本地有 / 两者全一致保留本地。
+  static ModMergeDecision _modDefaultDecision(ModMergeStatus status) {
+    return switch (status) {
+      ModMergeStatus.conflict || ModMergeStatus.importOnly =>
+        ModMergeDecision.import,
+      ModMergeStatus.localOnly || ModMergeStatus.identical =>
+        ModMergeDecision.keepLocal,
+    };
+  }
+
   /// 以只读方式打开备份库（不传 version，跳过 onCreate/onUpgrade 迁移逻辑）。
   static Future<Database> _openBackup(String path) async {
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
@@ -515,11 +672,15 @@ class DatabaseMergeService {
   }
 }
 
-/// 合并决策计划：逐书冲突分类与建议决策。
+/// 合并决策计划：逐书 / 逐 Mod 冲突分类与建议决策。
 class DatabaseMergePlan {
   final List<BookMergeEntry> entries;
+  final List<ModMergeEntry> modEntries;
 
-  const DatabaseMergePlan({required this.entries});
+  const DatabaseMergePlan({
+    required this.entries,
+    this.modEntries = const [],
+  });
 
   int get conflictCount =>
       entries.where((e) => e.status == MergeBookStatus.conflict).length;
@@ -529,6 +690,15 @@ class DatabaseMergePlan {
       entries.where((e) => e.status == MergeBookStatus.localOnly).length;
   int get identicalCount =>
       entries.where((e) => e.status == MergeBookStatus.identical).length;
+
+  int get modConflictCount =>
+      modEntries.where((e) => e.status == ModMergeStatus.conflict).length;
+  int get modImportOnlyCount =>
+      modEntries.where((e) => e.status == ModMergeStatus.importOnly).length;
+  int get modLocalOnlyCount =>
+      modEntries.where((e) => e.status == ModMergeStatus.localOnly).length;
+  int get modIdenticalCount =>
+      modEntries.where((e) => e.status == ModMergeStatus.identical).length;
 
   /// 依据决策表统计最终会发生的动作，用于合并确认摘要。
   Map<String, int> summarize(Map<String, MergeBookDecision> decisions) {
@@ -556,6 +726,42 @@ class DatabaseMergePlan {
       }
     }
     return {'import': toImport, 'replace': toReplace, 'skip': toSkip};
+  }
+
+  /// 依据 Mod 决策统计最终动作，用于合并确认摘要。
+  Map<String, int> summarizeMods(Map<String, ModMergeDecision> decisions) {
+    var toImport = 0;
+    var toRename = 0;
+    var toReplace = 0;
+    var toKeep = 0;
+    for (final e in modEntries) {
+      final d = decisions[e.name] ?? e.defaultDecision;
+      switch (e.status) {
+        case ModMergeStatus.conflict:
+          switch (d) {
+            case ModMergeDecision.import:
+              toReplace++;
+            case ModMergeDecision.rename:
+              toRename++;
+            case ModMergeDecision.keepLocal:
+              toKeep++;
+          }
+          break;
+        case ModMergeStatus.importOnly:
+          toImport++;
+          break;
+        case ModMergeStatus.localOnly:
+        case ModMergeStatus.identical:
+          toKeep++;
+          break;
+      }
+    }
+    return {
+      'import': toImport,
+      'rename': toRename,
+      'replace': toReplace,
+      'keep': toKeep,
+    };
   }
 }
 
@@ -627,3 +833,47 @@ enum MergeBookStatus { conflict, importOnly, localOnly, identical }
 
 /// 单书的合并决策。
 enum MergeBookDecision { keepImported, keepLocal }
+
+/// Mod 合并状态。
+enum ModMergeStatus { conflict, importOnly, localOnly, identical }
+
+/// 单个 Mod 的合并决策（冲突）：
+/// - [import]：用云端内容覆盖本地同名 Mod；
+/// - [rename]：把云端 Mod 重命名为「{原名} - 导入」另存（本地同名 Mod 保留）；
+/// - [keepLocal]：保留本地 Mod。
+enum ModMergeDecision { import, rename, keepLocal }
+
+/// 单 Mod 在某侧数据库中的完整快照（content 落地所需）。
+class ModMergeSide {
+  /// 完整 mod 行（含 name/description/pre_prompt/post_prompt/system_prompt/world_book 等）。
+  final Map<String, Object?> mod;
+
+  /// 该书在该库中的行 id（落地时用于关联映射）。
+  final int? dbId;
+
+  /// 与行 id 无关的内容指纹（冲突判定）。
+  final String fingerprint;
+
+  const ModMergeSide({
+    required this.mod,
+    this.dbId,
+    required this.fingerprint,
+  });
+}
+
+/// 单个 Mod 的合并条目。
+class ModMergeEntry {
+  final String name;
+  final ModMergeStatus status;
+  final ModMergeSide? imported;
+  final ModMergeSide? local;
+  final ModMergeDecision defaultDecision;
+
+  const ModMergeEntry({
+    required this.name,
+    required this.status,
+    this.imported,
+    this.local,
+    required this.defaultDecision,
+  });
+}

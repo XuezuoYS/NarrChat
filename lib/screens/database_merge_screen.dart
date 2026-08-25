@@ -20,7 +20,8 @@ class DatabaseMergeScreen extends StatefulWidget {
   /// 合并在哪里执行；为 null 时使用 [DatabaseMergeService.applyPlanIntoLocal]。
   final Future<DatabaseMergeResult> Function(
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> decisions,
+    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, ModMergeDecision> modDecisions,
   )?
   onApply;
 
@@ -31,7 +32,8 @@ class DatabaseMergeScreen extends StatefulWidget {
     required DatabaseMergePlan plan,
     Future<DatabaseMergeResult> Function(
       DatabaseMergePlan plan,
-      Map<String, MergeBookDecision> decisions,
+      Map<String, MergeBookDecision> bookDecisions,
+      Map<String, ModMergeDecision> modDecisions,
     )?
     onApply,
   }) {
@@ -48,6 +50,7 @@ class DatabaseMergeScreen extends StatefulWidget {
 
 class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
   late Map<String, MergeBookDecision> _decision;
+  late Map<String, ModMergeDecision> _modDecision;
   bool _applying = false;
   bool _autoSelectExpanded = false;
 
@@ -59,6 +62,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     // 打开时先执行一次「按轮次时间最新」，与底部「自动勾选」菜单共用同一套逻辑，
     // 避免「打开默认值」与「按轮次时间最新」两处重复实现。
     _decision = _computeDecisions(_BulkRule.newest);
+    // Mod 无时间/轮次，默认保留云端（导入），不受「按轮次时间最新」影响。
+    _modDecision = _computeModDecisions(_BulkRule.newest);
   }
 
   MergeBookDecision _decisionOf(String title) =>
@@ -68,10 +73,42 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     setState(() => _decision[title] = value);
   }
 
+  ModMergeDecision _modDecisionOf(String name) =>
+      _modDecision[name] ?? ModMergeDecision.keepLocal;
+
+  void _setModDecision(String name, ModMergeDecision value) {
+    setState(() => _modDecision[name] = value);
+  }
+
   /// 按规则计算全部书籍的决策（纯函数，供初始化与「自动勾选」菜单共用）。
   Map<String, MergeBookDecision> _computeDecisions(_BulkRule rule) {
     return {
       for (final e in plan.entries) e.title: _decisionFor(e, rule),
+    };
+  }
+
+  /// 按规则计算全部 Mod 的决策：仅「全本地/全导入」影响 Mod；
+  /// 「按轮次时间最新 / 按轮次数最多」对 Mod 无意义，保持不变（默认）。
+  Map<String, ModMergeDecision> _computeModDecisions(_BulkRule rule) {
+    return {
+      for (final e in plan.modEntries) e.name: _modDecisionFor(e, rule),
+    };
+  }
+
+  ModMergeDecision _modDecisionFor(ModMergeEntry e, _BulkRule rule) {
+    if (e.status == ModMergeStatus.localOnly ||
+        e.status == ModMergeStatus.identical) {
+      return ModMergeDecision.keepLocal;
+    }
+    // 仅导入有的 Mod 始终导入。
+    if (e.status == ModMergeStatus.importOnly) {
+      return ModMergeDecision.import;
+    }
+    // conflict
+    return switch (rule) {
+      _BulkRule.allLocal => ModMergeDecision.keepLocal,
+      _BulkRule.allImport => ModMergeDecision.import,
+      _BulkRule.newest || _BulkRule.mostRounds => e.defaultDecision,
     };
   }
 
@@ -112,24 +149,36 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
   }
 
   void _applyRule(_BulkRule rule) {
-    setState(() => _decision = _computeDecisions(rule));
+    setState(() {
+      _decision = _computeDecisions(rule);
+      _modDecision = _computeModDecisions(rule);
+    });
   }
 
   Future<void> _onMerge() async {
     if (_applying) return;
     final summary = plan.summarize(_decision);
+    final modSummary = plan.summarizeMods(_modDecision);
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => _MergeConfirmDialog(summary: summary),
+      builder: (_) => _MergeConfirmDialog(
+        summary: summary,
+        modSummary: modSummary,
+      ),
     );
     if (confirmed != true || !mounted) return;
 
     setState(() => _applying = true);
     try {
       final apply = widget.onApply ??
-          (DatabaseMergePlan p, Map<String, MergeBookDecision> d) =>
-              DatabaseMergeService.applyPlanIntoLocal(p, d);
-      final result = await apply(plan, Map.of(_decision));
+          (DatabaseMergePlan p, Map<String, MergeBookDecision> bd,
+                  Map<String, ModMergeDecision> md) =>
+              DatabaseMergeService.applyPlanIntoLocal(p, bd, md);
+      final result = await apply(
+        plan,
+        Map.of(_decision),
+        Map.of(_modDecision),
+      );
       if (!mounted) return;
       _showResultAndPop(result);
     } catch (e) {
@@ -146,9 +195,11 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     messenger.showSnackBar(
       SnackBar(
         content: Text(
-          '合并完成：导入 ${result.booksAdded}、替换为导入 ${result.booksReplaced}、'
-          '跳过 ${result.booksSkipped}、轮次 ${result.roundsAdded}、'
-          '世界书 ${result.worldBookAdded}、Mod ${result.modsAdded}',
+          '合并完成：导入书籍 ${result.booksAdded}、'
+          '替换书籍 ${result.booksReplaced}、跳过 ${result.booksSkipped}、'
+          '轮次 ${result.roundsAdded}、世界书 ${result.worldBookAdded}、'
+          '导入 Mod ${result.modsAdded}、替换 Mod ${result.modsReplaced}、'
+          '重命名 Mod ${result.modsRenamed}',
         ),
       ),
     );
@@ -192,13 +243,27 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
           _buildSummaryHeader(context),
           const Divider(height: 1),
           Expanded(
-            child: plan.entries.isEmpty
-                ? const Center(child: Text('无可合并的书籍'))
-                : ListView.builder(
+            child: (plan.entries.isEmpty && plan.modEntries.isEmpty)
+                ? const Center(child: Text('无可合并的书籍 / Mod'))
+                : ListView(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    itemCount: plan.entries.length,
-                    itemBuilder: (context, index) =>
-                        _buildEntryCard(context, plan.entries[index]),
+                    children: [
+                      for (final e in plan.entries) _buildEntryCard(context, e),
+                      if (plan.modEntries.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Mod（${plan.modEntries.length}）',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: context.narrColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        for (final m in plan.modEntries)
+                          _buildModCard(context, m),
+                      ],
+                    ],
                   ),
           ),
           _buildAutoSelectBar(context),
@@ -215,21 +280,32 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '共 ${plan.entries.length} 本 · '
-            '冲突 ${plan.conflictCount} · '
+            '书籍 ${plan.entries.length} 本 · 冲突 ${plan.conflictCount} · '
             '仅导入有 ${plan.importOnlyCount} · '
-            '仅本地有 ${plan.localOnlyCount} · '
-            '全一致 ${plan.identicalCount}',
+            '仅本地有 ${plan.localOnlyCount} · 全一致 ${plan.identicalCount}',
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w700,
               color: colors.textPrimary,
             ),
           ),
+          if (plan.modEntries.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Mod ${plan.modEntries.length} 个 · 冲突 ${plan.modConflictCount} · '
+              '仅导入有 ${plan.modImportOnlyCount} · '
+              '仅本地有 ${plan.modLocalOnlyCount} · 全一致 ${plan.modIdenticalCount}',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: colors.textPrimary,
+              ),
+            ),
+          ],
           const SizedBox(height: 4),
           Text(
-            '比较两边的书籍，「仅导入有」为新书；冲突书的轮次/设置等任一不同即触发。'
-            '请在合并前逐本选择保留侧，也可用底部「自动勾选」快速统一选择。',
+            '比较两边的书籍 / Mod，「仅导入有」为新增；冲突书的轮次/设置等任一不同即触发。'
+            '请在合并前逐项选择，也可用底部「自动勾选」快速统一选择。',
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
         ],
@@ -360,6 +436,14 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     );
   }
 
+  /// [side] 的最后更新时间是否严格晚于 [other]，用于最后时间的绿色高亮。
+  bool _isNewerTime(BookMergeSide side, BookMergeSide other) {
+    final t = side.lastTime;
+    if (t == null) return false;
+    final o = other.lastTime;
+    return o == null || t.isAfter(o);
+  }
+
   Widget _buildConflict(BuildContext context, BookMergeEntry entry) {
     final colors = context.narrColors;
     final decision = _decisionOf(entry.title);
@@ -384,6 +468,9 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                   entry.title,
                   MergeBookDecision.keepImported,
                 ),
+                highlightRounds: entry.imported!.roundsCount >
+                    entry.local!.roundsCount,
+                highlightTime: _isNewerTime(entry.imported!, entry.local!),
               ),
             ),
             const SizedBox(width: 10),
@@ -403,6 +490,9 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                   entry.title,
                   MergeBookDecision.keepLocal,
                 ),
+                highlightRounds: entry.local!.roundsCount >
+                    entry.imported!.roundsCount,
+                highlightTime: _isNewerTime(entry.local!, entry.imported!),
               ),
             ),
           ],
@@ -484,6 +574,125 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
       ),
     );
   }
+
+  Widget _buildModCard(BuildContext context, ModMergeEntry entry) {
+    final colors = context.narrColors;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.extension_outlined,
+                size: 18,
+                color: colors.textSecondary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  entry.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: colors.textPrimary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              _ModBadge(status: entry.status),
+            ],
+          ),
+          const SizedBox(height: 8),
+          switch (entry.status) {
+            ModMergeStatus.conflict => _buildModConflict(context, entry),
+            ModMergeStatus.importOnly => Text(
+                '仅导入有，将导入。',
+                style: TextStyle(fontSize: 12, color: colors.textSecondary),
+              ),
+            ModMergeStatus.localOnly => Text(
+                '仅本地有，保留本地。',
+                style: TextStyle(fontSize: 12, color: colors.textSecondary),
+              ),
+            ModMergeStatus.identical => Text(
+                '两者全一致，保留本地。',
+                style: TextStyle(fontSize: 12, color: colors.textSecondary),
+              ),
+          },
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModConflict(BuildContext context, ModMergeEntry entry) {
+    final colors = context.narrColors;
+    final decision = _modDecisionOf(entry.name);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '云端 Mod',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: colors.textPrimary,
+              ),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.visibility_outlined, size: 16),
+              tooltip: '预览云端 Mod',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _showModPreview(context, entry.imported!),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SegmentedButton<ModMergeDecision>(
+          segments: const [
+            ButtonSegment(
+              value: ModMergeDecision.import,
+              label: Text('导入'),
+            ),
+            ButtonSegment(
+              value: ModMergeDecision.rename,
+              label: Text('重命名'),
+            ),
+            ButtonSegment(
+              value: ModMergeDecision.keepLocal,
+              label: Text('本地'),
+            ),
+          ],
+          selected: {decision},
+          onSelectionChanged: (s) => _setModDecision(entry.name, s.first),
+          showSelectedIcon: false,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '「导入」覆盖本地同名 Mod；「重命名」另存为「${entry.name} - 导入」；「本地」保留本地。',
+          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+        ),
+      ],
+    );
+  }
+
+  void _showModPreview(BuildContext context, ModMergeSide side) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => _ModPreviewDialog(side: side),
+    );
+  }
 }
 
 /// 状态徽标。
@@ -532,6 +741,12 @@ class _SideCard extends StatelessWidget {
   final VoidCallback onPreview;
   final VoidCallback? onSelect;
 
+  /// 是否「轮次更多」一侧：是则轮次数用绿色突出。
+  final bool highlightRounds;
+
+  /// 是否「更新时间较新」一侧：是则最后时间用绿色突出。
+  final bool highlightTime;
+
   const _SideCard({
     required this.label,
     required this.side,
@@ -539,6 +754,8 @@ class _SideCard extends StatelessWidget {
     required this.colors,
     required this.onPreview,
     this.onSelect,
+    this.highlightRounds = false,
+    this.highlightTime = false,
   });
 
   @override
@@ -593,13 +810,157 @@ class _SideCard extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               '轮次 ${side.roundsCount}',
-              style: TextStyle(fontSize: 12, color: colors.textPrimary),
+              style: TextStyle(
+                fontSize: 12,
+                color: highlightRounds ? colors.success : colors.textPrimary,
+              ),
             ),
             const SizedBox(height: 2),
             Text(
               '最后时间：${side.lastTime == null ? '—' : Formats.formatDateTime(side.lastTime!)}',
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11, color: colors.textSecondary),
+              style: TextStyle(
+                fontSize: 11,
+                color: highlightTime ? colors.success : colors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Mod 状态徽标。
+class _ModBadge extends StatelessWidget {
+  final ModMergeStatus status;
+
+  const _ModBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    final (text, color, bg) = switch (status) {
+      ModMergeStatus.conflict => ('冲突', colors.warning, colors.bannerBackground),
+      ModMergeStatus.importOnly => ('仅导入有', Colors.white, NarrChatTheme.primary),
+      ModMergeStatus.localOnly => ('仅本地有', colors.textSecondary, colors.historyBackground),
+      ModMergeStatus.identical => (
+          '两者全一致',
+          const Color(0xFF2E7D32),
+          const Color(0xFFE8F5E9),
+        ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+/// Mod 预览对话框：查看某一侧 Mod 的内容字段。
+class _ModPreviewDialog extends StatelessWidget {
+  final ModMergeSide side;
+
+  const _ModPreviewDialog({required this.side});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.narrColors;
+    final mod = side.mod;
+    final fields = <(String, String)>[
+      ('名称', (mod['name'] as String? ?? '').trim()),
+      ('描述', mod['description'] as String? ?? ''),
+      ('前置提示', mod['pre_prompt'] as String? ?? ''),
+      ('后置提示', mod['post_prompt'] as String? ?? ''),
+      ('系统提示', mod['system_prompt'] as String? ?? ''),
+      ('世界书', mod['world_book'] as String? ?? ''),
+    ].where((s) => s.$2.trim().isNotEmpty).toList();
+
+    return Dialog(
+      insetPadding: const EdgeInsets.all(20),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640, maxHeight: 560),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 8, 0),
+              child: Row(
+                children: [
+                  Text(
+                    'Mod 预览',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (fields.isEmpty)
+                      Text(
+                        '（无内容）',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                          color: colors.textSecondary,
+                        ),
+                      )
+                    else
+                      for (final (label, value) in fields)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: colors.textSecondary,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              SelectableText(
+                                value,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  height: 1.4,
+                                  color: colors.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -611,8 +972,9 @@ class _SideCard extends StatelessWidget {
 /// 合并确认对话框：展示变更摘要。
 class _MergeConfirmDialog extends StatelessWidget {
   final Map<String, int> summary;
+  final Map<String, int>? modSummary;
 
-  const _MergeConfirmDialog({required this.summary});
+  const _MergeConfirmDialog({required this.summary, this.modSummary});
 
   @override
   Widget build(BuildContext context) {
@@ -620,6 +982,12 @@ class _MergeConfirmDialog extends StatelessWidget {
     final import = summary['import'] ?? 0;
     final replace = summary['replace'] ?? 0;
     final skip = summary['skip'] ?? 0;
+    final mImport = modSummary?['import'] ?? 0;
+    final mRename = modSummary?['rename'] ?? 0;
+    final mReplace = modSummary?['replace'] ?? 0;
+    final mKeep = modSummary?['keep'] ?? 0;
+    final hasMods =
+        modSummary != null && (mImport + mRename + mReplace + mKeep) > 0;
     return AlertDialog(
       title: const Text('确认合并'),
       content: Column(
@@ -636,9 +1004,25 @@ class _MergeConfirmDialog extends StatelessWidget {
           _SummaryRow(label: '替换为导入（覆盖本地同名书）', value: replace),
           const SizedBox(height: 4),
           _SummaryRow(label: '跳过（保留本地 / 不导入）', value: skip),
+          if (hasMods) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Mod：',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: colors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            _SummaryRow(label: '导入 Mod（新增）', value: mImport),
+            _SummaryRow(label: '重命名 Mod（另存）', value: mRename),
+            _SummaryRow(label: '覆盖本地 Mod', value: mReplace),
+            _SummaryRow(label: '保留本地 Mod', value: mKeep),
+          ],
           const SizedBox(height: 8),
           Text(
-            '「仅本地有」与「两者全一致」的书保持本地不变。',
+            '「仅本地有」与「两者全一致」的书籍 / Mod 保持不变。',
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
         ],

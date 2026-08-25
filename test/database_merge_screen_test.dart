@@ -3,11 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/screens/database_merge_screen.dart';
 import 'package:narrchat/services/database_merge_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/utils/formats.dart';
 
 import 'helpers/merge_db.dart';
 
 void main() {
   late DatabaseMergePlan plan;
+  late DatabaseMergePlan modPlan;
 
   setUp(() async {
     final local = await createMergeDb();
@@ -58,6 +60,7 @@ void main() {
       await local.close();
       await backup.close();
     }
+    modPlan = await _buildModPlan();
   });
 
   testWidgets('列出书籍，冲突展示两侧轮次/时间与状态徽标', (tester) async {
@@ -76,15 +79,38 @@ void main() {
     expect(find.text('本地'), findsOneWidget);
   });
 
+  testWidgets('冲突页：最后时间较新的一侧以绿色高亮（自适应主题）', (tester) async {
+    await _pumpScreen(tester, plan);
+    // 冲突书 A：导入侧时间 2026-02-01（更新）、本地 2026-01-01（较旧）。
+    final newer = tester.widget<Text>(
+      find.text('最后时间：${Formats.formatDateTime(DateTime(2026, 2, 1))}'),
+    );
+    expect(newer.style?.color, NarrChatColors.light.success);
+    final older = tester.widget<Text>(
+      find.text('最后时间：${Formats.formatDateTime(DateTime(2026, 1, 1))}'),
+    );
+    expect(older.style?.color, isNot(NarrChatColors.light.success));
+    // 轮次与最后时间分开高亮：A 两侧轮次相同(1:1)，因此轮次行均不标绿，
+    // 即使导入侧时间为较新一侧标绿——证明两者独立。
+    final roundTexts = find.text('轮次 1').evaluate();
+    expect(roundTexts, isNotEmpty);
+    for (final el in roundTexts) {
+      final t = el.widget as Text;
+      expect(t.style?.color, isNot(NarrChatColors.light.success));
+    }
+    // 主题本身的绿色在亮/暗下均有定义。
+    expect(NarrChatColors.light.success, isNot(NarrChatColors.dark.success));
+  });
+
   testWidgets('切换保留侧并合并 → onApply 收到对应决策', (tester) async {
     final decisions = <String, MergeBookDecision>{};
     var called = false;
     await _pumpScreen(
       tester,
       plan,
-      onApply: (p, d) async {
+      onApply: (p, bd, md) async {
         called = true;
-        decisions.addAll(d);
+        decisions.addAll(bd);
         return DatabaseMergeResult();
       },
     );
@@ -112,8 +138,8 @@ void main() {
     await _pumpScreen(
       tester,
       plan,
-      onApply: (p, d) async {
-        decisions.addAll(d);
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
         return DatabaseMergeResult();
       },
     );
@@ -135,8 +161,8 @@ void main() {
     await _pumpScreen(
       tester,
       plan,
-      onApply: (p, d) async {
-        decisions.addAll(d);
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
         return DatabaseMergeResult();
       },
     );
@@ -157,8 +183,8 @@ void main() {
     await _pumpScreen(
       tester,
       plan,
-      onApply: (p, d) async {
-        decisions.addAll(d);
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
         return DatabaseMergeResult();
       },
     );
@@ -182,8 +208,8 @@ void main() {
     await _pumpScreen(
       tester,
       plan,
-      onApply: (p, d) async {
-        decisions.addAll(d);
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
         return DatabaseMergeResult();
       },
     );
@@ -216,6 +242,57 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('数据库合并'), findsNothing);
   });
+
+  testWidgets('Mod 冲突：提供导入/重命名/本地三选一，重命名传参 onApply', (tester) async {
+    final modDecisions = <String, ModMergeDecision>{};
+    await _pumpScreen(
+      tester,
+      modPlan,
+      onApply: (p, bd, md) async {
+        modDecisions.addAll(md);
+        return DatabaseMergeResult();
+      },
+    );
+    expect(find.text('Mod（1）'), findsOneWidget);
+    expect(find.text('M'), findsOneWidget);
+    expect(find.text('导入'), findsOneWidget);
+    expect(find.text('重命名'), findsOneWidget);
+
+    await tester.tap(find.text('重命名'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(modDecisions['M'], ModMergeDecision.rename);
+  });
+
+  testWidgets('自动勾选：全本地同样作用于 Mod（冲突保留本地）', (tester) async {
+    final modDecisions = <String, ModMergeDecision>{};
+    await _pumpScreen(
+      tester,
+      modPlan,
+      onApply: (p, bd, md) async {
+        modDecisions.addAll(md);
+        return DatabaseMergeResult();
+      },
+    );
+    await tester.tap(find.text('自动勾选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全本地'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(modDecisions['M'], ModMergeDecision.keepLocal);
+  });
 }
 
 /// 以 push 方式打开屏幕（使 pop 回到前置路由），并注入可选的 [onApply]。
@@ -225,6 +302,7 @@ Future<void> _pumpScreen(
   Future<DatabaseMergeResult> Function(
     DatabaseMergePlan,
     Map<String, MergeBookDecision>,
+    Map<String, ModMergeDecision>,
   )?
   onApply,
 }) async {
@@ -251,4 +329,18 @@ Future<void> _pumpScreen(
   );
   await tester.tap(find.text('open'));
   await tester.pumpAndSettle();
+}
+
+/// 构建一个仅含「Mod 冲突」的计划（两侧同名 M 不同内容），供 Mod UI 用例使用。
+Future<DatabaseMergePlan> _buildModPlan() async {
+  final local = await createMergeDb();
+  final backup = await createMergeDb();
+  try {
+    await local.insert('mods', {'name': 'M', 'description': '本地描述'});
+    await backup.insert('mods', {'name': 'M', 'description': '云端描述'});
+    return await DatabaseMergeService.buildPlan(backup, local);
+  } finally {
+    await local.close();
+    await backup.close();
+  }
 }

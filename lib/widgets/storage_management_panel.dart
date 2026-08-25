@@ -174,7 +174,7 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     await DatabaseMergeScreen.open(
       context,
       plan: plan,
-      onApply: (p, d) => provider.applyMergePlan(p, d),
+      onApply: (p, bd, md) => provider.applyMergePlan(p, bd, md),
     );
     if (mounted) setState(() => _importing = false);
   }

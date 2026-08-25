@@ -453,15 +453,19 @@ class CloudSyncProvider extends ChangeNotifier {
     });
   }
 
-  /// 按合并决策页的逐书选择落地进本地库，并在成功后刷新本地内存态数据。
+  /// 按合并决策页的逐书 / 逐 Mod 选择落地进本地库，并在成功后刷新本地内存态数据。
   ///
-  /// 供「合并决策页」在用户确认后作为 onApply 调用；按用户的决策整本替换。
+  /// 供「合并决策页」在用户确认后作为 onApply 调用；按用户的决策整本替换 / Mod 合并。
   Future<DatabaseMergeResult> applyMergePlan(
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> decisions,
+    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, ModMergeDecision> modDecisions,
   ) async {
-    final result =
-        await DatabaseMergeService.applyPlanIntoLocal(plan, decisions);
+    final result = await DatabaseMergeService.applyPlanIntoLocal(
+      plan,
+      bookDecisions,
+      modDecisions,
+    );
     await onDataRestored?.call();
     return result;
   }
