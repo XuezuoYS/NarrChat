@@ -306,6 +306,9 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
   /// 跨书生成进程提示栏的背景色（不透明；浅色为淡琥珀，深色为深琥珀）。
   final Color bannerBackground;
 
+  /// 成功 / 更新时间较新侧的绿色文字（自适应亮/暗主题）。
+  final Color success;
+
   const NarrChatColors({
     required this.background,
     required this.surface,
@@ -318,6 +321,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     required this.historyHeader,
     required this.warning,
     required this.bannerBackground,
+    required this.success,
   });
 
   /// 浅色主题配色。
@@ -333,6 +337,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     historyHeader: Color(0xFFFDF0F0),
     warning: Color(0xFFB7791F),
     bannerBackground: Color(0xFFFFF0CC),
+    success: Color(0xFF2E7D32),
   );
 
   /// 深色主题配色。
@@ -348,6 +353,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     historyHeader: Color(0xFF2A1D1D),
     warning: Color(0xFFF0B429),
     bannerBackground: Color(0xFF3E3418),
+    success: Color(0xFF66BB6A),
   );
 
   @override
@@ -363,6 +369,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
     Color? historyHeader,
     Color? warning,
     Color? bannerBackground,
+    Color? success,
   }) {
     return NarrChatColors(
       background: background ?? this.background,
@@ -376,6 +383,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
       historyHeader: historyHeader ?? this.historyHeader,
       warning: warning ?? this.warning,
       bannerBackground: bannerBackground ?? this.bannerBackground,
+      success: success ?? this.success,
     );
   }
 
@@ -402,6 +410,7 @@ class NarrChatColors extends ThemeExtension<NarrChatColors> {
         other.bannerBackground,
         t,
       )!,
+      success: Color.lerp(success, other.success, t)!,
     );
   }
 }
