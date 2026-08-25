@@ -139,14 +139,19 @@ class _SettingsShellState extends State<SettingsShell> {
   }
 
   Widget _buildContent(BuildContext context) {
-    return Container(
+    // 用 Material（不透明 surface 色）承载内容区，而非 Container 的 ColoredBox，
+    // 避免区内 SwitchListTile/ListTile 的墨迹与选中背景被 ColoredBox 遮挡而触发
+    // 「ListTile background color or ink splashes may be invisible」断言。
+    return Material(
       color: context.narrColors.surface,
-      alignment: Alignment.topCenter,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 860),
-          child: widget.contentBuilder(context, _index),
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 860),
+            child: widget.contentBuilder(context, _index),
+          ),
         ),
       ),
     );
@@ -172,8 +177,10 @@ class _NavTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       // 外层 Container 带背景色（ColoredBox）会遮挡 ListTile 的墨迹与选中高亮，
       // 需用 Material 包裹，使选中背景 / 水波纹绘制在本层之上。
+      // Material 需为不透明背景色（与导航栏一致）；透明 Material 会触发
+      // 「ListTile background color or ink splashes may be invisible」断言。
       child: Material(
-        color: Colors.transparent,
+        color: colors.surface,
         borderRadius: BorderRadius.circular(10),
         child: ListTile(
           dense: true,

@@ -10,6 +10,7 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
+import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
@@ -380,5 +381,47 @@ class FakeStorageService implements StorageService {
     exportedImages = List.of(relPaths);
     exportedImagesTo = targetDirPath;
     return relPaths.length;
+  }
+}
+
+/// 内存版 [DebugDatabaseService]：按 [pageBuilder] 生成每页数据，
+/// 记录最近一次调用的页参数，供「数据库结构」页测试校验翻页。
+class FakeDebugDatabaseService implements DebugDatabaseService {
+  FakeDebugDatabaseService({this.tables = const [], this.pageBuilder});
+
+  final List<DebugTableSummary> tables;
+
+  /// 按 `(name, page, pageSize)` 生成一页数据；为 null 时返回空页。
+  final DebugTablePage Function(String name, int page, int pageSize)? pageBuilder;
+
+  int loadCount = 0;
+  String? lastName;
+  int? lastPage;
+  int? lastPageSize;
+
+  @override
+  Future<List<DebugTableSummary>> listTables() async => tables;
+
+  @override
+  Future<DebugTablePage> loadTable(
+    String tableName, {
+    int page = 0,
+    int pageSize = 20,
+  }) async {
+    loadCount++;
+    lastName = tableName;
+    lastPage = page;
+    lastPageSize = pageSize;
+    final builder = pageBuilder;
+    if (builder != null) return builder(tableName, page, pageSize);
+    return DebugTablePage(
+      name: tableName,
+      columns: const [],
+      indexes: const [],
+      rows: const [],
+      totalCount: 0,
+      page: page,
+      pageSize: pageSize,
+    );
   }
 }

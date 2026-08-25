@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'debug_screen.dart';
 import 'licenses_screen.dart';
 import 'update_log_screen.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
+import '../utils/triple_tap_detector.dart';
 import '../widgets/ai_settings_form.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
@@ -130,12 +132,28 @@ class _AboutPanel extends StatefulWidget {
 
 class _AboutPanelState extends State<_AboutPanel> {
   late Future<String> _versionFuture;
+  late final TripleTapDetector _versionTapDetector;
 
   @override
   void initState() {
     super.initState();
     _versionFuture = ReleaseInfo.versionLabel();
+    _versionTapDetector = TripleTapDetector(onTripleTap: _openDebug);
   }
+
+  @override
+  void dispose() {
+    _versionTapDetector.dispose();
+    super.dispose();
+  }
+
+  /// 连点版本号三次进入「调试」页。
+  void _openDebug() {
+    if (!context.mounted) return;
+    DebugScreen.open(context);
+  }
+
+  void _onVersionTap() => _versionTapDetector.tap();
 
   @override
   Widget build(BuildContext context) {
@@ -174,6 +192,8 @@ class _AboutPanelState extends State<_AboutPanel> {
                       return _AboutRow(
                         label: '版本',
                         value: snapshot.data ?? '…',
+                        onTap: _onVersionTap,
+                        valueKey: const ValueKey('about_version_tap'),
                       );
                     },
                   ),
@@ -217,11 +237,25 @@ class _AboutPanelState extends State<_AboutPanel> {
 class _AboutRow extends StatelessWidget {
   final String label;
   final String value;
+  final VoidCallback? onTap;
+  final Key? valueKey;
 
-  const _AboutRow({required this.label, required this.value});
+  const _AboutRow({
+    required this.label,
+    required this.value,
+    this.onTap,
+    this.valueKey,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final valueText = Text(
+      value,
+      style: TextStyle(
+        fontSize: 13,
+        color: context.narrColors.textPrimary,
+      ),
+    );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -235,13 +269,18 @@ class _AboutRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 13,
-              color: context.narrColors.textPrimary,
-            ),
-          ),
+          if (onTap != null)
+            GestureDetector(
+              key: valueKey,
+              behavior: HitTestBehavior.opaque,
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: valueText,
+              ),
+            )
+          else
+            valueText,
         ],
       ),
     );
