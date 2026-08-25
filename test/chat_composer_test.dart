@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
@@ -255,6 +256,28 @@ void main() {
     expect(completion.calls, hasLength(1));
     expect(completion.calls.single.bookId, book.id);
     expect(completion.calls.single.bookTitle, book.title);
+  });
+
+  testWidgets('Ctrl+Enter 快捷发送：发送并清空输入框', (tester) async {
+    final roundProvider = await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+    );
+
+    await tester.enterText(composerField(), '快捷键发送');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await waitSendDone(tester, roundProvider);
+
+    // 已发送：用户气泡出现，且输入框被清空。
+    expect(find.text('快捷键发送'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(composerField()).controller!.text,
+      isEmpty,
+    );
   });
 
   testWidgets('生成结束红点：生成中不显示，结束离开底部显示，回到底部消失', (tester) async {

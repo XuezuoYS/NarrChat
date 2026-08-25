@@ -1965,9 +1965,14 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               ),
             ),
-          // 粘贴：Ctrl+V 与右键菜单「粘贴」共用 _pasteFromClipboard。
+          // 快捷键：Ctrl+V 粘贴（含图片）；Ctrl+Enter 发送。
           CallbackShortcuts(
-            bindings: textFieldPasteBindings(onPaste: _pasteFromClipboard),
+            bindings: {
+              ...textFieldPasteBindings(onPaste: _pasteFromClipboard),
+              // Ctrl+Enter：直接发送（多行输入框的回车默认是换行，不触发发送）。
+              const SingleActivator(LogicalKeyboardKey.enter, control: true):
+                  _send,
+            },
             child: TextField(
               controller: _inputController,
               onTapOutside: unfocusOnTapOutside,
