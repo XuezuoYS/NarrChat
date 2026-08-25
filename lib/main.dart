@@ -23,6 +23,7 @@ import 'services/manual_licenses_service.dart';
 import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
 import 'services/system_fonts_service.dart';
+import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
@@ -35,6 +36,8 @@ Future<void> main() async {
     // 若是「图片查看器」独立子窗口，则运行最小查看器并结束（不再初始化业务数据）。
     if (await _runAsImageViewerWindowIfNeeded()) return;
   }
+  // Windows 11：修复 Win+V 剪贴板历史粘贴（引擎下发的畸形 Ctrl+V 序列）。
+  WindowsPasteFix.instance.inject();
   // 提前初始化数据库（桌面端会在此处完成 FFI 工厂切换），
   // 失败时不阻塞启动，后续请求会重试并暴露错误。
   try {
