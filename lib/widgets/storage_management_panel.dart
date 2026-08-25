@@ -1,8 +1,13 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
+import '../providers/cloud_sync_provider.dart';
+import '../screens/database_merge_screen.dart';
 import '../screens/image_gallery_page.dart';
+import '../services/app_paths.dart';
+import '../services/database_merge_service.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
@@ -18,7 +23,14 @@ class StorageManagementPanel extends StatefulWidget {
   /// 目录选择回调（测试注入替身；缺省用 [FilePicker.platform.getDirectoryPath]）。
   final Future<String?> Function()? directoryPicker;
 
-  const StorageManagementPanel({super.key, this.directoryPicker});
+  /// 数据库文件选择回调（测试注入替身；缺省用 [FilePicker.platform.pickFiles]）。
+  final Future<String?> Function()? filePicker;
+
+  const StorageManagementPanel({
+    super.key,
+    this.directoryPicker,
+    this.filePicker,
+  });
 
   @override
   State<StorageManagementPanel> createState() =>
@@ -31,6 +43,7 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
   List<StorageImageInfo>? _images;
   bool _imagesLoading = true;
   bool _exporting = false;
+  bool _importing = false;
 
   StorageService get _service => context.read<StorageService>();
 
@@ -125,6 +138,50 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<String?> _pickDatabaseFile() {
+    final custom = widget.filePicker;
+    if (custom != null) return custom();
+    return FilePicker.platform.pickFiles(
+      dialogTitle: '选择数据库备份文件',
+      type: FileType.custom,
+      allowedExtensions: const ['db'],
+    ).then((result) => result?.files.single.path);
+  }
+
+  /// 导入本机数据库备份：解析出合并计划后进入「合并决策页」逐本确认。
+  Future<void> _importDatabase() async {
+    final provider = context.read<CloudSyncProvider>();
+    final path = await _pickDatabaseFile();
+    if (path == null || !mounted) return;
+    // 防止选择当前本地库本身（只会产生「全一致」且无意义的自我合并）。
+    final localPath = await AppPaths.userDatabasePath();
+    if (!mounted) return;
+    if (_samePath(path, localPath)) {
+      _snack('请选择备份文件，而非当前数据库。');
+      return;
+    }
+    setState(() => _importing = true);
+    final DatabaseMergePlan plan;
+    try {
+      plan = await DatabaseMergeService.buildPlanFromBackup(path);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _importing = false);
+      _snack('解析导入文件失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    await DatabaseMergeScreen.open(
+      context,
+      plan: plan,
+      onApply: (p, d) => provider.applyMergePlan(p, d),
+    );
+    if (mounted) setState(() => _importing = false);
+  }
+
+  bool _samePath(String a, String b) => p.normalize(a).toLowerCase() ==
+      p.normalize(b).toLowerCase();
+
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
@@ -142,11 +199,11 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         const SizedBox(height: 20),
-        // ---------- 本地数据库导出 ----------
+        // ---------- 本地数据库导出/导入 ----------
         _SectionHeader(
           icon: Icons.storage_outlined,
-          title: '本地数据库导出',
-          subtitle: '把当前书籍及剧情的 sqlite 数据库复制到你选择的文件夹。',
+          title: '本地数据库导出/导入',
+          subtitle: '把当前书籍及剧情的 sqlite 数据库复制到你选择的文件夹，或从本机备份导入并逐本确认合并。',
         ),
         const SizedBox(height: 12),
         FutureBuilder<StorageDbInfo?>(
@@ -258,13 +315,21 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           style: TextStyle(fontSize: 11, color: colors.textSecondary),
         ),
         const SizedBox(height: 12),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton.icon(
-            onPressed: _exporting ? null : _exportDatabase,
-            icon: const Icon(Icons.upload_file_outlined, size: 18),
-            label: Text(_exporting ? '导出中…' : '导出数据库'),
-          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton.icon(
+              onPressed: _exporting ? null : _exportDatabase,
+              icon: const Icon(Icons.upload_file_outlined, size: 18),
+              label: Text(_exporting ? '导出中…' : '导出数据库'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _importing ? null : _importDatabase,
+              icon: const Icon(Icons.file_open_outlined, size: 18),
+              label: Text(_importing ? '导入中…' : '导入数据库'),
+            ),
+          ],
         ),
       ],
     );

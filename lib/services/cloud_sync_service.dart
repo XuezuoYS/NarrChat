@@ -4,7 +4,6 @@ import 'package:path/path.dart' as p;
 
 import '../database/database_helper.dart';
 import 'app_paths.dart';
-import 'database_merge_service.dart';
 import 'webdav_service.dart';
 
 /// 云同步编排服务：负责数据库文件的生命周期管理（关闭/复制/重开）、
@@ -125,11 +124,6 @@ class CloudSyncService {
       // 重开本地库（即使复制失败也重开，避免后续请求悬挂）。
       await DatabaseHelper.instance.database;
     }
-  }
-
-  /// 合并本地数据：将下载的备份合并进本地库（见 [DatabaseMergeService]）。
-  static Future<DatabaseMergeResult> applyMerge(String tempPath) {
-    return DatabaseMergeService.mergeBackupIntoLocal(tempPath);
   }
 
   static String _two(int n) => n.toString().padLeft(2, '0');

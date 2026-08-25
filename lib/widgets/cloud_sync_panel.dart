@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/cloud_sync_provider.dart';
+import '../screens/database_merge_screen.dart';
+import '../services/database_merge_service.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
@@ -187,30 +189,32 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       _cleanupTemp(tempPath);
       return;
     }
-    bool ok;
-    try {
-      ok = mode == _DownloadApplyMode.replace
-          ? await provider.applyReplace(tempPath)
-          : await provider.applyMerge(tempPath);
-    } finally {
-      // 无论成功失败都清理临时备份文件，避免残留占用磁盘。
+    // 替换：删除本地数据后用该备份整体恢复。
+    if (mode == _DownloadApplyMode.replace) {
+      final ok = await provider.applyReplace(tempPath);
       _cleanupTemp(tempPath);
+      if (!mounted) return;
+      _showSnack(ok ? '已用所选备份替换本地数据' : '处理失败：${provider.error ?? '未知错误'}');
+      return;
     }
+    // 合并：构建合并计划并进入「合并决策页」逐本确认保留侧。
+    final DatabaseMergePlan plan;
+    try {
+      plan = await DatabaseMergeService.buildPlanFromBackup(tempPath);
+    } catch (e) {
+      _cleanupTemp(tempPath);
+      if (!mounted) return;
+      _showSnack('解析备份失败：$e');
+      return;
+    }
+    // 计划为内存快照，备份文件随后即可清理。
+    _cleanupTemp(tempPath);
     if (!mounted) return;
-    if (ok) {
-      if (mode == _DownloadApplyMode.merge) {
-        final r = provider.lastMergeResult;
-        _showSnack(
-          '合并完成：新增书籍 ${r?.booksAdded ?? 0}、'
-          '轮次 ${r?.roundsAdded ?? 0}、世界书 ${r?.worldBookAdded ?? 0}、'
-          'Mod ${r?.modsAdded ?? 0}',
-        );
-      } else {
-        _showSnack('已用所选备份替换本地数据');
-      }
-    } else {
-      _showSnack('处理失败：${provider.error ?? '未知错误'}');
-    }
+    await DatabaseMergeScreen.open(
+      context,
+      plan: plan,
+      onApply: (p, d) => provider.applyMergePlan(p, d),
+    );
   }
 
   void _cleanupTemp(String path) {
@@ -707,7 +711,7 @@ class _DownloadApplyDialog extends StatelessWidget {
             _OptionTile(
               icon: Icons.merge_outlined,
               title: '合并本地数据',
-              subtitle: '保留本地与备份中不重复的数据，冲突时保留本地。',
+              subtitle: '打开合并决策页，逐本确认保留导入还是本地。',
             ),
           ],
         ),

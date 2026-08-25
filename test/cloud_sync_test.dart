@@ -1,14 +1,9 @@
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:narrchat/services/backup_image_service.dart';
 import 'package:narrchat/services/cloud_sync_service.dart';
-import 'package:narrchat/services/database_merge_service.dart';
 import 'package:narrchat/services/webdav_service.dart';
-import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// 供重定向测试使用的 PROPFIND 207 响应样例。
 const String _multistatusXml = '''
@@ -23,22 +18,6 @@ const String _multistatusXml = '''
 </d:multistatus>''';
 
 void main() {
-  setUpAll(() {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-  });
-
-  tearDownAll(() async {
-    for (final dir in _tempDirs) {
-      try {
-        await dir.delete(recursive: true);
-      } catch (_) {
-        // 忽略清理失败。
-      }
-    }
-    _tempDirs.clear();
-  });
-
   group('WebDavService.parseMultiStatus', () {
     test('解析文件条目并跳过目录', () {
       const xml = '''
@@ -231,129 +210,6 @@ void main() {
     });
   });
 
-  group('DatabaseMergeService.mergeDatabases', () {
-    test('合并去重：书籍/轮次/世界书/Mod 均取并集', () async {
-      final local = await _createDb();
-      final backup = await _createDb();
-      try {
-        // 本地：一本书（第 1 轮），一个 Mod。
-        final localBookId = await local.insert('books', {'title': '本地书'});
-        await local.insert('rounds', {
-          'book_id': localBookId,
-          'round_index': 1,
-          'user_input': '本地输入',
-        });
-        await local.insert('mods', {'name': '本地Mod'});
-        await local.insert('world_book_entries', {
-          'book_id': localBookId,
-          'keyword': 'k1',
-          'content': '本地k1',
-        });
-
-        // 备份：同名书（含第 1 轮重复 + 第 2 轮新增），一本新书，一个新 Mod。
-        final backupBook1 = await backup.insert('books', {'title': '本地书'});
-        await backup.insert('rounds', {
-          'book_id': backupBook1,
-          'round_index': 1,
-          'user_input': '备份输入',
-        });
-        await backup.insert('rounds', {
-          'book_id': backupBook1,
-          'round_index': 2,
-          'user_input': '备份第2轮',
-        });
-        final backupBook2 = await backup.insert('books', {'title': '云端书'});
-        await backup.insert('rounds', {
-          'book_id': backupBook2,
-          'round_index': 1,
-          'user_input': '云端输入',
-        });
-        await backup.insert('world_book_entries', {
-          'book_id': backupBook1,
-          'keyword': 'k1',
-          'content': '备份k1',
-        });
-        await backup.insert('world_book_entries', {
-          'book_id': backupBook1,
-          'keyword': 'k2',
-          'content': '备份k2',
-        });
-        await backup.insert('world_book_entries', {
-          'book_id': backupBook2,
-          'keyword': 'k3',
-          'content': '云端k3',
-        });
-        await backup.insert('mods', {'name': '本地Mod'});
-        final backupMod2 = await backup.insert('mods', {'name': '云端Mod'});
-        // 新书启用「云端Mod」，应随新书一并复制。
-        await backup.insert('book_mods', {
-          'book_id': backupBook2,
-          'mod_id': backupMod2,
-          'sort_order': 0,
-          'is_enabled': 1,
-        });
-
-        final result = await DatabaseMergeService.mergeDatabases(
-          backup,
-          local,
-        );
-        expect(result.booksAdded, 1);
-        expect(result.modsAdded, 1);
-        expect(result.roundsAdded, 2);
-        expect(result.worldBookAdded, 2);
-        expect(result.bookModsAdded, 1);
-
-        // 校验合并结果。
-        final books = await local.query('books', orderBy: 'id ASC');
-        expect(books, hasLength(2));
-        final cloudBook = books.firstWhere((b) => b['title'] == '云端书');
-        final localRounds = await local.query('rounds');
-        expect(localRounds, hasLength(3)); // 本地1 + 备份新2
-        final cloudRounds = localRounds
-            .where((r) => r['book_id'] == cloudBook['id'])
-            .toList();
-        expect(cloudRounds, hasLength(1));
-        expect(cloudRounds.single['user_input'], '云端输入');
-
-        final localWbe = await local.query('world_book_entries');
-        expect(localWbe, hasLength(3));
-        expect(
-          localWbe.map((w) => w['keyword']).toSet(),
-          {'k1', 'k2', 'k3'},
-        );
-
-        final localMods = await local.query('mods');
-        expect(localMods, hasLength(2));
-        final cloudMod = localMods.firstWhere((m) => m['name'] == '云端Mod');
-        final localBookMods = await local.query('book_mods');
-        expect(localBookMods, hasLength(1));
-        expect(localBookMods.single['book_id'], cloudBook['id']);
-        expect(localBookMods.single['mod_id'], cloudMod['id']);
-      } finally {
-        await local.close();
-        await backup.close();
-      }
-    });
-
-    test('备份为空时无变化', () async {
-      final local = await _createDb();
-      final backup = await _createDb();
-      try {
-        await local.insert('books', {'title': 'A'});
-        final result = await DatabaseMergeService.mergeDatabases(
-          backup,
-          local,
-        );
-        expect(result.isEmpty, isTrue);
-        final books = await local.query('books');
-        expect(books, hasLength(1));
-      } finally {
-        await local.close();
-        await backup.close();
-      }
-    });
-  });
-
   group('BackupImageService（图片 zip 备份命名 / 匹配）', () {
     test('文件名格式与时间戳、非法字符替换', () {
       final name = BackupImageService.buildImageBackupFileName(
@@ -382,80 +238,4 @@ void main() {
       expect(BackupImageService.compareBackups(b, a), lessThan(0));
     });
   });
-}
-
-final List<Directory> _tempDirs = [];
-
-/// 创建与正式库同构的独立临时文件数据库（仅含合并所需的五张表）。
-Future<Database> _createDb() async {
-  final dir = await Directory.systemTemp.createTemp('narrchat_test_');
-  _tempDirs.add(dir);
-  final db = await databaseFactoryFfi.openDatabase(p.join(dir.path, 'test.db'));
-  await db.execute('''
-    CREATE TABLE books (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      category TEXT DEFAULT '',
-      base_setting TEXT DEFAULT '',
-      writing_requirements TEXT DEFAULT '',
-      writing_style TEXT DEFAULT '',
-      global_pre_prompt TEXT DEFAULT '',
-      global_post_prompt TEXT DEFAULT '',
-      history_rounds INTEGER NOT NULL DEFAULT 1,
-      role_hierarchy TEXT DEFAULT '',
-      role_hierarchy_detail TEXT DEFAULT ''
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE rounds (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
-      round_index INTEGER NOT NULL,
-      user_input TEXT DEFAULT '',
-      ai_narrative TEXT DEFAULT '',
-      world_state TEXT DEFAULT '',
-      character_state TEXT DEFAULT '',
-      memory_summary TEXT DEFAULT '',
-      current_time TEXT DEFAULT '',
-      recommended_action TEXT DEFAULT '',
-      tokens_in INTEGER NOT NULL DEFAULT 0,
-      tokens_out INTEGER NOT NULL DEFAULT 0,
-      model_name TEXT DEFAULT '',
-      created_at DATETIME
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE world_book_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
-      keyword TEXT NOT NULL,
-      content TEXT DEFAULT '',
-      is_active INTEGER NOT NULL DEFAULT 1,
-      created_at DATETIME
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE mods (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      pre_prompt TEXT DEFAULT '',
-      post_prompt TEXT DEFAULT '',
-      system_prompt TEXT DEFAULT '',
-      world_book TEXT DEFAULT '',
-      created_at DATETIME,
-      updated_at DATETIME
-    )
-  ''');
-  await db.execute('''
-    CREATE TABLE book_mods (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
-      preset_key TEXT,
-      mod_id INTEGER,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      is_enabled INTEGER NOT NULL DEFAULT 1
-    )
-  ''');
-  return db;
 }

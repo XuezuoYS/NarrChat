@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/image_gallery_page.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -14,14 +15,21 @@ void main() {
   Widget wrap(
     StorageService service, {
     Future<String?> Function()? pick,
+    Future<String?> Function()? filePick,
   }) {
-    return Provider<StorageService>.value(
-      value: service,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: CloudSyncProvider()),
+        Provider<StorageService>.value(value: service),
+      ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
         home: Scaffold(
           body: SingleChildScrollView(
-            child: StorageManagementPanel(directoryPicker: pick),
+            child: StorageManagementPanel(
+              directoryPicker: pick,
+              filePicker: filePick,
+            ),
           ),
         ),
       ),
@@ -114,5 +122,44 @@ void main() {
     expect(service.exportedTo, outDir.path);
     expect(service.exportedName, 'backup.db'); // 自动补全 .db
     expect(find.textContaining('已导出'), findsOneWidget);
+  });
+
+  testWidgets('本地数据库导出/导入：渲染入口', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        FakeStorageService(
+          db: StorageDbInfo(
+            path: 'C:/data/narrchat.db',
+            size: 2048,
+            modified: DateTime(2026, 1, 1),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('本地数据库导出/导入'), findsOneWidget);
+    expect(find.text('导出数据库'), findsOneWidget);
+    expect(find.text('导入数据库'), findsOneWidget);
+  });
+
+  testWidgets('本地数据库导入：取消选择文件时不导航', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        FakeStorageService(
+          db: StorageDbInfo(
+            path: 'C:/data/narrchat.db',
+            size: 2048,
+            modified: DateTime(2026, 1, 1),
+          ),
+        ),
+        filePick: () async => null,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入数据库'));
+    await tester.pumpAndSettle();
+    // 仍在存储管理页，未进入合并决策页。
+    expect(find.text('存储管理'), findsOneWidget);
+    expect(find.text('数据库合并'), findsNothing);
   });
 }

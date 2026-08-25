@@ -453,17 +453,18 @@ class CloudSyncProvider extends ChangeNotifier {
     });
   }
 
-  /// 将已下载的临时备份合并进本地数据。
-  Future<bool> applyMerge(String tempPath) async {
-    return _apply(() async {
-      _mergeResult = await CloudSyncService.applyMerge(tempPath);
-    });
+  /// 按合并决策页的逐书选择落地进本地库，并在成功后刷新本地内存态数据。
+  ///
+  /// 供「合并决策页」在用户确认后作为 onApply 调用；按用户的决策整本替换。
+  Future<DatabaseMergeResult> applyMergePlan(
+    DatabaseMergePlan plan,
+    Map<String, MergeBookDecision> decisions,
+  ) async {
+    final result =
+        await DatabaseMergeService.applyPlanIntoLocal(plan, decisions);
+    await onDataRestored?.call();
+    return result;
   }
-
-  DatabaseMergeResult? _mergeResult;
-
-  /// 最近一次合并的统计结果。
-  DatabaseMergeResult? get lastMergeResult => _mergeResult;
 
   /// 执行数据落地操作并触发刷新回调。
   Future<bool> _apply(Future<void> Function() action) async {
