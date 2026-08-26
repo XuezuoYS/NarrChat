@@ -62,7 +62,7 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     // 打开时先执行一次「按轮次时间最新」，与底部「自动勾选」菜单共用同一套逻辑，
     // 避免「打开默认值」与「按轮次时间最新」两处重复实现。
     _decision = _computeDecisions(_BulkRule.newest);
-    // Mod 无时间/轮次，默认保留云端（导入），不受「按轮次时间最新」影响。
+    // Mod 无时间/轮次，默认保留导入，不受「按轮次时间最新」影响。
     _modDecision = _computeModDecisions(_BulkRule.newest);
   }
 
@@ -639,26 +639,31 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 与书籍冲突一致：并排展示「导入的备份」与「本地」两侧，均可预览对比。
         Row(
           children: [
-            Text(
-              '云端 Mod',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: colors.textPrimary,
+            Expanded(
+              child: _ModSideCard(
+                label: '导入的备份',
+                side: entry.imported!,
+                selected: decision != ModMergeDecision.keepLocal,
+                colors: colors,
+                onPreview: () => _showModPreview(context, entry.imported!),
               ),
             ),
-            const Spacer(),
-            IconButton(
-              icon: const Icon(Icons.visibility_outlined, size: 16),
-              tooltip: '预览云端 Mod',
-              visualDensity: VisualDensity.compact,
-              onPressed: () => _showModPreview(context, entry.imported!),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ModSideCard(
+                label: '本地',
+                side: entry.local!,
+                selected: decision == ModMergeDecision.keepLocal,
+                colors: colors,
+                onPreview: () => _showModPreview(context, entry.local!),
+              ),
             ),
           ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 10),
         SegmentedButton<ModMergeDecision>(
           segments: const [
             ButtonSegment(
@@ -824,6 +829,95 @@ class _SideCard extends StatelessWidget {
                 color: highlightTime ? colors.success : colors.textSecondary,
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 单侧 Mod 卡片：并排展示「导入的备份」与「本地」，供预览对比。
+///
+/// 与书籍的 [_SideCard] 仅展示一个字段摘要（Mod 无轮次/时间可对比），
+/// 选中侧以主题主色描边，当前决策对应的来源侧高亮。
+class _ModSideCard extends StatelessWidget {
+  final String label;
+  final ModMergeSide side;
+  final bool selected;
+  final NarrChatColors colors;
+  final VoidCallback onPreview;
+
+  const _ModSideCard({
+    required this.label,
+    required this.side,
+    required this.selected,
+    required this.colors,
+    required this.onPreview,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = selected
+        ? Theme.of(context).colorScheme.primary
+        : colors.divider;
+    final mod = side.mod;
+    final fieldLabels = <String>[
+      if ((mod['description'] as String? ?? '').trim().isNotEmpty) '描述',
+      if ((mod['pre_prompt'] as String? ?? '').trim().isNotEmpty) '前置提示',
+      if ((mod['post_prompt'] as String? ?? '').trim().isNotEmpty) '后置提示',
+      if ((mod['system_prompt'] as String? ?? '').trim().isNotEmpty) '系统提示',
+      if ((mod['world_book'] as String? ?? '').trim().isNotEmpty) '世界书',
+    ];
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: selected ? colors.userBubble : colors.background,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: borderColor, width: selected ? 1.4 : 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.visibility_outlined, size: 16),
+                  tooltip: '预览',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onPreview,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (fieldLabels.isEmpty)
+              Text(
+                '（无内容）',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: colors.textSecondary,
+                ),
+              )
+            else
+              Text(
+                '包含：${fieldLabels.join('、')}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: colors.textPrimary),
+              ),
           ],
         ),
       ),

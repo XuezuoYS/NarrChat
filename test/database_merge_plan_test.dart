@@ -315,7 +315,7 @@ void main() {
         expect(byName['云Mod'], ModMergeStatus.importOnly);
         expect(byName['本地Mod'], ModMergeStatus.localOnly);
         expect(byName['同'], ModMergeStatus.identical);
-        // Mod 无时间可对比，冲突默认保留云端。
+        // Mod 无时间可对比，冲突默认保留导入。
         expect(
           plan.modEntries.firstWhere((m) => m.name == 'M').defaultDecision,
           ModMergeDecision.import,
@@ -328,7 +328,7 @@ void main() {
   });
 
   group('DatabaseMergeService.applyPlan（Mod）', () {
-    test('冲突 Mod 默认导入：用云端内容覆盖本地同名 Mod', () async {
+    test('冲突 Mod 默认导入：用导入内容覆盖本地同名 Mod', () async {
       final local = await createMergeDb();
       final backup = await createMergeDb();
       try {

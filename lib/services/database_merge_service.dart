@@ -22,7 +22,7 @@ class DatabaseMergeResult {
   /// 因用户选择或既有状态而跳过的书籍数（保留本地/取消导入）。
   int booksSkipped = 0;
 
-  /// 冲突 mod「保留云端」覆盖本地同名 mod 的次数。
+  /// 冲突 mod「保留导入」覆盖本地同名 mod 的次数。
   int modsReplaced = 0;
 
   /// 冲突 mod「重命名为 {原名} - 导入」另存新 mod 的次数。
@@ -165,7 +165,7 @@ class DatabaseMergeService {
     });
 
     // 合并计划同样包含 Mod：与书一致，按名称判同（Mod 不记录修改时间，
-    // 无自动对比，默认保留云端；仅在「全本地/全导入」批量选项下变化）。
+    // 无自动对比，默认保留导入；仅在「全本地/全导入」批量选项下变化）。
     final backupModByName = _indexModsByName(backupMods);
     final localModByName = _indexModsByName(localMods);
     final allModNames = <String>{
@@ -225,9 +225,9 @@ class DatabaseMergeService {
   ) async {
     final result = DatabaseMergeResult();
     await local.transaction((txn) async {
-      // 1. 先落地 Mod 决策，得到「云端 Mod 名 → 本地 Mod id」映射，
+      // 1. 先落地 Mod 决策，得到「导入 Mod 名 → 本地 Mod id」映射，
       //    供导入书时解析其 book_mods 引用。
-      final cloudModNameToId = await _applyModDecisions(
+      final importModNameToId = await _applyModDecisions(
         txn,
         plan,
         modDecisions,
@@ -249,7 +249,7 @@ class DatabaseMergeService {
           await _insertImportedBook(
             txn,
             entry.imported!,
-            cloudModNameToId,
+            importModNameToId,
             result,
           );
           continue;
@@ -261,7 +261,7 @@ class DatabaseMergeService {
           continue;
         }
         await _deleteLocalBookByTitle(txn, entry.title);
-        await _insertImportedBook(txn, entry.imported!, cloudModNameToId, result);
+        await _insertImportedBook(txn, entry.imported!, importModNameToId, result);
         result.booksReplaced++;
       }
     });
@@ -282,14 +282,14 @@ class DatabaseMergeService {
   // 内部工具
   // ---------------------------------------------------------------------------
 
-  /// 落地 Mod 决策，返回「云端 Mod 名 → 本地 Mod id」映射（供导入书解析 book_mods）。
+  /// 落地 Mod 决策，返回「导入 Mod 名 → 本地 Mod id」映射（供导入书解析 book_mods）。
   static Future<Map<String, int>> _applyModDecisions(
     DatabaseExecutor txn,
     DatabaseMergePlan plan,
     Map<String, ModMergeDecision> modDecisions,
     DatabaseMergeResult result,
   ) async {
-    final cloudNameToId = <String, int>{};
+    final importNameToId = <String, int>{};
     final localModRows = await txn.query('mods');
     final localNameToId = <String, int>{
       for (final m in localModRows)
@@ -304,7 +304,7 @@ class DatabaseMergeService {
         case ModMergeStatus.localOnly:
         case ModMergeStatus.identical:
           final lid = localNameToId[e.name];
-          if (lid != null) cloudNameToId[e.name] = lid;
+          if (lid != null) importNameToId[e.name] = lid;
           break;
         case ModMergeStatus.importOnly:
           // 仅导入有的 Mod 始终导入。
@@ -314,17 +314,17 @@ class DatabaseMergeService {
             Map<String, Object?>.from(row)..remove('id'),
           );
           localNameToId[e.name] = newId;
-          cloudNameToId[e.name] = newId;
+          importNameToId[e.name] = newId;
           result.modsAdded++;
           break;
         case ModMergeStatus.conflict:
           switch (decision) {
             case ModMergeDecision.keepLocal:
               final lid = localNameToId[e.name];
-              if (lid != null) cloudNameToId[e.name] = lid;
+              if (lid != null) importNameToId[e.name] = lid;
               break;
             case ModMergeDecision.import:
-              // 用云端内容覆盖本地同名 Mod（就地更新，id 不变，引用不失效）。
+              // 用导入内容覆盖本地同名 Mod（就地更新，id 不变，引用不失效）。
               final row = e.imported!.mod;
               final lid = localNameToId[e.name];
               int modId;
@@ -344,7 +344,7 @@ class DatabaseMergeService {
                 localNameToId[e.name] = modId;
                 result.modsAdded++;
               }
-              cloudNameToId[e.name] = modId;
+              importNameToId[e.name] = modId;
               result.modsReplaced++;
               break;
             case ModMergeDecision.rename:
@@ -358,14 +358,14 @@ class DatabaseMergeService {
                   ..['name'] = renamed,
               );
               localNameToId[renamed] = newId;
-              cloudNameToId[e.name] = newId;
+              importNameToId[e.name] = newId;
               result.modsRenamed++;
               break;
           }
           break;
       }
     }
-    return cloudNameToId;
+    return importNameToId;
   }
 
   /// 删除本地库中与 [title]（去首尾空白判同）匹配的书籍及其整棵子树。
@@ -397,11 +397,11 @@ class DatabaseMergeService {
 
   /// 整本插入导入侧书籍快照（设置字段 + 轮次 + 世界书 + 书-Mod 配置）。
   ///
-  /// [cloudModNameToId]：云端 Mod 名 → 本地 Mod id（由 [applyPlan] 先落地 Mod 决策得到）。
+  /// [importModNameToId]：导入 Mod 名 → 本地 Mod id（由 [applyPlan] 先落地 Mod 决策得到）。
   static Future<void> _insertImportedBook(
     DatabaseExecutor txn,
     BookMergeSide side,
-    Map<String, int> cloudModNameToId,
+    Map<String, int> importModNameToId,
     DatabaseMergeResult result,
   ) async {
     final bookMap = side.book.toMap()..remove('id');
@@ -430,8 +430,8 @@ class DatabaseMergeService {
     }
 
     for (final bm in side.bookMods) {
-      final cloudName = (side.mods[bm.modId]?['name'] as String? ?? '').trim();
-      final modId = cloudName.isEmpty ? null : cloudModNameToId[cloudName];
+      final modName = (side.mods[bm.modId]?['name'] as String? ?? '').trim();
+      final modId = modName.isEmpty ? null : importModNameToId[modName];
       await txn.insert('book_mods', {
         'book_id': newBookId,
         'preset_key': bm.presetKey,
@@ -651,7 +651,7 @@ class DatabaseMergeService {
     ]);
   }
 
-  /// Mod 默认决策：无时间可对比，冲突 / 仅导入有默认保留云端；
+  /// Mod 默认决策：无时间可对比，冲突 / 仅导入有默认保留导入；
   /// 仅本地有 / 两者全一致保留本地。
   static ModMergeDecision _modDefaultDecision(ModMergeStatus status) {
     return switch (status) {
@@ -838,8 +838,8 @@ enum MergeBookDecision { keepImported, keepLocal }
 enum ModMergeStatus { conflict, importOnly, localOnly, identical }
 
 /// 单个 Mod 的合并决策（冲突）：
-/// - [import]：用云端内容覆盖本地同名 Mod；
-/// - [rename]：把云端 Mod 重命名为「{原名} - 导入」另存（本地同名 Mod 保留）；
+/// - [import]：用导入内容覆盖本地同名 Mod；
+/// - [rename]：把导入 Mod 重命名为「{原名} - 导入」另存（本地同名 Mod 保留）；
 /// - [keepLocal]：保留本地 Mod。
 enum ModMergeDecision { import, rename, keepLocal }
 

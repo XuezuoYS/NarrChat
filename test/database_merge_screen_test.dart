@@ -257,6 +257,10 @@ void main() {
     expect(find.text('M'), findsOneWidget);
     expect(find.text('导入'), findsOneWidget);
     expect(find.text('重命名'), findsOneWidget);
+    // 冲突 Mod 并排展示「导入的备份」与「本地」两侧，各有预览按钮。
+    expect(find.text('导入的备份'), findsOneWidget);
+    expect(find.text('本地'), findsNWidgets(2)); // 侧卡标签 + 「本地」决策段
+    expect(find.byTooltip('预览'), findsNWidgets(2));
 
     await tester.tap(find.text('重命名'));
     await tester.pumpAndSettle();
@@ -268,6 +272,32 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(modDecisions['M'], ModMergeDecision.rename);
+  });
+
+  testWidgets('Mod 冲突：可分别预览导入与本地两侧内容', (tester) async {
+    await _pumpScreen(tester, modPlan);
+
+    // 冲突 Mod 并排展示「导入的备份」与「本地」两侧，各有预览按钮。
+    expect(find.text('导入的备份'), findsOneWidget);
+    expect(find.byTooltip('预览'), findsNWidgets(2));
+
+    // 预览导入侧：展示备份内容。
+    await tester.tap(find.byTooltip('预览').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Mod 预览'), findsOneWidget);
+    expect(find.text('云端描述'), findsOneWidget);
+    expect(find.text('本地描述'), findsNothing);
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+
+    // 预览本地侧：展示本地内容。
+    await tester.tap(find.byTooltip('预览').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Mod 预览'), findsOneWidget);
+    expect(find.text('本地描述'), findsOneWidget);
+    expect(find.text('云端描述'), findsNothing);
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('自动勾选：全本地同样作用于 Mod（冲突保留本地）', (tester) async {
