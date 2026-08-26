@@ -162,4 +162,45 @@ void main() {
     expect(find.text('存储管理'), findsOneWidget);
     expect(find.text('数据库合并'), findsNothing);
   });
+
+  testWidgets('本地数据库导入：选择器异常时提示且不导航', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        FakeStorageService(
+          db: StorageDbInfo(
+            path: 'C:/data/narrchat.db',
+            size: 2048,
+            modified: DateTime(2026, 1, 1),
+          ),
+        ),
+        filePick: () async => throw Exception('picker failed'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入数据库'));
+    await tester.pumpAndSettle();
+    // 吞掉异常并给出提示，仍在存储管理页。
+    expect(find.textContaining('选择数据库文件失败'), findsOneWidget);
+    expect(find.text('数据库合并'), findsNothing);
+  });
+
+  testWidgets('本地数据库导入：选择非 .db 文件时提示且不导航', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        FakeStorageService(
+          db: StorageDbInfo(
+            path: 'C:/data/narrchat.db',
+            size: 2048,
+            modified: DateTime(2026, 1, 1),
+          ),
+        ),
+        filePick: () async => 'C:/data/note.txt',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('导入数据库'));
+    await tester.pumpAndSettle();
+    expect(find.text('请选择 .db 数据库备份文件。'), findsOneWidget);
+    expect(find.text('数据库合并'), findsNothing);
+  });
 }

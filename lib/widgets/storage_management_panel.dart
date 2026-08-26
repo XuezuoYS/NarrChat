@@ -141,18 +141,35 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
   Future<String?> _pickDatabaseFile() {
     final custom = widget.filePicker;
     if (custom != null) return custom();
+    // 注意：不要用 FileType.custom + allowedExtensions:['db']。Android 的 MimeTypeMap
+    // 不识别 `.db` 扩展名，getMimeTypeFromExtension('db') 返回 null，file_picker 会得到空
+    // MIME 数组并直接以「Unsupported filter」报错，导致系统文件选择器根本弹不出来（按钮有
+    // 点击效果却无响应）。这里改用 FileType.any 可靠弹出选择器，选中后再校验 `.db` 后缀。
     return FilePicker.platform.pickFiles(
       dialogTitle: '选择数据库备份文件',
-      type: FileType.custom,
-      allowedExtensions: const ['db'],
+      type: FileType.any,
     ).then((result) => result?.files.single.path);
   }
+
+  /// 判断路径是否以 `.db`（不区分大小写）结尾。
+  bool _isDbPath(String path) => p.extension(path).toLowerCase() == '.db';
 
   /// 导入本机数据库备份：解析出合并计划后进入「合并决策页」逐本确认。
   Future<void> _importDatabase() async {
     final provider = context.read<CloudSyncProvider>();
-    final path = await _pickDatabaseFile();
+    final String? path;
+    try {
+      path = await _pickDatabaseFile();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('选择数据库文件失败：$e');
+      return;
+    }
     if (path == null || !mounted) return;
+    if (!_isDbPath(path)) {
+      _snack('请选择 .db 数据库备份文件。');
+      return;
+    }
     // 防止选择当前本地库本身（只会产生「全一致」且无意义的自我合并）。
     final localPath = await AppPaths.userDatabasePath();
     if (!mounted) return;
