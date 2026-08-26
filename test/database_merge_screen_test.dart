@@ -274,30 +274,64 @@ void main() {
     expect(modDecisions['M'], ModMergeDecision.rename);
   });
 
-  testWidgets('Mod 冲突：可分别预览导入与本地两侧内容', (tester) async {
-    await _pumpScreen(tester, modPlan);
+  testWidgets('Mod 冲突：点侧卡即可选择对应导入/本地决策', (tester) async {
+    final modDecisions = <String, ModMergeDecision>{};
+    await _pumpScreen(
+      tester,
+      modPlan,
+      onApply: (p, bd, md) async {
+        modDecisions.addAll(md);
+        return DatabaseMergeResult();
+      },
+    );
 
-    // 冲突 Mod 并排展示「导入的备份」与「本地」两侧，各有预览按钮。
-    expect(find.text('导入的备份'), findsOneWidget);
+    // 默认建议为导入：导入侧卡选中（单选图标实心），本地未选中。
+    expect(find.byIcon(Icons.radio_button_checked), findsOneWidget);
+    expect(find.byIcon(Icons.radio_button_off), findsOneWidget);
+
+    // 点击未选中的本地侧卡 → 决策改为保留本地，导入侧卡随之变为未选中。
+    await tester.tap(find.byIcon(Icons.radio_button_off));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.radio_button_off), findsOneWidget);
+
+    // 再点击未选中的导入侧卡 → 决策改回导入。
+    await tester.tap(find.byIcon(Icons.radio_button_off));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(modDecisions['M'], ModMergeDecision.import);
+  });
+
+  testWidgets('Mod 冲突：预览打开单个并排对比对话框（git 式）', (tester) async {
+    await _pumpScreen(tester, modPlan);
     expect(find.byTooltip('预览'), findsNWidgets(2));
 
-    // 预览导入侧：展示备份内容。
+    // 任一点击预览都打开同一个并排对比对话框，同时展示两侧内容与差异标记。
     await tester.tap(find.byTooltip('预览').first);
     await tester.pumpAndSettle();
-    expect(find.text('Mod 预览'), findsOneWidget);
+    expect(find.text('Mod 对比'), findsOneWidget);
     expect(find.text('云端描述'), findsOneWidget);
-    expect(find.text('本地描述'), findsNothing);
+    expect(find.text('本地描述'), findsOneWidget);
+    expect(find.text('有差异'), findsOneWidget);
     await tester.tap(find.byIcon(Icons.close));
     await tester.pumpAndSettle();
+    expect(find.text('Mod 对比'), findsNothing);
 
-    // 预览本地侧：展示本地内容。
+    // 本地侧预览按钮同样打开同一个对话框。
     await tester.tap(find.byTooltip('预览').last);
     await tester.pumpAndSettle();
-    expect(find.text('Mod 预览'), findsOneWidget);
+    expect(find.text('Mod 对比'), findsOneWidget);
+    expect(find.text('云端描述'), findsOneWidget);
     expect(find.text('本地描述'), findsOneWidget);
-    expect(find.text('云端描述'), findsNothing);
     await tester.tap(find.byIcon(Icons.close));
     await tester.pumpAndSettle();
+    expect(find.text('Mod 对比'), findsNothing);
   });
 
   testWidgets('自动勾选：全本地同样作用于 Mod（冲突保留本地）', (tester) async {

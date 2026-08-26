@@ -639,7 +639,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 与书籍冲突一致：并排展示「导入的备份」与「本地」两侧，均可预览对比。
+        // 与书籍冲突一致：并排展示「导入的备份」与「本地」两侧。
+        // 点击侧卡即可选择对应的导入/本地决策；预览打开一个并排对比对话框。
         Row(
           children: [
             Expanded(
@@ -648,7 +649,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                 side: entry.imported!,
                 selected: decision != ModMergeDecision.keepLocal,
                 colors: colors,
-                onPreview: () => _showModPreview(context, entry.imported!),
+                onPreview: () => _showModCompare(context, entry.imported!, entry.local!),
+                onSelect: () => _setModDecision(entry.name, ModMergeDecision.import),
               ),
             ),
             const SizedBox(width: 10),
@@ -658,7 +660,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                 side: entry.local!,
                 selected: decision == ModMergeDecision.keepLocal,
                 colors: colors,
-                onPreview: () => _showModPreview(context, entry.local!),
+                onPreview: () => _showModCompare(context, entry.imported!, entry.local!),
+                onSelect: () => _setModDecision(entry.name, ModMergeDecision.keepLocal),
               ),
             ),
           ],
@@ -692,10 +695,15 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     );
   }
 
-  void _showModPreview(BuildContext context, ModMergeSide side) {
+  /// 打开一个并排展示「导入的备份」与「本地」的 Mod 对比对话框（类似 git 的左右 diff）。
+  void _showModCompare(
+    BuildContext context,
+    ModMergeSide imported,
+    ModMergeSide local,
+  ) {
     showDialog<void>(
       context: context,
-      builder: (_) => _ModPreviewDialog(side: side),
+      builder: (_) => _ModCompareDialog(imported: imported, local: local),
     );
   }
 }
@@ -836,16 +844,17 @@ class _SideCard extends StatelessWidget {
   }
 }
 
-/// 单侧 Mod 卡片：并排展示「导入的备份」与「本地」，供预览对比。
+/// 单侧 Mod 卡片：并排展示「导入的备份」与「本地」，供预览对比与点击选择。
 ///
-/// 与书籍的 [_SideCard] 仅展示一个字段摘要（Mod 无轮次/时间可对比），
-/// 选中侧以主题主色描边，当前决策对应的来源侧高亮。
+/// 与书籍的 [_SideCard] 一致：提供 [onSelect] 时展示单选图标，点击卡片即可选择
+/// 对应的导入/本地决策；[selected] 侧以主题主色描边并高亮。
 class _ModSideCard extends StatelessWidget {
   final String label;
   final ModMergeSide side;
   final bool selected;
   final NarrChatColors colors;
   final VoidCallback onPreview;
+  final VoidCallback? onSelect;
 
   const _ModSideCard({
     required this.label,
@@ -853,6 +862,7 @@ class _ModSideCard extends StatelessWidget {
     required this.selected,
     required this.colors,
     required this.onPreview,
+    this.onSelect,
   });
 
   @override
@@ -870,6 +880,7 @@ class _ModSideCard extends StatelessWidget {
     ];
 
     return InkWell(
+      onTap: onSelect,
       borderRadius: BorderRadius.circular(10),
       child: Container(
         padding: const EdgeInsets.all(10),
@@ -883,6 +894,17 @@ class _ModSideCard extends StatelessWidget {
           children: [
             Row(
               children: [
+                if (onSelect != null)
+                  Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    size: 16,
+                    color: selected
+                        ? Theme.of(context).colorScheme.primary
+                        : colors.textSecondary,
+                  ),
+                if (onSelect != null) const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     label,
@@ -962,29 +984,36 @@ class _ModBadge extends StatelessWidget {
   }
 }
 
-/// Mod 预览对话框：查看某一侧 Mod 的内容字段。
-class _ModPreviewDialog extends StatelessWidget {
-  final ModMergeSide side;
+/// Mod 对比对话框：在单个对话框内并排展示「导入的备份」与「本地」两侧内容，
+/// 类似 git 的左右 diff，便于逐字段对比。
+///
+/// 字段内容相同时两侧中性展示并标注「一致」；不同时导入侧（新）以绿色、
+/// 本地侧（旧）以红色描边高亮并标注「有差异」，聚焦差异一目了然。
+class _ModCompareDialog extends StatelessWidget {
+  final ModMergeSide imported;
+  final ModMergeSide local;
 
-  const _ModPreviewDialog({required this.side});
+  const _ModCompareDialog({required this.imported, required this.local});
+
+  static const List<(String label, String key)> _fieldDefs = [
+    ('名称', 'name'),
+    ('描述', 'description'),
+    ('前置提示', 'pre_prompt'),
+    ('后置提示', 'post_prompt'),
+    ('系统提示', 'system_prompt'),
+    ('世界书', 'world_book'),
+  ];
+
+  String _valueOf(ModMergeSide side, String key) =>
+      (side.mod[key] as String? ?? '');
 
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    final mod = side.mod;
-    final fields = <(String, String)>[
-      ('名称', (mod['name'] as String? ?? '').trim()),
-      ('描述', mod['description'] as String? ?? ''),
-      ('前置提示', mod['pre_prompt'] as String? ?? ''),
-      ('后置提示', mod['post_prompt'] as String? ?? ''),
-      ('系统提示', mod['system_prompt'] as String? ?? ''),
-      ('世界书', mod['world_book'] as String? ?? ''),
-    ].where((s) => s.$2.trim().isNotEmpty).toList();
-
     return Dialog(
       insetPadding: const EdgeInsets.all(20),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 640, maxHeight: 560),
+        constraints: const BoxConstraints(maxWidth: 900, maxHeight: 640),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -993,7 +1022,7 @@ class _ModPreviewDialog extends StatelessWidget {
               child: Row(
                 children: [
                   Text(
-                    'Mod 预览',
+                    'Mod 对比',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -1009,49 +1038,24 @@ class _ModPreviewDialog extends StatelessWidget {
                 ],
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+              child: Row(
+                children: [
+                  Expanded(child: _compareHeader('导入的备份', colors.success)),
+                  const SizedBox(width: 12),
+                  Expanded(child: _compareHeader('本地', colors.warning)),
+                ],
+              ),
+            ),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (fields.isEmpty)
-                      Text(
-                        '（无内容）',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontStyle: FontStyle.italic,
-                          color: colors.textSecondary,
-                        ),
-                      )
-                    else
-                      for (final (label, value) in fields)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                label,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  color: colors.textSecondary,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              SelectableText(
-                                value,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  height: 1.4,
-                                  color: colors.textPrimary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                    for (final (label, key) in _fieldDefs)
+                      _buildFieldRow(context, label, key),
                   ],
                 ),
               ),
@@ -1059,6 +1063,131 @@ class _ModPreviewDialog extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _compareHeader(String label, Color accent) {
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: accent,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFieldRow(BuildContext context, String label, String key) {
+    final colors = context.narrColors;
+    final importedValue = _valueOf(imported, key);
+    final localValue = _valueOf(local, key);
+    final differs = importedValue.trim() != localValue.trim();
+    final addedColor = colors.success;
+    final removedColor = Theme.of(context).colorScheme.error;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: colors.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              _statusChip(
+                color: differs ? colors.warning : colors.success,
+                text: differs ? '有差异' : '一致',
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _compareCell(importedValue, addedColor, differs, colors),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _compareCell(localValue, removedColor, differs, colors),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusChip({required Color color, required String text}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Widget _compareCell(
+    String value,
+    Color sideColor,
+    bool differs,
+    NarrChatColors colors,
+  ) {
+    final trimmed = value.trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: differs ? sideColor.withValues(alpha: 0.10) : colors.background,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: differs ? sideColor : colors.divider,
+          width: differs ? 1.3 : 1,
+        ),
+      ),
+      child: trimmed.isEmpty
+          ? Text(
+              '（无）',
+              style: TextStyle(
+                fontSize: 12,
+                fontStyle: FontStyle.italic,
+                color: colors.textSecondary,
+              ),
+            )
+          : SelectableText(
+              value,
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.4,
+                color: colors.textPrimary,
+              ),
+            ),
     );
   }
 }
