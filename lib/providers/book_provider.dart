@@ -31,6 +31,10 @@ class BookProvider extends ChangeNotifier {
   Map<int, DateTime> get lastRoundTimes => Map.unmodifiable(_lastRoundTimes);
 
   /// 加载书籍列表；若当前书籍已被删除则自动重置，无选中时默认选第一本。
+  ///
+  /// 重新加载后会用**最新实例**替换当前选中项（同一 id）——云同步拉取落地后
+  /// 调用本方法即让 currentBook 携带最新设置字段；否则保留旧实例会让
+  /// 对话页 / 书籍设置页持续展示陈旧数据。
   Future<void> loadBooks() async {
     _isLoading = true;
     _error = null;
@@ -38,9 +42,7 @@ class BookProvider extends ChangeNotifier {
     try {
       _books = await _dao.getAllBooks();
       _lastRoundTimes = await _dao.getLastRoundTimes();
-      if (_currentBook != null && !_books.any((b) => b.id == _currentBook!.id)) {
-        _currentBook = null;
-      }
+      _currentBook = _refreshCurrent(_currentBook);
       if (_currentBook == null && _books.isNotEmpty) {
         _currentBook = _books.first;
       }
@@ -50,6 +52,16 @@ class BookProvider extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  /// 返回与 [book] 同 id 的最新实例；[book] 已不在最新列表中（如被删除）返回 null。
+  Book? _refreshCurrent(Book? book) {
+    final id = book?.id;
+    if (id == null) return null;
+    for (final b in _books) {
+      if (b.id == id) return b;
+    }
+    return null;
   }
 
   /// 刷新「最近对话时间」映射（从对话页返回首页时调用）。
@@ -86,11 +98,8 @@ class BookProvider extends ChangeNotifier {
     try {
       await _dao.updateBook(book);
       await loadBooks();
-      // 保持选中同一本书。
-      _currentBook = _books.firstWhere(
-        (b) => b.id == book.id,
-        orElse: () => book,
-      );
+      // 保持选中同一本书（以最新列表中的实例为准）。
+      _currentBook = _refreshCurrent(book) ?? book;
       notifyListeners();
       _cloudSyncProvider?.triggerAutoSync();
       return true;
@@ -118,9 +127,14 @@ class BookProvider extends ChangeNotifier {
     }
   }
 
+  /// 切换当前书籍。
+  ///
+  /// 统一以 [books] 中的**最新实例**为准（同 id 重复选中同样生效）：
+  /// 云同步落地后即使传入的是旧快照，选中后 currentBook 也立即携带最新字段。
   void selectBook(Book book) {
-    if (_currentBook?.id == book.id) return;
-    _currentBook = book;
+    final fresh = _refreshCurrent(book) ?? book;
+    if (identical(_currentBook, fresh)) return;
+    _currentBook = fresh;
     notifyListeners();
   }
 }

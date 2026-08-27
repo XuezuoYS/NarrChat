@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:narrchat/database/book_dao.dart';
+import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
 import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
+import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/ai_service.dart';
@@ -168,6 +170,22 @@ class FakeRoundDao extends RoundDao {
 class FakeWorldBookDao extends WorldBookDao {
   @override
   Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
+}
+
+/// 内存版 [ModDao]：默认空 Mod 列表 / 无书-Mod 配置。
+class FakeModDao extends ModDao {
+  FakeModDao({List<Mod> mods = const []}) : mods = List.of(mods);
+
+  final List<Mod> mods;
+
+  @override
+  Future<List<Mod>> getAllMods() async => List.of(mods);
+
+  @override
+  Future<List<BookModConfig>> getBookMods(int bookId) async => [];
+
+  @override
+  Future<void> replaceBookMods(int bookId, List<BookModConfig> configs) async {}
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，

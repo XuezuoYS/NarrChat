@@ -23,10 +23,28 @@ class DraggableRoleList extends StatefulWidget {
 }
 
 class _DraggableRoleListState extends State<DraggableRoleList> {
-  late final List<RoleCategory> _categories = List.of(widget.initialCategories);
+  late List<RoleCategory> _categories = List.of(widget.initialCategories);
 
   void _notify() {
     widget.onChanged(List.of(_categories));
+  }
+
+  @override
+  void didUpdateWidget(covariant DraggableRoleList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 父级外部刷新（云同步落地等）提供的新列表与内部状态内容不同 → 采纳最新；
+    // 内容一致时保留内部状态（用户拖拽 / 编辑的结果不被重置）。
+    if (!_sameCategories(widget.initialCategories, _categories)) {
+      setState(() => _categories = List.of(widget.initialCategories));
+    }
+  }
+
+  static bool _sameCategories(List<RoleCategory> a, List<RoleCategory> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].name != b[i].name || a[i].format != b[i].format) return false;
+    }
+    return true;
   }
 
   Future<void> _openEditDialog({RoleCategory? category}) async {

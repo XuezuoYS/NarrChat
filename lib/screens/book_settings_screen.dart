@@ -57,6 +57,27 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
 
   bool _isSaving = false;
 
+  /// 编辑模式下已解析的**最新**书籍实例（随 Provider 刷新更新；新建草稿为 null）。
+  ///
+  /// 打开时优先从 [BookProvider] 按 id 解析，调用方传入的陈旧快照
+  ///（如云同步落地前打开的对话页传入的 currentBook 旧引用）不再决定展示值。
+  Book? _book;
+
+  /// 用户已编辑过的字段：同步落地刷新时仅更新**未编辑**字段，
+  /// 避免覆盖用户进行中的输入（用户草稿优先，保存后以草稿为准）。
+  final Set<TextEditingController> _dirtyControllers = {};
+  bool _historyRoundsDirty = false;
+  bool _rolesDirty = false;
+
+  /// 程序化刷新守卫：区分「用户输入」与「外部（同步）写入」，
+  /// 防止把程序写入误标为用户编辑。
+  bool _syncing = false;
+
+  BookProvider? _bookProvider;
+  bool _listening = false;
+
+  bool get _isCreate => widget.book == null;
+
   /// 新建书籍草稿模式下收集的世界书条目（保存书籍成功后统一落库）。
   List<WorldBookEntry> _draftWorldBookEntries = [];
 
@@ -66,7 +87,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   @override
   void initState() {
     super.initState();
-    final b = widget.book;
+    _book = widget.book == null ? null : _resolveFresh(widget.book!);
+    final b = _book;
     _title = TextEditingController(text: b?.title ?? '');
     _category = TextEditingController(text: b?.category ?? '');
     _writingRequirements = MarkdownEditingController(text: b?.writingRequirements ?? '');
@@ -84,10 +106,36 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       Provider.of<CloudSyncProvider?>(context, listen: false)
           ?.triggerAutoSync(silent: true);
     });
+    // 编辑态监听书籍数据变化（云同步落地等）：未编辑字段即时跟随最新值；
+    // 用户已编辑的字段保留草稿。
+    for (final c in <TextEditingController>[
+      _title,
+      _category,
+      _writingRequirements,
+      _baseSetting,
+      _writingStyle,
+      _globalPrePrompt,
+      _globalPostPrompt,
+    ]) {
+      c.addListener(() {
+        if (_syncing) return;
+        _dirtyControllers.add(c);
+      });
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_listening || _isCreate) return;
+    _listening = true;
+    _bookProvider = context.read<BookProvider>();
+    _bookProvider!.addListener(_onBookProviderChanged);
   }
 
   @override
   void dispose() {
+    _bookProvider?.removeListener(_onBookProviderChanged);
     _title.dispose();
     _category.dispose();
     _writingRequirements.dispose();
@@ -96,6 +144,60 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     _globalPrePrompt.dispose();
     _globalPostPrompt.dispose();
     super.dispose();
+  }
+
+  /// 解析 [base] 同 id 的最新书籍实例（Provider 列表优先；无则回退传入快照）。
+  Book _resolveFresh(Book base) {
+    final id = base.id;
+    if (id == null) return base;
+    for (final b in context.read<BookProvider>().books) {
+      if (b.id == id) return b;
+    }
+    return base;
+  }
+
+  /// 书籍数据变化（CloudSyncProvider 落地后的重载等）：刷新未编辑字段。
+  void _onBookProviderChanged() {
+    final base = _book;
+    if (base == null || !mounted || _isCreate) return;
+    final fresh = _resolveFresh(base);
+    if (identical(fresh, base)) return;
+    setState(() {
+      _book = fresh;
+      _applyBookToFields(fresh);
+    });
+  }
+
+  /// 把 [book] 的最新字段同步到编辑控件；跳过用户已编辑过的字段。
+  void _applyBookToFields(Book book) {
+    _syncing = true;
+    try {
+      if (!_dirtyControllers.contains(_title)) _title.text = book.title;
+      if (!_dirtyControllers.contains(_category)) _category.text = book.category;
+      if (!_dirtyControllers.contains(_writingRequirements)) {
+        _writingRequirements.text = book.writingRequirements;
+      }
+      if (!_dirtyControllers.contains(_baseSetting)) {
+        _baseSetting.text = book.baseSetting;
+      }
+      if (!_dirtyControllers.contains(_writingStyle)) {
+        _writingStyle.text = book.writingStyle;
+      }
+      if (!_dirtyControllers.contains(_globalPrePrompt)) {
+        _globalPrePrompt.text = book.globalPrePrompt;
+      }
+      if (!_dirtyControllers.contains(_globalPostPrompt)) {
+        _globalPostPrompt.text = book.globalPostPrompt;
+      }
+      if (!_historyRoundsDirty) {
+        _historyRounds = book.historyRounds < 1 ? 1 : book.historyRounds;
+      }
+      if (!_rolesDirty) {
+        _roleCategories = List.of(book.roleCategories);
+      }
+    } finally {
+      _syncing = false;
+    }
   }
 
   Future<void> _save() async {
@@ -108,8 +210,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     }
     setState(() => _isSaving = true);
     final book = Book(
-      id: widget.book?.id,
-      uuid: widget.book?.uuid ?? '',
+      id: _book?.id,
+      uuid: _book?.uuid ?? '',
       title: title,
       category: _category.text.trim(),
       baseSetting: _baseSetting.text,
@@ -124,7 +226,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     );
 
     final provider = context.read<BookProvider>();
-    final ok = widget.book == null
+    final ok = _isCreate
         ? await provider.createBook(book)
         : await provider.updateBook(book);
 
@@ -133,7 +235,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     if (ok) {
       final errors = <String>[];
       // 新建书籍：将草稿阶段配置的世界书条目与 Mod 一并落库到新书。
-      if (widget.book == null) {
+      if (_isCreate) {
         await _commitDraftData(errors);
       }
       if (!mounted) return;
@@ -306,7 +408,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        UuidDisplay(label: '书籍 UUID', uuid: widget.book?.uuid ?? ''),
+        UuidDisplay(label: '书籍 UUID', uuid: _book?.uuid ?? ''),
         const SizedBox(height: 12),
         _multiline(
           _writingRequirements,
@@ -316,7 +418,10 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         const SizedBox(height: 12),
         HistoryRoundStepper(
           value: _historyRounds,
-          onChanged: (v) => setState(() => _historyRounds = v < 1 ? 1 : v),
+          onChanged: (v) {
+            _historyRoundsDirty = true;
+            setState(() => _historyRounds = v < 1 ? 1 : v);
+          },
         ),
         const SizedBox(height: 12),
         _multiline(_globalPrePrompt, '全局前置词'),
@@ -337,7 +442,10 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         ),
         DraggableRoleList(
           initialCategories: _roleCategories,
-          onChanged: (categories) => _roleCategories = List.of(categories),
+          onChanged: (categories) {
+            _rolesDirty = true;
+            _roleCategories = List.of(categories);
+          },
         ),
       ],
     );
