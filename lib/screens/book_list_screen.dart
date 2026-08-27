@@ -11,8 +11,10 @@ import '../utils/focus_utils.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/book_actions.dart';
 import '../widgets/generation_banner.dart';
+import '../widgets/sync_status_chip.dart';
 import 'book_settings_screen.dart';
 import 'chat_screen.dart';
+import 'settings_screen.dart';
 
 /// 首页：书籍列表。
 ///
@@ -178,6 +180,11 @@ class _BookListScreenState extends State<BookListScreen> {
                 ),
               ),
               const Spacer(),
+              // 云同步状态章：点击进入设置 → 云同步面板。
+              SyncStatusChip(
+                onTap: () => SettingsScreen.open(context, initialIndex: 3),
+              ),
+              const SizedBox(width: 8),
               Text(
                 '$total 本',
                 style: TextStyle(

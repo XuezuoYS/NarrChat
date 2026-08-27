@@ -6,6 +6,7 @@ import '../models/mod.dart';
 import '../models/role_category.dart';
 import '../models/world_book_entry.dart';
 import '../providers/book_provider.dart';
+import '../providers/cloud_sync_provider.dart';
 import '../providers/mod_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
@@ -16,6 +17,7 @@ import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/settings_shell.dart';
+import '../widgets/uuid_display.dart';
 import '../widgets/world_book_panel.dart';
 
 /// 全窗口书籍设置界面（新建 / 编辑书籍）。
@@ -76,6 +78,12 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     _roleCategories = List.of(
       b?.roleCategories ?? Constants.defaultRoleCategories,
     );
+    // 打开书籍设置即触发一次静默同步：另一台设备刚改过的书籍设置就近拉到本地
+    // （编辑态打开时展示最新值；轮询会在 1 分钟内兜底）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<CloudSyncProvider?>(context, listen: false)
+          ?.triggerAutoSync(silent: true);
+    });
   }
 
   @override
@@ -101,6 +109,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     setState(() => _isSaving = true);
     final book = Book(
       id: widget.book?.id,
+      uuid: widget.book?.uuid ?? '',
       title: title,
       category: _category.text.trim(),
       baseSetting: _baseSetting.text,
@@ -140,7 +149,6 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       );
     }
   }
-
   /// 新建书籍成功后，将草稿阶段配置的世界书条目与 Mod 配置落库到新书。
   Future<void> _commitDraftData(List<String> errors) async {
     // 所有 Provider 在首个 await 之前获取，避免跨异步间隙使用 context。
@@ -297,6 +305,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
             isDense: true,
           ),
         ),
+        const SizedBox(height: 8),
+        UuidDisplay(label: '书籍 UUID', uuid: widget.book?.uuid ?? ''),
         const SizedBox(height: 12),
         _multiline(
           _writingRequirements,

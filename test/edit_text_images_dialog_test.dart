@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
+import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/widgets/edit_text_images_dialog.dart';
 import 'package:narrchat/widgets/image_preview.dart';
 import 'package:provider/provider.dart';
@@ -17,8 +18,15 @@ void main() {
       results: [const ImageImportResult(paths: ['img/b.png'])],
     );
     await tester.pumpWidget(
-      Provider<ClipboardPasteService>(
-        create: (_) => FakeClipboardPasteService(),
+      MultiProvider(
+        providers: [
+          Provider<ClipboardPasteService>(
+            create: (_) => FakeClipboardPasteService(),
+          ),
+          Provider<ImageRevivalService>(
+            create: (_) => FakeImageRevivalService(),
+          ),
+        ],
         child: MaterialApp(
           home: Scaffold(
             body: Builder(
@@ -78,8 +86,15 @@ void main() {
   testWidgets('非识图：隐藏图片区与「添加图片」按钮，仅文本编辑', (tester) async {
     EditTextImagesResult? captured;
     await tester.pumpWidget(
-      Provider<ClipboardPasteService>(
-        create: (_) => FakeClipboardPasteService(),
+      MultiProvider(
+        providers: [
+          Provider<ClipboardPasteService>(
+            create: (_) => FakeClipboardPasteService(),
+          ),
+          Provider<ImageRevivalService>(
+            create: (_) => FakeImageRevivalService(),
+          ),
+        ],
         child: MaterialApp(
           home: Scaffold(
             body: Builder(
@@ -118,10 +133,17 @@ void main() {
 
   testWidgets('识图：右键粘贴图片加入图片列表', (tester) async {
     await tester.pumpWidget(
-      Provider<ClipboardPasteService>(
-        create: (_) => FakeClipboardPasteService(
-          imagePng: Uint8List.fromList([0, 1, 2]),
-        ),
+      MultiProvider(
+        providers: [
+          Provider<ClipboardPasteService>(
+            create: (_) => FakeClipboardPasteService(
+              imagePng: Uint8List.fromList([0, 1, 2]),
+            ),
+          ),
+          Provider<ImageRevivalService>(
+            create: (_) => FakeImageRevivalService(),
+          ),
+        ],
         child: MaterialApp(
           home: Scaffold(
             body: Builder(

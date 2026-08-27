@@ -7,6 +7,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../database/database_helper.dart';
 import '../models/book.dart';
 import '../models/round.dart';
+import '../utils/uuid_utils.dart';
 
 /// 合并结果统计。
 class DatabaseMergeResult {
@@ -130,23 +131,41 @@ class DatabaseMergeService {
             );
 
       final MergeBookStatus status;
+      final bool settingsConflict;
+      final bool contentConflict;
       if (imported != null && localSide != null) {
-        status = imported.fingerprint == localSide.fingerprint
-            ? MergeBookStatus.identical
-            : MergeBookStatus.conflict;
-      } else if (imported != null) {
-        status = MergeBookStatus.importOnly;
+        settingsConflict =
+            imported.settingsFp != localSide.settingsFp;
+        contentConflict = imported.contentFp != localSide.contentFp;
+        status = (settingsConflict || contentConflict)
+            ? MergeBookStatus.conflict
+            : MergeBookStatus.identical;
       } else {
-        status = MergeBookStatus.localOnly;
+        settingsConflict = false;
+        contentConflict = false;
+        status = imported != null
+            ? MergeBookStatus.importOnly
+            : MergeBookStatus.localOnly;
       }
+
+      // 各部件默认：内容按"保留最后更新时间较新的一侧"；设置默认保留本地。
+      final suggestedContent = status != MergeBookStatus.conflict
+          ? MergePartChoice.keepLocal
+          : (_suggestContentImport(imported, localSide)
+              ? MergePartChoice.import
+              : MergePartChoice.keepLocal);
 
       entries.add(
         BookMergeEntry(
           title: title,
           status: status,
+          settingsConflict: settingsConflict,
+          contentConflict: contentConflict,
           imported: imported,
           local: localSide,
           suggestedDecision: _suggestDecision(status, imported, localSide),
+          suggestedSettings: MergePartChoice.keepLocal,
+          suggestedContent: suggestedContent,
         ),
       );
     }
@@ -215,12 +234,17 @@ class DatabaseMergeService {
     return DatabaseMergePlan(entries: entries, modEntries: modEntries);
   }
 
-  /// 按用户的逐书 / 逐 Mod 决策把 [plan] 落地进 [local]。
+  /// 按用户的逐书（部件级） / 逐 Mod 决策把 [plan] 落地进 [local]。
+  ///
+  /// 冲突书按「设置部件 / 内容部件」独立选择（[BookPartDecisions]）：
+  /// - 设置部件导入 → books 设置列 + 世界书 + 书‑Mod 配置采用导入侧；
+  /// - 内容部件导入 → 轮次 + 失败条目采用导入侧；
+  /// 同名书就地更新（不删除重建，保留本地行 id 与共基身份）。
   @visibleForTesting
   static Future<DatabaseMergeResult> applyPlan(
     Database local,
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, BookPartDecisions> bookDecisions,
     Map<String, ModMergeDecision> modDecisions,
   ) async {
     final result = DatabaseMergeResult();
@@ -241,8 +265,10 @@ class DatabaseMergeService {
             status == MergeBookStatus.identical) {
           continue;
         }
-        final decision =
-            bookDecisions[entry.title] ?? entry.suggestedDecision;
+        final decision = bookDecisions[entry.title] ?? BookPartDecisions(
+              settings: entry.suggestedSettings,
+              content: entry.suggestedContent,
+            );
 
         if (status == MergeBookStatus.importOnly) {
           // 仅导入有的书始终导入，不支持取消。
@@ -255,23 +281,133 @@ class DatabaseMergeService {
           continue;
         }
 
-        // conflict
-        if (decision == MergeBookDecision.keepLocal) {
-          result.booksSkipped++;
+        // conflict：按部件独立落地（就地更新，不删除重建）。
+        final localId = await _localBookIdByTitle(txn, entry.title);
+        if (localId == null) {
+          // 极端情形：本地书已不存在（如被删除）→ 整本保留导入。
+          await _insertImportedBook(
+            txn,
+            entry.imported!,
+            importModNameToId,
+            result,
+          );
           continue;
         }
-        await _deleteLocalBookByTitle(txn, entry.title);
-        await _insertImportedBook(txn, entry.imported!, importModNameToId, result);
-        result.booksReplaced++;
+        var applied = false;
+        if (decision.settings == MergePartChoice.import) {
+          await _applySettingsPart(
+            txn,
+            entry.imported!,
+            localId,
+            importModNameToId,
+            result,
+          );
+          applied = true;
+        }
+        if (decision.content == MergePartChoice.import) {
+          await _applyContentPart(txn, entry.imported!, localId, result);
+          applied = true;
+        }
+        if (applied) {
+          result.booksReplaced++;
+        } else {
+          result.booksSkipped++;
+        }
       }
     });
     return result;
   }
 
+  /// 按书名（去首尾空白）查找本地书 id。
+  static Future<int?> _localBookIdByTitle(
+    DatabaseExecutor txn,
+    String title,
+  ) async {
+    final normalized = title.trim();
+    final rows = await txn.query('books', where: 'title = ?', whereArgs: [title]);
+    for (final r in rows) {
+      if ((r['title'] as String? ?? '').trim() == normalized) {
+        return r['id'] as int?;
+      }
+    }
+    return null;
+  }
+
+  /// 落地「设置部件」：books 设置列（不含 title，避免改名扰乱匹配）+
+  /// 世界书整体替换 + 书‑Mod 配置整体替换。
+  static Future<void> _applySettingsPart(
+    DatabaseExecutor txn,
+    BookMergeSide imported,
+    int localId,
+    Map<String, int> importModNameToId,
+    DatabaseMergeResult result,
+  ) async {
+    final settings = imported.book.toMap()
+      ..remove('id')
+      ..remove('title')
+      ..remove('uuid');
+    await txn.update('books', settings, where: 'id = ?', whereArgs: [localId]);
+
+    await txn.delete('world_book_entries', where: 'book_id = ?', whereArgs: [localId]);
+    for (final w in imported.worldBooks) {
+      await txn.insert(
+        'world_book_entries',
+        Map<String, Object?>.from(w)
+          ..remove('id')
+          ..remove('book_id')
+          ..['book_id'] = localId,
+      );
+      result.worldBookAdded++;
+    }
+
+    await txn.delete('book_mods', where: 'book_id = ?', whereArgs: [localId]);
+    for (final bm in imported.bookMods) {
+      final modName = (imported.mods[bm.modId]?['name'] as String? ?? '').trim();
+      final modId = modName.isEmpty ? null : importModNameToId[modName];
+      await txn.insert('book_mods', {
+        'book_id': localId,
+        'preset_key': bm.presetKey,
+        'mod_id': modId,
+        'sort_order': bm.sortOrder,
+        'is_enabled': bm.isEnabled,
+      });
+      result.bookModsAdded++;
+    }
+  }
+
+  /// 落地「内容部件」：轮次整体替换 + 失败条目列一并替换。
+  static Future<void> _applyContentPart(
+    DatabaseExecutor txn,
+    BookMergeSide imported,
+    int localId,
+    DatabaseMergeResult result,
+  ) async {
+    await txn.delete('rounds', where: 'book_id = ?', whereArgs: [localId]);
+    for (final r in imported.rounds) {
+      await txn.insert(
+        'rounds',
+        r.toMap()
+          ..remove('id')
+          ..['book_id'] = localId,
+      );
+      result.roundsAdded++;
+    }
+    await txn.update(
+      'books',
+      {
+        'failed_user_input': imported.failedUserInput,
+        'failed_error_message': imported.failedErrorMessage,
+        'failed_user_images': imported.failedUserImages,
+      },
+      where: 'id = ?',
+      whereArgs: [localId],
+    );
+  }
+
   /// 把 [plan] 按决策落地进应用本地库（[DatabaseHelper]）。
   static Future<DatabaseMergeResult> applyPlanIntoLocal(
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, BookPartDecisions> bookDecisions,
     Map<String, ModMergeDecision> modDecisions,
   ) async {
     final local = await DatabaseHelper.instance.database;
@@ -311,7 +447,7 @@ class DatabaseMergeService {
           final row = e.imported!.mod;
           final newId = await txn.insert(
             'mods',
-            Map<String, Object?>.from(row)..remove('id'),
+            _ensureUuid(Map<String, Object?>.from(row)..remove('id')),
           );
           localNameToId[e.name] = newId;
           importNameToId[e.name] = newId;
@@ -325,13 +461,17 @@ class DatabaseMergeService {
               break;
             case ModMergeDecision.import:
               // 用导入内容覆盖本地同名 Mod（就地更新，id 不变，引用不失效）。
+              // 本地 uuid 保留（同步身份以本地为准，内容变更随推送传播）；
+              // 导入行 uuid 缺失时补齐（旧备份 schema 无该列）。
               final row = e.imported!.mod;
               final lid = localNameToId[e.name];
               int modId;
               if (lid != null) {
                 await txn.update(
                   'mods',
-                  Map<String, Object?>.from(row)..remove('id'),
+                  Map<String, Object?>.from(row)
+                    ..remove('id')
+                    ..remove('uuid'),
                   where: 'id = ?',
                   whereArgs: [lid],
                 );
@@ -339,7 +479,7 @@ class DatabaseMergeService {
               } else {
                 modId = await txn.insert(
                   'mods',
-                  Map<String, Object?>.from(row)..remove('id'),
+                  _ensureUuid(Map<String, Object?>.from(row)..remove('id')),
                 );
                 localNameToId[e.name] = modId;
                 result.modsAdded++;
@@ -353,9 +493,11 @@ class DatabaseMergeService {
               final row = e.imported!.mod;
               final newId = await txn.insert(
                 'mods',
-                Map<String, Object?>.from(row)
-                  ..remove('id')
-                  ..['name'] = renamed,
+                _ensureUuid(
+                  Map<String, Object?>.from(row)
+                    ..remove('id')
+                    ..['name'] = renamed,
+                ),
               );
               localNameToId[renamed] = newId;
               importNameToId[e.name] = newId;
@@ -368,31 +510,10 @@ class DatabaseMergeService {
     return importNameToId;
   }
 
-  /// 删除本地库中与 [title]（去首尾空白判同）匹配的书籍及其整棵子树。
-  ///
-  /// 显式删除 rounds / world_book_entries / book_mods 再删 books，
-  /// 不依赖 FK 级联，兼容任何历史库是否开启 `PRAGMA foreign_keys`。
-  static Future<void> _deleteLocalBookByTitle(
-    DatabaseExecutor txn,
-    String title,
-  ) async {
-    final rows = await txn.query(
-      'books',
-      where: 'title = ?',
-      whereArgs: [title],
-    );
-    // 标题可能携带首尾空白而索引已归一化，此处再按归一化匹配兜底。
-    final normalized = title.trim();
-    final match = rows.firstWhere(
-      (r) => (r['title'] as String? ?? '').trim() == normalized,
-      orElse: () => const <String, Object?>{},
-    );
-    final id = match['id'] as int?;
-    if (id == null) return;
-    await txn.delete('rounds', where: 'book_id = ?', whereArgs: [id]);
-    await txn.delete('world_book_entries', where: 'book_id = ?', whereArgs: [id]);
-    await txn.delete('book_mods', where: 'book_id = ?', whereArgs: [id]);
-    await txn.delete('books', where: 'id = ?', whereArgs: [id]);
+  /// 导入行 uuid 缺失（旧备份 schema）时补生成，保证落地后的行具备同步身份。
+  static Map<String, Object?> _ensureUuid(Map<String, Object?> row) {
+    if ((row['uuid'] as String? ?? '').isNotEmpty) return row;
+    return {...row, 'uuid': UuidUtils.generateUuidV4()};
   }
 
   /// 整本插入导入侧书籍快照（设置字段 + 轮次 + 世界书 + 书-Mod 配置）。
@@ -404,7 +525,7 @@ class DatabaseMergeService {
     Map<String, int> importModNameToId,
     DatabaseMergeResult result,
   ) async {
-    final bookMap = side.book.toMap()..remove('id');
+    final bookMap = _ensureUuid(side.book.toMap()..remove('id'));
     final newBookId = await txn.insert('books', bookMap);
     result.booksAdded++;
 
@@ -508,7 +629,85 @@ class DatabaseMergeService {
         assignments,
         referencedMods,
       ),
+      settingsFp: _settingsPartFingerprint(
+        backupRow,
+        worldBooksCopy,
+        assignments,
+        modsById,
+      ),
+      contentFp: _contentPartFingerprint(backupRow, roundModels),
+      failedUserInput: (backupRow['failed_user_input'] as String?) ?? '',
+      failedErrorMessage: (backupRow['failed_error_message'] as String?) ?? '',
+      failedUserImages: (backupRow['failed_user_images'] as String?) ?? '[]',
     );
+  }
+
+  /// 设置部件指纹：books 设置列 + 世界书 + 书‑Mod 配置。
+  static String _settingsPartFingerprint(
+    Map<String, Object?> row,
+    List<Map<String, Object?>> worldBooks,
+    List<BookModAssign> bookMods,
+    Map<int, Map<String, Object?>> modsById,
+  ) {
+    final worldBooksJson = [
+      for (final w in worldBooks)
+        [w['keyword'], w['content'], w['is_active']],
+    ];
+    final bookModsJson = [
+      for (final bm in bookMods)
+        [
+          _modName(bm.modId, modsById),
+          bm.presetKey,
+          bm.sortOrder,
+          bm.isEnabled,
+        ],
+    ];
+    return jsonEncode([
+      row['title'],
+      row['category'],
+      row['base_setting'],
+      row['writing_requirements'],
+      row['writing_style'],
+      row['global_pre_prompt'],
+      row['global_post_prompt'],
+      row['history_rounds'],
+      row['role_hierarchy'],
+      row['role_hierarchy_detail'],
+      worldBooksJson,
+      bookModsJson,
+    ]);
+  }
+
+  /// 内容部件指纹：轮次（按 round_index）+ 失败条目列。
+  static String _contentPartFingerprint(
+    Map<String, Object?> row,
+    List<Round> rounds,
+  ) {
+    final roundsJson = [
+      for (final r in rounds)
+        [
+          r.roundIndex,
+          r.userInput,
+          r.aiNarrative,
+          r.worldState,
+          r.characterState,
+          r.memorySummary,
+          r.currentTime,
+          r.recommendedAction,
+          r.tokensIn,
+          r.tokensOut,
+          r.modelName,
+          r.userImages,
+          r.aiImages,
+          r.createdAt?.toIso8601String(),
+        ],
+    ];
+    return jsonEncode([
+      roundsJson,
+      row['failed_user_input'],
+      row['failed_error_message'],
+      row['failed_user_images'],
+    ]);
   }
 
   static String _modName(
@@ -520,6 +719,7 @@ class DatabaseMergeService {
   }
 
   /// 与行 id 无关的书籍内容指纹：任一字段不同则指纹不同。
+  /// 排除同步身份（uuid）与时间戳/墓碑列：这些字段不参与"内容一致"判定。
   static String _fingerprint(
     Map<String, Object?> bookRow,
     List<Round> rounds,
@@ -527,7 +727,12 @@ class DatabaseMergeService {
     List<BookModAssign> bookMods,
     Map<int, Map<String, Object?>> modsById,
   ) {
-    final settings = Map<String, Object?>.from(bookRow)..remove('id');
+    final settings = Map<String, Object?>.from(bookRow)
+      ..remove('id')
+      ..remove('uuid')
+      ..remove('settings_updated_at')
+      ..remove('rounds_updated_at')
+      ..remove('deleted_at');
     final roundsJson = [
       for (final r in rounds)
         [
@@ -591,6 +796,17 @@ class DatabaseMergeService {
       case MergeBookStatus.identical:
         return MergeBookDecision.keepLocal;
     }
+  }
+
+  /// 内容部件默认：导入侧最后更新时间较新、或时间相同/未知 → 采用导入。
+  static bool _suggestContentImport(
+    BookMergeSide? imported,
+    BookMergeSide? local,
+  ) {
+    final i = imported?.lastTime;
+    final l = local?.lastTime;
+    if (i != null && (l == null || !l.isAfter(i))) return true;
+    return false;
   }
 
   static Map<int, List<Map<String, Object?>>> _groupByBookId(
@@ -701,31 +917,45 @@ class DatabaseMergePlan {
       modEntries.where((e) => e.status == ModMergeStatus.identical).length;
 
   /// 依据决策表统计最终会发生的动作，用于合并确认摘要。
-  Map<String, int> summarize(Map<String, MergeBookDecision> decisions) {
+  ///
+  /// [decisions] 为逐书部件决策（设置部件 / 内容部件独立计数）。
+  Map<String, int> summarize(Map<String, BookPartDecisions> decisions) {
     var toImport = 0;
     var toReplace = 0;
     var toSkip = 0;
+    var toReplaceSettings = 0;
+    var toReplaceContent = 0;
     for (final e in entries) {
-      final d = decisions[e.title] ?? e.suggestedDecision;
+      final d = decisions[e.title] ??
+          BookPartDecisions(
+            settings: e.suggestedSettings,
+            content: e.suggestedContent,
+          );
       switch (e.status) {
         case MergeBookStatus.conflict:
-          if (d == MergeBookDecision.keepImported) {
-            toReplace++;
-          } else {
+          if (d.allLocal) {
             toSkip++;
+          } else {
+            toReplace++;
           }
-          break;
+          if (d.settings == MergePartChoice.import) toReplaceSettings++;
+          if (d.content == MergePartChoice.import) toReplaceContent++;
         case MergeBookStatus.importOnly:
           // 仅导入有的书始终导入。
           toImport++;
-          break;
         case MergeBookStatus.localOnly:
         case MergeBookStatus.identical:
           // 保留本地，不计入变更。
           break;
       }
     }
-    return {'import': toImport, 'replace': toReplace, 'skip': toSkip};
+    return {
+      'import': toImport,
+      'replace': toReplace,
+      'skip': toSkip,
+      'replaceSettings': toReplaceSettings,
+      'replaceContent': toReplaceContent,
+    };
   }
 
   /// 依据 Mod 决策统计最终动作，用于合并确认摘要。
@@ -766,19 +996,38 @@ class DatabaseMergePlan {
 }
 
 /// 单本书的合并条目。
+///
+/// 冲突判定细分为两个部件（对应同步层的"设置部件 / 内容部件"）：
+/// - 设置部件：书名/分类/设定/文笔/前后置词/历史轮数/角色（books 设置列）+ 世界书 + 书‑Mod 配置；
+/// - 内容部件：轮次 + 失败条目（生成内容，失败条目随轮次同步）。
 class BookMergeEntry {
   final String title;
   final MergeBookStatus status;
+
+  /// 设置部件是否冲突（两侧设置/世界书/书‑Mod 任一不同）。
+  final bool settingsConflict;
+
+  /// 内容部件是否冲突（两侧轮次/失败条目任一不同）。
+  final bool contentConflict;
+
   final BookMergeSide? imported;
   final BookMergeSide? local;
   final MergeBookDecision suggestedDecision;
 
+  /// 各部件默认选择（内容部件按"保留轮次较新侧"建议；设置部件默认保留本地）。
+  final MergePartChoice suggestedSettings;
+  final MergePartChoice suggestedContent;
+
   const BookMergeEntry({
     required this.title,
     required this.status,
+    required this.settingsConflict,
+    required this.contentConflict,
     this.imported,
     this.local,
     required this.suggestedDecision,
+    required this.suggestedSettings,
+    required this.suggestedContent,
   });
 }
 
@@ -800,6 +1049,17 @@ class BookMergeSide {
   /// 与行 id 无关的内容指纹（冲突判定）。
   final String fingerprint;
 
+  /// 设置部件指纹（books 设置列 + 世界书 + 书‑Mod 配置）。
+  final String settingsFp;
+
+  /// 内容部件指纹（轮次 + 失败条目）。
+  final String contentFp;
+
+  /// 失败条目（books 列；随内容部件落地）。
+  final String failedUserInput;
+  final String failedErrorMessage;
+  final String failedUserImages;
+
   const BookMergeSide({
     required this.book,
     required this.rounds,
@@ -810,6 +1070,11 @@ class BookMergeSide {
     required this.roundsCount,
     this.lastTime,
     required this.fingerprint,
+    required this.settingsFp,
+    required this.contentFp,
+    this.failedUserInput = '',
+    this.failedErrorMessage = '',
+    this.failedUserImages = '[]',
   });
 }
 
@@ -833,6 +1098,26 @@ enum MergeBookStatus { conflict, importOnly, localOnly, identical }
 
 /// 单书的合并决策。
 enum MergeBookDecision { keepImported, keepLocal }
+
+/// 单个部件的合并选择（冲突书按部件独立选择）。
+enum MergePartChoice { keepLocal, import }
+
+/// 一本书的两个部件决策（设置部件 / 内容部件）。
+class BookPartDecisions {
+  final MergePartChoice settings;
+  final MergePartChoice content;
+
+  const BookPartDecisions({
+    required this.settings,
+    required this.content,
+  });
+
+  bool get allLocal => settings == MergePartChoice.keepLocal &&
+      content == MergePartChoice.keepLocal;
+
+  bool get allImport => settings == MergePartChoice.import &&
+      content == MergePartChoice.import;
+}
 
 /// Mod 合并状态。
 enum ModMergeStatus { conflict, importOnly, localOnly, identical }

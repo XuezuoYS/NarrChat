@@ -4,6 +4,7 @@ import 'package:narrchat/config/chat_route.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
@@ -135,6 +136,10 @@ void main() {
           ),
           ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
           ChangeNotifierProvider(create: (_) => SidebarProvider()),
+          // 云同步：ChatScreen 进入书籍时触发自动同步（未配置时忽略）。
+          ChangeNotifierProvider(
+            create: (_) => CloudSyncProvider(),
+          ),
         ],
         child: MaterialApp(
           navigatorKey: service.navigatorKey,

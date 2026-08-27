@@ -21,6 +21,9 @@ class SettingsShell extends StatefulWidget {
   final Widget Function(BuildContext context, int index) contentBuilder;
   final List<Widget>? actions;
 
+  /// 初始选中的面板序号（默认 0；越界时钳制到合法范围）。
+  final int initialIndex;
+
   const SettingsShell({
     super.key,
     required this.title,
@@ -28,6 +31,7 @@ class SettingsShell extends StatefulWidget {
     required this.navItems,
     required this.contentBuilder,
     this.actions,
+    this.initialIndex = 0,
   });
 
   @override
@@ -35,7 +39,8 @@ class SettingsShell extends StatefulWidget {
 }
 
 class _SettingsShellState extends State<SettingsShell> {
-  int _index = 0;
+  late int _index =
+      widget.initialIndex.clamp(0, widget.navItems.length - 1);
 
   @override
   Widget build(BuildContext context) {

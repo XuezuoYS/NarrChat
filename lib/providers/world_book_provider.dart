@@ -2,12 +2,21 @@ import 'package:flutter/foundation.dart';
 
 import '../database/world_book_dao.dart';
 import '../models/world_book_entry.dart';
+import 'cloud_sync_provider.dart';
 
 /// 世界书状态管理：加载/新增/更新/删除当前书籍的世界书条目。
+///
+/// 世界书属「书籍设置部件」，修改后同样触发全自动同步。
 class WorldBookProvider extends ChangeNotifier {
-  WorldBookProvider({WorldBookDao? dao}) : _dao = dao ?? WorldBookDao();
+  WorldBookProvider({WorldBookDao? dao, CloudSyncProvider? cloudSyncProvider})
+      : _dao = dao ?? WorldBookDao(),
+        // ignore: prefer_initializing_formals
+        _cloudSyncProvider = cloudSyncProvider;
 
   final WorldBookDao _dao;
+
+  /// 云同步 Provider：世界书修改后触发全自动同步（null = 未接入，如测试）。
+  final CloudSyncProvider? _cloudSyncProvider;
 
   List<WorldBookEntry> _entries = [];
   int? _bookId;
@@ -56,6 +65,7 @@ class WorldBookProvider extends ChangeNotifier {
         ),
       );
       await loadEntries(bookId);
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -70,6 +80,7 @@ class WorldBookProvider extends ChangeNotifier {
       if (_bookId != null) {
         await loadEntries(_bookId!);
       }
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -84,6 +95,7 @@ class WorldBookProvider extends ChangeNotifier {
       if (_bookId != null) {
         await loadEntries(_bookId!);
       }
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();

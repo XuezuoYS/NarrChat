@@ -30,12 +30,17 @@ import '../widgets/ui_settings_form.dart';
 /// 表单状态（API设置 + 云同步）由本页持有，切换面板不丢失；
 /// 右上角「保存」为全局保存：一次性校验并落库全部改动，不退出设置页。
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.initialIndex = 0});
 
-  static Future<void> open(BuildContext context) {
-    return Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+  /// 打开时初始选中的面板序号（与 [SettingsShell.navItems] 对应）。
+  final int initialIndex;
+
+  static Future<void> open(BuildContext context, {int initialIndex = 0}) {
+    return Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SettingsScreen(initialIndex: initialIndex),
+      ),
+    );
   }
 
   @override
@@ -85,6 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return SettingsShell(
       title: '设置',
       icon: Icons.settings,
+      initialIndex: widget.initialIndex.clamp(0, 5),
       navItems: const [
         SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'API设置'),
         SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),

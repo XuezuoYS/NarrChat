@@ -72,6 +72,9 @@ class Mod {
   /// 用户自定义 Mod 的数据库主键；预置 Mod 为 null。
   final int? id;
 
+  /// 跨设备同步身份（UUID v4，用户 Mod 才有）。本地插入时自动生成。
+  final String uuid;
+
   /// 预置 Mod 的稳定标识（如 `web_novel_style`）；用户自定义 Mod 为 null。
   final String? presetKey;
 
@@ -99,6 +102,7 @@ class Mod {
 
   const Mod({
     this.id,
+    this.uuid = '',
     this.presetKey,
     this.name = '',
     this.description = '',
@@ -119,6 +123,7 @@ class Mod {
   factory Mod.fromMap(Map<String, Object?> map) {
     return Mod(
       id: map['id'] as int?,
+      uuid: (map['uuid'] as String?) ?? '',
       presetKey: null,
       name: (map['name'] as String?) ?? '',
       description: (map['description'] as String?) ?? '',
@@ -138,6 +143,7 @@ class Mod {
   Map<String, Object?> toMap() {
     return {
       'id': id,
+      'uuid': uuid,
       'name': name,
       'description': description,
       'pre_prompt': prePrompt,
@@ -151,6 +157,7 @@ class Mod {
 
   Mod copyWith({
     int? id,
+    String? uuid,
     String? presetKey,
     String? name,
     String? description,
@@ -163,6 +170,7 @@ class Mod {
   }) {
     return Mod(
       id: id ?? this.id,
+      uuid: uuid ?? this.uuid,
       presetKey: presetKey ?? this.presetKey,
       name: name ?? this.name,
       description: description ?? this.description,

@@ -13,6 +13,7 @@ import 'app_empty_hint.dart';
 import 'markdown_editing_controller.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
+import 'uuid_display.dart';
 
 /// 全局设置页的「Mod 管理」面板。
 ///
@@ -818,6 +819,11 @@ class _ModDetailDialogState extends State<_ModDetailDialog> {
                                     border: OutlineInputBorder(),
                                     isDense: true,
                                   ),
+                                ),
+                                const SizedBox(height: 8),
+                                UuidDisplay(
+                                  label: 'Mod UUID',
+                                  uuid: widget.mod?.uuid ?? '',
                                 ),
                               ],
                             ),

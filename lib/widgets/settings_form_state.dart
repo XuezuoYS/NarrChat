@@ -6,6 +6,7 @@ import '../models/api_type.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../services/ai_request_body_builder.dart';
+import '../services/sync/sync_models.dart';
 
 /// 设置页全量表单状态（API 设置 + 云同步）。
 ///
@@ -33,9 +34,8 @@ class SettingsFormState extends ChangeNotifier {
         webdavUsername = TextEditingController(text: sync.webdavUsername),
         webdavPassword = TextEditingController(text: sync.webdavPassword),
         webdavFolder = TextEditingController(text: sync.folder),
-        webdavUserName = TextEditingController(text: sync.userName),
         webdavKeepVersions = TextEditingController(text: '${sync.keepVersions}'),
-        autoUpload = sync.autoUpload {
+        syncMode = sync.syncMode {
     for (final p in _working) {
       _ensurePlatformControllers(p.id);
     }
@@ -61,9 +61,10 @@ class SettingsFormState extends ChangeNotifier {
   final TextEditingController webdavUsername;
   final TextEditingController webdavPassword;
   final TextEditingController webdavFolder;
-  final TextEditingController webdavUserName;
   final TextEditingController webdavKeepVersions;
-  bool autoUpload;
+
+  /// 同步模式（全自动 / 手动「同步」按钮）。由同步模式分段选择器更新。
+  SyncMode syncMode;
   bool obscurePassword = true;
 
   // ---------------------------------------------------------------------------
@@ -245,8 +246,7 @@ class SettingsFormState extends ChangeNotifier {
           webdavPassword: webdavPassword.text,
           folder: webdavFolder.text,
           keepVersions: keep!,
-          autoUpload: autoUpload,
-          userName: webdavUserName.text,
+          syncMode: syncMode,
         ),
     ]);
     if (!results[0]) {
@@ -323,7 +323,6 @@ class SettingsFormState extends ChangeNotifier {
     webdavUsername.dispose();
     webdavPassword.dispose();
     webdavFolder.dispose();
-    webdavUserName.dispose();
     webdavKeepVersions.dispose();
     super.dispose();
   }

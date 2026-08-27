@@ -26,19 +26,28 @@ class RoundDao {
   Future<int> insertRound(Round round) async {
     final db = await _helper.database;
     final map = round.toMap()..remove('id');
-    return db.insert('rounds', map);
+    final id = await db.insert('rounds', map);
+    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    return id;
   }
 
   Future<int> updateRound(Round round) async {
     final db = await _helper.database;
     final map = round.toMap()..remove('id');
-    return db.update('rounds', map, where: 'id = ?', whereArgs: [round.id]);
+    final count = await db.update('rounds', map, where: 'id = ?', whereArgs: [round.id]);
+    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    return count;
   }
 
   /// 仅更新指定字段（用于侧边栏“保存快照”）。
   Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async {
     final db = await _helper.database;
-    return db.update('rounds', fields, where: 'id = ?', whereArgs: [roundId]);
+    final round = await getRoundById(roundId);
+    final count = await db.update('rounds', fields, where: 'id = ?', whereArgs: [roundId]);
+    if (round != null) {
+      await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    }
+    return count;
   }
 
   /// 删除轮次。
@@ -58,11 +67,13 @@ class RoundDao {
     } else {
       await db.delete('rounds', where: 'id = ?', whereArgs: [roundId]);
     }
+    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
   }
 
   /// 删除某本书的全部轮次（书籍删除时使用）。
   Future<void> deleteRoundsByBook(int bookId) async {
     final db = await _helper.database;
     await db.delete('rounds', where: 'book_id = ?', whereArgs: [bookId]);
+    await DatabaseHelper.touchBook(db, bookId, rounds: true);
   }
 }

@@ -31,12 +31,4 @@ class Formats {
     final l = t.toLocal();
     return '${two(l.hour)}:${two(l.minute)}:${two(l.second)}';
   }
-
-  /// 备份元信息：`时间 · 大小`（各自可缺省）。
-  static String formatBackupMeta({DateTime? modified, int size = 0}) {
-    final parts = <String>[];
-    if (modified != null) parts.add(formatDateTime(modified));
-    if (size > 0) parts.add(formatBytes(size));
-    return parts.join(' · ');
-  }
 }

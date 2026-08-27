@@ -14,6 +14,7 @@ import '../models/book.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
+import '../providers/cloud_sync_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/world_book_provider.dart';
@@ -21,6 +22,7 @@ import '../services/clipboard_paste_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_import_service.dart';
 import '../services/image_store.dart';
+import '../services/sync/image_revival.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../widgets/ai_bubble_actions.dart';
@@ -215,6 +217,8 @@ class _ChatScreenState extends State<ChatScreen>
       _scrollToBottom();
       // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
       context.read<WorldBookProvider>().loadEntries(book.id!);
+      // 全自动同步节点之一：进入书籍时拉取/推送变更（非自动模式内部忽略）。
+      context.read<CloudSyncProvider>().triggerAutoSync();
     });
   }
 
@@ -766,6 +770,7 @@ class _ChatScreenState extends State<ChatScreen>
       if (!mounted) return;
       if (result.paths.isNotEmpty) {
         setState(() => _pendingImages.addAll(result.paths));
+        _reviveImages(result.paths);
       }
       if (result.warnings.isNotEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -788,6 +793,16 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() => _pendingImages.remove(relPath));
   }
 
+  /// 图片"再添加复活"：若 [paths] 命中待推送删除墓碑，取消删除意图。
+  ///
+  /// 供导入 / 拖拽 / 粘贴保存后调用；复用 [ImageRevivalService] 便于测试注入。
+  void _reviveImages(Iterable<String> paths) {
+    final revival = context.read<ImageRevivalService>();
+    for (final rel in paths) {
+      revival.revive(rel);
+    }
+  }
+
   /// 从剪贴板粘贴到输入框：文本插入光标处；图片按识图门控加入待发送附件。
   ///
   /// 供 Ctrl+V 与右键菜单「粘贴」复用（见 [textFieldContextMenuBuilder]），
@@ -805,6 +820,7 @@ class _ChatScreenState extends State<ChatScreen>
       convertJpgToJpeg: ai.convertJpgToJpeg,
       onImageAdded: (rel) {
         if (mounted) setState(() => _pendingImages.add(rel));
+        _reviveImages([rel]);
       },
       onNotice: (msg) => messenger.showSnackBar(
         SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
@@ -864,6 +880,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
     if (!mounted) return;
+    _reviveImages(saved);
     setState(() {
       _pendingImages.addAll(saved);
       _isImportingImages = false;

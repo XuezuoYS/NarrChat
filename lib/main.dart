@@ -23,11 +23,13 @@ import 'services/manual_licenses_service.dart';
 import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
 import 'services/storage_service.dart';
+import 'services/sync/image_revival.dart';
 import 'services/system_fonts_service.dart';
 import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
+import 'widgets/sync_hud.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,11 +64,19 @@ Future<void> main() async {
     }),
   );
   // 云同步（WebDAV）设置：密码从安全存储读取，其余从本地 JSON 读取。
-  final cloudSyncProvider = CloudSyncProvider()..load();
-  // 业务数据 Provider：在 main 中创建以注册云同步恢复后的刷新回调。
-  final bookProvider = BookProvider()..loadBooks();
-  final worldBookProvider = WorldBookProvider();
-  final modProvider = ModProvider()..loadUserMods();
+  // 启动前加载完成，保证首帧后的自动同步能按已保存的同步模式正确触发。
+  final cloudSyncProvider = CloudSyncProvider();
+  await cloudSyncProvider.load();
+  // 接入生命周期：回前台触发一次静默同步；自动模式下每分钟静默轮询一次
+  //（保证"另一台设备改了数据、本机空闲在首页"时也能就近拉取）。
+  cloudSyncProvider.attachLifecycle();
+  // 业务数据 Provider：在 main 中创建以注册云同步恢复后的刷新回调；
+  // 传入云同步 Provider 以在书籍数据变更节点触发全自动同步。
+  final bookProvider = BookProvider(cloudSyncProvider: cloudSyncProvider)
+    ..loadBooks();
+  final worldBookProvider = WorldBookProvider(cloudSyncProvider: cloudSyncProvider);
+  final modProvider = ModProvider(cloudSyncProvider: cloudSyncProvider)
+    ..loadUserMods();
   // 生成完成系统通知：生成任务成功完成且用户不在该书 chat 页时弹出系统通知，
   // 点击通知进入对应书 chat 页；进入该书 chat 页则自动删除通知。
   final notificationService = GenerationNotificationService(
@@ -110,6 +120,8 @@ Future<void> main() async {
   );
   // 冷启动点通知：首帧后跳转到对应书的 chat 页。
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    // 全自动同步节点之一：打开软件。
+    cloudSyncProvider.triggerAutoSync();
     // Windows 主窗口：首帧后预热一个隐藏的图片查看器窗口并复用，
     // 省去每次开图都重新创建 engine + 重跑 main() 的冷启动开销。
     if (Platform.isWindows) {
@@ -191,14 +203,36 @@ class NarrChatApp extends StatelessWidget {
         Provider<StorageService>(
           create: (_) => LocalStorageService(),
         ),
+        // 图片"再添加复活"：导入/粘贴保存后取消待推送删除墓碑。
+        Provider<ImageRevivalService>(
+          create: (_) => SyncImageRevivalService(),
+        ),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。
       child: Consumer<UiSettingsProvider>(
         builder: (context, ui, _) {
           // 包裹整个应用：在 Windows 上修复长文本编辑框滚动后
           // 输入法候选窗跑偏（不跟随光标）的问题（见 ImeCaretSync）。
+          // 同步流程也复用同一 Navigator（弹首连分支对话框用）。
+          CloudSyncProvider.navigatorKey = navigatorKey;
+          // HUD 在 MaterialApp.builder 中位于 Navigator 之上（无 Overlay 可挂
+          // Tooltip），因此为「子内容 + 同步 HUD」包一层专属 Overlay。
           return ImeCaretSync(
             child: MaterialApp(
+              builder: (context, child) => Overlay(
+                initialEntries: [
+                  OverlayEntry(
+                    builder: (_) => Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        child ?? const SizedBox.shrink(),
+                        // 应用级同步悬浮 HUD：仅同步进行时出现。
+                        const SyncHud(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
               title: 'NarrChat',
               debugShowCheckedModeBanner: false,
               // 通知服务通过该 key 在任意位置导航（通知点击进入对应书 chat 页）。

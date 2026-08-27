@@ -120,29 +120,39 @@ void main() {
         final bakId = await _addBook(backup, 'A');
         await _addRound(backup, bakId, 1, createdAt: DateTime(2026, 2, 1));
 
-        var plan = await DatabaseMergeService.buildPlan(backup, local);
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
         expect(
           plan.entries.single.suggestedDecision,
           MergeBookDecision.keepImported,
         );
+        // 内容部件按"最后更新较新的一侧"建议导入；设置部件默认保留本地。
+        expect(plan.entries.single.suggestedContent, MergePartChoice.import);
+        expect(plan.entries.single.suggestedSettings, MergePartChoice.keepLocal);
+        expect(plan.entries.single.contentConflict, isTrue);
       } finally {
         await local.close();
         await backup.close();
       }
     });
 
-    test('建议决策：时间相同/未知默认保留本地', () async {
+    test('建议决策：时间相同/未知默认采用导入（轮次比对相等时优先导入）', () async {
       final local = await createMergeDb();
       final backup = await createMergeDb();
       try {
-        await _addBook(local, 'A');
-        await _addBook(backup, 'A');
+        // 制造真冲突但轮次时间相同、数量相同的书（轮次内容不同）。
+        final lokId = await _addBook(local, 'A');
+        await _addRound(local, lokId, 1, userInput: '本地', createdAt: DateTime(2026, 1, 1));
+        final bakId = await _addBook(backup, 'A');
+        await _addRound(backup, bakId, 1, userInput: '备份', createdAt: DateTime(2026, 1, 1));
 
         final plan = await DatabaseMergeService.buildPlan(backup, local);
         expect(
           plan.entries.single.suggestedDecision,
           MergeBookDecision.keepLocal,
         );
+        expect(plan.entries.single.suggestedContent, MergePartChoice.import,
+            reason: '轮次时间/数量相同 → 内容部件优先采用导入');
+        expect(plan.entries.single.suggestedSettings, MergePartChoice.keepLocal);
       } finally {
         await local.close();
         await backup.close();
@@ -150,8 +160,8 @@ void main() {
     });
   });
 
-  group('DatabaseMergeService.applyPlan', () {
-    test('冲突书保留导入 → 整本替换（设置/轮次/世界书/Mod 并集映射）', () async {
+  group('DatabaseMergeService.applyPlan（部件级）', () {
+    test('冲突书双部件采用导入 → 就地替换设置与内容（保留本地行 id）', () async {
       final local = await createMergeDb();
       final backup = await createMergeDb();
       try {
@@ -179,12 +189,12 @@ void main() {
         final result = await DatabaseMergeService.applyPlan(
           local,
           plan,
-          {plan.entries.single.title: MergeBookDecision.keepImported},
+          {plan.entries.single.title: const BookPartDecisions(settings: MergePartChoice.import, content: MergePartChoice.import)},
           const {},
         );
 
         expect(result.booksReplaced, 1);
-        expect(result.booksAdded, 1);
+        expect(result.booksAdded, 0, reason: '部件级就地更新，不删除重建');
         expect(result.roundsAdded, 1);
         expect(result.worldBookAdded, 1);
         expect(result.bookModsAdded, 1);
@@ -222,7 +232,7 @@ void main() {
         final result = await DatabaseMergeService.applyPlan(
           local,
           plan,
-          {plan.entries.single.title: MergeBookDecision.keepLocal},
+          {plan.entries.single.title: const BookPartDecisions(settings: MergePartChoice.keepLocal, content: MergePartChoice.keepLocal)},
           const {},
         );
 
@@ -251,7 +261,7 @@ void main() {
         await DatabaseMergeService.applyPlan(
           local,
           plan,
-          {entry.title: MergeBookDecision.keepImported},
+          {entry.title: const BookPartDecisions(settings: MergePartChoice.import, content: MergePartChoice.import)},
           const {},
         );
         final localBooks = await local.query('books');
@@ -280,7 +290,7 @@ void main() {
           local,
           plan,
           {
-            for (final e in plan.entries) e.title: e.suggestedDecision,
+            for (final e in plan.entries) e.title: BookPartDecisions(settings: e.suggestedSettings, content: e.suggestedContent),
           },
           const {},
         );

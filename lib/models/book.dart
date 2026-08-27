@@ -4,6 +4,10 @@ import 'role_category.dart';
 /// 书籍模型，对应数据库 `books` 表。
 class Book {
   final int? id;
+
+  /// 跨设备同步身份（UUID v4）。本地插入时自动生成；空串表示尚未落库（草稿）。
+  final String uuid;
+
   final String title;
   final String category;
   final String baseSetting;
@@ -23,6 +27,7 @@ class Book {
 
   const Book({
     this.id,
+    this.uuid = '',
     required this.title,
     this.category = '',
     this.baseSetting = '',
@@ -38,6 +43,7 @@ class Book {
   factory Book.fromMap(Map<String, Object?> map) {
     return Book(
       id: map['id'] as int?,
+      uuid: (map['uuid'] as String?) ?? '',
       title: (map['title'] as String?) ?? '',
       category: (map['category'] as String?) ?? '',
       baseSetting: (map['base_setting'] as String?) ?? '',
@@ -55,6 +61,7 @@ class Book {
   Map<String, Object?> toMap() {
     return {
       'id': id,
+      'uuid': uuid,
       'title': title,
       'category': category,
       'base_setting': baseSetting,
@@ -70,6 +77,7 @@ class Book {
 
   Book copyWith({
     int? id,
+    String? uuid,
     String? title,
     String? category,
     String? baseSetting,
@@ -83,6 +91,7 @@ class Book {
   }) {
     return Book(
       id: id ?? this.id,
+      uuid: uuid ?? this.uuid,
       title: title ?? this.title,
       category: category ?? this.category,
       baseSetting: baseSetting ?? this.baseSetting,

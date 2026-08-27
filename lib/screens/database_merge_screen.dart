@@ -20,7 +20,7 @@ class DatabaseMergeScreen extends StatefulWidget {
   /// 合并在哪里执行；为 null 时使用 [DatabaseMergeService.applyPlanIntoLocal]。
   final Future<DatabaseMergeResult> Function(
     DatabaseMergePlan plan,
-    Map<String, MergeBookDecision> bookDecisions,
+    Map<String, BookPartDecisions> bookDecisions,
     Map<String, ModMergeDecision> modDecisions,
   )?
   onApply;
@@ -32,7 +32,7 @@ class DatabaseMergeScreen extends StatefulWidget {
     required DatabaseMergePlan plan,
     Future<DatabaseMergeResult> Function(
       DatabaseMergePlan plan,
-      Map<String, MergeBookDecision> bookDecisions,
+      Map<String, BookPartDecisions> bookDecisions,
       Map<String, ModMergeDecision> modDecisions,
     )?
     onApply,
@@ -49,7 +49,8 @@ class DatabaseMergeScreen extends StatefulWidget {
 }
 
 class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
-  late Map<String, MergeBookDecision> _decision;
+  /// 逐书部件决策（设置部件 / 内容部件独立选择）。
+  late Map<String, BookPartDecisions> _decision;
   late Map<String, ModMergeDecision> _modDecision;
   bool _applying = false;
   bool _autoSelectExpanded = false;
@@ -66,22 +67,33 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     _modDecision = _computeModDecisions(_BulkRule.newest);
   }
 
-  MergeBookDecision _decisionOf(String title) =>
-      _decision[title] ?? MergeBookDecision.keepLocal;
+  BookPartDecisions _decisionOf(String title) =>
+      _decision[title] ??
+      BookPartDecisions(
+        settings: MergePartChoice.keepLocal,
+        content: MergePartChoice.keepLocal,
+      );
 
-  void _setDecision(String title, MergeBookDecision value) {
-    setState(() => _decision[title] = value);
+  void _setPartDecision(
+    String title,
+    MergePartChoice settings,
+    MergePartChoice content,
+  ) {
+    setState(() => _decision[title] = BookPartDecisions(
+          settings: settings,
+          content: content,
+        ));
   }
 
   ModMergeDecision _modDecisionOf(String name) =>
-      _modDecision[name] ?? ModMergeDecision.keepLocal;
+      _modDecision[name] ?? ModMergeDecision.import;
 
   void _setModDecision(String name, ModMergeDecision value) {
     setState(() => _modDecision[name] = value);
   }
 
   /// 按规则计算全部书籍的决策（纯函数，供初始化与「自动勾选」菜单共用）。
-  Map<String, MergeBookDecision> _computeDecisions(_BulkRule rule) {
+  Map<String, BookPartDecisions> _computeDecisions(_BulkRule rule) {
     return {
       for (final e in plan.entries) e.title: _decisionFor(e, rule),
     };
@@ -112,38 +124,62 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     };
   }
 
-  MergeBookDecision _decisionFor(BookMergeEntry e, _BulkRule rule) {
+  BookPartDecisions _decisionFor(BookMergeEntry e, _BulkRule rule) {
     switch (e.status) {
       case MergeBookStatus.localOnly:
       case MergeBookStatus.identical:
-        return MergeBookDecision.keepLocal;
+        return const BookPartDecisions(
+          settings: MergePartChoice.keepLocal,
+          content: MergePartChoice.keepLocal,
+        );
       case MergeBookStatus.importOnly:
         // 仅导入有的书始终导入，不做调整。
-        return MergeBookDecision.keepImported;
+        return const BookPartDecisions(
+          settings: MergePartChoice.import,
+          content: MergePartChoice.import,
+        );
       case MergeBookStatus.conflict:
         final imported = e.imported!;
         final local = e.local!;
+        // 内容部件默认随规则；设置部件默认「保留本地」，仅「全本地 / 全导入」
+        // 及轮次比对**持平**（时间相同 / 轮次数相等）时设置部件跟随。
         switch (rule) {
           case _BulkRule.allLocal:
-            return MergeBookDecision.keepLocal;
+            return const BookPartDecisions(
+              settings: MergePartChoice.keepLocal,
+              content: MergePartChoice.keepLocal,
+            );
           case _BulkRule.allImport:
-            return MergeBookDecision.keepImported;
+            return const BookPartDecisions(
+              settings: MergePartChoice.import,
+              content: MergePartChoice.import,
+            );
           case _BulkRule.newest:
-            // 保留最后更新时间较新的一侧；时间相同 / 未知默认保留本地。
+            // 内容按最后更新时间较新的一侧；时间相同 / 导入侧未知时**优先采用导入**。
             final i = imported.lastTime;
             final l = local.lastTime;
-            if (i != null && (l == null || i.isAfter(l))) {
-              return MergeBookDecision.keepImported;
-            }
-            if (l != null && (i == null || l.isAfter(i))) {
-              return MergeBookDecision.keepLocal;
-            }
-            return MergeBookDecision.keepLocal;
+            final content = (i != null && (l == null || !l.isAfter(i)))
+                ? MergePartChoice.import
+                : MergePartChoice.keepLocal;
+            // 两侧时间**均持平**（都存在且相等）时，书籍设置同样优先采用导入，
+            // 与轮次内容的默认选择保持一致。
+            final tied = i != null && l != null && !i.isAfter(l) && !l.isAfter(i);
+            return BookPartDecisions(
+              settings: tied ? MergePartChoice.import : MergePartChoice.keepLocal,
+              content: content,
+            );
           case _BulkRule.mostRounds:
-            // 保留轮次较多的一侧；轮次相同默认保留本地。
-            return imported.roundsCount > local.roundsCount
-                ? MergeBookDecision.keepImported
-                : MergeBookDecision.keepLocal;
+            // 保留轮次较多的一侧；轮次相同 / 相等时**优先采用导入**。
+            final content = imported.roundsCount >= local.roundsCount
+                ? MergePartChoice.import
+                : MergePartChoice.keepLocal;
+            // 两侧轮次数**均持平**（相等）时，书籍设置同样优先采用导入，
+            // 与轮次内容的默认选择保持一致。
+            final tied = imported.roundsCount == local.roundsCount;
+            return BookPartDecisions(
+              settings: tied ? MergePartChoice.import : MergePartChoice.keepLocal,
+              content: content,
+            );
         }
     }
   }
@@ -171,7 +207,7 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     setState(() => _applying = true);
     try {
       final apply = widget.onApply ??
-          (DatabaseMergePlan p, Map<String, MergeBookDecision> bd,
+          (DatabaseMergePlan p, Map<String, BookPartDecisions> bd,
                   Map<String, ModMergeDecision> md) =>
               DatabaseMergeService.applyPlanIntoLocal(p, bd, md);
       final result = await apply(
@@ -304,8 +340,9 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
           ],
           const SizedBox(height: 4),
           Text(
-            '比较两边的书籍 / Mod，「仅导入有」为新增；冲突书的轮次/设置等任一不同即触发。'
-            '请在合并前逐项选择，也可用底部「自动勾选」快速统一选择。',
+            '比较两边的书籍 / Mod（左侧本地、右侧导入的备份）；「仅导入有」为新增。'
+            '冲突书需分别选择「书籍设置」与「轮次内容」保留本地或采用导入，'
+            '也可用底部「自动勾选」快速统一选择。',
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
         ],
@@ -450,35 +487,15 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 约定：本地在左、导入在右。书籍改为部件级选择（书籍设置 / 轮次内容），
+        // 侧卡不再承载整书选择（去除选择框），点击卡片打开预览。
         Row(
           children: [
             Expanded(
               child: _SideCard(
-                label: '导入的备份',
-                side: entry.imported!,
-                selected: decision == MergeBookDecision.keepImported,
-                colors: colors,
-                onPreview: () => showBookMergePreview(
-                  context,
-                  title: entry.title,
-                  label: '导入的备份',
-                  side: entry.imported!,
-                ),
-                onSelect: () => _setDecision(
-                  entry.title,
-                  MergeBookDecision.keepImported,
-                ),
-                highlightRounds: entry.imported!.roundsCount >
-                    entry.local!.roundsCount,
-                highlightTime: _isNewerTime(entry.imported!, entry.local!),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _SideCard(
                 label: '本地',
                 side: entry.local!,
-                selected: decision == MergeBookDecision.keepLocal,
+                selected: false,
                 colors: colors,
                 onPreview: () => showBookMergePreview(
                   context,
@@ -486,34 +503,108 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                   label: '本地',
                   side: entry.local!,
                 ),
-                onSelect: () => _setDecision(
-                  entry.title,
-                  MergeBookDecision.keepLocal,
-                ),
                 highlightRounds: entry.local!.roundsCount >
                     entry.imported!.roundsCount,
                 highlightTime: _isNewerTime(entry.local!, entry.imported!),
               ),
             ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _SideCard(
+                label: '导入的备份',
+                side: entry.imported!,
+                selected: false,
+                colors: colors,
+                onPreview: () => showBookMergePreview(
+                  context,
+                  title: entry.title,
+                  label: '导入的备份',
+                  side: entry.imported!,
+                ),
+                highlightRounds: entry.imported!.roundsCount >
+                    entry.local!.roundsCount,
+                highlightTime: _isNewerTime(entry.imported!, entry.local!),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 10),
-        SegmentedButton<MergeBookDecision>(
-          segments: const [
-            ButtonSegment(
-              value: MergeBookDecision.keepImported,
-              label: Text('保留导入'),
+        // 部件独立选择：书籍设置（设置列 + 世界书 + 书‑Mod）与
+        // 轮次内容（轮次 + 失败条目）分别保留本地 / 采用导入。
+        Row(
+          children: [
+            Text(
+              '书籍设置：',
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.textSecondary,
+              ),
             ),
-            ButtonSegment(
-              value: MergeBookDecision.keepLocal,
-              label: Text('保留本地'),
+            const SizedBox(width: 8),
+            SegmentedButton<MergePartChoice>(
+              segments: const [
+                ButtonSegment(
+                  value: MergePartChoice.keepLocal,
+                  label: Text('保留本地'),
+                ),
+                ButtonSegment(
+                  value: MergePartChoice.import,
+                  label: Text('采用导入'),
+                ),
+              ],
+              selected: {decision.settings},
+              onSelectionChanged: (s) => _setPartDecision(
+                entry.title,
+                s.first,
+                decision.content,
+              ),
+              showSelectedIcon: false,
             ),
           ],
-          selected: {decision},
-          onSelectionChanged: (s) =>
-              _setDecision(entry.title, s.first),
-          showSelectedIcon: false,
         ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text(
+              '轮次内容：',
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.textSecondary,
+              ),
+            ),
+            const SizedBox(width: 8),
+            SegmentedButton<MergePartChoice>(
+              segments: const [
+                ButtonSegment(
+                  value: MergePartChoice.keepLocal,
+                  label: Text('保留本地'),
+                ),
+                ButtonSegment(
+                  value: MergePartChoice.import,
+                  label: Text('采用导入'),
+                ),
+              ],
+              selected: {decision.content},
+              onSelectionChanged: (s) => _setPartDecision(
+                entry.title,
+                decision.settings,
+                s.first,
+              ),
+              showSelectedIcon: false,
+            ),
+          ],
+        ),
+        if (entry.settingsConflict && entry.contentConflict)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              '书籍设置与轮次内容均有差异，请分别选择处理方式。',
+              style: TextStyle(
+                fontSize: 11.5,
+                color: colors.warning,
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -639,21 +730,10 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 与书籍冲突一致：并排展示「导入的备份」与「本地」两侧。
-        // 点击侧卡即可选择对应的导入/本地决策；预览打开一个并排对比对话框。
+        // 约定：本地在左、导入在右（与书籍冲突一致）；点击侧卡即可选择，
+        // 预览打开并排对比对话框。
         Row(
           children: [
-            Expanded(
-              child: _ModSideCard(
-                label: '导入的备份',
-                side: entry.imported!,
-                selected: decision != ModMergeDecision.keepLocal,
-                colors: colors,
-                onPreview: () => _showModCompare(context, entry.imported!, entry.local!),
-                onSelect: () => _setModDecision(entry.name, ModMergeDecision.import),
-              ),
-            ),
-            const SizedBox(width: 10),
             Expanded(
               child: _ModSideCard(
                 label: '本地',
@@ -662,6 +742,17 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                 colors: colors,
                 onPreview: () => _showModCompare(context, entry.imported!, entry.local!),
                 onSelect: () => _setModDecision(entry.name, ModMergeDecision.keepLocal),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ModSideCard(
+                label: '导入的备份',
+                side: entry.imported!,
+                selected: decision != ModMergeDecision.keepLocal,
+                colors: colors,
+                onPreview: () => _showModCompare(context, entry.imported!, entry.local!),
+                onSelect: () => _setModDecision(entry.name, ModMergeDecision.import),
               ),
             ),
           ],
@@ -745,14 +836,16 @@ class _StatusBadge extends StatelessWidget {
   }
 }
 
-/// 单侧书籍卡片：可选（冲突书）或纯展示（仅导入有 / 仅本地有）。
+/// 单侧书籍卡片：并排预览（约定：本地在左、导入在右）。
+///
+/// 书籍已改为**部件级选择**（书籍设置 / 轮次内容），侧卡不再承载整书选择
+/// （无选择框）；整卡可点击或右上「预览」打开对比对话框。
 class _SideCard extends StatelessWidget {
   final String label;
   final BookMergeSide side;
   final bool selected;
   final NarrChatColors colors;
   final VoidCallback onPreview;
-  final VoidCallback? onSelect;
 
   /// 是否「轮次更多」一侧：是则轮次数用绿色突出。
   final bool highlightRounds;
@@ -766,7 +859,6 @@ class _SideCard extends StatelessWidget {
     required this.selected,
     required this.colors,
     required this.onPreview,
-    this.onSelect,
     this.highlightRounds = false,
     this.highlightTime = false,
   });
@@ -777,7 +869,7 @@ class _SideCard extends StatelessWidget {
         ? Theme.of(context).colorScheme.primary
         : colors.divider;
     return InkWell(
-      onTap: onSelect,
+      onTap: onPreview,
       borderRadius: BorderRadius.circular(10),
       child: Container(
         padding: const EdgeInsets.all(10),
@@ -791,17 +883,6 @@ class _SideCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                if (onSelect != null)
-                  Icon(
-                    selected
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off,
-                    size: 16,
-                    color: selected
-                        ? Theme.of(context).colorScheme.primary
-                        : colors.textSecondary,
-                  ),
-                if (onSelect != null) const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     label,
@@ -1203,7 +1284,8 @@ class _MergeConfirmDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.narrColors;
     final import = summary['import'] ?? 0;
-    final replace = summary['replace'] ?? 0;
+    final replaceSettings = summary['replaceSettings'] ?? 0;
+    final replaceContent = summary['replaceContent'] ?? 0;
     final skip = summary['skip'] ?? 0;
     final mImport = modSummary?['import'] ?? 0;
     final mRename = modSummary?['rename'] ?? 0;
@@ -1224,9 +1306,11 @@ class _MergeConfirmDialog extends StatelessWidget {
           const SizedBox(height: 10),
           _SummaryRow(label: '导入新书', value: import),
           const SizedBox(height: 4),
-          _SummaryRow(label: '替换为导入（覆盖本地同名书）', value: replace),
+          _SummaryRow(label: '更新书籍设置（采用导入）', value: replaceSettings),
           const SizedBox(height: 4),
-          _SummaryRow(label: '跳过（保留本地 / 不导入）', value: skip),
+          _SummaryRow(label: '更新轮次内容（采用导入）', value: replaceContent),
+          const SizedBox(height: 4),
+          _SummaryRow(label: '跳过（保留本地）', value: skip),
           if (hasMods) ...[
             const SizedBox(height: 8),
             Text(

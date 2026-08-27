@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../services/clipboard_paste_service.dart';
 import '../services/image_import_service.dart';
+import '../services/sync/image_revival.dart';
 import '../utils/focus_utils.dart';
 import 'image_preview.dart';
 import 'markdown_editing_controller.dart';
@@ -112,6 +113,7 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
         _images.addAll(result.paths);
         _importing = false;
       });
+      _reviveImages(result.paths);
       if (result.warnings.isNotEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(result.warnings.join('\n'))),
@@ -142,11 +144,20 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
       convertJpgToJpeg: widget.convertJpgToJpeg,
       onImageAdded: (rel) {
         if (mounted) setState(() => _images.add(rel));
+        _reviveImages([rel]);
       },
       onNotice: (msg) => messenger.showSnackBar(
         SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
       ),
     );
+  }
+
+  /// 图片"再添加复活"：若 [paths] 命中待推送删除墓碑，取消删除意图。
+  void _reviveImages(Iterable<String> paths) {
+    final revival = context.read<ImageRevivalService>();
+    for (final rel in paths) {
+      revival.revive(rel);
+    }
   }
 
   @override

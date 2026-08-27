@@ -117,6 +117,26 @@ void main() {
     expect(find.text('删除'), findsOneWidget);
   });
 
+  testWidgets('删除书籍走软删：确认后从列表移除', (tester) async {
+    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '测试书')]);
+    expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    // 确认对话框出现。
+    expect(find.text('删除书籍'), findsOneWidget);
+    // 确认删除。
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    // 软删后列表移除该书，显示空态。
+    expect(find.widgetWithText(ListTile, '测试书'), findsNothing);
+    expect(find.text('还没有书籍'), findsOneWidget);
+  });
+
   testWidgets('无书籍时显示欢迎空态与新建按钮', (tester) async {
     await pumpHomeScreen(tester, books: const []);
     expect(find.text('还没有书籍'), findsOneWidget);

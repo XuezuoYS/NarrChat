@@ -265,6 +265,177 @@ void main() {
     await db.close();
   });
 
+  test('v11→v12 迁移新增同步列与同步辅助表且数据保留', () async {
+    final path = _newDbPath();
+
+    final db11 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 11, onCreate: _createV11Schema),
+    );
+    await db11.insert('books', {
+      'title': '书F',
+      'category': '科幻',
+      'base_setting': '设定',
+      'writing_requirements': '',
+      'writing_style': '',
+      'history_rounds': 1,
+      'role_hierarchy': '主角',
+      'role_hierarchy_detail': '[]',
+    });
+    await db11.insert('rounds', {
+      'book_id': 1,
+      'round_index': 1,
+      'user_input': '开始',
+      'ai_narrative': '正文',
+      'tokens_in': 1,
+      'tokens_out': 2,
+    });
+    await db11.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+
+    final bookCols = (await db.rawQuery('PRAGMA table_info(books)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(bookCols, containsAll(['settings_updated_at', 'rounds_updated_at', 'deleted_at']));
+    final roundCols = (await db.rawQuery('PRAGMA table_info(rounds)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(roundCols, contains('updated_at'));
+    final wbCols = (await db.rawQuery('PRAGMA table_info(world_book_entries)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(wbCols, contains('updated_at'));
+    final modCols = (await db.rawQuery('PRAGMA table_info(mods)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(modCols, contains('deleted_at'));
+
+    for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base', 'sync_pending_del']) {
+      final t = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        [table],
+      );
+      expect(t, isNotEmpty, reason: '缺少表 $table');
+    }
+
+    final book = (await db.rawQuery('SELECT * FROM books')).first;
+    expect(book['title'], '书F');
+    expect(book['deleted_at'], isNull);
+    await db.close();
+  });
+
+  test('v12→v13 迁移：books/mods 回填 uuid、旧同步表重建为 uuid 主键、数据保留', () async {
+    final path = _newDbPath();
+
+    final db12 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 12, onCreate: _createV12Schema),
+    );
+    await db12.insert('books', {
+      'title': '书G',
+      'category': '武侠',
+      'settings_updated_at': 100,
+      'rounds_updated_at': 200,
+    });
+    await db12.insert('mods', {'name': '风格', 'updated_at': '2026-01-01T00:00:00.000'});
+    // 旧同步表（title 主键）由 _createV12Schema 预置。
+    await db12.insert('sync_book_base', {
+      'title': '书G',
+      'settings_fp': 'S0',
+      'rounds_fp': 'R1',
+    });
+    await db12.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+
+    // uuid 回填：每行非空且为 v4 格式。
+    final book = (await db.rawQuery('SELECT * FROM books')).first;
+    expect(book['uuid'], isNotEmpty);
+    expect(RegExp(r'^[0-9a-f-]{36}$').hasMatch(book['uuid'] as String), isTrue);
+    final mod = (await db.rawQuery('SELECT * FROM mods')).first;
+    expect(mod['uuid'], isNotEmpty);
+    expect(mod['name'], '风格');
+
+    // 旧同步表重建为 uuid 主键（而不是 title 主键）。
+    final syncBookSql = await db.rawQuery(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_book_base'",
+    );
+    expect(
+      (syncBookSql.first['sql'] as String).contains('uuid TEXT PRIMARY KEY'),
+      isTrue,
+      reason: '同步表主键应为 uuid',
+    );
+    final syncModSql = await db.rawQuery(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_mod_base'",
+    );
+    expect(
+      (syncModSql.first['sql'] as String).contains('uuid TEXT PRIMARY KEY'),
+      isTrue,
+    );
+    // v14：新装/重建的同步表带 5 个子部件列（旧表行因重建清空，属设计行为）。
+    final baseCols = (await db.rawQuery('PRAGMA table_info(sync_book_base)'))
+        .map((c) => c['name'])
+        .toList();
+    expect(baseCols, containsAll(['info_fp', 'roles_fp', 'base_setting_fp', 'prompts_fp', 'failed_fp']));
+    // 数据保留。
+    expect(await db.rawQuery('SELECT COUNT(*) AS c FROM books'), [
+      {'c': 1},
+    ]);
+    await db.close();
+  });
+
+  test('v13→v14 迁移：sync_book_base 补充子部件列并从旧 settings_fp 回填', () async {
+    final path = _newDbPath();
+
+    final db13 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 13, onCreate: _createV13Schema),
+    );
+    await db13.insert('sync_book_base', {
+      'uuid': 'u-base-1',
+      'title': '书H',
+      'settings_fp': 'S0',
+      'rounds_fp': 'R1',
+    });
+    await db13.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+    // 旧单值 settings_fp 回填到 5 个子部件列（整书兼容直到下次同步重写）。
+    final baseRow = (await db.rawQuery('SELECT * FROM sync_book_base')).first;
+    expect(baseRow['info_fp'], 'S0');
+    expect(baseRow['roles_fp'], 'S0');
+    expect(baseRow['base_setting_fp'], 'S0');
+    expect(baseRow['prompts_fp'], 'S0');
+    expect(baseRow['failed_fp'], 'S0');
+    expect(baseRow['rounds_fp'], 'R1');
+    await db.close();
+  });
+
   test('修复后迁移幂等：同一列重复出现在后续版本也不会重复 ADD', () async {
     // 模拟「v9 建表但 user_version 被降回 5」的极端遗留：migrate(5, current)
     // 中途 v8 重建会丢弃 model_name，v9 再补回，整个过程不应报 duplicate column。
@@ -301,6 +472,105 @@ String _newDbPath() {
   final dir = Directory.systemTemp.createTempSync('db_migration_test_');
   _tempDirs.add(dir);
   return p.join(dir.path, 'narrchat.db');
+}
+
+/// 历史 v11 schema（v10 + books.failed_user_images；尚无同步列/辅助表）。
+Future<void> _createV11Schema(Database db, int version) async {
+  await _createV10Schema(db, version);
+  await db.execute(
+    "ALTER TABLE books ADD COLUMN failed_user_images TEXT NOT NULL DEFAULT '[]'",
+  );
+}
+
+/// 历史 v13 schema（uuid 主键同步表 + 单值 settings_fp；尚无 4 个子部件列）。
+Future<void> _createV13Schema(Database db, int version) async {
+  await _createV12Schema(db, version);
+  await db.execute(
+    "ALTER TABLE books ADD COLUMN uuid TEXT NOT NULL DEFAULT ''",
+  );
+  await db.execute(
+    "ALTER TABLE mods ADD COLUMN uuid TEXT NOT NULL DEFAULT ''",
+  );
+  await db.execute('DROP TABLE IF EXISTS sync_book_base');
+  await db.execute('DROP TABLE IF EXISTS sync_mod_base');
+  await db.execute('''
+    CREATE TABLE sync_book_base (
+      uuid TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      settings_fp TEXT DEFAULT '',
+      rounds_fp TEXT DEFAULT '',
+      worldbook_fp TEXT DEFAULT '',
+      bookmods_fp TEXT DEFAULT '',
+      settings_updated_at INTEGER NOT NULL DEFAULT 0,
+      rounds_updated_at INTEGER NOT NULL DEFAULT 0,
+      worldbook_updated_at INTEGER NOT NULL DEFAULT 0,
+      bookmods_updated_at INTEGER NOT NULL DEFAULT 0
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE sync_mod_base (
+      uuid TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      fingerprint TEXT DEFAULT '',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    )
+  ''');
+}
+
+/// 历史 v12 schema（v11 + 同步列/软删墓碑 + 旧版 title 主键同步表）。
+Future<void> _createV12Schema(Database db, int version) async {
+  await _createV11Schema(db, version);
+  await db.execute(
+    'ALTER TABLE books ADD COLUMN settings_updated_at INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute(
+    'ALTER TABLE books ADD COLUMN rounds_updated_at INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute('ALTER TABLE books ADD COLUMN deleted_at INTEGER');
+  await db.execute(
+    'ALTER TABLE rounds ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute(
+    'ALTER TABLE world_book_entries ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute('ALTER TABLE mods ADD COLUMN deleted_at INTEGER');
+  await db.execute('''
+    CREATE TABLE sync_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      device_id TEXT DEFAULT '',
+      last_synced_at INTEGER NOT NULL DEFAULT 0,
+      last_generation INTEGER NOT NULL DEFAULT 0,
+      sync_in_flight INTEGER NOT NULL DEFAULT 0,
+      last_phase TEXT DEFAULT '',
+      last_error TEXT DEFAULT ''
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE sync_book_base (
+      title TEXT PRIMARY KEY,
+      settings_fp TEXT DEFAULT '',
+      rounds_fp TEXT DEFAULT '',
+      worldbook_fp TEXT DEFAULT '',
+      bookmods_fp TEXT DEFAULT '',
+      settings_updated_at INTEGER NOT NULL DEFAULT 0,
+      rounds_updated_at INTEGER NOT NULL DEFAULT 0,
+      worldbook_updated_at INTEGER NOT NULL DEFAULT 0,
+      bookmods_updated_at INTEGER NOT NULL DEFAULT 0
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE sync_mod_base (
+      name TEXT PRIMARY KEY,
+      fingerprint TEXT DEFAULT '',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE sync_pending_del (
+      path TEXT PRIMARY KEY,
+      deleted_at INTEGER NOT NULL DEFAULT 0
+    )
+  ''');
 }
 
 /// 历史 v10 schema（books 含 failed_user_input/error；rounds 含

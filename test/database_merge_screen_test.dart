@@ -10,6 +10,7 @@ import 'helpers/merge_db.dart';
 void main() {
   late DatabaseMergePlan plan;
   late DatabaseMergePlan modPlan;
+  late DatabaseMergePlan tiePlan;
 
   setUp(() async {
     final local = await createMergeDb();
@@ -61,6 +62,7 @@ void main() {
       await backup.close();
     }
     modPlan = await _buildModPlan();
+    tiePlan = await _buildTiePlan();
   });
 
   testWidgets('列出书籍，冲突展示两侧轮次/时间与状态徽标', (tester) async {
@@ -103,7 +105,7 @@ void main() {
   });
 
   testWidgets('切换保留侧并合并 → onApply 收到对应决策', (tester) async {
-    final decisions = <String, MergeBookDecision>{};
+    final decisions = <String, BookPartDecisions>{};
     var called = false;
     await _pumpScreen(
       tester,
@@ -116,8 +118,8 @@ void main() {
     );
     expect(decisions, isEmpty);
 
-    // 默认建议：冲突书 A 的备份较新 → 保留导入；此处切换为「保留本地」。
-    await tester.tap(find.text('保留本地'));
+    // 默认建议：冲突书 A 的备份较新 → 轮次内容建议采用导入；此处把「轮次内容」切为保留本地。
+    await tester.tap(find.text('保留本地').at(1));
     await tester.pumpAndSettle();
     await tester.tap(find.text('合并'));
     await tester.pumpAndSettle();
@@ -128,13 +130,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(called, isTrue);
-    expect(decisions['A'], MergeBookDecision.keepLocal);
-    expect(decisions['B'], MergeBookDecision.keepImported); // 默认纳入
-    expect(decisions['D'], MergeBookDecision.keepLocal);
+    expect(decisions['A']!.allLocal, isTrue);
+    expect(decisions['B']!.allImport, isTrue); // 仅导入有始终导入
+    expect(decisions['D']!.allLocal, isTrue);
   });
 
   testWidgets('仅导入有的书不可取消，始终导入', (tester) async {
-    final decisions = <String, MergeBookDecision>{};
+    final decisions = <String, BookPartDecisions>{};
     await _pumpScreen(
       tester,
       plan,
@@ -153,11 +155,11 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
 
-    expect(decisions['B'], MergeBookDecision.keepImported);
+    expect(decisions['B']!.allImport, isTrue);
   });
 
-  testWidgets('打开时默认按轮次时间最新（备份较新 → 保留导入）', (tester) async {
-    final decisions = <String, MergeBookDecision>{};
+  testWidgets('打开时默认按轮次时间最新（备份较新 → 内容部件采用导入）', (tester) async {
+    final decisions = <String, BookPartDecisions>{};
     await _pumpScreen(
       tester,
       plan,
@@ -173,13 +175,16 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
 
-    expect(decisions['A'], MergeBookDecision.keepImported); // 备份时间更新
-    expect(decisions['B'], MergeBookDecision.keepImported);
-    expect(decisions['D'], MergeBookDecision.keepLocal);
+    expect(decisions['A']!.content, MergePartChoice.import,
+        reason: '备份时间更新 → 内容部件建议导入');
+    expect(decisions['A']!.settings, MergePartChoice.keepLocal,
+        reason: '备份时间严格更新（非持平）→ 设置部件保持保留本地');
+    expect(decisions['B']!.allImport, isTrue);
+    expect(decisions['D']!.allLocal, isTrue);
   });
 
   testWidgets('自动勾选：全本地 → 冲突保留本地、仅导入有仍导入', (tester) async {
-    final decisions = <String, MergeBookDecision>{};
+    final decisions = <String, BookPartDecisions>{};
     await _pumpScreen(
       tester,
       plan,
@@ -199,12 +204,12 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
 
-    expect(decisions['A'], MergeBookDecision.keepLocal);
-    expect(decisions['B'], MergeBookDecision.keepImported); // 仅导入有始终导入
+    expect(decisions['A']!.allLocal, isTrue);
+    expect(decisions['B']!.allImport, isTrue); // 仅导入有始终导入
   });
 
-  testWidgets('自动勾选：按轮次数最多 → 轮次相同默认保留本地', (tester) async {
-    final decisions = <String, MergeBookDecision>{};
+  testWidgets('自动勾选：按轮次数最多 → 轮次相同默认采用导入', (tester) async {
+    final decisions = <String, BookPartDecisions>{};
     await _pumpScreen(
       tester,
       plan,
@@ -224,7 +229,33 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpAndSettle();
 
-    expect(decisions['A'], MergeBookDecision.keepLocal); // 两侧轮次相同 → 保留本地
+    expect(decisions['A']!.content, MergePartChoice.import,
+        reason: '两侧轮次相同 → 轮次内容优先采用导入');
+    expect(decisions['A']!.settings, MergePartChoice.import,
+        reason: '两侧轮次相同（均持平）→ 书籍设置同样采用导入');
+  });
+
+  testWidgets('自动勾选：按轮次时间最新，两侧时间持平 → 设置与内容均采用导入', (tester) async {
+    final decisions = <String, BookPartDecisions>{};
+    await _pumpScreen(
+      tester,
+      tiePlan,
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
+        return DatabaseMergeResult();
+      },
+    );
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(decisions['A']!.content, MergePartChoice.import,
+        reason: '两侧时间持平 → 轮次内容优先采用导入');
+    expect(decisions['A']!.settings, MergePartChoice.import,
+        reason: '两侧时间持平（均持平）→ 书籍设置同样采用导入');
   });
 
   testWidgets('点预览打开书籍内容对话框', (tester) async {
@@ -365,7 +396,7 @@ Future<void> _pumpScreen(
   DatabaseMergePlan plan, {
   Future<DatabaseMergeResult> Function(
     DatabaseMergePlan,
-    Map<String, MergeBookDecision>,
+    Map<String, BookPartDecisions>,
     Map<String, ModMergeDecision>,
   )?
   onApply,
@@ -402,6 +433,35 @@ Future<DatabaseMergePlan> _buildModPlan() async {
   try {
     await local.insert('mods', {'name': 'M', 'description': '本地描述'});
     await backup.insert('mods', {'name': 'M', 'description': '云端描述'});
+    return await DatabaseMergeService.buildPlan(backup, local);
+  } finally {
+    await local.close();
+    await backup.close();
+  }
+}
+
+/// 构建一个「冲突书 A 两侧轮次时间相同、轮次数相同」的计划，
+/// 供「按轮次时间最新 / 按轮次数最多」持平时默认决策用例使用。
+Future<DatabaseMergePlan> _buildTiePlan() async {
+  final local = await createMergeDb();
+  final backup = await createMergeDb();
+  try {
+    final lokA = await local.insert('books', {'title': 'A', 'category': '本地'});
+    await local.insert('rounds', {
+      'book_id': lokA,
+      'round_index': 1,
+      'user_input': '本地内容',
+      'ai_narrative': '本地正文',
+      'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
+    final bakA = await backup.insert('books', {'title': 'A', 'category': '备份'});
+    await backup.insert('rounds', {
+      'book_id': bakA,
+      'round_index': 1,
+      'user_input': '备份内容',
+      'ai_narrative': '备份正文',
+      'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
     return await DatabaseMergeService.buildPlan(backup, local);
   } finally {
     await local.close();

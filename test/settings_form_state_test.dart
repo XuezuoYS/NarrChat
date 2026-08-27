@@ -4,6 +4,7 @@ import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
 
 /// 记录 save 调用并返回可配置结果的 [AiSettingsProvider] 替身。
@@ -42,8 +43,7 @@ class _FakeCloudSyncProvider extends CloudSyncProvider {
     required String webdavPassword,
     required String folder,
     required int keepVersions,
-    required bool autoUpload,
-    required String userName,
+    required SyncMode syncMode,
   }) async {
     saveCalls++;
     return saveResult;

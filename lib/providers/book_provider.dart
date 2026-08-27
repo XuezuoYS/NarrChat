@@ -2,12 +2,19 @@ import 'package:flutter/foundation.dart';
 
 import '../database/book_dao.dart';
 import '../models/book.dart';
+import 'cloud_sync_provider.dart';
 
 /// 书籍状态管理：书籍列表、当前选中书籍、增删改。
 class BookProvider extends ChangeNotifier {
-  BookProvider({BookDao? dao}) : _dao = dao ?? BookDao();
+  BookProvider({BookDao? dao, CloudSyncProvider? cloudSyncProvider})
+      : _dao = dao ?? BookDao(),
+        // ignore: prefer_initializing_formals
+        _cloudSyncProvider = cloudSyncProvider;
 
   final BookDao _dao;
+
+  /// 云同步 Provider：书籍创建 / 设置保存后触发全自动同步（null = 未接入，如测试）。
+  final CloudSyncProvider? _cloudSyncProvider;
 
   List<Book> _books = [];
   Book? _currentBook;
@@ -65,6 +72,7 @@ class BookProvider extends ChangeNotifier {
         orElse: () => _books.isNotEmpty ? _books.first : book,
       );
       notifyListeners();
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -84,6 +92,7 @@ class BookProvider extends ChangeNotifier {
         orElse: () => book,
       );
       notifyListeners();
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -92,10 +101,10 @@ class BookProvider extends ChangeNotifier {
     }
   }
 
-  /// 删除书籍（连同其全部轮次）。
+  /// 删除书籍（软删：打下跌碑并隐藏，行暂留用于云同步删除传播）。
   Future<bool> deleteBook(Book book) async {
     try {
-      await _dao.deleteBook(book.id!);
+      await _dao.softDeleteBook(book.id!);
       if (_currentBook?.id == book.id) {
         _currentBook = null;
       }

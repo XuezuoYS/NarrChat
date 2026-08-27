@@ -6,13 +6,21 @@ import '../models/preset_mods.dart';
 import '../models/round.dart';
 import '../services/world_book_scanner.dart';
 import '../models/world_book_entry.dart';
+import 'cloud_sync_provider.dart';
 
 /// Mod 状态管理：用户自定义 Mod 的增删改查、书籍启用与顺序配置，
 /// 以及将书籍启用的 Mod 解析为可直接注入提示词的 [ModsBundle]。
 class ModProvider extends ChangeNotifier {
-  ModProvider({ModDao? dao}) : _dao = dao ?? ModDao();
+  ModProvider({ModDao? dao, CloudSyncProvider? cloudSyncProvider})
+      : _dao = dao ?? ModDao(),
+        // ignore: prefer_initializing_formals
+        _cloudSyncProvider = cloudSyncProvider;
 
   final ModDao _dao;
+
+  /// 云同步 Provider：Mod 修改保存后触发全自动同步（null = 未接入，如测试）。
+  final CloudSyncProvider? _cloudSyncProvider;
+
   final WorldBookScanner _scanner = const WorldBookScanner();
 
   List<Mod> _userMods = [];
@@ -58,6 +66,7 @@ class ModProvider extends ChangeNotifier {
         ),
       );
       await loadUserMods();
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -70,6 +79,7 @@ class ModProvider extends ChangeNotifier {
     try {
       await _dao.updateMod(mod);
       await loadUserMods();
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -82,6 +92,7 @@ class ModProvider extends ChangeNotifier {
     try {
       await _dao.deleteMod(id);
       await loadUserMods();
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -107,6 +118,7 @@ class ModProvider extends ChangeNotifier {
   Future<bool> saveBookModConfigs(int bookId, List<BookModConfig> configs) async {
     try {
       await _dao.replaceBookMods(bookId, configs);
+      _cloudSyncProvider?.triggerAutoSync();
       return true;
     } catch (e) {
       _error = e.toString();

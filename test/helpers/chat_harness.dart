@@ -4,6 +4,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -14,6 +15,7 @@ import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
@@ -96,11 +98,16 @@ Future<RoundProvider> pumpChatScreen(
         ChangeNotifierProvider(create: (_) => WorldBookProvider(dao: worldDao)),
         ChangeNotifierProvider(create: (_) => roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
+        // 云同步（ChatScreen 进入书籍时触发自动同步；未配置时内部忽略）。
+        ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
         Provider<ImageImportService>(
           create: (_) => imageImport ?? FakeImageImportService(),
         ),
         Provider<ClipboardPasteService>(
           create: (_) => clipboardPaste ?? FakeClipboardPasteService(),
+        ),
+        Provider<ImageRevivalService>(
+          create: (_) => FakeImageRevivalService(),
         ),
       ],
       child: MaterialApp(
@@ -141,6 +148,8 @@ Future<BookProvider> pumpHomeScreen(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
         ChangeNotifierProvider(create: (_) => bookProvider),
+        // 云同步（SyncStatusChip 需读取其 syncState）。
+        ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
         ),
@@ -161,6 +170,9 @@ Future<BookProvider> pumpHomeScreen(
             ),
           ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
+        Provider<ImageRevivalService>(
+          create: (_) => FakeImageRevivalService(),
+        ),
       ],
       child: MaterialApp(theme: NarrChatTheme.light, home: const HomeScreen()),
     ),

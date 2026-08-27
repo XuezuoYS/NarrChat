@@ -14,6 +14,10 @@ import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/services/sync/image_revival.dart';
+import 'package:narrchat/services/sync/sync_models.dart';
+import 'package:narrchat/services/sync/sync_remote_store.dart';
+import 'package:narrchat/database/sync_dao.dart';
 import 'package:path/path.dart' as p;
 
 /// 公共测试替身（Fakes）。
@@ -27,16 +31,38 @@ import 'package:path/path.dart' as p;
 /// 约定：本文件不包含任何 widget 脚手架（见 chat_harness.dart），
 /// 仅包含“数据/服务层”替身。
 
+/// 可控图片复活替身：记录调用与路径，默认不复活（返回 false）。
+class FakeImageRevivalService implements ImageRevivalService {
+  final List<String> revived = [];
+  int calls = 0;
+  bool result = false;
+
+  @override
+  Future<bool> revive(String path) async {
+    calls++;
+    revived.add(path);
+    return result;
+  }
+}
+
 /// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。
 class FakeBookDao extends BookDao {
-  FakeBookDao({this.books = const [], this.times = const {}});
+  FakeBookDao({List<Book> books = const [], this.times = const {}})
+      : books = List.of(books);
 
   final List<Book> books;
   final Map<int, DateTime> times;
   FailedAttempt failed = const FailedAttempt();
 
   @override
-  Future<List<Book>> getAllBooks() async => books;
+  Future<List<Book>> getAllBooks({bool includeDeleted = false}) async =>
+      List.of(books);
+
+  /// 软删：从内存列表移除（等价于真实实现中 `deleted_at` 墓碑被过滤）。
+  @override
+  Future<void> softDeleteBook(int id) async {
+    books.removeWhere((b) => b.id == id);
+  }
 
   @override
   Future<Map<int, DateTime>> getLastRoundTimes() async => times;
@@ -424,4 +450,111 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
       pageSize: pageSize,
     );
   }
+}
+
+/// 内存版云端同步存储（manifest / 快照 / 图片 / 软锁），供同步测试复用。
+///
+/// 锁默认"可获取"（可注入持锁设备 id 模拟并发占用）；`close()` 无操作。
+class MemorySyncStore extends SyncRemoteStore {
+  MemorySyncStore({this.manifest, this.lockedBy = ''});
+
+  SyncManifest? manifest;
+  final Map<String, Uint8List> snapshots = {};
+  final Map<String, Uint8List> images = {};
+
+  /// 当前持锁设备（非空表示锁被占用；`{deviceId, expiresAt}` 模拟）。
+  String lockedBy = '';
+
+  /// 可选：拦截读 manifest（模拟"同步期间其它设备已更新"等并发场景）。
+  Future<SyncManifest?> Function()? onReadManifest;
+
+  @override
+  Future<SyncManifest?> readManifest() async =>
+      onReadManifest?.call() ?? manifest;
+
+  @override
+  Future<void> writeManifest(SyncManifest m) async => manifest = m;
+
+  @override
+  Future<List<String>> listSnapshotNames() async => snapshots.keys.toList();
+
+  @override
+  Future<Uint8List?> readSnapshot(String name) async => snapshots[name];
+
+  @override
+  Future<void> writeSnapshot(String name, Uint8List b) async =>
+      snapshots[name] = b;
+
+  @override
+  Future<void> deleteSnapshot(String name) async => snapshots.remove(name);
+
+  @override
+  Future<List<String>> listImages() async => images.keys.toList();
+
+  @override
+  Future<Uint8List?> readImage(String path) async => images[path];
+
+  @override
+  Future<void> writeImage(String path, Uint8List b) async => images[path] = b;
+
+  @override
+  Future<void> deleteImage(String path) async => images.remove(path);
+
+  @override
+  Future<bool> acquireLock({String deviceId = '', int ttlSeconds = 300}) async {
+    // 被其它设备持有 → 拒绝（注入的持锁状态视为未过期）。
+    if (lockedBy.isNotEmpty && lockedBy != deviceId) return false;
+    lockedBy = deviceId;
+    return true;
+  }
+
+  @override
+  Future<void> releaseLock({String deviceId = ''}) async {
+    if (lockedBy == deviceId) lockedBy = '';
+  }
+
+  @override
+  void close() {}
+}
+
+/// 内存版同步状态/共基存储（`sync_state` / 基表 / 待推删除墓碑）。
+class MemorySyncStateStore implements SyncStateStore {
+  SyncStateRecord state = const SyncStateRecord();
+  final Map<String, SyncBookBase> bookBases = {};
+  final Map<String, SyncModBase> modBases = {};
+  final List<SyncPendingDelete> pending = [];
+
+  @override
+  Future<SyncStateRecord> getState() async => state;
+
+  @override
+  Future<void> saveState(SyncStateRecord s) async => state = s;
+
+  @override
+  Future<Map<String, SyncBookBase>> getAllBookBases() async => bookBases;
+
+  @override
+  Future<void> putBookBase(SyncBookBase b) async => bookBases[b.uuid] = b;
+
+  @override
+  Future<void> deleteBookBase(String uuid) async => bookBases.remove(uuid);
+
+  @override
+  Future<Map<String, SyncModBase>> getAllModBases() async => modBases;
+
+  @override
+  Future<void> putModBase(SyncModBase b) async => modBases[b.uuid] = b;
+
+  @override
+  Future<void> deleteModBase(String uuid) async => modBases.remove(uuid);
+
+  @override
+  Future<List<SyncPendingDelete>> getPendingDeletes() async => List.of(pending);
+
+  @override
+  Future<void> addPendingDelete(SyncPendingDelete d) async => pending.add(d);
+
+  @override
+  Future<void> removePendingDelete(String path) async =>
+      pending.removeWhere((e) => e.path == path);
 }

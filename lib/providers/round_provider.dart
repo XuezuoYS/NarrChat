@@ -542,19 +542,13 @@ class RoundProvider extends ChangeNotifier {
       // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
       _rawDataByRound[newRoundId] = List.of(gen.rawExchanges);
       gen.rawExchanges.clear();
-      // 仅当用户仍停留在生成书时才重载其轮次；若已切到其它书，不把 _bookId
-      // 改回生成书，避免污染当前查看书籍的界面。
+      // 自动云同步：所有生成结束路径（成功 / 失败 / 中断）统一在 finally 触发，
+      // 不阻塞本轮返回；上传失败也不影响本轮结果。
       if (_bookId == b.id) {
         await loadRounds(b.id!);
       }
-      // 自动云同步：开启「每轮生成结束后自动上传」时，本轮落库后异步上传，
-      // 不阻塞本轮返回；上传失败也不影响本轮结果。
-      final cloud = _cloudSyncProvider;
       // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
       onGenerationCompleted?.call(b.id!, b.title);
-      if (cloud != null && cloud.autoUpload && cloud.isConfigured) {
-        unawaited(cloud.upload(auto: true));
-      }
       return true;
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
@@ -600,6 +594,9 @@ class RoundProvider extends ChangeNotifier {
         onGenerationActiveChanged?.call(false);
       }
       notifyListeners();
+      // 自动云同步：生成结束（成功落库 / 失败条目 / 用户中断均会改动本地数据），
+      // 全自动模式下异步触发一次同步；不在队内重复触发（provider 内部排队）。
+      _cloudSyncProvider?.triggerAutoSync();
     }
   }
 

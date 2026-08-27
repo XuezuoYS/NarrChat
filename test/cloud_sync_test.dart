@@ -1,15 +1,22 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:narrchat/services/backup_image_service.dart';
-import 'package:narrchat/services/cloud_sync_service.dart';
+import 'package:narrchat/services/sync/sync_models.dart';
+import 'package:narrchat/services/sync/sync_remote_store.dart';
 import 'package:narrchat/services/webdav_service.dart';
 
-/// 供重定向测试使用的 PROPFIND 207 响应样例。
+/// WebDAV 服务 / 云端快照命名测试。
+///
+/// 覆盖：
+/// - `WebDavService.parseMultiStatus` 与 3xx 重定向跟随；
+/// - 新版快照命名 `narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db` 的
+///   匹配 / 代际 / 时间解析（旧版 `narrchat_<user>_*.db` 不再支持）。
 const String _multistatusXml = '''
 <d:multistatus xmlns:d="DAV:">
   <d:response>
-    <d:href>/dav/narrchat/narrchat_user_2026-08-09_10-00-00.db</d:href>
+    <d:href>/dav/narrchat/narrchat_snapshot_g5_20260809_100000.db</d:href>
     <d:propstat><d:prop>
       <d:getlastmodified>Mon, 09 Aug 2026 10:00:00 GMT</d:getlastmodified>
       <d:getcontentlength>2048</d:getcontentlength>
@@ -31,7 +38,7 @@ void main() {
     </d:prop></d:propstat>
   </d:response>
   <d:response>
-    <d:href>/dav/narrchat/narrchat_user_2026-08-09_10-00-00.db</d:href>
+    <d:href>/dav/narrchat/narrchat_snapshot_g5_20260809_100000.db</d:href>
     <d:propstat><d:prop>
       <d:getlastmodified>Mon, 09 Aug 2026 10:00:00 GMT</d:getlastmodified>
       <d:getcontentlength>2048</d:getcontentlength>
@@ -47,7 +54,7 @@ void main() {
 
       final files = WebDavService.parseMultiStatus(xml);
       expect(files, hasLength(2));
-      expect(files[0].name, 'narrchat_user_2026-08-09_10-00-00.db');
+      expect(files[0].name, 'narrchat_snapshot_g5_20260809_100000.db');
       expect(files[0].size, 2048);
       expect(files[0].lastModified, isNotNull);
       expect(files[1].name, 'other.txt');
@@ -59,12 +66,12 @@ void main() {
       const xml = '''
 <d:multistatus xmlns:d="DAV:">
   <d:response>
-    <d:href>/dav/narrchat/narrchat%20user_2026-08-09_11-00-00.db</d:href>
+    <d:href>/dav/narrchat/narrchat%20snapshot_g5_20260809_110000.db</d:href>
     <d:propstat><d:prop><d:getcontentlength>100</d:getcontentlength></d:prop></d:propstat>
   </d:response>
 </d:multistatus>''';
       final files = WebDavService.parseMultiStatus(xml);
-      expect(files.single.name, 'narrchat user_2026-08-09_11-00-00.db');
+      expect(files.single.name, 'narrchat snapshot_g5_20260809_110000.db');
     });
 
     test('空响应返回空列表', () {
@@ -108,7 +115,7 @@ void main() {
       expect(lastMethod, 'PROPFIND');
       expect(lastAuth, isNotNull);
       expect(files, hasLength(1));
-      expect(files.single.name, 'narrchat_user_2026-08-09_10-00-00.db');
+      expect(files.single.name, 'narrchat_snapshot_g5_20260809_100000.db');
     });
 
     test('跨主机跳转时移除 Authorization', () async {
@@ -156,86 +163,91 @@ void main() {
     });
   });
 
-  group('CloudSyncService.buildBackupFileName', () {
-    test('生成标准格式文件名', () {
-      final name = CloudSyncService.buildBackupFileName(
-        'user',
-        DateTime(2026, 8, 9, 10, 30, 5),
+  group('WebDavSyncStore 快照命名（新版备份规则）', () {
+    test('生成标准格式快照名', () {
+      final name = WebDavSyncStore.snapshotName(3, DateTime(2026, 8, 16, 10, 30, 5));
+      expect(name, 'narrchat_snapshot_g3_20260816_103005.db');
+      expect(WebDavSyncStore.isSnapshot(name), isTrue);
+    });
+
+    test('isSnapshot：匹配新版快照，不再匹配旧版命名', () {
+      expect(
+        WebDavSyncStore.isSnapshot('narrchat_snapshot_g1_20260816_000000.db'),
+        isTrue,
       );
-      expect(name, 'narrchat_user_2026-08-09_10-30-05.db');
-    });
-
-    test('非法文件名与空白用户名被净化', () {
-      final name = CloudSyncService.buildBackupFileName(
-        'a/b:c',
-        DateTime(2026, 8, 9, 10, 30, 5),
+      expect(WebDavSyncStore.isSnapshot('other.db'), isFalse);
+      // 旧版命名（narrchat_<user>_<yyyy-MM-dd_HH-mm-ss>.db）不再支持。
+      expect(
+        WebDavSyncStore.isSnapshot('narrchat_user_2026-08-16_10-30-05.db'),
+        isFalse,
       );
-      expect(name, 'narrchat_a_b_c_2026-08-09_10-30-05.db');
-      final empty = CloudSyncService.buildBackupFileName(
-        '   ',
-        DateTime(2026, 1, 2, 3, 4, 5),
-      );
-      expect(empty, 'narrchat_user_2026-01-02_03-04-05.db');
-    });
-  });
-
-  group('CloudSyncService.matchBackups / compareBackups', () {
-    test('仅匹配本应用备份文件名', () {
-      final files = [
-        const WebDavFile(name: 'narrchat_user_2026-08-09_10-00-00.db'),
-        const WebDavFile(name: 'other.db'),
-        const WebDavFile(name: 'narrchat_user_bad.db'),
-        const WebDavFile(name: 'narrchat_user_2026-08-09_10-00-00.db.bak'),
-      ];
-      final matched = CloudSyncService.matchBackups(files);
-      expect(matched.map((f) => f.name), [
-        'narrchat_user_2026-08-09_10-00-00.db',
-      ]);
+      expect(WebDavSyncStore.isSnapshot('manifest.json'), isFalse);
     });
 
-    test('按修改时间新 → 旧排序', () {
-      final files = [
-        WebDavFile(
-          name: 'a.db',
-          lastModified: DateTime.utc(2026, 8, 1),
-        ),
-        WebDavFile(
-          name: 'b.db',
-          lastModified: DateTime.utc(2026, 8, 9),
-        ),
-        WebDavFile(name: 'c.db'),
-      ];
-      files.sort(CloudSyncService.compareBackups);
-      expect(files.map((f) => f.name).toList(), ['b.db', 'a.db', 'c.db']);
-    });
-  });
-
-  group('BackupImageService（图片 zip 备份命名 / 匹配）', () {
-    test('文件名格式与时间戳、非法字符替换', () {
-      final name = BackupImageService.buildImageBackupFileName(
-        '张三/user',
+    test('generationOf / snapshotTimeOf：解析代际与内嵌时间戳', () {
+      const name = 'narrchat_snapshot_g12_20260816_103005.db';
+      expect(WebDavSyncStore.generationOf(name), 12);
+      expect(
+        WebDavSyncStore.snapshotTimeOf(name),
         DateTime(2026, 8, 16, 10, 30, 5),
       );
-      expect(name, 'img_张三_user_20260816_103005.zip');
-      expect(BackupImageService.backupNameRegex.hasMatch(name), isTrue);
+      expect(WebDavSyncStore.generationOf('other.db'), isNull);
+      expect(WebDavSyncStore.snapshotTimeOf('other.db'), isNull);
     });
 
-    test('matchImageBackups：仅匹配本应用图片备份', () {
-      final files = [
-        const WebDavFile(name: 'narrchat_user_20260816_103005.db'),
-        const WebDavFile(name: 'img_张三_user_20260816_103005.zip'),
-        const WebDavFile(name: 'other.txt'),
-      ];
-      final matched = BackupImageService.matchImageBackups(files);
-      expect(matched, hasLength(1));
-      expect(matched.single.name, 'img_张三_user_20260816_103005.zip');
-    });
-
-    test('compareBackups：按修改时间新 → 旧，无时间按名字倒序', () {
-      final a = const WebDavFile(name: 'img_u_20260816_100000.zip');
-      final b = const WebDavFile(name: 'img_u_20260816_110000.zip');
-      expect(BackupImageService.compareBackups(a, b), greaterThan(0));
-      expect(BackupImageService.compareBackups(b, a), lessThan(0));
+    test('latestSnapshotName：按代际新 → 旧，可指定代际', () async {
+      final store = _MemorySnapshotStore({
+        'narrchat_snapshot_g3_20260816_100000.db',
+        'narrchat_snapshot_g5_20260816_120000.db',
+        'narrchat_snapshot_g7_20260816_110000.db',
+        'manifest.json', // 非快照名忽略
+      });
+      expect(await store.latestSnapshotName(), 'narrchat_snapshot_g7_20260816_110000.db');
+      expect(
+        await store.latestSnapshotName(generation: 5),
+        'narrchat_snapshot_g5_20260816_120000.db',
+      );
+      expect(await store.latestSnapshotName(generation: 99), isNull);
     });
   });
+}
+
+/// 纯内存快照名列表替身（只实现 [SyncRemoteStore] 的最小面，供命名测试用）。
+class _MemorySnapshotStore extends SyncRemoteStore {
+  _MemorySnapshotStore(this.names);
+
+  final Set<String> names;
+
+  @override
+  Future<List<String>> listSnapshotNames() async => names.toList();
+
+  @override
+  Future<SyncManifest?> readManifest() async => null;
+
+  @override
+  Future<void> writeManifest(SyncManifest manifest) async {}
+
+  @override
+  Future<Uint8List?> readSnapshot(String name) async => null;
+
+  @override
+  Future<void> writeSnapshot(String name, Uint8List bytes) async {}
+
+  @override
+  Future<void> deleteSnapshot(String name) async {}
+
+  @override
+  Future<List<String>> listImages() async => const [];
+
+  @override
+  Future<Uint8List?> readImage(String path) async => null;
+
+  @override
+  Future<void> writeImage(String path, Uint8List bytes) async {}
+
+  @override
+  Future<void> deleteImage(String path) async {}
+
+  @override
+  void close() {}
 }

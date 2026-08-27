@@ -38,6 +38,7 @@ Future<void> _createSchema(Database db) async {
   await db.execute('''
     CREATE TABLE books (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL,
       category TEXT DEFAULT '',
       base_setting TEXT DEFAULT '',
@@ -50,7 +51,10 @@ Future<void> _createSchema(Database db) async {
       role_hierarchy_detail TEXT DEFAULT '',
       failed_user_input TEXT DEFAULT '',
       failed_error_message TEXT DEFAULT '',
-      failed_user_images TEXT NOT NULL DEFAULT '[]'
+      failed_user_images TEXT NOT NULL DEFAULT '[]',
+      settings_updated_at INTEGER NOT NULL DEFAULT 0,
+      rounds_updated_at INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER
     )
   ''');
   await db.execute('''
@@ -86,6 +90,7 @@ Future<void> _createSchema(Database db) async {
   await db.execute('''
     CREATE TABLE mods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
       description TEXT DEFAULT '',
       pre_prompt TEXT DEFAULT '',
@@ -93,7 +98,8 @@ Future<void> _createSchema(Database db) async {
       system_prompt TEXT DEFAULT '',
       world_book TEXT DEFAULT '',
       created_at DATETIME,
-      updated_at DATETIME
+      updated_at DATETIME,
+      deleted_at INTEGER
     )
   ''');
   await db.execute('''
