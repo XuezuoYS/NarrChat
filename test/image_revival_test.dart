@@ -1,63 +1,72 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/sync_dao.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
+import 'package:narrchat/services/sync/img_tombstones.dart';
 
-/// 内存版 [SyncStateStore]，仅承载待推送删除墓碑相关逻辑。
-class _FakeStateStore implements SyncStateStore {
-  final List<SyncPendingDelete> pending = [];
-
-  @override
-  Future<SyncStateRecord> getState() async => const SyncStateRecord();
-  @override
-  Future<void> saveState(SyncStateRecord s) async {}
-  @override
-  Future<Map<String, SyncBookBase>> getAllBookBases() async => {};
-  @override
-  Future<void> putBookBase(SyncBookBase b) async {}
-  @override
-  Future<void> deleteBookBase(String title) async {}
-  @override
-  Future<Map<String, SyncModBase>> getAllModBases() async => {};
-  @override
-  Future<void> putModBase(SyncModBase b) async {}
-  @override
-  Future<void> deleteModBase(String name) async {}
-  @override
-  Future<List<SyncPendingDelete>> getPendingDeletes() async => List.of(pending);
-  @override
-  Future<void> addPendingDelete(SyncPendingDelete d) async => pending.add(d);
-  @override
-  Future<void> removePendingDelete(String path) async =>
-      pending.removeWhere((e) => e.path == path);
-}
+import 'helpers/fakes.dart';
 
 void main() {
-  test('命中墓碑：移除并返回 true', () async {
-    final store = _FakeStateStore();
-    store.pending.add(const SyncPendingDelete(path: 'img/b.png', deletedAt: 100));
-    final revived = await reviveTombstonedImage(store, 'img/b.png');
+  group('SyncImageRevivalService.revive（墓碑文件）', () {
+    test('命中条目：删除对应条目并记录撤销，返回 true', () async {
+      final store = MemoryTombstoneStore(
+        ImgTombstones(entries: [
+          ImgTombstoneEntry(
+            path: 'img/b.png',
+            deletedAt: 100,
+            expiresAt: 100 + ImgTombstoneEntry.ttlMillis,
+          ),
+        ]),
+      );
+      final service = SyncImageRevivalService(store: store);
 
-    expect(revived, isTrue);
-    expect(store.pending, isEmpty);
-  });
+      final revived = await service.revive('img/b.png');
 
-  test('未命中墓碑：返回 false 且不修改墓碑', () async {
-    final store = _FakeStateStore();
-    store.pending.add(const SyncPendingDelete(path: 'img/b.png', deletedAt: 100));
-    final revived = await reviveTombstonedImage(store, 'img/a.png');
+      expect(revived, isTrue);
+      expect(store.state.entries, isEmpty);
+      expect(store.state.revoked, ['img/b.png'],
+          reason: '撤销记录用于抵消云端残留条目，防止复活被覆盖');
+    });
 
-    expect(revived, isFalse);
-    expect(store.pending, hasLength(1));
-    expect(store.pending.single.path, 'img/b.png');
-  });
+    test('未命中条目：返回 false 且不修改墓碑', () async {
+      final store = MemoryTombstoneStore(
+        ImgTombstones(entries: [
+          ImgTombstoneEntry(
+            path: 'img/b.png',
+            deletedAt: 100,
+            expiresAt: 200,
+          ),
+        ]),
+      );
+      final service = SyncImageRevivalService(store: store);
 
-  test('多个墓碑仅移除命中的那一个', () async {
-    final store = _FakeStateStore();
-    store.pending.add(const SyncPendingDelete(path: 'img/b.png', deletedAt: 100));
-    store.pending.add(const SyncPendingDelete(path: 'img/c.png', deletedAt: 200));
-    final revived = await reviveTombstonedImage(store, 'img/c.png');
+      final revived = await service.revive('img/a.png');
 
-    expect(revived, isTrue);
-    expect(store.pending.single.path, 'img/b.png');
+      expect(revived, isFalse);
+      expect(store.state.entries.single.path, 'img/b.png');
+      expect(store.state.revoked, isEmpty);
+    });
+
+    test('多次重新添加：撤销清单累积（同步成功后统一消费）', () async {
+      final store = MemoryTombstoneStore(
+        ImgTombstones(entries: [
+          ImgTombstoneEntry(
+            path: 'img/b.png',
+            deletedAt: 100,
+            expiresAt: 200,
+          ),
+          ImgTombstoneEntry(
+            path: 'img/c.png',
+            deletedAt: 101,
+            expiresAt: 201,
+          ),
+        ]),
+      );
+      final service = SyncImageRevivalService(store: store);
+
+      await service.revive('img/b.png');
+      await service.revive('img/c.png');
+
+      expect(store.state.entries, isEmpty);
+      expect(store.state.revoked.toSet(), {'img/b.png', 'img/c.png'});
+    });
   });
 }

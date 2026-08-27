@@ -87,7 +87,6 @@ void main() {
         toUpload: [],
         toPull: [],
         toDeleteCloud: [],
-        revived: [],
       ),
     );
   }

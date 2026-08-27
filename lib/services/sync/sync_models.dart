@@ -164,24 +164,12 @@ class SyncModEntry {
       );
 }
 
-/// 图片删除墓碑：`[path]` 内容寻址路径（`img/<hash>.<ext>`）。
-class SyncDeletedImage {
-  final String path;
-  final int deletedAt;
-
-  const SyncDeletedImage({required this.path, required this.deletedAt});
-
-  Map<String, dynamic> toJson() => {'path': path, 'deletedAt': deletedAt};
-
-  factory SyncDeletedImage.fromJson(Map<String, dynamic> j) => SyncDeletedImage(
-        path: j['path'] as String? ?? '',
-        deletedAt: (j['deletedAt'] as num?)?.toInt() ?? 0,
-      );
-}
-
 /// 云端索引（manifest）：增量计算与并发控制的唯一基准。
 ///
 /// `format`：1 = 无 uuid（旧版/未发布格式）；2 = uuid 身份（现版本）。
+///
+/// 图片删除不再进 manifest：独立为 WebDAV 墓碑文件（`img_tombstones.json`），
+/// 见 `img_tombstones.dart`——manifest 只承载书籍 / Mod / 图片引用集合。
 class SyncManifest {
   final int format;
   final int generation;
@@ -193,9 +181,6 @@ class SyncManifest {
   /// 云端当前应存在的图片（内容寻址路径集合）。
   final List<String> images;
 
-  /// 图片删除墓碑（删除后未被再次添加）。
-  final List<SyncDeletedImage> deletedImages;
-
   const SyncManifest({
     this.format = 2,
     this.generation = 0,
@@ -204,7 +189,6 @@ class SyncManifest {
     this.books = const [],
     this.mods = const [],
     this.images = const [],
-    this.deletedImages = const [],
   });
 
   /// 通过 WebDAV 下载后解析；空/非法 JSON 返回 null 便于调用方判断"云端为空"。
@@ -235,10 +219,6 @@ class SyncManifest {
             .map(SyncModEntry.fromJson)
             .toList(),
         images: ((j['images'] as List?) ?? const []).map((e) => e.toString()).toList(),
-        deletedImages: ((j['deletedImages'] as List?) ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(SyncDeletedImage.fromJson)
-            .toList(),
       );
 
   String toJsonString() => jsonEncode(toJson());
@@ -251,6 +231,5 @@ class SyncManifest {
         'books': books.map((b) => b.toJson()).toList(),
         'mods': mods.map((m) => m.toJson()).toList(),
         'images': images,
-        'deletedImages': deletedImages.map((d) => d.toJson()).toList(),
       };
 }

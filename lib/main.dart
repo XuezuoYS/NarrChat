@@ -24,6 +24,7 @@ import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
 import 'services/storage_service.dart';
 import 'services/sync/image_revival.dart';
+import 'services/sync/image_deletion.dart';
 import 'services/system_fonts_service.dart';
 import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
@@ -206,6 +207,10 @@ class NarrChatApp extends StatelessWidget {
         // 图片"再添加复活"：导入/粘贴保存后取消待推送删除墓碑。
         Provider<ImageRevivalService>(
           create: (_) => SyncImageRevivalService(),
+        ),
+        // 图片删除：删除本机文件 + 记录待推送删除墓碑（同步删云端并传播）。
+        Provider<ImageDeletionService>(
+          create: (_) => SyncImageDeletionService(),
         ),
       ],
       // 监听 UI 设置变化，动态重建主题（含全局字体与亮/暗模式）。

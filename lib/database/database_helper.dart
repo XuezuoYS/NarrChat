@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 14;
+  static const int _dbVersion = 15;
 
   Database? _database;
 
@@ -259,6 +259,13 @@ class DatabaseHelper {
                 prompts_fp = COALESCE(NULLIF(prompts_fp, ''), settings_fp),
                 failed_fp = COALESCE(NULLIF(failed_fp, ''), settings_fp)
           ''');
+        }
+        if (oldVersion < 15) {
+          // 图片删除墓碑改为文件化（WebDAV `img_tombstones.json` + 本地工作副本
+          // `local_config/img_tombstones.json`，见 img_tombstones.dart），不再进数据库：
+          // 移除早期（本系列开发期）的 sync_pending_del / sync_image_revived 表。
+          await db.execute('DROP TABLE IF EXISTS sync_pending_del');
+          await db.execute('DROP TABLE IF EXISTS sync_image_revived');
         }
   }
 
@@ -520,12 +527,8 @@ class DatabaseHelper {
         updated_at INTEGER NOT NULL DEFAULT 0
       )
     ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_pending_del (
-        path TEXT PRIMARY KEY,
-        deleted_at INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
+    // 图片删除墓碑已文件化（img_tombstones.dart），不再进数据库：
+    // 仅保留版本注释，避免后续误加同表。
   }
 
   Future<void> close() async {

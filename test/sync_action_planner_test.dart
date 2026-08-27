@@ -100,18 +100,19 @@ void main() {
     expect(a.deleteRemoteBookUuids, contains('u1'));
   });
 
-  test('图片：删除后被重新引用 → 复活并重传，不删除云端', () {
+  test('图片：墓碑（合并后的最终删除意图）→ 删除传播（云端 + 本地文件）', () {
     final merge = buildPlan(base: const {}, local: const {}, remote: const {});
     final a = SyncActionPlanner.plan(
       mergePlan: merge,
-      referencedImages: const ['img/b.png'],
-      cloudImages: const [], // 云端已被清
+      referencedImages: const ['img/b.png'], // 仍被引用
+      cloudImages: const ['img/b.png'],
       localImages: const ['img/b.png'],
       tombstones: const ['img/b.png'],
     );
-    expect(a.images.revived, ['img/b.png']);
-    expect(a.images.toUpload, contains('img/b.png'));
-    expect(a.images.toDeleteCloud, isEmpty);
+    expect(a.images.toDeleteCloud, ['img/b.png']);
+    expect(a.images.toDeleteLocal, ['img/b.png']);
+    expect(a.images.toUpload, isEmpty);
+    expect(a.images.toPull, isEmpty);
   });
 
   test('Mod：仅远端有 → 拉取；Mod 冲突 → 冲突；远端删 Mod → 本地删除清单', () {

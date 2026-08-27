@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/image_gallery_page.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/storage_management_panel.dart';
 import 'package:provider/provider.dart';
@@ -21,6 +22,8 @@ void main() {
       providers: [
         ChangeNotifierProvider.value(value: CloudSyncProvider()),
         Provider<StorageService>.value(value: service),
+        // 图片库二级页依赖删除服务（删除 = 删文件 + 记录同步墓碑）。
+        Provider<ImageDeletionService>.value(value: FakeImageDeletionService()),
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
@@ -64,6 +67,7 @@ void main() {
     expect(find.text('存储管理'), findsOneWidget);
     expect(find.text('导出数据库'), findsOneWidget);
     expect(find.textContaining('共 2 张'), findsOneWidget);
+    expect(find.text('本地/云端图片管理'), findsOneWidget);
     // 不再是内联列表（无行名文本，而是入口卡）。
     expect(find.text('b.png'), findsNothing);
     expect(find.byType(ImageGalleryPage), findsNothing);
@@ -72,7 +76,7 @@ void main() {
   testWidgets('空图片：入口显示暂无', (tester) async {
     await tester.pumpWidget(wrap(FakeStorageService()));
     await tester.pumpAndSettle();
-    expect(find.textContaining('暂无本地图片'), findsOneWidget);
+    expect(find.textContaining('暂无图片'), findsOneWidget);
   });
 
   testWidgets('点击图片管理入口：进入图片库二级页面', (tester) async {

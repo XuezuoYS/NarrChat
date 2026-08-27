@@ -15,10 +15,13 @@ import '../utils/formats.dart';
 
 /// 设置页「存储管理」面板。
 ///
-/// - **本地数据库导出**：展示数据库路径 / 大小 / 修改时间，选择目标文件夹并
-///   以自定义文件名导出（SQLite 开启 WAL 时会连同 `-wal`/`-shm` 一并复制）。
-/// - **本地图片管理**：列出 `img/` 目录下全部图片（按修改时间倒序），提供
-///   全屏查看、删除（带确认）与刷新，并显示图片总数与占用空间。
+/// - **本地数据库导出/导入**：展示数据库路径 / 大小 / 修改时间，选择目标文件夹并
+///   以自定义文件名导出（SQLite 开启 WAL 时会连同 `-wal`/`-shm` 一并复制），
+///   或从本机 `.db` 备份导入并逐本确认合并；
+/// - **本地/云端图片管理**：列出 `img/` 目录下全部图片（按修改时间倒序），提供
+///   全屏查看、删除（带确认）与刷新，并显示图片总数与占用空间。图片库与云同步
+///   联动：删除是全局语义（同步删云端并传播到其它设备），其它设备新增的图片
+///   同步后也会出现在本地。
 class StorageManagementPanel extends StatefulWidget {
   /// 目录选择回调（测试注入替身；缺省用 [FilePicker.platform.getDirectoryPath]）。
   final Future<String?> Function()? directoryPicker;
@@ -212,7 +215,8 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
         ),
         const SizedBox(height: 4),
         Text(
-          '导出本地数据库到指定位置，或按修改时间浏览、查看与清理本地图片。',
+          '导出本地数据库到指定位置；图片库与云同步联动——删除即全局删除，'
+          '其它设备同步后也会一并消失。',
           style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         const SizedBox(height: 20),
@@ -234,11 +238,12 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           },
         ),
         const SizedBox(height: 24),
-        // ---------- 本地图片管理 ----------
+        // ---------- 本地/云端图片管理 ----------
         _SectionHeader(
           icon: Icons.photo_library_outlined,
-          title: '本地图片管理',
-          subtitle: '按修改时间浏览、查看与清理本地图片。',
+          title: '本地/云端图片管理',
+          subtitle: '按修改时间浏览、查看与清理图片；删除会同步到云端与其它设备，'
+              '其它设备新增的图片同步后也会出现在本地。',
         ),
         const SizedBox(height: 12),
         _buildImageEntry(context),
@@ -263,7 +268,7 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
       final images = _images ?? const <StorageImageInfo>[];
       final total = images.fold<int>(0, (s, i) => s + i.size);
       summary = images.isEmpty
-          ? '暂无本地图片'
+          ? '暂无图片'
           : '共 ${images.length} 张 · 合计 ${Formats.formatBytes(total)}';
     }
     return Material(

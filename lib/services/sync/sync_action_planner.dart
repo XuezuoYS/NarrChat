@@ -156,7 +156,8 @@ class SyncAction {
       deleteLocalModUuids.isNotEmpty ||
       images.toUpload.isNotEmpty ||
       images.toPull.isNotEmpty ||
-      images.toDeleteCloud.isNotEmpty;
+      images.toDeleteCloud.isNotEmpty ||
+      images.toDeleteLocal.isNotEmpty;
 
   bool get hasConflict =>
       conflictBookUuids.isNotEmpty || conflictModUuids.isNotEmpty;

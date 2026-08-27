@@ -5,8 +5,10 @@ import 'package:narrchat/services/image_store.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:path/path.dart' as p;
 
-/// 测试 [LocalStorageService]：列出图片（按修改时间）、导出数据库、删除图片。
+/// 测试 [LocalStorageService]：列出图片（按修改时间）、导出数据库。
 ///
+/// 图片删除已迁至 `ImageDeletionService`（删除 = 删文件 + 记录同步墓碑），
+/// 见 `image_deletion_test.dart`。
 /// 用临时目录 + `ImageStore.testUserDataRoot` 隔离真实路径，不触碰真实库。
 void main() {
   late Directory tempRoot;
@@ -75,15 +77,5 @@ void main() {
       ),
       throwsA(isA<StateError>()),
     );
-  });
-
-  test('deleteImage：删除相对路径对应的文件', () async {
-    final file = File(p.join(imgDir.path, 'a.png'));
-    file.writeAsBytesSync([1]);
-    expect(file.existsSync(), isTrue);
-
-    await LocalStorageService().deleteImage('img/a.png');
-
-    expect(file.existsSync(), isFalse);
   });
 }

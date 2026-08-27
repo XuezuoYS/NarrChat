@@ -319,12 +319,20 @@ void main() {
         .toList();
     expect(modCols, contains('deleted_at'));
 
-    for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base', 'sync_pending_del']) {
+    for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base']) {
       final t = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         [table],
       );
       expect(t, isNotEmpty, reason: '缺少表 $table');
+    }
+    // 图片删除墓碑已文件化（img_tombstones.dart），不再进数据库。
+    for (final table in ['sync_pending_del', 'sync_image_revived']) {
+      final t = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        [table],
+      );
+      expect(t, isEmpty, reason: '墓碑表 $table 应已移除');
     }
 
     final book = (await db.rawQuery('SELECT * FROM books')).first;
@@ -464,6 +472,44 @@ void main() {
     expect(roundCols, contains('model_name'));
     await db.close();
   });
+
+  test('v14→v15 迁移：移除图片删除墓碑表（图片不再走数据库）', () async {
+    final path = _newDbPath();
+
+    final db14 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 14, onCreate: _createV14Schema),
+    );
+    // v14 库（历史版本）预置墓碑数据与一本书；迁移后墓碑表移除、业务数据保留。
+    await db14.insert('sync_pending_del', {
+      'path': 'img/a.png',
+      'deleted_at': 100,
+    });
+    await db14.insert('books', {'title': '书I'});
+    await db14.close();
+
+    final db = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
+
+    for (final table in ['sync_pending_del', 'sync_image_revived']) {
+      final t = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        [table],
+      );
+      expect(t, isEmpty, reason: '墓碑表 $table 应已移除');
+    }
+    // 业务表不受影响。
+    final books = await db.query('books');
+    expect(books.single['title'], '书I');
+    await db.close();
+  });
 }
 
 final List<Directory> _tempDirs = [];
@@ -515,6 +561,16 @@ Future<void> _createV13Schema(Database db, int version) async {
       updated_at INTEGER NOT NULL DEFAULT 0
     )
   ''');
+}
+
+/// 历史 v14 schema（v13 + sync_book_base 5 个子部件列；尚无 sync_image_revived）。
+Future<void> _createV14Schema(Database db, int version) async {
+  await _createV13Schema(db, version);
+  for (final col in const ['info_fp', 'roles_fp', 'base_setting_fp', 'prompts_fp', 'failed_fp']) {
+    await db.execute(
+      "ALTER TABLE sync_book_base ADD COLUMN $col TEXT DEFAULT ''",
+    );
+  }
 }
 
 /// 历史 v12 schema（v11 + 同步列/软删墓碑 + 旧版 title 主键同步表）。

@@ -2,21 +2,31 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/image_gallery_page.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
-/// 测试本地图片库二级页（小米相册式）：网格渲染、长按/按钮进入选择、多选删除、批量导出。
+/// 测试图片库二级页（小米相册式）：网格渲染、长按/按钮进入选择、多选删除、批量导出。
 void main() {
   Widget wrap(
     StorageService service, {
+    ImageDeletionService? deletion,
     Future<String?> Function()? pick,
   }) {
-    return Provider<StorageService>.value(
-      value: service,
+    return MultiProvider(
+      providers: [
+        Provider<StorageService>.value(value: service),
+        Provider<ImageDeletionService>.value(
+          value: deletion ?? FakeImageDeletionService(),
+        ),
+        // 删除后触发自动同步（未配置时内部忽略）。
+        ChangeNotifierProvider.value(value: CloudSyncProvider()),
+      ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
         home: ImageGalleryPage(directoryPicker: pick),
@@ -82,7 +92,7 @@ void main() {
     expect(find.text('已选 1 张'), findsOneWidget);
   });
 
-  testWidgets('多选删除：选择 → 删除 → 服务被调用 + 列表刷新', (tester) async {
+  testWidgets('多选删除：选择 → 删除 → 删除服务被调用（含墓碑）+ 列表刷新', (tester) async {
     setWideViewport(tester);
     final service = FakeStorageService(
       images: [
@@ -100,7 +110,14 @@ void main() {
         ),
       ],
     );
-    await tester.pumpWidget(wrap(service));
+    final deletion = FakeImageDeletionService(
+      onDelete: (rel) async {
+        service.images = service.images
+            .where((i) => i.relPath != rel)
+            .toList();
+      },
+    );
+    await tester.pumpWidget(wrap(service, deletion: deletion));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('选择'));
@@ -118,8 +135,8 @@ void main() {
     await tester.tap(find.text('删除').last);
     await tester.pumpAndSettle();
 
-    expect(service.deleteCalls, 2);
-    expect(service.deleted, containsAll(['img/a.png', 'img/b.png']));
+    expect(deletion.calls, 2);
+    expect(deletion.deleted, containsAll(['img/a.png', 'img/b.png']));
     expect(find.text('暂无本地图片'), findsOneWidget);
   });
 

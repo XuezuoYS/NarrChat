@@ -16,7 +16,9 @@ import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
+import 'package:narrchat/services/sync/img_tombstones.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/sync/sync_remote_store.dart';
 import 'package:narrchat/database/sync_dao.dart';
@@ -381,7 +383,7 @@ class FakeClipboardPasteService implements ClipboardPasteService {
   }
 }
 
-/// 可控存储管理替身：返回预设数据并记录导出 / 删除调用。
+/// 可控存储管理替身：返回预设数据并记录导出调用。
 class FakeStorageService implements StorageService {
   FakeStorageService({this.db, this.images = const []});
 
@@ -411,13 +413,6 @@ class FakeStorageService implements StorageService {
   }
 
   @override
-  Future<void> deleteImage(String relPath) async {
-    deleteCalls++;
-    deleted.add(relPath);
-    images = images.where((i) => i.relPath != relPath).toList();
-  }
-
-  @override
   Future<int> exportImages({
     required List<String> relPaths,
     required String targetDirPath,
@@ -425,6 +420,24 @@ class FakeStorageService implements StorageService {
     exportedImages = List.of(relPaths);
     exportedImagesTo = targetDirPath;
     return relPaths.length;
+  }
+}
+
+/// 可控图片删除服务：记录删除路径，可注入 [onDelete] 模拟删除后的副作用。
+class FakeImageDeletionService implements ImageDeletionService {
+  FakeImageDeletionService({this.onDelete});
+
+  /// 删除后的回调（如从图片列表移除，供列表刷新断言）。
+  Future<void> Function(String relPath)? onDelete;
+
+  final List<String> deleted = [];
+  int calls = 0;
+
+  @override
+  Future<void> delete(String relPath) async {
+    calls++;
+    deleted.add(relPath);
+    await onDelete?.call(relPath);
   }
 }
 
@@ -470,7 +483,7 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
   }
 }
 
-/// 内存版云端同步存储（manifest / 快照 / 图片 / 软锁），供同步测试复用。
+/// 内存版云端同步存储（manifest / 快照 / 图片 / 墓碑文件 / 软锁），供同步测试复用。
 ///
 /// 锁默认"可获取"（可注入持锁设备 id 模拟并发占用）；`close()` 无操作。
 class MemorySyncStore extends SyncRemoteStore {
@@ -479,6 +492,9 @@ class MemorySyncStore extends SyncRemoteStore {
   SyncManifest? manifest;
   final Map<String, Uint8List> snapshots = {};
   final Map<String, Uint8List> images = {};
+
+  /// 云端图片删除墓碑文件（null = 文件不存在，首次同步按空处理）。
+  ImgTombstones? tombstones;
 
   /// 当前持锁设备（非空表示锁被占用；`{deviceId, expiresAt}` 模拟）。
   String lockedBy = '';
@@ -519,6 +535,12 @@ class MemorySyncStore extends SyncRemoteStore {
   Future<void> deleteImage(String path) async => images.remove(path);
 
   @override
+  Future<ImgTombstones?> readImageTombstones() async => tombstones;
+
+  @override
+  Future<void> writeImageTombstones(ImgTombstones t) async => tombstones = t;
+
+  @override
   Future<bool> acquireLock({String deviceId = '', int ttlSeconds = 300}) async {
     // 被其它设备持有 → 拒绝（注入的持锁状态视为未过期）。
     if (lockedBy.isNotEmpty && lockedBy != deviceId) return false;
@@ -535,12 +557,24 @@ class MemorySyncStore extends SyncRemoteStore {
   void close() {}
 }
 
-/// 内存版同步状态/共基存储（`sync_state` / 基表 / 待推删除墓碑）。
+/// 内存版图片删除墓碑工作副本（`local_config/img_tombstones.json` 的替身）。
+class MemoryTombstoneStore implements SyncTombstoneStore {
+  MemoryTombstoneStore([this.state = ImgTombstones.empty]);
+
+  ImgTombstones state;
+
+  @override
+  Future<ImgTombstones> load() async => state;
+
+  @override
+  Future<void> save(ImgTombstones tombstones) async => state = tombstones;
+}
+
+/// 内存版同步状态/共基存储（`sync_state` / 基表；图片墓碑见 [MemoryTombstoneStore]）。
 class MemorySyncStateStore implements SyncStateStore {
   SyncStateRecord state = const SyncStateRecord();
   final Map<String, SyncBookBase> bookBases = {};
   final Map<String, SyncModBase> modBases = {};
-  final List<SyncPendingDelete> pending = [];
 
   @override
   Future<SyncStateRecord> getState() async => state;
@@ -565,14 +599,4 @@ class MemorySyncStateStore implements SyncStateStore {
 
   @override
   Future<void> deleteModBase(String uuid) async => modBases.remove(uuid);
-
-  @override
-  Future<List<SyncPendingDelete>> getPendingDeletes() async => List.of(pending);
-
-  @override
-  Future<void> addPendingDelete(SyncPendingDelete d) async => pending.add(d);
-
-  @override
-  Future<void> removePendingDelete(String path) async =>
-      pending.removeWhere((e) => e.path == path);
 }

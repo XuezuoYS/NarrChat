@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../webdav_service.dart';
+import 'img_tombstones.dart';
 import 'sync_models.dart';
 
 /// 云端同步存储抽象：把 WebDAV 的"目录级文件"操作包装成语义化的
@@ -34,6 +35,15 @@ abstract class SyncRemoteStore {
   Future<Uint8List?> readImage(String path);
   Future<void> writeImage(String path, Uint8List bytes);
   Future<void> deleteImage(String path);
+
+  /// 读取云端「图片删除墓碑」文件（默认实现：无此文件支持 - 视为空）。
+  ///
+  /// 墓碑独立于 manifest / 快照：仅记录已删除图片的路径与"删除时间 / 过期时间"，
+  /// 条目保留一年，每次同步清除过期项；重新添加的图片由同步合并时抵消。
+  Future<ImgTombstones?> readImageTombstones() async => null;
+
+  /// 覆盖写入云端「图片删除墓碑」文件（默认实现：无此文件支持 - 空写入）。
+  Future<void> writeImageTombstones(ImgTombstones tombstones) async {}
 
   /// 尝试获取云端互斥锁（软锁，TTL 超时后可被抢占）。
   ///
@@ -125,6 +135,7 @@ class WebDavSyncStore extends SyncRemoteStore {
 
   String get _manifestName => 'manifest.json';
   String get _lockName => 'sync.lock';
+  String get _tombstonesName => 'img_tombstones.json';
 
   /// 云端互斥锁（软锁）实现：`sync.lock` 文件，内容 `{deviceId, expiresAt}`。
   ///
@@ -254,6 +265,27 @@ class WebDavSyncStore extends SyncRemoteStore {
   Future<void> deleteImage(String path) async {
     final sub = path.replaceFirst(RegExp(r'^img/'), '');
     await dav.delete('$folder/img', sub);
+  }
+
+  @override
+  Future<ImgTombstones?> readImageTombstones() async {
+    try {
+      final bytes = await dav.get(folder, _tombstonesName);
+      final j = jsonDecode(utf8.decode(bytes));
+      if (j is! Map<String, dynamic>) return ImgTombstones.empty;
+      return ImgTombstones.fromJson(j);
+    } on WebDavException {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> writeImageTombstones(ImgTombstones tombstones) async {
+    await dav.put(
+      folder,
+      _tombstonesName,
+      Uint8List.fromList(utf8.encode(jsonEncode(tombstones.toJson()))),
+    );
   }
 
   @override

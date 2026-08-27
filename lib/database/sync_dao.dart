@@ -97,15 +97,10 @@ class SyncModBase {
       );
 }
 
-/// 待推送的图片删除墓碑（断网时暂存，重连后重放）。
-class SyncPendingDelete {
-  final String path;
-  final int deletedAt;
-
-  const SyncPendingDelete({required this.path, required this.deletedAt});
-}
-
 /// 云同步状态 / 共基数据访问抽象，供 `SyncService` 依赖（便于注入内存替身）。
+///
+/// 图片删除墓碑**不在此列**（不进入数据库）：由独立的墓碑文件承载
+/// （`img_tombstones.dart`——WebDAV 云端文件 + 本地工作副本）。
 abstract class SyncStateStore {
   Future<SyncStateRecord> getState();
   Future<void> saveState(SyncStateRecord s);
@@ -115,9 +110,6 @@ abstract class SyncStateStore {
   Future<Map<String, SyncModBase>> getAllModBases();
   Future<void> putModBase(SyncModBase b);
   Future<void> deleteModBase(String name);
-  Future<List<SyncPendingDelete>> getPendingDeletes();
-  Future<void> addPendingDelete(SyncPendingDelete d);
-  Future<void> removePendingDelete(String path);
 }
 
 /// 云同步状态 / 共基数据访问对象（仅读写同步辅助表，不触碰业务表）。
@@ -232,37 +224,5 @@ class SyncStateDao implements SyncStateStore {
   Future<void> deleteModBase(String uuid) async {
     final db = await _helper.database;
     await db.delete('sync_mod_base', where: 'uuid = ?', whereArgs: [uuid]);
-  }
-
-  // ---------------------------------------------------------------------------
-  // sync_pending_del
-  // ---------------------------------------------------------------------------
-  @override
-  Future<List<SyncPendingDelete>> getPendingDeletes() async {
-    final db = await _helper.database;
-    final rows = await db.query('sync_pending_del');
-    return [
-      for (final r in rows)
-        SyncPendingDelete(
-          path: (r['path'] as String? ?? ''),
-          deletedAt: (r['deleted_at'] as int?) ?? 0,
-        ),
-    ];
-  }
-
-  @override
-  Future<void> addPendingDelete(SyncPendingDelete d) async {
-    final db = await _helper.database;
-    await db.insert(
-      'sync_pending_del',
-      {'path': d.path, 'deleted_at': d.deletedAt},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  @override
-  Future<void> removePendingDelete(String path) async {
-    final db = await _helper.database;
-    await db.delete('sync_pending_del', where: 'path = ?', whereArgs: [path]);
   }
 }

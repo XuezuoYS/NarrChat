@@ -35,8 +35,9 @@ class StorageImageInfo {
 
 /// 存储管理服务（可注入替身）。
 ///
-/// 抽象「本地数据库信息 / 列出图片（按修改时间）/ 导出数据库 / 删除单张图片」，
-/// 供测试注入假实现，避免触碰真实数据库与真实图片目录。
+/// 抽象「本地数据库信息 / 列出图片（按修改时间）/ 导出数据库 / 批量导出图片」。
+/// 图片**删除**不在本服务：删除是全局语义（删本机文件 + 记录同步删除墓碑），
+/// 由 `ImageDeletionService` 承载（见 `services/sync/image_deletion.dart`）。
 abstract class StorageService {
   /// 本地数据库信息（不存在返回 null）。
   Future<StorageDbInfo?> dbInfo();
@@ -52,9 +53,6 @@ abstract class StorageService {
     required String targetDirPath,
     required String fileName,
   });
-
-  /// 删除单张本地图片（相对路径）。
-  Future<void> deleteImage(String relPath);
 
   /// 把 [relPaths] 对应的图片复制到 [targetDirPath] 文件夹，返回成功导出数量。
   Future<int> exportImages({
@@ -131,13 +129,6 @@ class LocalStorageService implements StorageService {
     await _copyIfExists('$src-wal', '$target-wal');
     await _copyIfExists('$src-shm', '$target-shm');
     return target;
-  }
-
-  @override
-  Future<void> deleteImage(String relPath) async {
-    final abs = await ImageStore.resolveAbsolute(relPath);
-    final file = File(abs);
-    if (await file.exists()) await file.delete();
   }
 
   @override

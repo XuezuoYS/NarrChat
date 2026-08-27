@@ -4,8 +4,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../providers/cloud_sync_provider.dart';
 import '../services/image_store.dart';
 import '../services/storage_service.dart';
+import '../services/sync/image_deletion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/image_preview.dart';
 
@@ -150,7 +152,8 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除图片'),
-        content: Text('将删除已选的 $count 张图片。删除后，引用它们的剧情将显示为缺失。确定删除吗？'),
+        content: Text('将删除已选的 $count 张图片。删除后，引用它们的剧情将显示为缺失，'
+            '同步后云端与其它设备也会一并删除。确定删除吗？'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -168,10 +171,12 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     );
     if (confirmed != true || !mounted) return;
     setState(() => _deleting = true);
+    final deletion = context.read<ImageDeletionService>();
     var failed = 0;
     for (final rel in _selected) {
       try {
-        await _service.deleteImage(rel);
+        // 删本机文件 + 记录删除墓碑：同步据此删除云端并传播到其它设备。
+        await deletion.delete(rel);
       } catch (_) {
         failed++;
       }
@@ -182,6 +187,8 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       _selectMode = false;
       _selected.clear();
     });
+    // 删除意图尽快推送到云端（自动模式；未配置/手动模式内部忽略）。
+    context.read<CloudSyncProvider?>()?.triggerAutoSync();
     await _load();
     if (mounted) {
       final messenger = ScaffoldMessenger.of(context);

@@ -23,6 +23,7 @@ import '../services/sync/sync_models.dart';
 import '../services/sync/remote_snapshot_applier.dart';
 import '../services/sync/sync_remote_store.dart';
 import '../services/sync/sync_service.dart';
+import '../services/sync/img_tombstones.dart';
 import '../services/webdav_service.dart';
 import '../screens/database_merge_screen.dart';
 import '../widgets/sync_bootstrap_dialog.dart';
@@ -836,6 +837,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       localImages: _localImagePaths,
       readLocalImage: _readLocalImage,
       writeLocalImage: _writeLocalImage,
+      deleteLocalImage: _deleteLocalImage,
+      tombstoneStore: FileTombstoneStore(),
       keepVersions: _keepVersions,
       onProgress: _onSyncProgress,
       isCancelled: () => _cancelRequested,
@@ -954,6 +957,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _writeLocalImage(String relPath, Uint8List bytes) async {
     final abs = await ImageStore.resolveAbsolute(relPath);
     await File(abs).writeAsBytes(bytes, flush: true);
+  }
+
+  /// 删除本机 `img/` 下的图片文件（其它设备删除意图的本地传播）。
+  Future<void> _deleteLocalImage(String relPath) async {
+    final abs = await ImageStore.resolveAbsolute(relPath);
+    final file = File(abs);
+    if (await file.exists()) await file.delete();
   }
 
   /// 刷新云端备份列表。
