@@ -1,15 +1,16 @@
 import 'dart:typed_data';
 
 import '../../database/sync_dao.dart';
-import 'img_tombstones.dart';
 import 'sync_action_planner.dart';
-import 'sync_image_planner.dart';
 import 'sync_local_snapshot.dart';
 import 'sync_merge_planner.dart';
 import 'sync_models.dart';
 import 'sync_remote_store.dart';
 
-/// 一次同步的结果。
+/// 一次**数据平面**同步的结果。
+///
+/// 代数（manifest.generation）只在本平面推进；图片平面没有代数通道
+///（见 `image_sync_runner.dart`），图片动作在结构上不可能误推代数。
 class SyncResult {
   /// 是否发生了落地变更（拉取 / 删除传播 / 推送）。
   final bool applied;
@@ -33,11 +34,18 @@ class SyncResult {
   });
 }
 
-/// 云同步编排服务。
+/// 数据平面同步执行器：锁 → pull→merge→push → 释放锁。
 ///
-/// 依赖注入以便测试：云存储（manifest/快照/图片/锁）、同步状态/共基存储、
-/// 本地快照构建、快照字节构建、图片本地读写。工作流见方案定稿。
-class SyncService {
+/// 只负责数据平面的文件与迭代：`manifest.json`（第 N 代）、
+/// `narrchat_snapshot_gN_*.db`、本地共基 / 状态（`sync_book_base` /
+/// `sync_mod_base` / `sync_state`）。图片 blob 与删除墓碑属独立图片平面
+///（`ImageSyncRunner`），本类结构上**不读写** `img/*` 与
+/// `img_tombstones.json`——manifest 的 `images` 字段仅承载引用集快照
+///（派生展示信息，图片缺失/多余都由图片平面按实际清单自愈）。
+///
+/// 依赖注入以便测试：云存储、同步状态/共基存储、本地快照构建、
+/// 快照字节构建、远端落地回调。工作流见 docs/sync_auto_triggers.md。
+class DatabaseSyncRunner {
   final SyncRemoteStore store;
   final SyncStateStore stateStore;
   final String deviceId;
@@ -48,29 +56,13 @@ class SyncService {
   /// 构建"当前本地库"的快照字节（用于上传）。
   final Future<Uint8List> Function() buildSnapshotBytes;
 
-  /// 当前本地库引用的图片路径集合（存活集）。
+  /// 当前本地库引用的图片路径集合（存活集，仅用于 manifest.images）。
   final Future<List<String>> Function() referencedImages;
-
-  /// 本地 `img/` 现存路径。
-  final Future<List<String>> Function() localImages;
-
-  final Future<Uint8List?> Function(String path) readLocalImage;
-  final Future<void> Function(String path, Uint8List bytes) writeLocalImage;
-
-  /// 删除本地 `img/` 下的图片文件（其它设备的删除传播；null 时跳过本地删除）。
-  final Future<void> Function(String path)? deleteLocalImage;
-
-  /// 图片删除墓碑工作副本（本地文件存取）。
-  ///
-  /// 墓碑不进入数据库：本地工作副本在删除/重新添加流程即时改写，
-  /// 同步时与云端 `img_tombstones.json` 合并（并集 + 撤销 + 过期清除），
-  /// 并把结果回写云端与本地。
-  final SyncTombstoneStore tombstoneStore;
 
   final int keepVersions;
   final void Function(SyncProgressEvent)? onProgress;
 
-  /// 协作式取消回调：返回 true 表示用户已请求取消，
+  /// 协作式取消回调：返回 true 表示用户已请求取消本平面的同步，
   /// 在阶段之间检查，取消后提前返回（不写入云端）。
   final bool Function()? isCancelled;
 
@@ -96,27 +88,22 @@ class SyncService {
   /// 云端锁被占用时的重试间隔（测试可注入 [Duration.zero]）。
   final Duration lockRetryDelay;
 
-  SyncService({
+  DatabaseSyncRunner({
     required this.store,
     required this.stateStore,
     required this.deviceId,
     required this.buildLocalSnapshot,
     required this.buildSnapshotBytes,
     required this.referencedImages,
-    required this.localImages,
-    required this.readLocalImage,
-    required this.writeLocalImage,
-    SyncTombstoneStore? tombstoneStore,
-    this.deleteLocalImage,
     this.keepVersions = 5,
     this.onProgress,
     this.isCancelled,
     this.applyRemotePlan,
     this.applyRemoteBooks,
     this.lockRetryDelay = const Duration(milliseconds: 400),
-  }) : tombstoneStore = tombstoneStore ?? const _EmptyTombstoneStore();
+  });
 
-  /// 执行一次完整同步：锁定 → pull→merge→push → 释放锁。
+  /// 执行一次完整数据同步：锁定 → pull→merge→push → 释放锁。
   Future<SyncResult> sync() async {
     if (_cancelled) return const SyncResult(error: '已取消');
     var lockHeld = false;
@@ -159,35 +146,8 @@ class SyncService {
       baseMods: baseMods,
     );
 
-    final referenced = await referencedImages();
-    final locImages = await localImages();
-    // 图片规划以「云端实际存在的 blob」为准（而非 manifest 声明）：历史版本
-    // 曾把图片写入 manifest 却未上传（或首次连接从未上传），若只信 manifest
-    // 会导致缺失的图片永远不会被补传。实际清单缺失时会被判定为 toUpload。
-    final cloudImageFiles = await store.listImages();
-    // 删除墓碑：云端文件 ⊕ 本地工作副本（并集 / 撤销 / 过期清除），
-    // 结果即本轮的最终删除意图（不进入数据库与 manifest）。
-    final cloudTombstones =
-        (await store.readImageTombstones()) ?? ImgTombstones.empty;
-    final localTombstones = await tombstoneStore.load();
-    final mergedTombstones = mergeTombstones(
-      local: localTombstones,
-      cloud: cloudTombstones,
-      now: DateTime.now().millisecondsSinceEpoch,
-    );
-    final tombstones = [for (final e in mergedTombstones.entries) e.path];
-    final action = SyncActionPlanner.plan(
-      mergePlan: mergePlan,
-      referencedImages: referenced,
-      cloudImages: cloudImageFiles,
-      localImages: locImages,
-      tombstones: tombstones,
-    );
-
+    final action = SyncActionPlanner.plan(mergePlan: mergePlan);
     if (!action.hasChanges) {
-      // 无其它变更也要做墓碑维护：每次同步清除过期条目、消费撤销清单，
-      // 并把离线删除合并进云端墓碑文件（本分支无云端其他写入）。
-      await _persistTombstones(mergedTombstones, cloudTombstones);
       return SyncResult(applied: false, generation: manifest.generation);
     }
     if (action.hasConflict) {
@@ -197,11 +157,6 @@ class SyncService {
         generation: manifest.generation,
       );
     }
-
-    // —— 先落地图片远端状态（拉取 / 删除传播）——幂等，且与是否推送无关：
-    // 拉取与删除都不需要推进 manifest 代数（图片由独立墓碑文件传播），
-    // 若把它们挂在「推送路径」上会导致每次同步都白推一代快照/清单。
-    await _applyRemoteImages(action.images);
 
     // —— apply 远端：拉取 / 删除传播落地本地库 ——
     final hasPulls =
@@ -244,9 +199,7 @@ class SyncService {
       remoteMods: remoteMods,
       baseMods: baseMods,
     );
-    // 只有「上传图片」需要随推送执行；拉取/删除已于上方落地，不再是推送理由。
-    final hasImageUploads = action.images.toUpload.isNotEmpty;
-    if (!_requiresPush(planAfter) && !hasImageUploads) {
+    if (!_requiresPush(planAfter)) {
       await _writeBase(localAfter);
       await _cleanupBases(localAfter);
       await stateStore.saveState(
@@ -256,9 +209,6 @@ class SyncService {
           lastGeneration: manifest.generation,
         ),
       );
-      // 无推送也执行墓碑维护：过期清除 / 撤销 / 离线删除合并到云端文件，
-      // 并把本地工作副本刷新为云端内容（撤销清单已消费）。
-      await _persistTombstones(mergedTombstones, cloudTombstones);
       return SyncResult(
         applied: true,
         pushed: false,
@@ -274,24 +224,21 @@ class SyncService {
     final snapshotName = WebDavSyncStore.snapshotName(nextGen, DateTime.now());
     await store.writeSnapshot(snapshotName, snapshotBytes);
 
-    _emit(SyncPhase.pushImages, '同步图片…');
-    if (_cancelled) return const SyncResult(error: '已取消');
-    await _uploadImages(action.images);
-
     await _pruneSnapshots();
 
     // 远端内容落地后重建本地快照：拉取的书需进入本代 manifest 与共基
-    // （否则下一轮同步会把它们误判为「远端删除」或重复弹冲突）。
+    //（否则下一轮同步会把它们误判为「远端删除」或重复弹冲突）。
     // 注意：无变更不推进分支已提前返回，这里到达时必有推送。
-    // 图片删除/复活意图经独立的墓碑文件传播（见 img_tombstones.dart），
-    // 不进入 manifest（此处仅承载书籍 / Mod / 图片引用集合）。
+    // manifest.images 仅承载引用集快照（展示/审计用途）；图片 blob 的实际
+    // 收敛与删除意图由独立图片平面（ImageSyncRunner + 墓碑文件）负责，
+    // 因此图片缺失/多余都**不构成**本平面的推送理由。
     final newManifest = SyncManifest(
       generation: nextGen,
       lastWriterDeviceId: deviceId,
       knownDevices: {...manifest.knownDevices, deviceId}.toList(),
       books: _toBookEntries(localAfter.books, localAfter.bookMeta),
       mods: _toModEntries(localAfter.mods),
-      images: referenced,
+      images: await referencedImages(),
     );
 
     // 写前校验：云端 generation 已变（并发窗口）→ 放弃本次推送，保留云端。
@@ -310,14 +257,12 @@ class SyncService {
         lastGeneration: nextGen,
       ),
     );
-    // 推送成功后回写墓碑：删除/撤销/过期清除随云端墓碑文件持久化（失败路径
-    // 不消费，本地工作副本保留离线改动，下次同步重放，保证不丢失删除意图）。
-    await _persistTombstones(mergedTombstones, cloudTombstones);
     return SyncResult(applied: true, pushed: true, generation: nextGen);
   }
 
   // ---------------------------------------------------------------------------
-  // 首次连接：把本地推上去初始化云端仓库。
+  // 首次连接：把本地推上去初始化云端仓库（仅数据平面；图片由图片平面
+  // 独立收敛——统一触发时紧随其后，单发图片同步也不依赖 manifest 存在）。
   // ---------------------------------------------------------------------------
   Future<SyncResult> _bootstrap() async {
     _emit(SyncPhase.bootstrap, '初始化云端仓库…');
@@ -325,18 +270,6 @@ class SyncService {
     final snapshot = await buildSnapshotBytes();
     final snapshotName = WebDavSyncStore.snapshotName(1, DateTime.now());
     await store.writeSnapshot(snapshotName, snapshot);
-    final referenced = await referencedImages();
-    // 首次同步同样把本地图片上传到云端（此前仅写 manifest，
-    // 导致图片从未真正出现在 WebDAV 中）。
-    final locImages = await localImages();
-    await _uploadImages(
-      ImageSyncPlanner.plan(
-        referencedImages: referenced,
-        cloudImages: const [],
-        localImages: locImages,
-        tombstones: const [],
-      ),
-    );
     await store.writeManifest(
       SyncManifest(
         generation: 1,
@@ -344,7 +277,7 @@ class SyncService {
         knownDevices: [deviceId],
         books: _toBookEntries(local.books, local.bookMeta),
         mods: _toModEntries(local.mods),
-        images: referenced,
+        images: await referencedImages(),
       ),
     );
     await _writeBase(local);
@@ -362,69 +295,6 @@ class SyncService {
   // ---------------------------------------------------------------------------
   // 内部
   // ---------------------------------------------------------------------------
-  /// 落地图片「远端状态」：拉取缺失 blob、删除传播（云端 blob / 本机文件）。
-  ///
-  /// 幂等且在推送前执行——拉取与删除不改变 manifest 内容，不应成为
-  /// 「推送 / 推进代数」的理由；重复同步对已完成的删除不再产生动作。
-  Future<void> _applyRemoteImages(ImageSyncPlan images) async {
-    if (images.toPull.isNotEmpty) {
-      await store.ensureImagesFolder();
-      for (final p in images.toPull) {
-        final bytes = await store.readImage(p);
-        if (bytes == null) continue;
-        await writeLocalImage(p, bytes);
-      }
-    }
-    for (final p in images.toDeleteCloud) {
-      await store.deleteImage(p);
-    }
-    final deleteLocal = images.toDeleteLocal;
-    if (deleteLocal.isNotEmpty && deleteLocalImage != null) {
-      // 删除传播：其它设备的删除意图 → 删除本机文件（即使仍被引用，剧情显示缺失）。
-      for (final p in deleteLocal) {
-        await deleteLocalImage!(p);
-      }
-    }
-  }
-
-  /// 上传本机图片到云端（仅推送路径：上传的内容会进入本代 manifest）。
-  Future<void> _uploadImages(ImageSyncPlan images) async {
-    if (images.toUpload.isEmpty) return;
-    await store.ensureImagesFolder();
-    for (final p in images.toUpload) {
-      final bytes = await readLocalImage(p);
-      if (bytes == null) continue;
-      await store.writeImage(p, bytes);
-    }
-  }
-
-  /// 回写墓碑：合并结果与云端文件不一致（离线删除 / 撤销 / 过期清除）时
-  /// 覆盖云端 `img_tombstones.json`；随后把本地工作副本刷新为云端内容
-  /// （撤销清单已消费；云端写入失败则抛错，本地工作副本保留离线改动）。
-  Future<void> _persistTombstones(
-    ImgTombstones merged,
-    ImgTombstones cloud,
-  ) async {
-    if (!_sameTombstones(merged, cloud)) {
-      await store.writeImageTombstones(merged);
-    }
-    await tombstoneStore.save(ImgTombstones(entries: merged.entries));
-  }
-
-  /// 两份墓碑文件是否语义一致（与条目顺序无关，按路径对齐比较）。
-  static bool _sameTombstones(ImgTombstones a, ImgTombstones b) {
-    if (a.entries.length != b.entries.length) return false;
-    for (final e in a.entries) {
-      final matches = b.entries.where((x) => x.path == e.path).toList();
-      if (matches.length != 1) return false;
-      if (matches.single.deletedAt != e.deletedAt ||
-          matches.single.expiresAt != e.expiresAt) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   /// 修剪超量快照，始终保留最新 [keepVersions] 份。
   Future<void> _pruneSnapshots() async {
     final names = await store.listSnapshotNames();
@@ -524,11 +394,11 @@ class SyncService {
     }
   }
 
-  /// 落地后是否仍存在「需要推送的本地变更」。
+  /// 落地后是否仍存在「需要推送的本地变更」（仅数据平面；图片平面永不推代数）。
   ///
   /// 无 → 本地已与远端一致（拉取 + 删除传播的结果），跳过写快照/写清单/推进代数。
   /// 说明：预检已排除真冲突；planAfter 中的 conflict 只可能来自"刚拉取的部件"
-  /// （local==remote、都区别于 base 的三向假象），不应遮蔽真实的 localOnly 部件。
+  ///（local==remote、都区别于 base 的三向假象），不应遮蔽真实的 localOnly 部件。
   static bool _requiresPush(SyncMergePlan plan) {
     for (final b in plan.books) {
       switch (b.presence) {
@@ -627,15 +497,4 @@ class SyncService {
       );
 
   bool get _cancelled => isCancelled?.call() ?? false;
-}
-
-/// 空墓碑存储（未接入墓碑文件的纯只读编排 / 测试缺省）：不留存任何删除意图。
-class _EmptyTombstoneStore implements SyncTombstoneStore {
-  const _EmptyTombstoneStore();
-
-  @override
-  Future<ImgTombstones> load() async => ImgTombstones.empty;
-
-  @override
-  Future<void> save(ImgTombstones tombstones) async {}
 }

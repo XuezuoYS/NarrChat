@@ -207,8 +207,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   Widget _buildStatusHero(BuildContext context, CloudSyncProvider provider) {
     final colors = context.narrColors;
     final configured = provider.isConfigured;
-    final state = provider.syncState;
-    final (icon, title, subtitle) = _statusHint(configured, state, colors);
+    final (icon, title, subtitle) = _statusHint(configured, provider);
 
     return Material(
       color: colors.surface,
@@ -266,7 +265,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                               ],
                             ),
                           ),
-                          _statusBadge(context, state, configured),
+                          _statusBadges(context, provider, configured),
                         ],
                       ),
                       if (configured) ...[
@@ -302,35 +301,84 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
   }
 
+  /// 状态卡主提示：两平面聚合（syncing > error > success > idle）。
   (IconData, String, String) _statusHint(
     bool configured,
-    SyncState state,
-    NarrChatColors colors,
+    CloudSyncProvider provider,
   ) {
     if (!configured) {
       return (Icons.cloud_off_outlined, '未连接', '填写下方连接信息后进行测试，即可开始云端同步。');
     }
-    switch (state) {
-      case SyncState.syncing:
-        return (Icons.sync, '正在同步', '正在将数据同步到云端…');
-      case SyncState.success:
-        return (Icons.cloud_done_outlined, '已同步', '本地与云端数据一致。');
-      case SyncState.error:
-        return (Icons.error_outline, '同步失败', '请检查网络与连接设置。');
-      case SyncState.idle:
-        return (Icons.cloud_outlined, '已连接', '点击「同步」或等待自动同步。');
+    final data = provider.dataSyncState;
+    final images = provider.imageSyncState;
+    final dataSyncing = data == SyncState.syncing;
+    final imageSyncing = images == SyncState.syncing;
+    if (dataSyncing || imageSyncing) {
+      final what = dataSyncing && imageSyncing
+          ? '数据与图片'
+          : dataSyncing
+          ? '数据'
+          : '图片';
+      return (Icons.sync, '正在同步', '正在同步$what到云端…');
     }
+    if (data == SyncState.error || images == SyncState.error) {
+      return (Icons.error_outline, '同步失败', '请检查网络与连接设置。');
+    }
+    if (data == SyncState.success || images == SyncState.success) {
+      return (Icons.cloud_done_outlined, '已同步', '本地与云端数据一致。');
+    }
+    return (Icons.cloud_outlined, '已连接', '点击「同步」或等待自动同步。');
   }
 
-  Widget _statusBadge(BuildContext context, SyncState state, bool configured) {
+  /// 分平面状态徽章：「数据」「图片」两枚小徽章，各自显示所属平面状态。
+  Widget _statusBadges(
+    BuildContext context,
+    CloudSyncProvider provider,
+    bool configured,
+  ) {
+    if (!configured) {
+      return _statusPill(context, '未连接', context.narrColors.textSecondary);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        _planeBadge(context, '数据', provider.dataSyncState),
+        const SizedBox(height: 4),
+        _planeBadge(context, '图片', provider.imageSyncState),
+      ],
+    );
+  }
+
+  Widget _planeBadge(
+    BuildContext context,
+    String planeLabel,
+    SyncState state,
+  ) {
     final colors = context.narrColors;
-    final (label, color) = switch ((configured, state)) {
-      (false, _) => ('未连接', colors.textSecondary),
-      (true, SyncState.syncing) => ('同步中', NarrChatTheme.primary),
-      (true, SyncState.success) => ('已同步', colors.success),
-      (true, SyncState.error) => ('失败', Theme.of(context).colorScheme.error),
-      (true, SyncState.idle) => ('就绪', colors.success),
+    final (label, color) = switch (state) {
+      SyncState.syncing => ('同步中', NarrChatTheme.primary),
+      SyncState.success => ('已同步', colors.success),
+      SyncState.error => ('失败', Theme.of(context).colorScheme.error),
+      SyncState.idle => ('就绪', colors.success),
     };
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 36,
+          child: Text(
+            planeLabel,
+            textAlign: TextAlign.end,
+            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+          ),
+        ),
+        const SizedBox(width: 4),
+        _statusPill(context, label, color),
+      ],
+    );
+  }
+
+  Widget _statusPill(BuildContext context, String label, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -348,7 +396,11 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color),
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
           ),
         ],
       ),

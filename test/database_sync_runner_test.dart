@@ -2,29 +2,32 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/sync_dao.dart';
+import 'package:narrchat/services/sync/database_sync_runner.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
-import 'package:narrchat/services/sync/sync_service.dart';
 
 import 'helpers/fakes.dart';
 
-SyncService _service(
+/// **数据平面**执行器 [DatabaseSyncRunner] 测试（不触碰真实网络 / 真库）。
+///
+/// 结构约束在这里被显式验证：数据平面只读写 manifest / 快照 / 共基，
+/// **从不读写 `img/*` blob 与墓碑文件**——图片缺失/多余不构成推送理由，
+/// 代数只随书籍 / Mod 变更推进（图片同步永远不可能推代数）。
+DatabaseSyncRunner _service(
   MemorySyncStore store,
   MemorySyncStateStore state,
   SyncLocalSnapshot local, {
   Future<SyncLocalSnapshot> Function()? buildSnapshot,
+  List<String> referenced = const ['img/a.png'],
 }) {
-  return SyncService(
+  return DatabaseSyncRunner(
     store: store,
     stateStore: state,
     deviceId: 'dev-1',
     buildLocalSnapshot: () async => buildSnapshot?.call() ?? local,
     buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
-    referencedImages: () async => const ['img/a.png'],
-    localImages: () async => const ['img/a.png'],
-    readLocalImage: (_) async => Uint8List.fromList([9]),
-    writeLocalImage: (_, _) async {},
+    referencedImages: () async => referenced,
     keepVersions: 5,
     lockRetryDelay: Duration.zero,
   );
@@ -44,6 +47,35 @@ final _localSnapshot = SyncLocalSnapshot(
   mods: const {'m1': SyncModRecord(uuid: 'm1', name: 'm1', fingerprint: 'F1')},
 );
 
+/// 与 manifest 对齐的本地图书快照（无 mods）。
+const _matchedLocal = SyncLocalSnapshot(
+  books: {
+    'u1': SyncBookRecord(
+      uuid: 'u1',
+      title: '书A',
+      parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
+    ),
+  },
+  bookMeta: {
+    'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
+  },
+  mods: {},
+);
+
+const _matchedManifestBooks = [
+  SyncBookEntry(
+    uuid: 'u1',
+    title: '书A',
+    deleted: false,
+    settingsFp: 'S0',
+    settingsUpdatedAt: 100,
+    roundsFp: 'R1',
+    roundsUpdatedAt: 200,
+    worldBookFp: '',
+    bookModsFp: '',
+  ),
+];
+
 void main() {
   test('云端为空 → 引导推送：写入快照 + 清单(gen1, format2, uuid键) + 本地共基与状态', () async {
     final store = MemorySyncStore();
@@ -62,14 +94,22 @@ void main() {
     expect(store.manifest!.books.single.title, '书A');
     expect(store.manifest!.books.single.roundsFp, 'R1');
     expect(store.snapshots, hasLength(1));
-    // 首次同步也应把本地图片真正上传（而非只写进 manifest）。
-    expect(store.images.containsKey('img/a.png'), isTrue);
-    expect(store.images['img/a.png'], [9]);
+    expect(store.manifest!.images, ['img/a.png'], reason: 'manifest 承载引用集快照');
     expect(state.state.deviceId, 'dev-1');
     expect(state.state.lastGeneration, 1);
     expect(state.bookBases.keys, contains('u1'));
     expect(state.bookBases['u1']!.settingsUpdatedAt, 100);
     expect(state.bookBases['u1']!.uuid, 'u1');
+  });
+
+  test('引导推送不读写任何图片 blob（图片收敛归图片平面）', () async {
+    final store = MemorySyncStore();
+    final state = MemorySyncStateStore();
+    final svc = _service(store, state, _localSnapshot);
+
+    await svc.sync();
+
+    expect(store.images, isEmpty, reason: '数据平面从不写 img/*');
   });
 
   test('两端一致且已有共基 → 无变更（不推送、不写快照、不推进代数）', () async {
@@ -79,22 +119,8 @@ void main() {
         lastWriterDeviceId: 'dev-1',
         knownDevices: ['dev-1'],
         images: ['img/a.png'],
-        books: [
-          SyncBookEntry(
-            uuid: 'u1',
-            title: '书A',
-            deleted: false,
-            settingsFp: 'S0',
-            settingsUpdatedAt: 100,
-            roundsFp: 'R1',
-            roundsUpdatedAt: 200,
-            worldBookFp: '',
-            bookModsFp: '',
-          ),
-        ],
+        books: _matchedManifestBooks,
       );
-    // 图片 blob 已真实存在于云端（否则会被判定为缺失并补传）。
-    store.images['img/a.png'] = Uint8List.fromList([9]);
     final state = MemorySyncStateStore()
       ..bookBases['u1'] = const SyncBookBase(
         uuid: 'u1',
@@ -102,21 +128,7 @@ void main() {
         settingsFp: 'S0',
         roundsFp: 'R1',
       );
-    // 保持一致：本地无 mod，bookMods/worldBook 空指纹。
-    final local = SyncLocalSnapshot(
-      books: const {
-        'u1': SyncBookRecord(
-          uuid: 'u1',
-          title: '书A',
-          parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
-        ),
-      },
-      bookMeta: const {
-        'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
-      },
-      mods: const {},
-    );
-    final svc = _service(store, state, local);
+    final svc = _service(store, state, _matchedLocal);
 
     final result = await svc.sync();
 
@@ -127,29 +139,18 @@ void main() {
     expect(store.snapshots, isEmpty); // 不写入快照
   });
 
-  test('manifest 声明图片但云端 blob 缺失 → 补传（自愈缺失的图片）', () async {
-    // 场景：历史版本把图片写进 manifest 却未上传（或首次同步未传图）。
+  test('manifest 声明图片但云端 blob 缺失 → 数据平面不补传、不推进代数（图片平面自愈）', () async {
+    // 场景：历史版本把图片写进 manifest 却未上传（或图片平面失败）。
+    // 结构保证：数据平面看不到 blob 状态，本轮"无数据变更"，代数保持。
     final store = MemorySyncStore()
       ..manifest = const SyncManifest(
         generation: 4,
         lastWriterDeviceId: 'dev-1',
         knownDevices: ['dev-1'],
         images: ['img/a.png'],
-        books: [
-          SyncBookEntry(
-            uuid: 'u1',
-            title: '书A',
-            deleted: false,
-            settingsFp: 'S0',
-            settingsUpdatedAt: 100,
-            roundsFp: 'R1',
-            roundsUpdatedAt: 200,
-            worldBookFp: '',
-            bookModsFp: '',
-          ),
-        ],
+        books: _matchedManifestBooks,
       );
-    // 注意：store.images 为空（blob 从未上传）。
+    // store.images 为空（blob 从未上传）——不影响数据平面决策。
     final state = MemorySyncStateStore()
       ..bookBases['u1'] = const SyncBookBase(
         uuid: 'u1',
@@ -157,27 +158,15 @@ void main() {
         settingsFp: 'S0',
         roundsFp: 'R1',
       );
-    final local = SyncLocalSnapshot(
-      books: const {
-        'u1': SyncBookRecord(
-          uuid: 'u1',
-          title: '书A',
-          parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
-        ),
-      },
-      bookMeta: const {
-        'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
-      },
-      mods: const {},
-    );
-    final svc = _service(store, state, local);
+    final svc = _service(store, state, _matchedLocal);
 
     final result = await svc.sync();
 
-    expect(result.applied, isTrue, reason: '缺失图片应触发补传');
-    expect(store.images.containsKey('img/a.png'), isTrue);
-    expect(store.images['img/a.png'], [9]);
-    expect(store.manifest!.generation, 5, reason: '补传后正常推进一代');
+    expect(result.applied, isFalse, reason: '图片缺失不是数据平面的变更理由');
+    expect(result.pushed, isFalse);
+    expect(result.generation, 4, reason: '代数不因图片补传需求而推进');
+    expect(store.snapshots, isEmpty);
+    expect(store.images, isEmpty, reason: '数据平面从不代传图片');
   });
 
   test('同一本书两端都改同子部件（真冲突）→ 不下发、返回 hasConflict', () async {
@@ -267,16 +256,13 @@ void main() {
       mods: const {},
     );
     var readCount = 0;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
     );
@@ -314,17 +300,7 @@ void main() {
         lastWriterDeviceId: 'dev-2',
         knownDevices: ['dev-2'],
         books: [
-          SyncBookEntry(
-            uuid: 'u1',
-            title: '书A',
-            deleted: false,
-            settingsFp: 'S0',
-            settingsUpdatedAt: 100,
-            roundsFp: 'R1',
-            roundsUpdatedAt: 200,
-            worldBookFp: '',
-            bookModsFp: '',
-          ),
+          ..._matchedManifestBooks,
           SyncBookEntry(
             uuid: 'u2',
             title: '远端书',
@@ -347,54 +323,38 @@ void main() {
         settingsFp: 'S0',
         roundsFp: 'R1',
       );
-    // 本地只有书A（与远端一致）；拉取后 localAfter 纳入远端书。
-    final local = SyncLocalSnapshot(
-      books: const {
-        'u1': SyncBookRecord(
-          uuid: 'u1',
-          title: '书A',
-          parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
-        ),
-      },
-      bookMeta: const {
-        'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
-      },
-      mods: const {},
-    );
-    var afterApply = local;
-    final svc = SyncService(
+    // 本地只有书A（与远端一致）；拉取落地后本地快照纳入远端书。
+    var afterPull = false;
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
-      buildLocalSnapshot: () async => afterApply,
+      buildLocalSnapshot: () async => afterPull
+          ? const SyncLocalSnapshot(
+              books: {
+                'u1': SyncBookRecord(
+                  uuid: 'u1',
+                  title: '书A',
+                  parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
+                ),
+                'u2': SyncBookRecord(
+                  uuid: 'u2',
+                  title: '远端书',
+                  parts: SyncBookParts(settingsFp: 'RS', roundsFp: 'RR'),
+                ),
+              },
+              bookMeta: {
+                'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
+                'u2': SyncBookMeta(settingsUpdatedAt: 300, roundsUpdatedAt: 400),
+              },
+              mods: {},
+            )
+          : _matchedLocal,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
-      applyRemoteBooks: (mergePlan, action, bytes) async {
-        afterApply = SyncLocalSnapshot(
-          books: const {
-            'u1': SyncBookRecord(
-              uuid: 'u1',
-              title: '书A',
-              parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
-            ),
-            'u2': SyncBookRecord(
-              uuid: 'u2',
-              title: '远端书',
-              parts: SyncBookParts(settingsFp: 'RS', roundsFp: 'RR'),
-            ),
-          },
-          bookMeta: const {
-            'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
-            'u2': SyncBookMeta(settingsUpdatedAt: 300, roundsUpdatedAt: 400),
-          },
-          mods: const {},
-        );
-      },
+      applyRemoteBooks: (mergePlan, action, bytes) async => afterPull = true,
     );
 
     final result = await svc.sync();
@@ -402,7 +362,8 @@ void main() {
     expect(result.applied, isTrue, reason: '拉取落地');
     expect(result.pushed, isFalse, reason: '本地与远端一致，不推进代数');
     expect(result.generation, 5, reason: '代数保持云端当前代');
-    expect(store.snapshots, hasLength(1), reason: '未新增快照（仅保留下拉用的既有快照）');
+    expect(store.snapshots, hasLength(1),
+        reason: '未新增快照（仅保留下拉用的既有快照）');
     expect(store.manifest!.generation, 5, reason: 'manifest 未被重写');
     // 拉取的书写入共基（下一轮不再重复拉取 / 弹冲突）。
     expect(state.bookBases.keys, containsAll(['u1', 'u2']));
@@ -431,30 +392,14 @@ void main() {
       );
     // 无快照（listSnapshotNames 空）。
     final state = MemorySyncStateStore();
-    final local = SyncLocalSnapshot(
-      books: const {
-        'u1': SyncBookRecord(
-          uuid: 'u1',
-          title: '书A',
-          parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R1'),
-        ),
-      },
-      bookMeta: const {
-        'u1': SyncBookMeta(settingsUpdatedAt: 100, roundsUpdatedAt: 200),
-      },
-      mods: const {},
-    );
     var applyCalled = false;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
-      buildLocalSnapshot: () async => local,
+      buildLocalSnapshot: () async => _matchedLocal,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (_, _, _) async => applyCalled = true,

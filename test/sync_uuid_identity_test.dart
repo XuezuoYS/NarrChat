@@ -11,7 +11,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/sync/remote_snapshot_applier.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
-import 'package:narrchat/services/sync/sync_service.dart';
+import 'package:narrchat/services/sync/database_sync_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -55,13 +55,13 @@ void main() {
     await DatabaseHelper.instance.database;
   }
 
-  SyncService serviceFor(
+  DatabaseSyncRunner serviceFor(
     String deviceId,
     String dbPath,
     MemorySyncStore store,
     MemorySyncStateStore state,
   ) {
-    return SyncService(
+    return DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: deviceId,
@@ -69,9 +69,6 @@ void main() {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: () async => File(dbPath).readAsBytes(),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemotePlan: (action) async {

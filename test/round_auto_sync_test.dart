@@ -2,19 +2,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/services/sync/sync_models.dart';
 
 import 'helpers/fakes.dart';
 
 /// `RoundProvider` 生成结束自动同步触发测试：
 /// - 成功落库后触发一次自动同步；
 /// - 失败（红框报错条目）后同样触发；
-/// - 触发发生在数据落库之后（成功路径轮次已入库）。
+/// - 触发发生在数据落库之后（成功路径轮次已入库）；
+/// - 触发种类为 both（轮次含图片引用：数据推送 + 图片补跑一起排队）。
 class _RecordingSyncProvider extends CloudSyncProvider {
   int triggers = 0;
+  SyncKind? lastKind;
 
   @override
-  void triggerAutoSync({bool silent = false}) {
+  void triggerSync({SyncKind kind = SyncKind.both, bool silent = false}) {
     triggers++;
+    lastKind = kind;
   }
 }
 
@@ -45,6 +49,7 @@ void main() {
     expect(ok, isTrue);
     expect(rp.rounds, hasLength(2), reason: '第零轮 + 成功一轮');
     expect(cloud.triggers, 1, reason: '成功落库后触发一次性自动同步');
+    expect(cloud.lastKind, SyncKind.both, reason: '轮次可能带图：数据 + 图片补跑');
   });
 
   test('生成失败（红框报错条目）→ 同样触发自动同步', () async {

@@ -8,13 +8,13 @@ import 'package:narrchat/database/sync_dao.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
-import 'package:narrchat/services/sync/sync_service.dart';
+import 'package:narrchat/services/sync/database_sync_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/fakes.dart';
 
-/// `SyncService` 真库 apply（删除传播）：远端删除一本书 → 同步落地为本地软删，
+/// `DatabaseSyncRunner` 真库 apply（删除传播）：远端删除一本书 → 同步落地为本地软删，
 /// 默认列表立即隐藏、`includeDeleted` 仍可见并有删除标记。
 void main() {
   setUpAll(() {
@@ -80,7 +80,7 @@ void main() {
         bookmodsFp: parts.bookModsFp,
       );
 
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
@@ -88,9 +88,6 @@ void main() {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemotePlan: (action) async {

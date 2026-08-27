@@ -104,7 +104,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     // （编辑态打开时展示最新值；轮询会在 1 分钟内兜底）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Provider.of<CloudSyncProvider?>(context, listen: false)
-          ?.triggerAutoSync(silent: true);
+          ?.triggerSync(silent: true);
     });
     // 编辑态监听书籍数据变化（云同步落地等）：未编辑字段即时跟随最新值；
     // 用户已编辑的字段保留草稿。

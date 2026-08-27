@@ -1,21 +1,16 @@
-import 'sync_image_planner.dart';
 import 'sync_merge_planner.dart';
 
-/// 把三向部件级规划结果 + 图片状态，翻译成语义化的"同步动作"清单。
+/// 把三向部件级规划结果翻译成语义化的"数据同步动作"清单（**仅数据平面**）。
 ///
-/// 供 `SyncService` 消费：它只描述"要做哪些 pull/push/conflict/删除"，
+/// 供 `DatabaseSyncRunner` 消费：它只描述"要做哪些 pull/push/conflict/删除"，
 /// 不读写库/网络。清单一律以 **uuid** 标识目标对象（跨设备身份），
 /// 落地层负责 uuid → 本地行 的映射（必要时回退 title/name）。
+/// 图片 blob / 墓碑属独立图片平面（见 `sync_image_planner.dart`），
+/// 不进入本清单——从结构上保证图片动作不可能推进数据代数。
 class SyncActionPlanner {
   SyncActionPlanner._();
 
-  static SyncAction plan({
-    required SyncMergePlan mergePlan,
-    required List<String> referencedImages,
-    required List<String> cloudImages,
-    required List<String> localImages,
-    required List<String> tombstones,
-  }) {
+  static SyncAction plan({required SyncMergePlan mergePlan}) {
     final pullBooks = <String>{};
     final pushBooks = <String>{};
     final conflictBooks = <String>{};
@@ -79,13 +74,6 @@ class SyncActionPlanner {
       }
     }
 
-    final images = ImageSyncPlanner.plan(
-      referencedImages: referencedImages,
-      cloudImages: cloudImages,
-      localImages: localImages,
-      tombstones: tombstones,
-    );
-
     return SyncAction(
       pullBookUuids: pullBooks.toList(),
       pushBookUuids: pushBooks.toList(),
@@ -97,7 +85,6 @@ class SyncActionPlanner {
       conflictModUuids: conflictMods.toList(),
       deleteRemoteModUuids: deleteRemoteMods.toList(),
       deleteLocalModUuids: deleteLocalMods.toList(),
-      images: images,
     );
   }
 
@@ -114,7 +101,7 @@ class SyncActionPlanner {
       b.bookMods == SyncPartStatus.remoteOnly;
 }
 
-/// 一次同步的语义化动作清单（uuid 标识）。
+/// 一次数据同步的语义化动作清单（uuid 标识；图片平面不在此列）。
 class SyncAction {
   final List<String> pullBookUuids;
   final List<String> pushBookUuids;
@@ -126,7 +113,6 @@ class SyncAction {
   final List<String> conflictModUuids;
   final List<String> deleteRemoteModUuids;
   final List<String> deleteLocalModUuids;
-  final ImageSyncPlan images;
 
   const SyncAction({
     required this.pullBookUuids,
@@ -139,10 +125,9 @@ class SyncAction {
     required this.conflictModUuids,
     required this.deleteRemoteModUuids,
     required this.deleteLocalModUuids,
-    required this.images,
   });
 
-  /// 是否存在任何需要落地的变更（含图片）。
+  /// 是否存在任何需要落地的**数据**变更（图片平面不在此列）。
   bool get hasChanges =>
       pullBookUuids.isNotEmpty ||
       pushBookUuids.isNotEmpty ||
@@ -153,11 +138,7 @@ class SyncAction {
       pullModUuids.isNotEmpty ||
       conflictModUuids.isNotEmpty ||
       deleteRemoteModUuids.isNotEmpty ||
-      deleteLocalModUuids.isNotEmpty ||
-      images.toUpload.isNotEmpty ||
-      images.toPull.isNotEmpty ||
-      images.toDeleteCloud.isNotEmpty ||
-      images.toDeleteLocal.isNotEmpty;
+      deleteLocalModUuids.isNotEmpty;
 
   bool get hasConflict =>
       conflictBookUuids.isNotEmpty || conflictModUuids.isNotEmpty;

@@ -8,6 +8,7 @@ import '../providers/cloud_sync_provider.dart';
 import '../services/image_store.dart';
 import '../services/storage_service.dart';
 import '../services/sync/image_deletion.dart';
+import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
 import '../widgets/image_preview.dart';
 
@@ -187,8 +188,11 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       _selectMode = false;
       _selected.clear();
     });
-    // 删除意图尽快推送到云端（自动模式；未配置/手动模式内部忽略）。
-    context.read<CloudSyncProvider?>()?.triggerAutoSync();
+    // 删除意图尽快推送到云端（仅图片平面：墓碑 + blob 收敛，不涉数据；
+    // 自动模式；未配置/手动模式内部忽略）。
+    context
+        .read<CloudSyncProvider?>()
+        ?.triggerSync(kind: SyncKind.images);
     await _load();
     if (mounted) {
       final messenger = ScaffoldMessenger.of(context);

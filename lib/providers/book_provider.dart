@@ -84,7 +84,7 @@ class BookProvider extends ChangeNotifier {
         orElse: () => _books.isNotEmpty ? _books.first : book,
       );
       notifyListeners();
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -101,7 +101,7 @@ class BookProvider extends ChangeNotifier {
       // 保持选中同一本书（以最新列表中的实例为准）。
       _currentBook = _refreshCurrent(book) ?? book;
       notifyListeners();
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

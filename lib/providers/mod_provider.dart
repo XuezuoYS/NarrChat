@@ -66,7 +66,7 @@ class ModProvider extends ChangeNotifier {
         ),
       );
       await loadUserMods();
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -79,7 +79,7 @@ class ModProvider extends ChangeNotifier {
     try {
       await _dao.updateMod(mod);
       await loadUserMods();
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -92,7 +92,7 @@ class ModProvider extends ChangeNotifier {
     try {
       await _dao.deleteMod(id);
       await loadUserMods();
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -118,7 +118,7 @@ class ModProvider extends ChangeNotifier {
   Future<bool> saveBookModConfigs(int bookId, List<BookModConfig> configs) async {
     try {
       await _dao.replaceBookMods(bookId, configs);
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

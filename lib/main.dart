@@ -122,7 +122,7 @@ Future<void> main() async {
   // 冷启动点通知：首帧后跳转到对应书的 chat 页。
   WidgetsBinding.instance.addPostFrameCallback((_) {
     // 全自动同步节点之一：打开软件。
-    cloudSyncProvider.triggerAutoSync();
+    cloudSyncProvider.triggerSync();
     // Windows 主窗口：首帧后预热一个隐藏的图片查看器窗口并复用，
     // 省去每次开图都重新创建 engine + 重跑 main() 的冷启动开销。
     if (Platform.isWindows) {

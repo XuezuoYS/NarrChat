@@ -3,8 +3,8 @@ import 'package:narrchat/services/sync/sync_action_planner.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 
-/// `SyncActionPlanner` 测试：把三向计划 + 图片状态翻译为 push/pull/conflict/删除动作
-/// （uuid 标识；设置类为 5 个子部件，本组用例以 info 子部件代表"设置"）。
+/// `SyncActionPlanner` 测试：把三向计划翻译为 push/pull/conflict/删除动作
+/// （**仅数据平面**；uuid 标识；图片动作归 `ImageSyncPlanner`，不进入本清单）。
 void main() {
   SyncMergePlan buildPlan({
     required Map<String, SyncBookBaseParts> base,
@@ -24,15 +24,8 @@ void main() {
     );
   }
 
-  SyncAction toAction(SyncMergePlan merge) {
-    return SyncActionPlanner.plan(
-      mergePlan: merge,
-      referencedImages: const [],
-      cloudImages: const [],
-      localImages: const [],
-      tombstones: const [],
-    );
-  }
+  SyncAction toAction(SyncMergePlan merge) =>
+      SyncActionPlanner.plan(mergePlan: merge);
 
   SyncBookRecord rec(String uuid, String title, String s, String r) =>
       SyncBookRecord(
@@ -98,21 +91,6 @@ void main() {
       remote: {'u1': rem('u1', '书A', 'S0', 'R1')},
     ));
     expect(a.deleteRemoteBookUuids, contains('u1'));
-  });
-
-  test('图片：墓碑（合并后的最终删除意图）→ 删除传播（云端 + 本地文件）', () {
-    final merge = buildPlan(base: const {}, local: const {}, remote: const {});
-    final a = SyncActionPlanner.plan(
-      mergePlan: merge,
-      referencedImages: const ['img/b.png'], // 仍被引用
-      cloudImages: const ['img/b.png'],
-      localImages: const ['img/b.png'],
-      tombstones: const ['img/b.png'],
-    );
-    expect(a.images.toDeleteCloud, ['img/b.png']);
-    expect(a.images.toDeleteLocal, ['img/b.png']);
-    expect(a.images.toUpload, isEmpty);
-    expect(a.images.toPull, isEmpty);
   });
 
   test('Mod：仅远端有 → 拉取；Mod 冲突 → 冲突；远端删 Mod → 本地删除清单', () {

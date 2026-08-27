@@ -13,7 +13,6 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/sync/remote_snapshot_applier.dart';
 import 'package:narrchat/services/sync/sync_action_planner.dart';
-import 'package:narrchat/services/sync/sync_image_planner.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -83,11 +82,6 @@ void main() {
       conflictModUuids: const [],
       deleteRemoteModUuids: const [],
       deleteLocalModUuids: const [],
-      images: const ImageSyncPlan(
-        toUpload: [],
-        toPull: [],
-        toDeleteCloud: [],
-      ),
     );
   }
 

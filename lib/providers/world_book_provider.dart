@@ -65,7 +65,7 @@ class WorldBookProvider extends ChangeNotifier {
         ),
       );
       await loadEntries(bookId);
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -80,7 +80,7 @@ class WorldBookProvider extends ChangeNotifier {
       if (_bookId != null) {
         await loadEntries(_bookId!);
       }
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -95,7 +95,7 @@ class WorldBookProvider extends ChangeNotifier {
       if (_bookId != null) {
         await loadEntries(_bookId!);
       }
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

@@ -596,7 +596,7 @@ class RoundProvider extends ChangeNotifier {
       notifyListeners();
       // 自动云同步：生成结束（成功落库 / 失败条目 / 用户中断均会改动本地数据），
       // 全自动模式下异步触发一次同步；不在队内重复触发（provider 内部排队）。
-      _cloudSyncProvider?.triggerAutoSync();
+      _cloudSyncProvider?.triggerSync();
     }
   }
 

@@ -218,7 +218,7 @@ class _ChatScreenState extends State<ChatScreen>
       // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
       context.read<WorldBookProvider>().loadEntries(book.id!);
       // 全自动同步节点之一：进入书籍时拉取/推送变更（非自动模式内部忽略）。
-      context.read<CloudSyncProvider>().triggerAutoSync();
+      context.read<CloudSyncProvider>().triggerSync();
     });
   }
 

@@ -9,6 +9,27 @@ enum SyncMode { auto, manual }
 /// 同步总体状态（供 HUD 与同步状态章展示）。
 enum SyncState { idle, syncing, success, error }
 
+/// 云同步平面：**两条相互独立的生命周期**。
+///
+/// - [data]：manifest / 快照 / 共基（唯一的代数迭代通道）；
+/// - [images]：`img/*` 内容寻址 blob + `img_tombstones.json` 墓碑文件
+///   （无代数概念，按「本地盘 ⊕ 云端 blob ⊕ 墓碑」收敛）。
+///
+/// 两平面各自规划、各自失败重试、各自 UI 指示；仅在同设备上经统一协调层
+/// （`SyncCoordinator` 单执行道）**串行**派发（共享同一 WebDAV 目录与软锁）。
+enum SyncPlane { data, images }
+
+extension SyncPlaneLabel on SyncPlane {
+  /// UI 展示名（HUD 分段 / 状态章文案）。
+  String get label => switch (this) {
+        SyncPlane.data => '数据同步',
+        SyncPlane.images => '图片同步',
+      };
+}
+
+/// 统一触发入口（`CloudSyncProvider.triggerSync`）的请求种类。
+enum SyncKind { both, data, images }
+
 /// 同步阶段（用于前台 HUD 展示进度与步骤）。
 enum SyncPhase {
   idle, // 未在同步
@@ -19,11 +40,12 @@ enum SyncPhase {
   merge, // 三向合并（计算/等待用户决策）
   applyLocal, // 应用合并到本地库
   pushSnapshot, // 上传新快照
-  pushImages, // 上传缺失图片
-  pullImages, // 下载缺失图片
-  deleteImages, // 删除云端被墓碑/引用的图片
   pushManifest, // 提交 manifest
   updateCursor, // 更新本地同步游标
+  tombstoneMerge, // 合并图片删除墓碑（图片平面）
+  pushImages, // 上传缺失图片
+  pullImages, // 下载缺失图片
+  deleteImages, // 删除被墓碑标记的图片（云端 + 本机）
 }
 
 /// 同步进度事件（驱动前台 HUD）。

@@ -422,7 +422,7 @@ void main() {
           ),
         },
         remote: const {
-          // SyncService 已把缺失 uuid 的清单条目归一化为 legacy 键（见 _toRemoteBooks）。
+          // DatabaseSyncRunner 已把缺失 uuid 的清单条目归一化为 legacy 键（见 _toRemoteBooks）。
           'legacy:书A': RemoteBookParts(
             uuid: 'legacy:书A',
             title: '书A',

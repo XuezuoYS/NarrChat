@@ -17,12 +17,14 @@ import '../services/image_store.dart';
 import '../services/local_config_service.dart';
 import '../services/sync/sync_action_planner.dart';
 import '../services/sync/sync_bootstrapper.dart';
+import '../services/sync/sync_coordinator.dart';
 import '../services/sync/sync_local_snapshot.dart';
 import '../services/sync/sync_merge_planner.dart';
 import '../services/sync/sync_models.dart';
+import '../services/sync/database_sync_runner.dart';
+import '../services/sync/image_sync_runner.dart';
 import '../services/sync/remote_snapshot_applier.dart';
 import '../services/sync/sync_remote_store.dart';
-import '../services/sync/sync_service.dart';
 import '../services/sync/img_tombstones.dart';
 import '../services/webdav_service.dart';
 import '../screens/database_merge_screen.dart';
@@ -31,6 +33,13 @@ import '../widgets/sync_conflict_dialog.dart';
 
 /// 云同步（WebDAV）设置与同步操作状态管理。
 ///
+/// **两平面架构**（数据 / 图片，两条独立生命周期 + 统一触发接口）：
+/// - [triggerSync]：统一触发入口（`SyncKind.both / data / images`）；
+/// - [SyncCoordinator]：同设备单执行道串行派发 + 分平面排队合并 / 取消 /
+///   状态与进度（两平面共享同一 WebDAV 目录与软锁，不并发打网络）；
+/// - [DatabaseSyncRunner]：manifest / 快照 / 共基（唯一推进代数的平面）；
+/// - [ImageSyncRunner]：`img/*` blob + `img_tombstones.json`（无代数）。
+///
 /// 存储策略（符合 AGENTS.md 数据结构规范）：
 /// - **密码**：写入 `flutter_secure_storage`（系统密钥库），禁止明文落盘；
 /// - 其余设置（服务器地址、用户名、文件夹、保留版本数、自动上传、
@@ -38,12 +47,18 @@ import '../widgets/sync_conflict_dialog.dart';
 ///   `local_config/app_settings.json`（[LocalConfigService]），不进入云存储。
 ///
 /// 云端文件约定（新版同步规则）：
-/// - `manifest.json`：增量索引；
+/// - `manifest.json`：数据平面增量索引（仅数据平面读写）；
 /// - `narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db`：数据库快照（版本备份）；
-/// - `img/<hash>.<ext>`：图片 blob（随同步自动多端复制）。
-/// 旧版 `narrchat_<user>_*.db` 备份命名不再支持。
+/// - `img/<hash>.<ext>`：图片 blob（仅图片平面读写）；
+/// - `img_tombstones.json`：图片删除墓碑（仅图片平面读写）。
 class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
-  CloudSyncProvider();
+  CloudSyncProvider() {
+    _coordinator = SyncCoordinator(
+      runTask: _runPlaneTask,
+      onChanged: notifyListeners,
+      onResult: _onPlaneResult,
+    );
+  }
 
   /// 全局 ScaffoldMessenger key：用于每轮结束自动上传等后台操作的 SnackBar 提示
   ///（不依赖任何页面的 BuildContext）。main.dart 的 MaterialApp 引用同一 key。
@@ -79,32 +94,19 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 本设备标识（首连时自动生成，用于 manifest 的 knownDevices）。
   String _deviceId = '';
 
-  /// 最近一次同步的状态（供 HUD / 同步状态章）。
-  SyncState _syncState = SyncState.idle;
+  /// 两平面统一协调层（触发 / 排队 / 分平面状态与进度）。
+  late final SyncCoordinator _coordinator;
 
-  /// 当前同步进度事件（供 HUD 展示阶段 / 进度 / 当前文件）。
-  SyncProgressEvent? _progress;
+  /// 手动同步进行期间的数据平面最近结果（[sync] 的返回值来源）。
+  bool _lastDataOk = false;
 
-  /// 用户是否请求取消当前同步（协作式，SyncService 在阶段间检查）。
-  bool _cancelRequested = false;
+  /// 设置类操作（备份列表 / 测试连接 / 下载恢复）的执行中标记。
+  bool _opsBusy = false;
 
-  /// 同步进行中期间又有新的同步请求（自动触发节点）时置位，
-  /// 当前同步结束后自动补跑一次（队列合并，避免并发同步互相覆盖）。
-  bool _pendingSyncRequested = false;
+  /// 分平面最近一次错误（面板状态徽章 / 错误框用；成功或重跑后清除）。
+  String? _dataError;
+  String? _imageError;
 
-  /// 待补跑同步是否为静默模式（轮询/回前台触发不弹成功提示）。
-  bool _pendingSyncSilent = false;
-
-  /// 静默轮询定时器（仅自动模式下存在；每分钟一次，无变更时不推进、不提示）。
-  Timer? _pollTimer;
-
-  /// 首次连接分支决策（首次连接弹窗的选择结果；否则为 null）。
-  SyncBootstrapDecision? _bootstrapDecision;
-
-  /// 首次连接「用云端覆盖本地」完成后落地的云端代际（结果提示用）。
-  int? _firstConnectGeneration;
-
-  bool _isBusy = false;
   String? _error;
   List<WebDavFile> _backups = [];
   bool _backupsLoaded = false;
@@ -120,11 +122,28 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   SyncMode get syncMode => _syncMode;
   String get deviceId => _deviceId;
 
-  /// 当前同步状态（供 HUD / 状态章）。
-  SyncState get syncState => _syncState;
+  // ---------------------------------------------------------------------------
+  // 分平面状态（供 HUD / 状态章 / 设置面板）
+  // ---------------------------------------------------------------------------
 
-  /// 当前同步进度事件（无正在进行的同步时为 null）。
-  SyncProgressEvent? get progress => _progress;
+  /// 数据平面当前同步状态（供「数据同步」指示器）。
+  SyncState get dataSyncState => _coordinator.stateOf(SyncPlane.data);
+
+  /// 图片平面当前同步状态（供「图片同步」指示器）。
+  SyncState get imageSyncState => _coordinator.stateOf(SyncPlane.images);
+
+  /// 数据平面当前进度事件（无进行中的数据同步时为 null）。
+  SyncProgressEvent? get dataProgress => _coordinator.progressOf(SyncPlane.data);
+
+  /// 图片平面当前进度事件（无进行中的图片同步时为 null）。
+  SyncProgressEvent? get imageProgress =>
+      _coordinator.progressOf(SyncPlane.images);
+
+  /// 数据平面最近一次错误（null = 无未决错误）。
+  String? get dataError => _dataError;
+
+  /// 图片平面最近一次错误（null = 无未决错误）。
+  String? get imageError => _imageError;
 
   /// 首次连接分支决策（首次连接弹窗的选择结果）。
   SyncBootstrapDecision? get bootstrapDecision => _bootstrapDecision;
@@ -164,15 +183,11 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
   }
 
-  /// 请求取消当前同步（HUD 取消按钮回调；同步完成 / 停止后自动复位）。
+  /// 请求取消指定平面的同步（HUD 分平面取消按钮回调）。
   ///
-  /// 用户主动取消时同时清掉待跑队列（避免取消后又立刻被补同步）。
-  void cancelSync() {
-    if (_syncState != SyncState.syncing) return;
-    _cancelRequested = true;
-    _pendingSyncRequested = false;
-    notifyListeners();
-  }
+  /// 运行中 → 协作式停止（Runner 在阶段间 / 逐文件检查）；待跑 → 撤销排队。
+  /// 另一平面不受影响（两平面取消语义独立）。
+  void cancelSync(SyncPlane plane) => _coordinator.cancel(plane);
 
   /// 接入应用生命周期：回前台触发一次静默同步；
   /// 并启动每分钟一次的静默轮询（自动模式下才实际执行），
@@ -181,7 +196,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _pollTimer ??= Timer.periodic(
       const Duration(minutes: 1),
-      (_) => triggerAutoSync(silent: true),
+      (_) => triggerSync(silent: true),
     );
   }
 
@@ -192,57 +207,69 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pollTimer = null;
   }
 
+  Timer? _pollTimer;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      triggerAutoSync(silent: true);
+      triggerSync(silent: true);
     }
   }
 
-  /// 全自动同步触发入口（各数据变更节点调用）。
+  // ---------------------------------------------------------------------------
+  // 统一触发接口
+  // ---------------------------------------------------------------------------
+
+  /// 全自动同步统一触发入口（各变更节点调用）。
   ///
   /// - 未配置 WebDAV 或当前为手动模式：忽略；
-  /// - 空闲：立即发起一次后台同步；
-  /// - 已有同步在进行：置 [pendingSyncRequested]，当前同步结束后自动补跑一次
-  ///   （多个触发点合并为一次补跑，同步本身幂等，见 docs/sync_auto_triggers.md）。
+  /// - [kind]：`both`（默认，数据 + 图片补跑）/ `data` / `images`；
+  /// - 空闲：立即派发对应平面任务（同执行道串行，数据优先）；
+  /// - 执行中：置对应平面待跑位（多个触发点合并为一次补跑，同步本身幂等，
+  ///   见 docs/sync_auto_triggers.md）。
   /// - [silent] 为 true（轮询 / 回前台 / 打开书籍设置等被动触发）时，
   ///   成功类结果不弹提示（失败仍提示）。
-  void triggerAutoSync({bool silent = false}) {
+  void triggerSync({SyncKind kind = SyncKind.both, bool silent = false}) {
     if (!isConfigured || _syncMode != SyncMode.auto) return;
-    if (_isBusy) {
-      _pendingSyncRequested = true;
-      _pendingSyncSilent = _pendingSyncSilent || silent;
-      return;
+    if (kind != SyncKind.images) _coordinator.trigger(SyncPlane.data, silent: silent);
+    if (kind != SyncKind.data) {
+      _coordinator.trigger(SyncPlane.images, silent: silent);
     }
-    unawaited(sync(auto: true, silent: silent));
   }
 
-  /// 测试用：是否已有排队待跑的自动同步。
-  @visibleForTesting
-  bool get debugPendingSyncRequested => _pendingSyncRequested;
+  // ---------------------------------------------------------------------------
+  // 测试钩子
+  // ---------------------------------------------------------------------------
 
-  /// 测试用：读取取消请求标记（HUD 取消按钮断言用）。
+  /// 测试用：指定平面是否有排队待跑的触发。
   @visibleForTesting
-  bool get debugCancelRequested => _cancelRequested;
+  bool debugPendingSyncRequested(SyncPlane plane) =>
+      _coordinator.pendingOf(plane);
 
-  /// 测试用：直接改写同步状态（避免依赖真实网络路径）。
+  /// 测试用：读取指定平面的取消请求标记（HUD 取消按钮断言用）。
   @visibleForTesting
-  void debugSetSyncState(SyncState state) {
-    _syncState = state;
-    notifyListeners();
-  }
+  bool debugCancelRequested(SyncPlane plane) =>
+      _coordinator.debugCancelRequested(plane);
 
-  /// 测试用：直接改写同步进度事件。
+  /// 测试用：直接改写指定平面同步状态（避免依赖真实网络路径）。
   @visibleForTesting
-  void debugSetProgress(SyncProgressEvent? event) {
-    _progress = event;
-    notifyListeners();
-  }
+  void debugSetSyncState(SyncPlane plane, SyncState state) =>
+      _coordinator.debugSetState(plane, state);
 
-  /// 测试用：直接设置忙碌标记（验证队列逻辑，避免触发真实网络）。
+  /// 测试用：直接改写指定平面同步进度事件。
   @visibleForTesting
-  void debugSetBusy(bool value) {
-    _isBusy = value;
+  void debugSetProgress(SyncPlane plane, SyncProgressEvent? event) =>
+      _coordinator.debugSetProgress(plane, event);
+
+  /// 测试用：强制占用执行道（验证排队逻辑，避免触发真实网络）。
+  @visibleForTesting
+  void debugSetLaneBusy(bool value) => _coordinator.debugSetLaneBusy(value);
+
+  /// 测试用：直接改写数据平面错误（验证分平面错误显示）。
+  @visibleForTesting
+  void debugSetPlaneErrors({String? data, String? images}) {
+    _dataError = data;
+    _imageError = images;
     notifyListeners();
   }
 
@@ -278,8 +305,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  bool get isBusy => _isBusy;
-  String? get error => _error;
+  bool get isBusy => _opsBusy || _coordinator.isRunning;
+  String? get error => _error ?? _dataError ?? _imageError;
 
   /// 云端备份列表（快照，按代际新 → 旧）。
   List<WebDavFile> get backups => List.unmodifiable(_backups);
@@ -449,6 +476,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _backups = [];
     _backupsLoaded = false;
     _error = null;
+    _dataError = null;
+    _imageError = null;
     notifyListeners();
   }
 
@@ -464,122 +493,206 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  /// 统一的「同步」入口：拉取远端非冲突变更并推送本地变更。
+  // ---------------------------------------------------------------------------
+  // 统一入口：手动「同步」
+  // ---------------------------------------------------------------------------
+
+  /// 手动「同步」：同时派发数据 + 图片两个平面（经协调层单执行道串行，
+  /// 数据先、图片后），等待整条执行道空闲后返回。
   ///
-  /// [auto] 为 true 时是后台自动同步（与手动「同步」按钮共用同一流程，
-  /// 结果提示统一为 [showSyncSnack]——完成/取消显示原因，失败驻留可复制可关闭）。
-  ///
-  /// [silent] 为 true（轮询 / 回前台 / 被动触发）时**抑制成功类提示**（
-  /// "已是最新版本" 等不再刷屏），失败仍驻留提示。
-  ///
-  /// 返回 true 表示本次同步完成（含「已是最近版本」与「冲突已引导处理」）；
-  /// false 表示失败 / 用户取消 / 冲突待处理。同步进行期间再次调用会排队
-  /// （[triggerAutoSync] 语义），当前同步结束后自动补跑一次。
-  Future<bool> sync({bool auto = false, bool silent = false}) async {
-    if (_isBusy) {
-      _pendingSyncRequested = true;
-      _pendingSyncSilent = _pendingSyncSilent || silent;
+  /// 返回 true 表示**数据平面**本轮完成（含「已是最新版本」与「冲突已引导
+  /// 处理」）；false 表示失败 / 用户取消 / 冲突待处理 / 执行道忙排队。
+  /// 图片平面的结果独立提示，不影响返回值语义。
+  Future<bool> sync() async {
+    if (isBusy) {
+      // 执行中：并入两平面待跑（与 [triggerSync] 语义一致；手动触发非静默）。
+      _coordinator.trigger(SyncPlane.data);
+      _coordinator.trigger(SyncPlane.images);
       return false;
     }
-    _isBusy = true;
-    _syncState = SyncState.syncing;
+    _lastDataOk = false;
     _error = null;
-    _progress = null;
-    _cancelRequested = false;
+    _coordinator.trigger(SyncPlane.data);
+    _coordinator.trigger(SyncPlane.images);
+    await _coordinator.onIdle;
+    return _lastDataOk;
+  }
+
+  /// 首次连接分支决策（首次连接弹窗的选择结果；否则为 null）。
+  SyncBootstrapDecision? _bootstrapDecision;
+
+  /// 协调层回调：按平面派发具体任务。
+  Future<SyncTaskOutcome> _runPlaneTask(SyncTaskContext ctx) {
+    return switch (ctx.plane) {
+      SyncPlane.data => _runDataPlane(ctx),
+      SyncPlane.images => _runImagePlane(ctx),
+    };
+  }
+
+  /// 协调层回调：分平面结果 → 全局提示 + 分平面错误记录。
+  void _onPlaneResult(
+    SyncPlane plane,
+    SyncTaskOutcome outcome,
+    bool silent,
+  ) {
+    if (plane == SyncPlane.data) {
+      _lastDataOk = outcome.state == SyncState.success;
+      _dataError = outcome.state == SyncState.error ? outcome.message : null;
+    } else {
+      _imageError = outcome.state == SyncState.error ? outcome.message : null;
+    }
+    // 静默模式（轮询 / 回前台 / 被动触发）只保留失败类提示，
+    // 避免"已是最新版本"类消息每分钟刷屏；两平面各自独立提示。
+    if (outcome.message != null && (!silent || outcome.persistent)) {
+      showSyncSnack(outcome.message!, persistent: outcome.persistent);
+    }
     notifyListeners();
-    bool ok = false;
-    String? resultMessage;
-    var resultPersistent = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 数据平面任务：首连分支 → merge/pull/push →（冲突引导）→ 备份列表刷新
+  // ---------------------------------------------------------------------------
+  Future<SyncTaskOutcome> _runDataPlane(SyncTaskContext ctx) async {
+    _dataError = null;
     WebDavService? dav;
     try {
       dav = _buildDav();
       final davStore = WebDavSyncStore(dav: dav, folder: _folder.trim());
       await davStore.ensureFolder();
-      final preflight = await _handleFirstConnect(davStore);
-      if (preflight == _FirstConnectOutcome.aborted) {
-        _syncState = SyncState.idle;
-        resultMessage = '已取消同步';
-      } else if (preflight == _FirstConnectOutcome.completed) {
-        ok = true;
-        _syncState = SyncState.success;
-        final gen = _firstConnectGeneration;
-        resultMessage = gen == null
-            ? '已导入云端数据'
-            : '已导入云端数据（第 $gen 代）';
-        _firstConnectGeneration = null;
-      } else {
-        final service = _buildSyncService(davStore);
-        final result = await service.sync();
-        if (result.error != null) {
-          // 「已取消」＝用户通过 HUD 主动取消，非失败。
-          final cancelled = result.error == '已取消';
-          _error = cancelled ? null : result.error;
-          _syncState = cancelled ? SyncState.idle : SyncState.error;
-          ok = false;
-          resultMessage = cancelled
-              ? '已取消同步'
-              : '同步失败：${result.error}';
-          resultPersistent = !cancelled;
-        } else if (result.hasConflict) {
-          ok = await _handleConflict(davStore);
-          if (ok) {
-            resultMessage = null; // 已进入冲突解决页，无需再提示
-          } else if (_error != null) {
-            resultMessage = '同步失败：$_error';
-            resultPersistent = true;
-          } else {
-            resultMessage = '已取消同步，同步模式已切换为手动。需要时请点击「同步」按钮。';
-          }
-        } else {
-          // 「无变更（已是最新）」「仅拉取落地」「有变更并已推送」都视为成功。
-          _syncState = SyncState.success;
-          ok = true;
-          // 有落地变更（拉取 / 删除传播）时刷新内存态数据：
-          // 否则另一台设备同步后 UI 仍显示缓存的旧轮次 / 旧书籍列表。
-          if (result.applied && onDataRestored != null) {
-            await onDataRestored!();
-          }
-          final gen = result.generation;
-          if (result.pushed) {
-            resultMessage =
-                '已同步到云端${gen == null ? '' : '（第 $gen 代）'}';
-          } else if (result.applied) {
-            resultMessage =
-                '已同步最新内容${gen == null ? '' : '（第 $gen 代）'}';
-          } else {
-            resultMessage =
-                '已是最新版本${gen == null ? '' : '（第 $gen 代）'}';
-          }
-        }
+      final preflight = await _handleFirstConnect(davStore, ctx);
+      switch (preflight.outcome) {
+        case _FirstConnectOutcome.aborted:
+          return const SyncTaskOutcome(
+            SyncState.idle,
+            message: '已取消数据同步',
+          );
+        case _FirstConnectOutcome.completed:
+          final gen = preflight.generation;
+          await _loadBackups(dav);
+          return SyncTaskOutcome(
+            SyncState.success,
+            message: gen == null
+                ? '已导入云端数据'
+                : '已导入云端数据（第 $gen 代）',
+            generation: gen,
+          );
+        case _FirstConnectOutcome.continueSync:
+          break;
       }
+
+      final runner = _buildDatabaseRunner(davStore, ctx);
+      final result = await runner.sync();
+      if (ctx.isCancelled()) {
+        return const SyncTaskOutcome(SyncState.idle, message: '已取消数据同步');
+      }
+      if (result.error != null) {
+        // 「已取消」＝用户通过 HUD 主动取消，非失败。
+        final cancelled = result.error == '已取消';
+        return cancelled
+            ? const SyncTaskOutcome(
+                SyncState.idle,
+                message: '已取消数据同步',
+              )
+            : SyncTaskOutcome(
+                SyncState.error,
+                message: '数据同步失败：${result.error}',
+                persistent: true,
+              );
+      }
+      if (result.hasConflict) {
+        final handled = await _handleConflict(davStore, ctx);
+        if (handled.ok) {
+          // 已进入冲突解决页，无需再提示；合并落定后经补同步推送。
+          await _loadBackups(dav);
+          return const SyncTaskOutcome(SyncState.success);
+        }
+        if (handled.error != null) {
+          return SyncTaskOutcome(
+            SyncState.error,
+            message: '数据同步失败：${handled.error}',
+            persistent: true,
+          );
+        }
+        return SyncTaskOutcome(SyncState.idle, message: handled.message);
+      }
+      // 「无变更（已是最新）」「仅拉取落地」「有变更并已推送」都视为成功。
+      // 有落地变更（拉取 / 删除传播）时刷新内存态数据：
+      // 否则另一台设备同步后 UI 仍显示缓存的旧轮次 / 旧书籍列表。
+      if (result.applied) await onDataRestored?.call();
+      final gen = result.generation;
+      final suffix = gen == null ? '' : '（第 $gen 代）';
+      final message = result.pushed
+          ? '数据已同步到云端$suffix'
+          : result.applied
+          ? '已拉取最新数据$suffix'
+          : '数据已是最新版本$suffix';
       // 刷新备份列表（展示最新一代快照）。
       await _loadBackups(dav);
+      return SyncTaskOutcome(SyncState.success, message: message, generation: gen);
     } catch (e) {
-      _error = e.toString();
-      _syncState = SyncState.error;
-      ok = false;
-      resultMessage = '同步失败：$e';
-      resultPersistent = true;
+      return SyncTaskOutcome(
+        SyncState.error,
+        message: '数据同步失败：$e',
+        persistent: true,
+      );
     } finally {
       dav?.close();
-      _isBusy = false;
-      _cancelRequested = false;
-      _progress = null;
-      notifyListeners();
-      // 排队补跑：同步幂等，多个触发点合并为一次（继承静默标记）。
-      if (_pendingSyncRequested) {
-        _pendingSyncRequested = false;
-        final pendingSilent = _pendingSyncSilent;
-        _pendingSyncSilent = false;
-        unawaited(sync(auto: true, silent: pendingSilent));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 图片平面任务：墓碑合并 → blob 收敛（无代数、不碰 manifest）
+  // ---------------------------------------------------------------------------
+  Future<SyncTaskOutcome> _runImagePlane(SyncTaskContext ctx) async {
+    _imageError = null;
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      final davStore = WebDavSyncStore(dav: dav, folder: _folder.trim());
+      await davStore.ensureFolder();
+      final runner = ImageSyncRunner(
+        store: davStore,
+        deviceId: _deviceId,
+        localImages: _localImagePaths,
+        readLocalImage: _readLocalImage,
+        writeLocalImage: _writeLocalImage,
+        deleteLocalImage: _deleteLocalImage,
+        tombstoneStore: FileTombstoneStore(),
+        onProgress: ctx.reportProgress,
+        isCancelled: ctx.isCancelled,
+      );
+      final result = await runner.sync();
+      if (result.error == '已取消') {
+        return const SyncTaskOutcome(SyncState.idle, message: '已取消图片同步');
       }
+      if (result.error != null) {
+        return SyncTaskOutcome(
+          SyncState.error,
+          message: '图片同步失败：${result.error}',
+          persistent: true,
+        );
+      }
+      // 无 blob 变更时不提示（静默收敛：仅墓碑维护）；有变更给出计数摘要。
+      final parts = <String>[
+        if (result.uploaded > 0) '上传 ${result.uploaded}',
+        if (result.pulled > 0) '下载 ${result.pulled}',
+        if (result.deleted > 0) '删除 ${result.deleted}',
+      ];
+      return SyncTaskOutcome(
+        SyncState.success,
+        message: result.applied
+            ? '图片同步完成（${parts.join(' · ')}）'
+            : null,
+      );
+    } catch (e) {
+      return SyncTaskOutcome(
+        SyncState.error,
+        message: '图片同步失败：$e',
+        persistent: true,
+      );
+    } finally {
+      dav?.close();
     }
-    // 静默模式（轮询 / 回前台 / 打开书籍设置）只保留失败类提示，
-    // 避免"已是最新版本"类消息每分钟刷屏。
-    if (resultMessage != null && (!silent || resultPersistent)) {
-      showSyncSnack(resultMessage, persistent: resultPersistent);
-    }
-    return ok;
   }
 
   // ---------------------------------------------------------------------------
@@ -591,42 +704,52 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// - 弹窗后按用户选择落地：`pullCloud` 用云端覆盖本地并完成，
   ///   `initCloud` 把云端设为共基后走常规同步（推送本地），
   ///   `mergeBoth` 走常规同步（真冲突进入冲突处理）。
-  Future<_FirstConnectOutcome> _handleFirstConnect(
+  Future<_FirstConnectResult> _handleFirstConnect(
     WebDavSyncStore davStore,
+    SyncTaskContext ctx,
   ) async {
     final decision = await _computeFirstConnectDecision(davStore);
-    if (decision == null) return _FirstConnectOutcome.continueSync;
+    if (decision == null) {
+      return const _FirstConnectResult(_FirstConnectOutcome.continueSync);
+    }
     final summary = SyncBootstrapSummary(
       localBooks: await _localCount('books'),
       localMods: await _localCount('mods'),
-      cloudBooks: decision == SyncBootstrapDecision.mergeBoth
-          ? await _cloudBookCount(davStore)
-          : 0,
-      cloudMods: decision == SyncBootstrapDecision.mergeBoth
-          ? await _cloudModCount(davStore)
-          : 0,
+      cloudBooks:
+          decision == SyncBootstrapDecision.mergeBoth
+              ? await _cloudBookCount(davStore)
+              : 0,
+      cloudMods:
+          decision == SyncBootstrapDecision.mergeBoth
+              ? await _cloudModCount(davStore)
+              : 0,
     );
-    final ctx = navigatorKey.currentState?.context;
-    if (ctx == null) {
+    final navCtx = navigatorKey.currentState?.context;
+    if (navCtx == null) {
       // 无可渲染的 Navigator（如纯后台自动同步）时记录并跳过，走常规同步；
       // 常规同步检出冲突后走冲突处理（同样会因无 Navigator 而记录错误）。
       _bootstrapDecision = decision;
-      return _FirstConnectOutcome.continueSync;
+      return const _FirstConnectResult(_FirstConnectOutcome.continueSync);
     }
-    // ctx 取自应用级 Navigator（常驻），非会话内会失效的局部 context，忽略该告警。
+    // navCtx 取自应用级 Navigator（常驻），非会话内会失效的局部 context，忽略该告警。
     // ignore: use_build_context_synchronously
-    final chosen = await showSyncBootstrapDialog(ctx, summary: summary);
-    if (chosen == null) return _FirstConnectOutcome.aborted;
+    final chosen = await showSyncBootstrapDialog(navCtx, summary: summary);
+    if (chosen == null) {
+      return const _FirstConnectResult(_FirstConnectOutcome.aborted);
+    }
     _bootstrapDecision = chosen;
     if (chosen == SyncBootstrapDecision.pullCloud) {
-      _firstConnectGeneration = await _applyCloudOverLocal(davStore);
-      return _FirstConnectOutcome.completed;
+      final gen = await _applyCloudOverLocal(davStore, ctx);
+      return _FirstConnectResult(
+        _FirstConnectOutcome.completed,
+        generation: gen,
+      );
     }
     if (chosen == SyncBootstrapDecision.initCloud) {
       // 本地覆盖云端：先让远端内容成为共基，常规同步即会以 localOnly 推送本地。
       await _adoptRemoteAsBase(davStore);
     }
-    return _FirstConnectOutcome.continueSync;
+    return const _FirstConnectResult(_FirstConnectOutcome.continueSync);
   }
 
   /// 计算首次连接分支：仅"从未同步且两端都有数据"返回 `mergeBoth` 暗示需弹窗，
@@ -647,10 +770,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 「用云端覆盖本地」：下载当前代快照整体替换本地，并把云端内容设为共基
-  /// （替换后本地与云端一致，下次同步为「无变更」）。
+  ///（替换后本地与云端一致，下次同步为「无变更」）。
   ///
   /// 返回落地的云端代际（无快照可下载时返回 null）。
-  Future<int?> _applyCloudOverLocal(WebDavSyncStore davStore) async {
+  Future<int?> _applyCloudOverLocal(
+    WebDavSyncStore davStore,
+    SyncTaskContext ctx,
+  ) async {
     final manifest = await davStore.readManifest();
     final name = await davStore.latestSnapshotName(
       generation: manifest?.generation,
@@ -658,14 +784,18 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (name == null) return null;
     final bytes = await davStore.readSnapshot(name);
     if (bytes == null) return null;
+    ctx.reportProgress(
+      const SyncProgressEvent(
+        phase: SyncPhase.pullSnapshot,
+        label: '下载云端快照…',
+      ),
+    );
     final tempPath = await CloudSyncService.saveSnapshotToTemp(name, bytes);
     try {
       await CloudSyncService.applyReplace(tempPath);
       // 用云端内容修正本地共基，避免下次同步把远端当作变化拉回。
       await _adoptRemoteAsBase(davStore);
-      if (onDataRestored != null) {
-        await onDataRestored!();
-      }
+      await onDataRestored?.call();
       return manifest?.generation;
     } finally {
       _cleanupTemp(tempPath);
@@ -718,62 +848,82 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 恢复 / 合并落定后：把云端内容设为共基，并触发一次自动同步推送本地结果。
   ///
-  /// 失败（如离线）不阻塞恢复结果本身；自动同步由 [triggerAutoSync] 门控。
+  /// 失败（如离线）不阻塞恢复结果本身；自动同步由 [triggerSync] 门控。
   Future<void> _rebaseAndQueuedSync() async {
     WebDavService? dav;
     try {
       dav = _buildDav();
-      await _adoptRemoteAsBase(WebDavSyncStore(dav: dav, folder: _folder.trim()));
+      await _adoptRemoteAsBase(
+        WebDavSyncStore(dav: dav, folder: _folder.trim()),
+      );
     } catch (e) {
       _error = e.toString();
     } finally {
       dav?.close();
     }
-    triggerAutoSync();
+    triggerSync();
   }
 
   // ---------------------------------------------------------------------------
-  // 冲突处理
+  // 冲突处理（数据平面）
   // ---------------------------------------------------------------------------
 
   /// 同步检出冲突后的引导对话框：
-  /// - 取消同步：中止本次同步并把同步模式改为手动；
+  /// - 取消同步：中止本次同步（数据平面）并把同步模式改为手动；
   /// - 解决冲突：下载当前代快照，进入合并决策页逐本确认。
-  Future<bool> _handleConflict(WebDavSyncStore davStore) async {
-    final ctx = navigatorKey.currentState?.context;
-    if (ctx == null) {
-      _error = '检测到同步冲突，请打开「设置 → 云同步」处理。';
-      _syncState = SyncState.error;
-      return false;
+  Future<_ConflictResult> _handleConflict(
+    WebDavSyncStore davStore,
+    SyncTaskContext ctx,
+  ) async {
+    final navCtx = navigatorKey.currentState?.context;
+    if (navCtx == null) {
+      return const _ConflictResult(
+        ok: false,
+        error: '检测到同步冲突，请打开「设置 → 云同步」处理。',
+      );
     }
-    // 更新 HUD/进度文案：检出冲突 → 等待用户选择，而不是停留在上一步描述。
-    _setProgress(SyncPhase.merge, '检测到同步冲突，等待处理…');
-    // ctx 取自应用级 Navigator（常驻），忽略该告警。
+    // 更新数据平面指示器：检出冲突 → 等待用户选择，而不是停留在上一步描述。
+    ctx.reportProgress(
+      const SyncProgressEvent(
+        phase: SyncPhase.merge,
+        label: '检测到同步冲突，等待处理…',
+      ),
+    );
+    // navCtx 取自应用级 Navigator（常驻），忽略该告警。
     // ignore: use_build_context_synchronously
-    final action = await showSyncConflictDialog(ctx);
+    final action = await showSyncConflictDialog(navCtx);
     if (action == SyncConflictAction.cancelSync) {
       await setSyncMode(SyncMode.manual);
-      _error = null;
-      _syncState = SyncState.idle;
-      return false;
+      return const _ConflictResult(
+        ok: false,
+        message: '已取消数据同步，同步模式已切换为手动。需要时请点击「同步」按钮。',
+      );
     }
-    final resolved = await _openConflictResolver(davStore);
+    final resolved = await _openConflictResolver(davStore, ctx);
     if (!resolved) {
-      _error = '冲突解决失败：无法下载/解析远端快照，请稍后重试或改用「云端备份」列表处理。';
-      _syncState = SyncState.error;
-      return false;
+      return const _ConflictResult(
+        ok: false,
+        error: '冲突解决失败：无法下载/解析远端快照，请稍后重试或改用「云端备份」列表处理。',
+      );
     }
     // 已引导进入合并决策页；合并落定后由 applyMergePlan 触发补同步推送结果。
-    _syncState = SyncState.success;
-    return true;
+    return const _ConflictResult(ok: true);
   }
 
   /// 打开冲突解决页：下载当前代快照 → 构建合并计划 → 进入 [DatabaseMergeScreen]。
-  Future<bool> _openConflictResolver(WebDavSyncStore davStore) async {
-    final ctx = navigatorKey.currentState?.context;
-    if (ctx == null) return false;
-    // 更新 HUD/进度文案：走下一步（下载快照），避免停留在上一步描述。
-    _setProgress(SyncPhase.pullSnapshot, '下载远端快照…');
+  Future<bool> _openConflictResolver(
+    WebDavSyncStore davStore,
+    SyncTaskContext ctx,
+  ) async {
+    final navCtx = navigatorKey.currentState?.context;
+    if (navCtx == null) return false;
+    // 更新指示器文案：走下一步（下载快照），避免停留在上一步描述。
+    ctx.reportProgress(
+      const SyncProgressEvent(
+        phase: SyncPhase.pullSnapshot,
+        label: '下载远端快照…',
+      ),
+    );
     final manifest = await davStore.readManifest();
     final name = await davStore.latestSnapshotName(
       generation: manifest?.generation,
@@ -791,25 +941,24 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _cleanupTemp(tempPath);
     // 进入合并决策页：提示"等待处理"，同步本身挂起等合并落定后的补同步。
-    _setProgress(SyncPhase.merge, '检测到冲突，请在合并页选择处理方式…');
+    ctx.reportProgress(
+      const SyncProgressEvent(
+        phase: SyncPhase.merge,
+        label: '检测到冲突，请在合并页选择处理方式…',
+      ),
+    );
     // 合并页弹在应用级 Navigator 上；onApply 由 applyMergePlan 落地并补同步。
     await DatabaseMergeScreen.open(
       // ignore: use_build_context_synchronously
-      ctx,
+      navCtx,
       plan: plan,
       onApply: (p, bd, md) => applyMergePlan(p, bd, md),
     );
     return true;
   }
 
-  /// 更新同步进度事件（供 HUD 展示当前步骤；冲突页交互阶段也随步骤更新）。
-  void _setProgress(SyncPhase phase, String label) {
-    _progress = SyncProgressEvent(phase: phase, label: label);
-    notifyListeners();
-  }
-
   // ---------------------------------------------------------------------------
-  // 同步服务构建
+  // 同步执行器构建
   // ---------------------------------------------------------------------------
 
   Future<int> _localCount(String table) async {
@@ -824,9 +973,15 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<int> _cloudModCount(WebDavSyncStore davStore) async =>
       (await davStore.readManifest())?.mods.length ?? 0;
 
-  /// 构建驱动真实云同步的 [SyncService]（用真实 WebDAV + 本地库 + 图片目录）。
-  SyncService _buildSyncService(WebDavSyncStore store) {
-    return SyncService(
+  /// 构建驱动**数据平面**同步的 [DatabaseSyncRunner]（真实 WebDAV + 本地库）。
+  ///
+  /// 只注入数据平面依赖（快照构建 / 引用集 / 落地回调）；图片依赖
+  ///（本地盘读写 / 墓碑文件）只归 [ImageSyncRunner]，两平面互不共享。
+  DatabaseSyncRunner _buildDatabaseRunner(
+    WebDavSyncStore store,
+    SyncTaskContext ctx,
+  ) {
+    return DatabaseSyncRunner(
       store: store,
       stateStore: SyncStateDao(),
       deviceId: _deviceId,
@@ -834,14 +989,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: CloudSyncService.buildSnapshotBytes,
       referencedImages: _referencedImages,
-      localImages: _localImagePaths,
-      readLocalImage: _readLocalImage,
-      writeLocalImage: _writeLocalImage,
-      deleteLocalImage: _deleteLocalImage,
-      tombstoneStore: FileTombstoneStore(),
       keepVersions: _keepVersions,
-      onProgress: _onSyncProgress,
-      isCancelled: () => _cancelRequested,
+      onProgress: ctx.reportProgress,
+      isCancelled: ctx.isCancelled,
       applyRemotePlan: _applyRemotePlan,
       applyRemoteBooks: _applyRemoteBooks,
     );
@@ -853,12 +1003,11 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     SyncMergePlan mergePlan,
     SyncAction action,
     Uint8List snapshotBytes,
-  ) =>
-      const RemoteSnapshotApplier().apply(
-        mergePlan: mergePlan,
-        action: action,
-        snapshotBytes: snapshotBytes,
-      );
+  ) => const RemoteSnapshotApplier().apply(
+    mergePlan: mergePlan,
+    action: action,
+    snapshotBytes: snapshotBytes,
+  );
 
   /// 把远端拉取 / 删除传播的 [SyncAction] 落地到本地库。
   ///
@@ -905,17 +1054,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     return uuid == refUuid;
   }
 
-  /// 记录同步进度事件（已接收主线程回调，无需跨线程）。
-  void _onSyncProgress(SyncProgressEvent event) {
-    _progress = event;
-    notifyListeners();
-  }
-
-  /// 收集当前库实际引用的图片路径（存活集）。
+  /// 收集当前库实际引用的图片路径（存活集；仅写入 manifest.images 展示项）。
   Future<List<String>> _referencedImages() async {
     final db = await DatabaseHelper.instance.database;
     final out = <String>{};
-    for (final row in await db.query('rounds', columns: ['user_images', 'ai_images'])) {
+    for (final row in await db.query(
+      'rounds',
+      columns: ['user_images', 'ai_images'],
+    )) {
       out.addAll(_decodeImgList(row['user_images']));
       out.addAll(_decodeImgList(row['ai_images']));
     }
@@ -936,12 +1082,16 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     return const [];
   }
 
+  // ---- 图片平面本地读写（仅 ImageSyncRunner 使用） ----
+
   Future<List<String>> _localImagePaths() async {
     final dir = await ImageStore.imgDirectory();
     if (!await dir.exists()) return const [];
     final out = <String>[];
     await for (final e in dir.list(followLinks: false)) {
-      if (e is File) out.add('${ImageStore.relativeDir}/${e.uri.pathSegments.last}');
+      if (e is File) {
+        out.add('${ImageStore.relativeDir}/${e.uri.pathSegments.last}');
+      }
     }
     return out;
   }
@@ -966,10 +1116,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (await file.exists()) await file.delete();
   }
 
+  // ---------------------------------------------------------------------------
+  // 备份列表 / 数据恢复（与两平面任务共用执行道互斥由调用方 UI 门控）
+  // ---------------------------------------------------------------------------
+
   /// 刷新云端备份列表。
   Future<void> refreshBackups() async {
-    if (_isBusy) return;
-    _isBusy = true;
+    if (isBusy) return;
+    _opsBusy = true;
     _error = null;
     notifyListeners();
     WebDavService? dav;
@@ -980,7 +1134,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _error = e.toString();
     } finally {
       dav?.close();
-      _isBusy = false;
+      _opsBusy = false;
       notifyListeners();
     }
   }
@@ -994,8 +1148,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     required String password,
     required String folder,
   }) async {
-    if (_isBusy) return '正在进行其他同步操作，请稍候';
-    _isBusy = true;
+    if (isBusy) return '正在进行其他同步操作，请稍候';
+    _opsBusy = true;
     _error = null;
     notifyListeners();
     try {
@@ -1019,7 +1173,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _error = e.toString();
       return e.toString();
     } finally {
-      _isBusy = false;
+      _opsBusy = false;
       notifyListeners();
     }
   }
@@ -1044,8 +1198,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 下载指定快照到临时目录，返回临时文件路径；失败返回 null。
   Future<String?> downloadBackup(String name) async {
-    if (_isBusy) return null;
-    _isBusy = true;
+    if (isBusy) return null;
+    _opsBusy = true;
     _error = null;
     notifyListeners();
     WebDavService? dav;
@@ -1061,7 +1215,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       return null;
     } finally {
       dav?.close();
-      _isBusy = false;
+      _opsBusy = false;
       notifyListeners();
     }
   }
@@ -1100,8 +1254,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 执行数据落地操作并触发刷新回调。
   Future<bool> _apply(Future<void> Function() action) async {
-    if (_isBusy) return false;
-    _isBusy = true;
+    if (isBusy) return false;
+    _opsBusy = true;
     _error = null;
     notifyListeners();
     try {
@@ -1112,7 +1266,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _error = e.toString();
       return false;
     } finally {
-      _isBusy = false;
+      _opsBusy = false;
       notifyListeners();
     }
   }
@@ -1126,7 +1280,15 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 }
 
-/// 首次连接预检结果。
+/// 首次连接预检结果（含「用云端覆盖本地」落地的代际）。
+class _FirstConnectResult {
+  final _FirstConnectOutcome outcome;
+  final int? generation;
+
+  const _FirstConnectResult(this.outcome, {this.generation});
+}
+
+/// 首次连接预检结局。
 enum _FirstConnectOutcome {
   /// 无需处理（老用户 / 仅一端有数据），走常规同步。
   continueSync,
@@ -1136,4 +1298,13 @@ enum _FirstConnectOutcome {
 
   /// 用户取消（不执行同步）。
   aborted,
+}
+
+/// 冲突引导处理结果（ok=已进合并页；message=取消类提示；error=失败原因）。
+class _ConflictResult {
+  final bool ok;
+  final String? message;
+  final String? error;
+
+  const _ConflictResult({required this.ok, this.message, this.error});
 }

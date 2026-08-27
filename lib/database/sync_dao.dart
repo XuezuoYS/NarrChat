@@ -97,7 +97,7 @@ class SyncModBase {
       );
 }
 
-/// 云同步状态 / 共基数据访问抽象，供 `SyncService` 依赖（便于注入内存替身）。
+/// 云同步状态 / 共基数据访问抽象，供 `DatabaseSyncRunner` 依赖（便于注入内存替身）。
 ///
 /// 图片删除墓碑**不在此列**（不进入数据库）：由独立的墓碑文件承载
 /// （`img_tombstones.dart`——WebDAV 云端文件 + 本地工作副本）。

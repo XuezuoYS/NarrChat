@@ -5,7 +5,7 @@ import 'package:narrchat/database/sync_dao.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
-import 'package:narrchat/services/sync/sync_service.dart';
+import 'package:narrchat/services/sync/database_sync_runner.dart';
 
 import 'helpers/fakes.dart';
 
@@ -68,16 +68,13 @@ void main() {
     Uint8List? pulledBytes;
     // 拉取后本地快照应纳入远端书（真实场景由库重建产生；此处模拟）。
     var local = _localSnapshot;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
@@ -162,16 +159,13 @@ void main() {
     SyncMergePlan? passedPlan;
     // 本地 == base（仅远端改动轮次）；拉取后本地与远端一致。
     var local = _localSnapshot;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
@@ -243,16 +237,13 @@ void main() {
     List<String>? pulledMods;
     // 本地无 m2、无 base → 该 Mod 为 remoteOnly。
     var local = _localSnapshot;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
@@ -318,16 +309,13 @@ void main() {
       );
 
     var called = false;
-    final svc = SyncService(
+    final svc = DatabaseSyncRunner(
       store: store,
       stateStore: state,
       deviceId: 'dev-1',
       buildLocalSnapshot: () async => _localSnapshot,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      localImages: () async => const [],
-      readLocalImage: (_) async => null,
-      writeLocalImage: (_, _) async {},
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (_, _, _) async => called = true,

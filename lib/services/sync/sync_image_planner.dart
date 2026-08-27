@@ -1,6 +1,9 @@
-/// 图片同步规划（内容寻址 + 全局删除传播）。
+/// 图片同步规划（内容寻址 + 全局删除传播）——**图片平面**唯一规划器。
 ///
 /// 纯逻辑，不读写文件/网络。输入均为**内容寻址路径**（`img/<hash>.<ext>`）。
+/// 图片平面无代数概念：不读不写 manifest / 快照，仅收敛 `img/*` blob 与
+/// 墓碑文件（`img_tombstones.json`），因此也**不依赖数据库**（本地盘的镜像
+/// 语义覆盖未入正文的图；「DB 引用集」只是数据平面 manifest.images 的展示项）。
 ///
 /// 规则：
 /// - **只靠显式删除**：图片仅在用户于图片库删除后才离开云端；删书不自动清图。
@@ -15,17 +18,14 @@ class ImageSyncPlanner {
 
   /// 计算图片同步动作。
   ///
-  /// - [referencedImages]：当前快照（DB）实际引用的图片路径（存活集）；
   /// - [cloudImages]：云端实际存在的 blob 路径；
   /// - [localImages]：本地 `img/` 目录现存路径；
   /// - [tombstones]：删除墓碑路径集合（云端墓碑文件合并后的最终意图）。
   static ImageSyncPlan plan({
-    required List<String> referencedImages,
     required List<String> cloudImages,
     required List<String> localImages,
     required List<String> tombstones,
   }) {
-    final referenced = referencedImages.toSet();
     final cloud = cloudImages.toSet();
     final local = localImages.toSet();
     final tombstonesSet = tombstones.toSet();
@@ -37,7 +37,7 @@ class ImageSyncPlanner {
 
     // 1. 墓碑：删除传播。**幂等**——只有云端 blob 仍存在时才计入「删除云端」，
     //    只有本机仍持有文件时才计入「删除本地」；已删除完成的图不再产生任何
-    //    动作（否则墓碑条目保留一年，每次同步都会误判为有变更而推进代数）。
+    //    动作（否则墓碑条目保留一年，每次同步都会误判为有变更）。
     for (final t in tombstonesSet) {
       if (cloud.contains(t)) toDeleteCloud.add(t);
       if (local.contains(t)) toDeleteLocal.add(t);
@@ -88,4 +88,11 @@ class ImageSyncPlan {
     required this.toDeleteCloud,
     this.toDeleteLocal = const [],
   });
+
+  /// 本轮是否存在需要落地的 blob 动作。
+  bool get hasChanges =>
+      toUpload.isNotEmpty ||
+      toPull.isNotEmpty ||
+      toDeleteCloud.isNotEmpty ||
+      toDeleteLocal.isNotEmpty;
 }
