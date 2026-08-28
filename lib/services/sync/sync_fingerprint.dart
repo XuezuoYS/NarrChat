@@ -73,6 +73,21 @@ class SyncFingerprint {
     });
   }
 
+  /// 解析「轮次部件」聚合串的行内容列表（`roundsWithFailed` 的输出格式：按
+  /// round_index 升序的 `round()` 行串）。不可解析（旧格式 / 损坏）→ null，
+  /// 调用方按整串语义处理。
+  static List<String>? roundRows(String fp) {
+    try {
+      final decoded = jsonDecode(fp);
+      if (decoded is! Map || decoded['rounds'] is! List) return null;
+      final rows = decoded['rounds'] as List;
+      if (rows.any((r) => r is! String)) return null;
+      return rows.cast<String>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// 「世界书部件」指纹：按 keyword 排序后逐条哈希（顺序无关；不含 created_at）。
   static String worldBooks(List<Map<String, Object?>> rows) {
     final sorted = [...rows]..sort((a, b) {

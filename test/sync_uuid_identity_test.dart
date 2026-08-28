@@ -5,6 +5,7 @@ import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/database_helper.dart';
 import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
+import 'package:narrchat/database/sync_dao.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/mod.dart';
@@ -21,7 +22,8 @@ import 'helpers/fakes.dart';
 /// 1. A 建书 → A 同步 → 云端 gen1；
 /// 2. B 首连拉取整书（含远端 uuid 身份）；
 /// 3. B 再次同步 → 无变更（不推进代数）；
-/// 4. A 改全局后置词 → 同步 → B 同步拉到新后置词（且 B 不推进代数）；
+/// 4. A 改全局后置词 → 同步 → B 检出「云端单侧设置变更」待确认（不静默覆盖
+///    本地），确认后落地新后置词；
 /// 5. B 重存相同书籍设置 → 无变更不推送。
 void main() {
   setUpAll(() {
@@ -135,12 +137,39 @@ void main() {
     expect(result.pushed, isTrue);
     expect(store.manifest!.generation, 2);
 
-    // —— B 同步：拉到新后置词，且不推进代数 ——
+    // —— B 同步：云端新后置词 → 设置类单侧变更走人工确认门（不静默应用）——
     await useDb(pathB);
     result = await serviceFor('dev-b', pathB, store, stateB).sync();
-    expect(result.applied, isTrue, reason: '拉取落地');
-    expect(result.pushed, isFalse, reason: '本地无独立变更 → 不推送');
-    expect(store.manifest!.generation, 2, reason: '代数保持 A 推进的一代');
+    expect(result.hasConflict, isTrue, reason: '云端单改设置需进合并决策页确认');
+    expect(result.applied, isFalse);
+    expect(store.manifest!.generation, 2, reason: '确认门前绝不改写云端');
+    final pendingB = (await BookDao().getAllBooks()).single;
+    expect(pendingB.globalPostPrompt, '旧后置词',
+        reason: '未确认前本地不被云端版本覆盖');
+
+    // —— 模拟用户在合并决策页选择「导入」：云端设置落地本地，共基按云端
+    // 清单重定基（_rebaseAndQueuedSync 流程）→ 再次同步与云端一致、不推送 ——
+    await bookDaoB.updateBook(
+      Book(
+        id: pendingB.id,
+        uuid: pendingB.uuid,
+        title: pendingB.title,
+        category: pendingB.category,
+        globalPostPrompt: '新后置词',
+      ),
+    );
+    final cloudEntry = store.manifest!.books.single;
+    stateB.bookBases[cloudEntry.uuid] = SyncBookBase(
+      uuid: cloudEntry.uuid,
+      title: cloudEntry.title,
+      settingsFp: cloudEntry.settingsFp,
+      roundsFp: cloudEntry.roundsFp,
+      worldbookFp: cloudEntry.worldBookFp,
+      bookmodsFp: cloudEntry.bookModsFp,
+    );
+    result = await serviceFor('dev-b', pathB, store, stateB).sync();
+    expect(result.applied, isFalse, reason: '导入后与云端一致 → 无需推送');
+    expect(store.manifest!.generation, 2);
     final updatedB = (await BookDao().getAllBooks()).single;
     expect(updatedB.globalPostPrompt, '新后置词', reason: '后置词已同步至另一台设备');
 

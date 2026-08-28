@@ -13,7 +13,8 @@ enum SyncConflictAction {
 
 /// 打开同步冲突对话框。
 ///
-/// 仅当同步检出「真冲突」（双方都改过同一部件）时调用。返回用户选择；
+/// 当同步检出「真冲突」（双方在同一部件改出分歧）**或待人工确认的云端单侧
+/// 设置 / Mod 变更**时调用。返回用户选择；
 /// 关闭对话框（Esc / 点空白）视为 [SyncConflictAction.cancelSync]。
 Future<SyncConflictAction> showSyncConflictDialog(BuildContext context) {
   return showDialog<SyncConflictAction>(
@@ -52,8 +53,8 @@ class _SyncConflictDialog extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    '本地与云端在同一本书 / Mod 上都有修改，无法自动合并。'
-                    '请选择如何处理：',
+                    '云端有书籍设置 / Mod 变更需要确认，或双方在同一本书 / Mod '
+                    '上改出了分歧，无法自动合并。请选择如何处理：',
                     style: TextStyle(
                       fontSize: 13,
                       height: 1.4,

@@ -4,7 +4,9 @@ import 'package:narrchat/services/sync/sync_merge_planner.dart';
 
 /// 冲突检测回归：双端都修改同一本书 / 同一 Mod 时，各身份形态下都必须
 /// 判定为「真冲突」（走冲突解决提示），绝不能被静默覆盖 / 静默拉取。
-/// 设置类拆成 5 个子部件：同子部件双改 → 冲突；不同子部件双改 → 各自动合并不冲突。
+/// 设置类为单部件（任一字段双改即冲突）；**仅云端改动的设置类部件**不再是
+/// "自动拉取"，而是 `remoteOnly + needsReview` → 动作层折叠进确认通道
+/// （冲突对话框 + 合并决策页），本文件在规划层断言状态与 needsReview。
 void main() {
   SyncBookRecord rec(String uuid, String title, String s, String r) =>
       SyncBookRecord(
@@ -121,7 +123,7 @@ void main() {
       expect(d.settings, SyncPartStatus.conflict);
     });
 
-    test('仅本地改设置（远端未改）→ localOnly 自动推；仅远端改 → 自动拉', () {
+    test('仅本地改设置 → localOnly 自动推；仅远端改 → remoteOnly + 待确认', () {
       final localOnly = SyncMergePlanner.plan(
         base: const {
           'u1': SyncBookBaseParts(title: '书A', settingsFp: 'S0', roundsFp: 'R1'),
@@ -147,6 +149,8 @@ void main() {
       );
       expect(remoteOnly.books.single.settings, SyncPartStatus.remoteOnly);
       expect(remoteOnly.books.single.hasConflict, isFalse);
+      expect(remoteOnly.books.single.needsReview, isTrue,
+          reason: '设置类仅云端改动 → 动作层折叠进确认通道');
     });
   });
 
@@ -254,7 +258,7 @@ void main() {
       expect(plan.books.single.settings, SyncPartStatus.localOnly);
     });
 
-    test('仅远端改（本地未改）→ remoteOnly 自动拉', () {
+    test('仅远端改（本地未改）→ remoteOnly + 待人工确认', () {
       final plan = SyncMergePlanner.plan(
         base: const {
           'u1': SyncBookBaseParts(title: '书A', settingsFp: 'S0', roundsFp: 'R1'),
@@ -267,6 +271,9 @@ void main() {
       );
       expect(plan.books.single.hasConflict, isFalse);
       expect(plan.books.single.settings, SyncPartStatus.remoteOnly);
+      expect(plan.books.single.needsReview, isTrue,
+          reason: '设置类仅云端改动 → 动作层进确认通道');
+      expect(plan.needsReview, isTrue);
     });
   });
 }

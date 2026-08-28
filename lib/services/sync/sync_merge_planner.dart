@@ -1,3 +1,4 @@
+import 'sync_fingerprint.dart';
 import 'sync_local_snapshot.dart';
 
 /// 三向部件级合并规划器（纯逻辑，不写库、不联网）。
@@ -47,7 +48,12 @@ class SyncMergePlanner {
         presence = SyncBookPresence.both;
         settings =
             _classify(bv?.settingsFp ?? '', lv.parts.settingsFp, rv.settingsFp, basePresent);
-        rounds = _classify(bv?.roundsFp ?? '', lv.parts.roundsFp, rv.roundsFp, basePresent);
+        rounds = _classifyRoundsPart(
+          bv?.roundsFp ?? '',
+          lv.parts.roundsFp,
+          rv.roundsFp,
+          basePresent,
+        );
         worldBook =
             _classify(bv?.worldBookFp ?? '', lv.parts.worldBookFp, rv.worldBookFp, basePresent);
         bookMods =
@@ -142,9 +148,12 @@ class SyncMergePlanner {
     String remoteFp,
     bool basePresent,
   ) {
+    // 双端内容一致（含各自独立改出相同结果）→ 无分歧可谈，直接静默。
+    if (localFp == remoteFp) return SyncPartStatus.unchanged;
     final localSame = localFp == baseFp;
     final remoteSame = remoteFp == baseFp;
     if (!basePresent) {
+      // 首连无共基：维持"整串合并人工处理"的既有语义。
       return localSame && remoteSame
           ? SyncPartStatus.unchanged
           : SyncPartStatus.conflict;
@@ -153,6 +162,62 @@ class SyncMergePlanner {
     if (!localSame && remoteSame) return SyncPartStatus.localOnly;
     if (localSame && !remoteSame) return SyncPartStatus.remoteOnly;
     return SyncPartStatus.conflict;
+  }
+
+  /// 轮次部件分类：**整串三向（现状语义）**；仅当串级判为「双方都改」时，
+  /// 兜一层**以共基锚定的单纯增**（用户规则：本地 n 轮、云端 n+m 轮、前 n 轮
+  /// 逐行一致 → 直接给短侧加长侧的 m 轮；反之亦然）：
+  /// - 一侧轮次行序列与共基一致、另一侧 = 共基行序 + 尾部新增 → 自动：
+  ///   远端是纯增量 → remoteOnly（拉）；本地是纯增量 → localOnly（推）。
+  /// - 两侧轮次行完全一致（串级差异只来自失败条目草稿，用户不可见）→ 按
+  ///   纯增量（m=0）流转：推本地，对端下次同步拉取。
+  /// - 其余一切（双方各加各的轮、同轮改出分歧、删 vs 改 / 删 vs 增）→ 真冲突，
+  ///   交用户在决策页裁决。**不做任何自动并集**。
+  /// 行比对 = 完整呈现文本（`round()` 串，不做哈希）；聚合串不可解析（旧格式/
+  /// 损坏）→ 维持串级冲突现状。
+  static SyncPartStatus _classifyRoundsPart(
+    String baseFp,
+    String localFp,
+    String remoteFp,
+    bool basePresent,
+  ) {
+    final status = _classify(baseFp, localFp, remoteFp, basePresent);
+    if (status != SyncPartStatus.conflict) return status;
+    final bRows = SyncFingerprint.roundRows(baseFp);
+    final lRows = SyncFingerprint.roundRows(localFp);
+    final rRows = SyncFingerprint.roundRows(remoteFp);
+    if (lRows == null || rRows == null) return SyncPartStatus.conflict;
+    if (_sameRows(lRows, rRows)) {
+      // 轮次内容零差异（仅失败草稿各改各的）→ 纯增量 m=0：推本地。
+      return SyncPartStatus.localOnly;
+    }
+    if (bRows != null) {
+      if (_sameRows(bRows, lRows) && _isPrefix(bRows, rRows)) {
+        return SyncPartStatus.remoteOnly; // 仅远端尾部新增 → 拉。
+      }
+      if (_sameRows(bRows, rRows) && _isPrefix(bRows, lRows)) {
+        return SyncPartStatus.localOnly; // 仅本地尾部新增 → 推。
+      }
+    }
+    return SyncPartStatus.conflict;
+  }
+
+  /// 两侧轮次行序列是否逐行完全一致（内容 = 完整呈现文本）。
+  static bool _sameRows(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// [shorter] 是否为 [longer] 的严格前缀（更短且前段逐行一致 = 纯尾部新增）。
+  static bool _isPrefix(List<String> shorter, List<String> longer) {
+    if (shorter.length >= longer.length) return false;
+    for (var i = 0; i < shorter.length; i++) {
+      if (shorter[i] != longer[i]) return false;
+    }
+    return true;
   }
 
   static bool? _unchangedSinceBase(SyncBookBaseParts b, SyncBookParts p) {
@@ -343,6 +408,8 @@ class BookSyncDecision {
   final String title;
   final SyncBookPresence presence;
   final SyncPartStatus settings;
+
+  /// 轮次部件三向判定（整串；双方都改时仅"单纯增"与"行一致只差失败草稿"救回自动）。
   final SyncPartStatus rounds;
   final SyncPartStatus worldBook;
   final SyncPartStatus bookMods;
@@ -365,6 +432,14 @@ class BookSyncDecision {
       rounds == SyncPartStatus.conflict ||
       worldBook == SyncPartStatus.conflict ||
       bookMods == SyncPartStatus.conflict;
+
+  /// 设置类部件仅云端改过 → 需要人工确认（不静默覆盖本地）：
+  /// 与真冲突共用同一条确认通道（合并决策页），未处理前每次同步都会提醒。
+  bool get needsReview =>
+      presence == SyncBookPresence.both &&
+      (settings == SyncPartStatus.remoteOnly ||
+          worldBook == SyncPartStatus.remoteOnly ||
+          bookMods == SyncPartStatus.remoteOnly);
 }
 
 /// 单个 Mod 的三向状态（Mod 无子部件）。
@@ -395,6 +470,10 @@ class ModSyncDecision {
   bool get isConflict =>
       status == SyncModStatus.conflict ||
       status == SyncModStatus.deletionConflict;
+
+  /// 本地已有的 Mod 仅云端内容变了 → 需要人工确认（与书籍设置同通道）。
+  /// 全新 Mod（本地没有）的导入属"增量"，维持自动。
+  bool get needsReview => status == SyncModStatus.remoteOnly && localUuid != null;
 }
 
 /// 本地一本书的部件指纹与删除标记。
@@ -425,6 +504,10 @@ class SyncMergePlan {
       books.where((b) => b.hasConflict).toList();
 
   bool get hasConflict => conflictBooks.isNotEmpty || mods.any((m) => m.isConflict);
+
+  /// 待人工确认（云端单侧设置 / Mod 变更），不含真冲突。
+  bool get needsReview =>
+      books.any((b) => b.needsReview) || mods.any((m) => m.needsReview);
 
   /// 汇总计数，供首连/决策页摘要展示。
   Map<String, int> summarize() {

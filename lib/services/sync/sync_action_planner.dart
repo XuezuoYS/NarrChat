@@ -31,7 +31,8 @@ class SyncActionPlanner {
           if (b.localUuid != null) conflictBooks.add(b.localUuid!);
           if (b.remoteUuid != null) conflictBooks.add(b.remoteUuid!);
         case SyncBookPresence.both:
-          if (b.hasConflict) {
+          // 真冲突与「仅云端改动的设置类部件」共用同一条人工确认通道。
+          if (b.hasConflict || b.needsReview) {
             if (b.localUuid != null) conflictBooks.add(b.localUuid!);
             if (b.remoteUuid != null) conflictBooks.add(b.remoteUuid!);
           } else {
@@ -57,7 +58,14 @@ class SyncActionPlanner {
         case SyncModStatus.localOnly:
           if (m.localUuid != null) pushMods.add(m.localUuid!);
         case SyncModStatus.remoteOnly:
-          if (m.remoteUuid != null) pullMods.add(m.remoteUuid!);
+          // 本地已有该 Mod（云端单改了它）→ 人工确认，与书籍设置同通道；
+          // 本地没有（全新 Mod 导入）→ 维持自动拉取。
+          if (m.needsReview) {
+            if (m.localUuid != null) conflictMods.add(m.localUuid!);
+            if (m.remoteUuid != null) conflictMods.add(m.remoteUuid!);
+          } else if (m.remoteUuid != null) {
+            pullMods.add(m.remoteUuid!);
+          }
         case SyncModStatus.conflict:
           if (m.localUuid != null) conflictMods.add(m.localUuid!);
           if (m.remoteUuid != null) conflictMods.add(m.remoteUuid!);
