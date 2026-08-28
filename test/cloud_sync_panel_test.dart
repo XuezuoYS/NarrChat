@@ -12,7 +12,7 @@ import 'package:provider/provider.dart';
 /// 云同步面板（重新设计版）widget 测试。
 ///
 /// 重点：窄屏（360）下不溢出、亮/暗主题均可渲染、滑动式同步模式分段可选、
-/// 云端备份列表按新版快照命名展示（第 N 代 · 时间 · 大小）。
+/// 云端备份列表按新版快照命名展示（云端记录 #N · 时间 · 大小）。
 void main() {
   SettingsFormState makeForm({CloudSyncProvider? provider}) {
     return SettingsFormState(
@@ -81,7 +81,7 @@ void main() {
     expect(form.syncMode, SyncMode.auto);
   });
 
-  testWidgets('云端备份列表：按新版快照命名展示「第 N 代」并过滤旧命名', (tester) async {
+  testWidgets('云端备份列表：按新版快照命名展示「云端记录 #N」并过滤旧命名', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
     provider.debugSetBackups([
@@ -101,7 +101,7 @@ void main() {
     // 旧版命名与 manifest 不再出现在备份列表中。
     expect(find.text('narrchat_user_2026-08-16_10-00-00.db'), findsNothing);
     expect(find.text('manifest.json'), findsNothing);
-    expect(find.text('第 3 代'), findsOneWidget);
+    expect(find.text('云端记录 #3'), findsOneWidget);
     expect(find.textContaining('2026-08-16'), findsWidgets);
     expect(find.textContaining('2.0 KB'), findsOneWidget);
   });
@@ -130,8 +130,8 @@ void main() {
       form: form,
       provider: provider,
     );
-    expect(find.text('第 7 代'), findsOneWidget);
-    expect(find.text('第 5 代'), findsOneWidget);
-    expect(find.text('第 2 代'), findsOneWidget);
+    expect(find.text('云端记录 #7'), findsOneWidget);
+    expect(find.text('云端记录 #5'), findsOneWidget);
+    expect(find.text('云端记录 #2'), findsOneWidget);
   });
 }

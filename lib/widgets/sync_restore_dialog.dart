@@ -14,7 +14,7 @@ enum SyncRestoreMode {
   merge,
 }
 
-/// 打开快照恢复对话框：展示「第 N 代」元信息，选择处理方式后统一确认。
+/// 打开快照恢复对话框：展示「云端记录 #N」元信息，选择处理方式后统一确认。
 ///
 /// 返回 [SyncRestoreMode]；取消 / Esc 返回 null。
 Future<SyncRestoreMode?> showSyncRestoreDialog(
@@ -55,7 +55,7 @@ class _SyncRestoreDialogState extends State<SyncRestoreDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 头部：第 N 代 + 生成时间与大小（新版命名信息）。
+            // 头部：云端记录 #N + 生成时间与大小（新版命名信息）。
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -72,7 +72,7 @@ class _SyncRestoreDialogState extends State<SyncRestoreDialog> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          gen == null ? file.name : '第 $gen 代',
+                          gen == null ? file.name : '云端记录 #$gen',
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 15,
@@ -241,10 +241,10 @@ class _RestoreOption extends StatelessWidget {
   }
 }
 
-/// 快照条目标题：`第 N 代`；解析失败回退文件名。
+/// 快照条目标题：`云端记录 #N`；解析失败回退文件名。
 String snapshotLabelOf(WebDavFile file) {
   final gen = WebDavSyncStore.generationOf(file.name);
-  return gen == null ? file.name : '第 $gen 代';
+  return gen == null ? file.name : '云端记录 #$gen';
 }
 
 /// 快照条目标注：`时间 · 大小`（时间优先取文件名内嵌生成时间戳）。

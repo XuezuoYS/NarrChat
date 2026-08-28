@@ -409,6 +409,7 @@ void main() {
 
     expect(result.applied, isFalse);
     expect(result.error, contains('无法获取云端快照'));
+    expect(result.generation, 5, reason: '错误结果携带本轮已读到的代数');
     expect(applyCalled, isFalse);
     expect(store.snapshots, isEmpty, reason: '绝不带旧内容推送');
     expect(store.manifest!.generation, 5, reason: 'manifest 未被覆盖');

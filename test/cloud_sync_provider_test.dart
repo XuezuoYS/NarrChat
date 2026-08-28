@@ -198,15 +198,15 @@ void main() {
 
   test('showSyncResult：同文案去重，不同文案各自入队', () {
     final provider = CloudSyncProvider();
-    provider.showSyncResult('数据已同步到云端（第 3 代）');
-    provider.showSyncResult('数据已同步到云端（第 3 代）');
+    provider.showSyncResult('云端记录 #3：数据已同步');
+    provider.showSyncResult('云端记录 #3：数据已同步');
     expect(provider.resultToasts, hasLength(1));
 
-    provider.showSyncResult('图片同步完成（上传 3）');
+    provider.showSyncResult('图片同步：完成（上传 3）');
     expect(provider.resultToasts, hasLength(2));
     expect(
       provider.resultToasts.map((t) => t.message).toList(),
-      ['数据已同步到云端（第 3 代）', '图片同步完成（上传 3）'],
+      ['云端记录 #3：数据已同步', '图片同步：完成（上传 3）'],
     );
   });
 
@@ -231,7 +231,7 @@ void main() {
   test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
     final provider = CloudSyncProvider();
     provider.showSyncResult('已取消数据同步', kind: SyncToastKind.info);
-    provider.showSyncResult('图片同步失败：连接超时（HTTP 408）', kind: SyncToastKind.error);
+    provider.showSyncResult('图片同步：连接超时（HTTP 408）', kind: SyncToastKind.error);
 
     final error = provider.resultToasts
         .firstWhere((t) => t.kind == SyncToastKind.error);

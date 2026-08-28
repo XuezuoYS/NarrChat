@@ -57,46 +57,46 @@ void main() {
     final provider = await pumpBubble(tester);
     expect(find.byType(SelectableText), findsNothing, reason: '无提示时不占位');
 
-    provider.showSyncResult('数据已同步到云端（第 3 代）');
+    provider.showSyncResult('云端记录 #3：数据已同步');
     await tester.pump();
     // 内容以 SelectableText 呈现（可长按选择复制）。
     expect(find.byType(SelectableText), findsOneWidget);
-    expect(find.text('数据已同步到云端（第 3 代）'), findsOneWidget);
+    expect(find.text('云端记录 #3：数据已同步'), findsOneWidget);
     expect(find.byTooltip('关闭'), findsNothing, reason: '成功提示无需关闭按钮');
 
     // 悬浮 2 秒后自动消失。
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
-    expect(find.text('数据已同步到云端（第 3 代）'), findsNothing);
+    expect(find.text('云端记录 #3：数据已同步'), findsNothing);
   });
 
   testWidgets('失败提示：驻留等待用户点击「关闭」，内容可复制', (tester) async {
     final provider = await pumpBubble(tester);
     provider.showSyncResult(
-      '图片同步失败：连接超时（HTTP 408）',
+      '图片同步：连接超时（HTTP 408）',
       kind: SyncToastKind.error,
     );
     await tester.pump();
 
     expect(find.byType(SelectableText), findsOneWidget);
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsOneWidget);
+    expect(find.text('图片同步：连接超时（HTTP 408）'), findsOneWidget);
     expect(find.byTooltip('关闭'), findsOneWidget);
 
     // 驻留：远超自动消失时长（10s）后仍不消失。
     await tester.pump(const Duration(seconds: 10));
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsOneWidget);
+    expect(find.text('图片同步：连接超时（HTTP 408）'), findsOneWidget);
 
     // 手动关闭。
     await tester.tap(find.byTooltip('关闭'));
     await tester.pump();
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsNothing);
+    expect(find.text('图片同步：连接超时（HTTP 408）'), findsNothing);
   });
 
   testWidgets('多条结果纵向堆叠，关闭其中一条不影响其它条目', (tester) async {
     final provider = await pumpBubble(tester);
     provider.showSyncResult('已取消数据同步', kind: SyncToastKind.info);
     provider.showSyncResult(
-      '图片同步失败：连接超时（HTTP 408）',
+      '图片同步：连接超时（HTTP 408）',
       kind: SyncToastKind.error,
     );
     await tester.pump();
@@ -105,7 +105,7 @@ void main() {
 
     await tester.tap(find.byTooltip('关闭'));
     await tester.pump();
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsNothing);
+    expect(find.text('图片同步：连接超时（HTTP 408）'), findsNothing);
     expect(find.text('已取消数据同步'), findsOneWidget);
   });
 

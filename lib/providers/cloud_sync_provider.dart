@@ -190,6 +190,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// 结果提示的代数前缀：`云端记录 #N：body`（代数未知时仅返回 body）。
+  static String _recordMessage(int? generation, String body) =>
+      generation == null ? body : '云端记录 #$generation：$body';
+
   /// 关闭一条结果提示（气泡「关闭」按钮 / 成功类到点自动移除的回调）。
   void dismissSyncResult(int id) {
     final before = _resultToasts.length;
@@ -621,9 +625,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           await _loadBackups(dav);
           return SyncTaskOutcome(
             SyncState.success,
-            message: gen == null
-                ? '已导入云端数据'
-                : '已导入云端数据（第 $gen 代）',
+            message: _recordMessage(gen, '已导入云端数据'),
             generation: gen,
           );
         case _FirstConnectOutcome.continueSync:
@@ -645,7 +647,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
               )
             : SyncTaskOutcome(
                 SyncState.error,
-                message: '数据同步失败：${result.error}',
+                message: _recordMessage(
+                  result.generation,
+                  '数据同步失败：${result.error}',
+                ),
                 persistent: true,
               );
       }
@@ -659,7 +664,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (handled.error != null) {
           return SyncTaskOutcome(
             SyncState.error,
-            message: '数据同步失败：${handled.error}',
+            message: _recordMessage(
+              result.generation,
+              '数据同步失败：${handled.error}',
+            ),
             persistent: true,
           );
         }
@@ -670,12 +678,11 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 否则另一台设备同步后 UI 仍显示缓存的旧轮次 / 旧书籍列表。
       if (result.applied) await onDataRestored?.call();
       final gen = result.generation;
-      final suffix = gen == null ? '' : '（第 $gen 代）';
       final message = result.pushed
-          ? '数据已同步到云端$suffix'
+          ? _recordMessage(gen, '数据已同步')
           : result.applied
-          ? '已拉取最新数据$suffix'
-          : '数据已是最新版本$suffix';
+          ? _recordMessage(gen, '已拉取最新数据')
+          : _recordMessage(gen, '已是最新');
       // 刷新备份列表（展示最新一代快照）。
       await _loadBackups(dav);
       return SyncTaskOutcome(SyncState.success, message: message, generation: gen);
@@ -718,7 +725,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result.error != null) {
         return SyncTaskOutcome(
           SyncState.error,
-          message: '图片同步失败：${result.error}',
+          message: '图片同步：${result.error}',
           persistent: true,
         );
       }
@@ -731,13 +738,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       return SyncTaskOutcome(
         SyncState.success,
         message: result.applied
-            ? '图片同步完成（${parts.join(' · ')}）'
+            ? '图片同步：完成（${parts.join(' · ')}）'
             : null,
       );
     } catch (e) {
       return SyncTaskOutcome(
         SyncState.error,
-        message: '图片同步失败：$e',
+        message: '图片同步：$e',
         persistent: true,
       );
     } finally {

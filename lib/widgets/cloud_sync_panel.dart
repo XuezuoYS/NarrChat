@@ -574,7 +574,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.cloud_outlined,
       title: '云端备份',
-      subtitle: '一键同步本地与云端；也可从某个历史版本（第 N 代快照）合并或恢复本地数据。',
+      subtitle: '一键同步本地与云端；也可从某个历史版本（云端记录 #N）合并或恢复本地数据。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

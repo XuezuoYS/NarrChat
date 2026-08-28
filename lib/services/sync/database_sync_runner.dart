@@ -103,6 +103,10 @@ class DatabaseSyncRunner {
     this.lockRetryDelay = const Duration(milliseconds: 400),
   });
 
+  /// 本轮已读到的云端代数（manifest.generation；拉取 / 推送中途失败时
+  /// 附带在错误结果上，供结果提示呈现「云端记录 #N：…」）。
+  int? _lastSeenGeneration;
+
   /// 执行一次完整数据同步：锁定 → pull→merge→push → 释放锁。
   Future<SyncResult> sync() async {
     if (_cancelled) return const SyncResult(error: '已取消');
@@ -119,6 +123,10 @@ class DatabaseSyncRunner {
     }
     try {
       return await _syncLocked();
+    } catch (e) {
+      // 失败也携带本轮已读到的代数；锁未持有 / 清单未读到
+      // （[_lastSeenGeneration] 为 null）时保持未知，提示不加前缀。
+      return SyncResult(error: e.toString(), generation: _lastSeenGeneration);
     } finally {
       await store.releaseLock(deviceId: deviceId);
     }
@@ -128,6 +136,7 @@ class DatabaseSyncRunner {
     if (_cancelled) return const SyncResult(error: '已取消');
     _emit(SyncPhase.pullManifest, '读取云端清单…');
     final manifest = await store.readManifest();
+    _lastSeenGeneration = manifest?.generation;
     if (manifest == null) {
       return _bootstrap();
     }
@@ -176,7 +185,8 @@ class DatabaseSyncRunner {
         if (bytes == null) {
           return SyncResult(
             applied: false,
-            error: '无法获取云端快照（第 ${manifest.generation} 代），请稍后重试',
+            error: '无法获取云端快照，请稍后重试',
+            generation: manifest.generation,
           );
         }
         _emit(SyncPhase.pullSnapshot, '下载远端快照…');

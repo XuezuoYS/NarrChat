@@ -5,7 +5,7 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/sync_restore_dialog.dart';
 
 /// 快照恢复对话框（新版）测试：
-/// - 展示「第 N 代 + 时间 + 大小」元信息与文件名；
+/// - 展示「云端记录 #N + 时间 + 大小」元信息与文件名；
 /// - 默认选「合并」；可切换「删除并恢复」并出现不可撤销警告；
 /// - 确认 / 取消的返回值。
 const _snapshot = WebDavFile(
@@ -31,12 +31,12 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('展示新版命名信息：第 N 代 · 时间 · 大小 · 文件名', (tester) async {
+  testWidgets('展示新版命名信息：云端记录 #N · 时间 · 大小 · 文件名', (tester) async {
     await pumpApp(tester);
     final future = open(tester);
     await tester.pumpAndSettle();
 
-    expect(find.text('第 5 代'), findsOneWidget);
+    expect(find.text('云端记录 #5'), findsOneWidget);
     expect(find.textContaining('2026-08-16 10:30:05'), findsOneWidget);
     expect(find.textContaining('2.0 KB'), findsOneWidget);
     expect(find.text(_snapshot.name), findsOneWidget);
