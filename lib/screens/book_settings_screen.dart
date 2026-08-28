@@ -101,7 +101,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       b?.roleCategories ?? Constants.defaultRoleCategories,
     );
     // 打开书籍设置即触发一次静默同步：另一台设备刚改过的书籍设置就近拉到本地
-    // （编辑态打开时展示最新值；轮询会在 1 分钟内兜底）。
+    // （编辑态打开时展示最新值；已无空闲轮询，此处是编辑前唯一的拉取点）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Provider.of<CloudSyncProvider?>(context, listen: false)
           ?.triggerSync(silent: true);

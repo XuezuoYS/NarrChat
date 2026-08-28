@@ -123,7 +123,7 @@ void main() {
   });
 
   test('静默与运算合并：执行中触发继承非静默（手动点击需要结果提示）', () async {
-    coordinator.trigger(SyncPlane.data, silent: true); // 立即执行（轮询）
+    coordinator.trigger(SyncPlane.data, silent: true); // 立即执行（被动触发 → 静默）
     coordinator.trigger(SyncPlane.data, silent: false); // 手动点击并入待跑
     await complete(SyncPlane.data, const SyncTaskOutcome(SyncState.success));
 

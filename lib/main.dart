@@ -68,8 +68,8 @@ Future<void> main() async {
   // 启动前加载完成，保证首帧后的自动同步能按已保存的同步模式正确触发。
   final cloudSyncProvider = CloudSyncProvider();
   await cloudSyncProvider.load();
-  // 接入生命周期：回前台触发一次静默同步；自动模式下每分钟静默轮询一次
-  //（保证"另一台设备改了数据、本机空闲在首页"时也能就近拉取）。
+  // 接入生命周期：回前台触发一次静默同步（距上次同步 2 分钟内自动跳过）。
+  // 自动同步只由用户操作节点发起，空闲时不再有任何定时轮询。
   cloudSyncProvider.attachLifecycle();
   // 业务数据 Provider：在 main 中创建以注册云同步恢复后的刷新回调；
   // 传入云同步 Provider 以在书籍数据变更节点触发全自动同步。

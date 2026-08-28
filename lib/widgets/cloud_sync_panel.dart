@@ -425,7 +425,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
               _SegOption(
                 icon: Icons.sync,
                 label: '全自动',
-                desc: '连接后自动同步，无需手动操作',
+                desc: '在你操作时自动同步，无需手动点击',
               ),
               _SegOption(
                 icon: Icons.touch_app_outlined,
@@ -440,7 +440,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           const SizedBox(height: 12),
           Text(
             _form.syncMode == SyncMode.auto
-                ? '全自动：应用启动 / 每轮生成结束后自动推送本地变更，并自动拉取远端非冲突变更；仅在真冲突时弹合并确认。'
+                ? '全自动：在打开应用 / 进入书籍 / 每轮生成结束 / 保存书籍或 Mod 设置 / 回到前台（2 分钟内不重复）等操作节点自动推送与拉取；空闲时不周期性联网，仅在真冲突时弹合并确认。'
                 : '手动：仅在你点击「同步」时推送与拉取一次，适合希望完全掌控上传时机的场景。',
             style: TextStyle(fontSize: 12, color: colors.textSecondary),
           ),

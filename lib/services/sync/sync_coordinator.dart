@@ -28,7 +28,7 @@ class SyncTaskOutcome {
 class SyncTaskContext {
   final SyncPlane plane;
 
-  /// 本次派发是否静默（轮询 / 回前台 / 被动触发：成功类结果不提示）。
+  /// 本次派发是否静默（回前台 / 打开书籍设置等被动触发：成功类结果不提示）。
   final bool silent;
 
   /// 上报进度（仅当该平面仍在执行时生效）。

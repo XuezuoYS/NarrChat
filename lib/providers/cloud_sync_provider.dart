@@ -40,6 +40,13 @@ import '../widgets/sync_conflict_dialog.dart';
 /// - [DatabaseSyncRunner]：manifest / 快照 / 共基（唯一推进代数的平面）；
 /// - [ImageSyncRunner]：`img/*` blob + `img_tombstones.json`（无代数）。
 ///
+/// **自动触发白名单**（全自动模式下只有这些用户操作节点会发起备份，
+/// 空闲 / 定时一律不打网络；详见 docs/sync_auto_triggers.md）：
+/// 打开 APP（冷启动首帧）、回到前台（距上次同步 [resumeSyncThrottle] 内跳过）、
+/// 进入书籍、打开书籍设置（拉取最新设置）、保存书籍设置 / 世界书、
+/// 新轮次结束（成功 / 失败 / 中断）、Mod 设置保存、图片库删除（仅图片平面）、
+/// 手动点击「同步」。新增触发点前请先确认它对应一次真实的用户操作。
+///
 /// 存储策略（符合 AGENTS.md 数据结构规范）：
 /// - **密码**：写入 `flutter_secure_storage`（系统密钥库），禁止明文落盘；
 /// - 其余设置（服务器地址、用户名、文件夹、保留版本数、自动上传、
@@ -189,48 +196,62 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 另一平面不受影响（两平面取消语义独立）。
   void cancelSync(SyncPlane plane) => _coordinator.cancel(plane);
 
-  /// 接入应用生命周期：回前台触发一次静默同步；
-  /// 并启动每分钟一次的静默轮询（自动模式下才实际执行），
-  /// 保证"另一台设备改了数据、本机空闲在首页"时也能就近拉取。
+  /// 接入应用生命周期：只注册观察者，让「回到前台」按 [resumeSyncThrottle]
+  /// 节流后触发一次静默同步（视作"打开 APP"节点的延续）。
+  ///
+  /// **不做任何定时轮询**：自动同步只由用户操作节点发起（见类注释的触发白名单），
+  /// 空闲停留首页时不再周期性打网络。
   void attachLifecycle() {
     WidgetsBinding.instance.addObserver(this);
-    _pollTimer ??= Timer.periodic(
-      const Duration(minutes: 1),
-      (_) => triggerSync(silent: true),
-    );
   }
 
-  /// 解除生命周期监听与轮询（测试 / 应用退出时调用）。
+  /// 解除生命周期监听（测试 / 应用退出时调用）。
   void detachLifecycle() {
     WidgetsBinding.instance.removeObserver(this);
-    _pollTimer?.cancel();
-    _pollTimer = null;
   }
 
-  Timer? _pollTimer;
+  /// 回前台（resumed）触发的节流窗口：距上一次同步请求不足该时长时跳过。
+  ///
+  /// 窗口内说明刚刚已经同步过（冷启动 / 进书 / 轮次落库 / 手动等任一节点），
+  /// 再拉一次只是重复打网络。resumed 在实际使用中非常密集（见 dart:ui
+  /// [AppLifecycleState]：resumed = 可见且持有输入焦点）：Android 每次切回应用、
+  /// Windows 每次窗口重新获得焦点（alt-tab 回来 / 点回窗口 / 从最小化恢复）、
+  /// 文件选择等系统弹窗关闭返回，都会命中一次，故必须节流。
+  static const Duration resumeSyncThrottle = Duration(minutes: 2);
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      triggerSync(silent: true);
-    }
+    if (state != AppLifecycleState.resumed) return;
+    final last = _lastSyncRequestAt;
+    if (last != null && _now().difference(last) < resumeSyncThrottle) return;
+    triggerSync(silent: true);
   }
+
+  /// 最近一次同步请求的时刻（自动触发 / 手动「同步」均计入；null = 本次运行内没有过）。
+  DateTime? get lastSyncRequestAt => _lastSyncRequestAt;
+  DateTime? _lastSyncRequestAt;
+
+  /// 时刻源（测试可经 [debugSetNow] 注入固定时钟）。
+  DateTime Function() _now = DateTime.now;
 
   // ---------------------------------------------------------------------------
   // 统一触发接口
   // ---------------------------------------------------------------------------
 
-  /// 全自动同步统一触发入口（各变更节点调用）。
+  /// 全自动同步统一触发入口（**仅**规定的用户操作节点调用，见类注释白名单）。
+  ///
+  /// 每次真正发起请求都会记录 [lastSyncRequestAt]，作为回前台节流的基准。
   ///
   /// - 未配置 WebDAV 或当前为手动模式：忽略；
   /// - [kind]：`both`（默认，数据 + 图片补跑）/ `data` / `images`；
   /// - 空闲：立即派发对应平面任务（同执行道串行，数据优先）；
   /// - 执行中：置对应平面待跑位（多个触发点合并为一次补跑，同步本身幂等，
   ///   见 docs/sync_auto_triggers.md）。
-  /// - [silent] 为 true（轮询 / 回前台 / 打开书籍设置等被动触发）时，
+  /// - [silent] 为 true（回前台 / 打开书籍设置等被动触发）时，
   ///   成功类结果不弹提示（失败仍提示）。
   void triggerSync({SyncKind kind = SyncKind.both, bool silent = false}) {
     if (!isConfigured || _syncMode != SyncMode.auto) return;
+    _lastSyncRequestAt = _now();
     if (kind != SyncKind.images) _coordinator.trigger(SyncPlane.data, silent: silent);
     if (kind != SyncKind.data) {
       _coordinator.trigger(SyncPlane.images, silent: silent);
@@ -295,6 +316,19 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _webdavUsername = '';
     }
     notifyListeners();
+  }
+
+  /// 测试用：注入固定时钟（传 null 恢复 [DateTime.now]），
+  /// 用于验证回前台节流窗口而不必等待真实时间流逝。
+  @visibleForTesting
+  void debugSetNow(DateTime Function()? now) {
+    _now = now ?? DateTime.now;
+  }
+
+  /// 测试用：清空「最近一次同步请求」时刻（模拟本次运行从未同步过）。
+  @visibleForTesting
+  void debugClearSyncRequestAt() {
+    _lastSyncRequestAt = null;
   }
 
   /// 测试用：直接改写同步模式（避免触碰本地配置文件）。
@@ -512,6 +546,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _lastDataOk = false;
     _error = null;
+    // 手动点击同样计入"最近一次同步请求"，避免紧接着的回前台再拉一次。
+    _lastSyncRequestAt = _now();
     _coordinator.trigger(SyncPlane.data);
     _coordinator.trigger(SyncPlane.images);
     await _coordinator.onIdle;
@@ -541,8 +577,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       _imageError = outcome.state == SyncState.error ? outcome.message : null;
     }
-    // 静默模式（轮询 / 回前台 / 被动触发）只保留失败类提示，
-    // 避免"已是最新版本"类消息每分钟刷屏；两平面各自独立提示。
+    // 静默模式（回前台 / 打开书籍设置等被动触发）只保留失败类提示，
+    // 避免"已是最新版本"类消息刷屏；两平面各自独立提示。
     if (outcome.message != null && (!silent || outcome.persistent)) {
       showSyncSnack(outcome.message!, persistent: outcome.persistent);
     }

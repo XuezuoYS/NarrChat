@@ -10,7 +10,7 @@ import 'package:narrchat/services/webdav_service.dart';
 /// - 自动触发门控（未配置 / 手动模式忽略，data / images / both 一律如此）；
 /// - 分平面排队：执行中触发 → 对应平面置待跑；kind 精确影响所属平面；
 /// - 取消只作用于目标平面（另一平面排队保留）；
-/// - 生命周期轮询：每分钟静默触发两平面、回前台触发一次；
+/// - 生命周期：空闲不产生任何定时轮询；回前台触发 + 2 分钟节流窗口；
 /// - 同步结果提示：失败驻留、可复制、可手动关闭。
 void main() {
   test('triggerSync：未配置时忽略（全部 kind）', () {
@@ -78,32 +78,103 @@ void main() {
     expect(provider.debugCancelRequested(SyncPlane.images), isFalse);
   });
 
-  test('生命周期轮询：每分钟在后台静默触发两平面', () {
+  /// 构造「已配置 + 自动模式 + 执行道被占用」的 provider：
+  /// 触发只排队、不触碰真实网络，便于断言触发本身。
+  CloudSyncProvider laneBusyProvider({DateTime Function()? now}) {
     TestWidgetsFlutterBinding.ensureInitialized();
+    final provider = CloudSyncProvider()
+      ..debugSetConfigured(value: true)
+      ..debugSetLaneBusy(true);
+    provider.debugSetNow(now);
+    provider.debugClearSyncRequestAt();
+    return provider;
+  }
+
+  /// 撤销排队位（把"已触发"复位成"空闲"，不引入真实任务执行）。
+  void clearQueue(CloudSyncProvider provider) {
+    provider.cancelSync(SyncPlane.data);
+    provider.cancelSync(SyncPlane.images);
+  }
+
+  test('空闲不轮询：attachLifecycle 之后停留 30 分钟也不产生任何同步', () {
     fakeAsync((async) {
-      final provider = CloudSyncProvider()
-        ..debugSetConfigured(value: true)
-        // 占用执行道：轮询触发不会真正发起网络同步，只会排队（验证触发本身）。
-        ..debugSetLaneBusy(true);
+      final provider = laneBusyProvider();
       provider.attachLifecycle();
       expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
 
-      async.elapse(const Duration(minutes: 2));
-      expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue,
-          reason: '每分钟应触发一次同步（空闲时合并为待跑）');
-      expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue,
-          reason: '轮询同时兜底图片收敛');
+      async.elapse(const Duration(minutes: 30));
+      expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
+          reason: '自动同步只由用户操作节点发起，空闲时不得打网络');
+      expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse,
+          reason: '图片平面同样不再有定时兜底（随下一次操作节点收敛）');
+      expect(async.pendingTimers, isEmpty, reason: 'provider 不再挂任何定时器');
       provider.detachLifecycle();
     });
   });
 
-  test('回前台（resumed）→ 触发一次两平面同步请求', () {
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true);
+  test('回前台（resumed）→ 本次运行首次触发两平面同步请求', () {
+    final base = DateTime(2026, 8, 28, 10);
+    final provider = laneBusyProvider(now: () => base);
+
+    provider.didChangeAppLifecycleState(AppLifecycleState.inactive);
+    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
+        reason: '非 resumed 生命周期状态不触发');
+
     provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
     expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue);
     expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue);
+    expect(provider.lastSyncRequestAt, base);
+  });
+
+  test('回前台节流：距上次同步请求不足 2 分钟时跳过，满窗口后恢复触发', () {
+    final base = DateTime(2026, 8, 28, 10);
+    DateTime now = base;
+    final provider = laneBusyProvider(now: () => now);
+
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    clearQueue(provider);
+
+    now = base.add(const Duration(minutes: 1, seconds: 59));
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
+        reason: '节流窗口内的回前台不再重复打网络');
+    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
+    expect(provider.lastSyncRequestAt, base, reason: '被跳过的触发不改写基准时刻');
+
+    now = base.add(const Duration(minutes: 2));
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue,
+        reason: '窗口结束后回前台重新触发');
+    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue);
+    expect(provider.lastSyncRequestAt, now);
+  });
+
+  test('用户操作节点刷新节流基准：刚同步过则紧随其后的回前台被跳过', () {
+    final base = DateTime(2026, 8, 28, 10);
+    DateTime now = base;
+    final provider = laneBusyProvider(now: () => now);
+
+    provider.triggerSync(); // 例：轮次落库 / 保存书籍设置
+    clearQueue(provider);
+    expect(provider.lastSyncRequestAt, base);
+
+    now = base.add(const Duration(seconds: 30));
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
+    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
+  });
+
+  test('未配置 / 手动模式下回前台不记录同步请求时刻（触发被门控忽略）', () {
+    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+    provider.debugClearSyncRequestAt();
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    expect(provider.lastSyncRequestAt, isNull);
+
+    provider.debugSetConfigured(value: true);
+    provider.debugSetSyncMode(SyncMode.manual);
+    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    expect(provider.lastSyncRequestAt, isNull,
+        reason: '手动模式下回前台同样静默忽略，不占用节流窗口');
   });
 
   test('compareSnapshots：按代际新 → 旧，同代按文件名（内嵌时间）倒序', () {
