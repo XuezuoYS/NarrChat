@@ -1,5 +1,5 @@
 import 'package:fake_async/fake_async.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
@@ -11,7 +11,8 @@ import 'package:narrchat/services/webdav_service.dart';
 /// - 分平面排队：执行中触发 → 对应平面置待跑；kind 精确影响所属平面；
 /// - 取消只作用于目标平面（另一平面排队保留）；
 /// - 生命周期：空闲不产生任何定时轮询；回前台触发 + 2 分钟节流窗口；
-/// - 同步结果提示：失败驻留、可复制、可手动关闭。
+/// - 结果提示队列：同文案去重、上限挤掉最早提示、按 id 关闭移除
+///   （气泡渲染与自动消失 / 驻留关闭语义见 sync_result_bubble_test.dart）。
 void main() {
   test('triggerSync：未配置时忽略（全部 kind）', () {
     final provider = CloudSyncProvider()..debugSetConfigured(value: false);
@@ -195,48 +196,54 @@ void main() {
     );
   });
 
-  testWidgets('showSyncSnack：失败消息驻留、内容可复制、可手动关闭', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        scaffoldMessengerKey: CloudSyncProvider.messengerKey,
-        home: const Scaffold(body: SizedBox()),
-      ),
+  test('showSyncResult：同文案去重，不同文案各自入队', () {
+    final provider = CloudSyncProvider();
+    provider.showSyncResult('数据已同步到云端（第 3 代）');
+    provider.showSyncResult('数据已同步到云端（第 3 代）');
+    expect(provider.resultToasts, hasLength(1));
+
+    provider.showSyncResult('图片同步完成（上传 3）');
+    expect(provider.resultToasts, hasLength(2));
+    expect(
+      provider.resultToasts.map((t) => t.message).toList(),
+      ['数据已同步到云端（第 3 代）', '图片同步完成（上传 3）'],
     );
-    CloudSyncProvider.showSyncSnack('图片同步失败：连接超时（HTTP 408）', persistent: true);
-    await tester.pump();
-
-    // 内容以 SelectableText 呈现（可长按选择复制）。
-    expect(find.byType(SelectableText), findsOneWidget);
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsOneWidget);
-    expect(find.text('关闭'), findsOneWidget);
-
-    // 驻留：较长时间后仍不消失。
-    await tester.pump(const Duration(seconds: 10));
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsOneWidget);
-
-    // 手动关闭。
-    await tester.tap(find.text('关闭'));
-    await tester.pumpAndSettle();
-    expect(find.text('图片同步失败：连接超时（HTTP 408）'), findsNothing);
   });
 
-  testWidgets('showSyncSnack：普通消息自动消失', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        scaffoldMessengerKey: CloudSyncProvider.messengerKey,
-        home: const Scaffold(body: SizedBox()),
-      ),
-    );
-    CloudSyncProvider.showSyncSnack('数据已同步到云端（第 3 代）');
-    await tester.pump();
-    // 入场动画完成（停留计时从此时开始）。
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('数据已同步到云端（第 3 代）'), findsOneWidget);
-    expect(find.text('关闭'), findsNothing);
+  test('showSyncResult：超过上限时优先挤掉最早的临时提示，驻留错误不轻易丢', () {
+    final provider = CloudSyncProvider();
+    provider.showSyncResult('A');
+    provider.showSyncResult('B');
+    provider.showSyncResult('C');
 
-    // 超过停留时长（4s）后自动消失。
-    await tester.pump(const Duration(seconds: 4));
-    await tester.pumpAndSettle();
-    expect(find.text('数据已同步到云端（第 3 代）'), findsNothing);
+    // 第 4 条：A 是临时提示（成功类）→ 被挤掉；B / C 保留。
+    provider.showSyncResult('D');
+    expect(provider.resultToasts.map((t) => t.message).toList(), ['B', 'C', 'D']);
+
+    // 全是驻留错误时丢弃最早一条。
+    final allError = CloudSyncProvider();
+    for (final m in ['E1', 'E2', 'E3', 'E4']) {
+      allError.showSyncResult(m, kind: SyncToastKind.error);
+    }
+    expect(allError.resultToasts.map((t) => t.message).toList(), ['E2', 'E3', 'E4']);
+  });
+
+  test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
+    final provider = CloudSyncProvider();
+    provider.showSyncResult('已取消数据同步', kind: SyncToastKind.info);
+    provider.showSyncResult('图片同步失败：连接超时（HTTP 408）', kind: SyncToastKind.error);
+
+    final error = provider.resultToasts
+        .firstWhere((t) => t.kind == SyncToastKind.error);
+    provider.dismissSyncResult(error.id);
+
+    expect(
+      provider.resultToasts.map((t) => t.message).toList(),
+      ['已取消数据同步'],
+    );
+
+    // 重复关闭：无副作用（不再通知）。
+    provider.dismissSyncResult(error.id);
+    expect(provider.resultToasts, hasLength(1));
   });
 }

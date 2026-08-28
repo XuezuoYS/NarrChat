@@ -94,7 +94,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   }
 
   Future<void> _sync() async {
-    // 结果提示（完成 / 失败 / 取消）统一由 provider 的全局 toast 展示。
+    // 结果提示（完成 / 失败 / 取消）统一由 provider 的应用级悬浮气泡展示。
     await context.read<CloudSyncProvider>().sync();
   }
 

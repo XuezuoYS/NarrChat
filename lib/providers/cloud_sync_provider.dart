@@ -67,10 +67,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  /// 全局 ScaffoldMessenger key：用于每轮结束自动上传等后台操作的 SnackBar 提示
-  ///（不依赖任何页面的 BuildContext）。main.dart 的 MaterialApp 引用同一 key。
-  static final GlobalKey<ScaffoldMessengerState> messengerKey =
-      GlobalKey<ScaffoldMessengerState>();
 
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
@@ -161,33 +157,44 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 使同步流程能复用现有路由（通知跳转与同步对话框共用同一 Navigator）。
   static GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-  /// 展示云同步结果提示（走应用级全局 messenger，跨页面可见）。
+  /// 结果提示队列上限：数据 / 图片两平面依次结束最多各一条，超出时挤掉
+  /// 最早的临时提示（全是驻留错误时才丢弃最早一条）。
+  static const int maxResultToasts = 3;
+
+  final List<SyncResultToast> _resultToasts = [];
+  int _nextToastId = 0;
+
+  /// 云同步结果提示（应用级悬浮气泡 [SyncResultBubble] 的数据源；
+  /// 成功 / 取消类悬浮约 2 秒后自动消失，失败类驻留等待用户关闭）。
+  List<SyncResultToast> get resultToasts => List.unmodifiable(_resultToasts);
+
+  /// 展示一条云同步结果提示（由 [SyncResultBubble] 跨页面渲染）。
   ///
-  /// - 内容为 [SelectableText]：可长按 / 拖动选择并复制（含报错详情）；
-  /// - [persistent] 为 true（失败等需留意结果）时不自动消失，点击「关闭」手动关闭。
-  static void showSyncSnack(String message, {bool persistent = false}) {
-    final messenger = messengerKey.currentState;
-    if (messenger == null) return;
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          behavior: SnackBarBehavior.floating,
-          content: SelectableText(
-            message,
-            style: const TextStyle(fontSize: 13, height: 1.3),
-          ),
-          duration: persistent
-              ? const Duration(days: 1)
-              : const Duration(seconds: 4),
-          action: persistent
-              ? SnackBarAction(
-                  label: '关闭',
-                  onPressed: messenger.hideCurrentSnackBar,
-                )
-              : null,
-        ),
-      );
+  /// - [kind]：成功 / 取消等（短暂悬浮后自动消失）；错误（驻留 + 关闭按钮）；
+  /// - 内容以可选中的 [SelectableText] 呈现（用户可长按选择复制，含报错详情）；
+  /// - 相同文案去重（连续同步结果相同时不叠加）。
+  void showSyncResult(
+    String message, {
+    SyncToastKind kind = SyncToastKind.success,
+  }) {
+    if (_resultToasts.any((t) => t.message == message)) return;
+    _resultToasts.add(
+      SyncResultToast(id: _nextToastId++, message: message, kind: kind),
+    );
+    if (_resultToasts.length > maxResultToasts) {
+      // 优先挤掉已自动消失的临时提示；全是驻留错误时丢弃最早一条。
+      final oldestTransient =
+          _resultToasts.indexWhere((t) => !t.persistent);
+      _resultToasts.removeAt(oldestTransient >= 0 ? oldestTransient : 0);
+    }
+    notifyListeners();
+  }
+
+  /// 关闭一条结果提示（气泡「关闭」按钮 / 成功类到点自动移除的回调）。
+  void dismissSyncResult(int id) {
+    final before = _resultToasts.length;
+    _resultToasts.removeWhere((t) => t.id == id);
+    if (_resultToasts.length != before) notifyListeners();
   }
 
   /// 请求取消指定平面的同步（HUD 分平面取消按钮回调）。
@@ -565,7 +572,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
   }
 
-  /// 协调层回调：分平面结果 → 全局提示 + 分平面错误记录。
+  /// 协调层回调：分平面结果 → 应用级悬浮气泡提示 + 分平面错误记录。
   void _onPlaneResult(
     SyncPlane plane,
     SyncTaskOutcome outcome,
@@ -580,7 +587,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 静默模式（回前台 / 打开书籍设置等被动触发）只保留失败类提示，
     // 避免"已是最新版本"类消息刷屏；两平面各自独立提示。
     if (outcome.message != null && (!silent || outcome.persistent)) {
-      showSyncSnack(outcome.message!, persistent: outcome.persistent);
+      showSyncResult(
+        outcome.message!,
+        kind: outcome.persistent
+            ? SyncToastKind.error
+            : outcome.state == SyncState.idle
+                ? SyncToastKind.info
+                : SyncToastKind.success,
+      );
     }
     notifyListeners();
   }

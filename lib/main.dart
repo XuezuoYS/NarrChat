@@ -31,6 +31,7 @@ import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
 import 'widgets/sync_hud.dart';
+import 'widgets/sync_result_bubble.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -233,6 +234,9 @@ class NarrChatApp extends StatelessWidget {
                         child ?? const SizedBox.shrink(),
                         // 应用级同步悬浮 HUD：仅同步进行时出现。
                         const SyncHud(),
+                        // 应用级同步结果悬浮气泡：成功 2 秒自动消失，
+                        // 失败驻留待关闭（内容可复制）。
+                        const SyncResultBubble(),
                       ],
                     ),
                   ),
@@ -244,8 +248,6 @@ class NarrChatApp extends StatelessWidget {
               navigatorKey: navigatorKey,
               // 通知服务观察路由栈，判断用户是否正在查看某本书的 chat 页。
               navigatorObservers: navigatorObservers,
-              // 云同步自动上传等后台操作通过此 key 弹出全局 SnackBar 提示。
-              scaffoldMessengerKey: CloudSyncProvider.messengerKey,
               theme: NarrChatTheme.lightWithFont(ui.fontFamily),
               darkTheme: NarrChatTheme.darkWithFont(ui.fontFamily),
               // 主题模式：跟随系统（默认）/ 亮色 / 暗色。

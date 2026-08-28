@@ -255,3 +255,34 @@ class SyncManifest {
         'images': images,
       };
 }
+
+/// 云同步结果提示的类型（决定应用级悬浮气泡的图标与关闭语义）。
+///
+/// - [success]：成功（如「数据已同步到云端」）：短暂悬浮后自动消失；
+/// - [error]：失败（含完整错误原因）：驻留等待用户手动关闭；
+/// - [info]：取消 / 中止等中性结果：短暂悬浮后自动消失。
+enum SyncToastKind { success, error, info }
+
+/// 云同步结果提示条目（应用级悬浮气泡 [SyncResultBubble] 的渲染数据源）。
+///
+/// 由 [CloudSyncProvider.showSyncResult] 入队、[SyncResultBubble] 消费；
+/// 计时（成功 / 取消类 2 秒自动消失）由气泡组件负责，驻留关闭由用户触发。
+class SyncResultToast {
+  const SyncResultToast({
+    required this.id,
+    required this.message,
+    required this.kind,
+  });
+
+  /// 队列内唯一标识（关闭 / 自动到点移除时定位）。
+  final int id;
+
+  /// 提示文案（可为多行，含报错详情）。
+  final String message;
+
+  /// 提示类型（成功 / 失败 / 取消等）。
+  final SyncToastKind kind;
+
+  /// 失败类提示驻留，等待用户关闭；其余悬浮 2 秒后自动消失。
+  bool get persistent => kind == SyncToastKind.error;
+}
