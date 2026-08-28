@@ -11,8 +11,9 @@
 ///   按删除处理：删除云端 blob；其它设备收到墓碑后同时删除本地文件
 ///   （即使仍被引用——与图片库删除确认文案一致），且**不重新上传**。
 /// - **重新添加复活**：不在本规划层处理——删除/导入流程直接在墓碑文件上
-///   增删条目，同步合并（`img_tombstones.dart` 的 mergeTombstones）已把
-///   本机重新添加的条目抵消，因此规划器收到的 `tombstones` 即最终删除意图。
+///   增删条目并登记全局复活标记，同步合并（`img_tombstones.dart` 的
+///   mergeTombstones）已凭标记抵消所有设备上的残留条目，因此规划器收到的
+///   `tombstones` 即最终删除意图。
 class ImageSyncPlanner {
   ImageSyncPlanner._();
 

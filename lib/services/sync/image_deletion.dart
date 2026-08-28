@@ -28,19 +28,20 @@ class SyncImageDeletionService implements ImageDeletionService {
     final file = File(abs);
     if (await file.exists()) await file.delete();
 
-    final now = DateTime.now().millisecondsSinceEpoch;
     final current = await _store.load();
+    // 删除必晚于既有复活标记（同一毫秒 / 时钟回摆时抬升 1ms）：
+    // 「最后一次操作为准」由时间戳严格性保证，复活标记原样保留（更晚的
+    // 删除天然不被其抵消，无需清除）。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final revivedAt = current.revived[relPath] ?? -1;
+    final deletedAt = now > revivedAt ? now : revivedAt + 1;
     final byPath = <String, ImgTombstoneEntry>{
       for (final e in current.entries) e.path: e,
     };
-    // 重复删除同图：刷新删除时间与过期时间；删除意图回归时撤销清单同步清除
-    //（重新添加→删除的反复以最后一次操作为准）。
-    byPath[relPath] = ImgTombstoneEntry.deleted(relPath, now);
+    // 重复删除同图：刷新删除时间与过期时间。
+    byPath[relPath] = ImgTombstoneEntry.deleted(relPath, deletedAt);
     await _store.save(
-      ImgTombstones(
-        entries: byPath.values.toList(),
-        revoked: List.of(current.revoked)..remove(relPath),
-      ),
+      ImgTombstones(entries: byPath.values.toList(), revived: current.revived),
     );
   }
 }

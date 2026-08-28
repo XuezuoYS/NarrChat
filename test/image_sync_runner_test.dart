@@ -68,7 +68,7 @@ void main() {
     // 删除意图持久化到云端墓碑文件（供其它设备传播），工作副本刷新为合并结果。
     expect(store.tombstones!.entries.single.path, 'img/c.png');
     expect(tombstoneStore.state.entries.single.path, 'img/c.png');
-    expect(tombstoneStore.state.revoked, isEmpty);
+    expect(tombstoneStore.state.revived, isEmpty);
   });
 
   test('图片平面从不触碰 manifest / 快照（无代数概念，结构保证）', () async {
@@ -136,16 +136,17 @@ void main() {
     expect(store.images.containsKey('img/a.png'), isFalse, reason: '不被重新上传');
     expect(store.tombstones!.entries.single.path, 'img/a.png',
         reason: '删除意图在墓碑文件中延续，不被撤销');
-    expect(tombstoneStore.state.revoked, isEmpty);
+    expect(tombstoneStore.state.revived, isEmpty);
   });
 
-  test('再添加复活（本机撤销 + 云端残留条目）→ 抵消删除并重新上传', () async {
+
+  test('再添加复活（本机标记撤销 + 云端残留条目）→ 抵消删除并重新上传', () async {
     final store = MemorySyncStore()
       ..manifest = _manifestBase
       ..tombstones = _withEntry('img/b.png');
-    // 用户重新导入过同一张图：本地工作副本删除条目并记录撤销。
+    // 用户重新导入过同一张图：工作副本删除条目并登记带时间戳的复活标记。
     final tombstoneStore = MemoryTombstoneStore(
-      ImgTombstones(revoked: ['img/b.png']),
+      ImgTombstones(revived: {'img/b.png': DateTime.now().millisecondsSinceEpoch}),
     );
     final runner = _runner(
       store,
@@ -158,11 +159,75 @@ void main() {
 
     expect(result.error, isNull);
     expect(result.uploaded, 1);
-    // 复活：重新上传云端 blob；合并结果（无残留条目）回写云端文件与工作副本。
+    // 复活：重新上传云端 blob；合并结果（条目已抵消）回写云端文件与工作副本。
     expect(store.images['img/b.png'], [7, 8, 9]);
     expect(store.tombstones!.entries, isEmpty);
+    // 关键修复点：撤销不再"消费即丢"，复活标记必须上云传播（否则他机凭
+    // 工作副本里的陈旧条目反杀刚复活的 blob）。
+    expect(store.tombstones!.revived['img/b.png'], isNotNull,
+        reason: '标记写入云端墓碑文件');
     expect(tombstoneStore.state.entries, isEmpty);
-    expect(tombstoneStore.state.revoked, isEmpty, reason: '撤销清单消费');
+    expect(tombstoneStore.state.revived['img/b.png'], isNotNull,
+        reason: '工作副本同样保留标记至过期');
+  });
+
+  test('复活传播（回归）：他机带陈旧条目同步 → 被云端标记抵消，不得再删已复活 blob',
+      () async {
+    // 场景：A 删除 b → B 同步传播（B 工作副本持久化了条目）→ A 重新添加并
+    // 同步（blob 重传、条目被标记抵消）。此时 B 再同步——修复前 B 的并集合并
+    // 会"复活"陈旧条目并把刚上传的云端 blob 删掉。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final store = MemorySyncStore()
+      ..manifest = _manifestBase
+      ..images['img/b.png'] = Uint8List.fromList([7, 8, 9])
+      ..tombstones = ImgTombstones(revived: {'img/b.png': now});
+    // B 的工作副本：同步过删除的陈旧条目（deletedAt 早于云端标记）。
+    final bTombstones = MemoryTombstoneStore(
+      ImgTombstones(entries: [ImgTombstoneEntry.deleted('img/b.png', now - 1000)]),
+    );
+    final deletedLocal = <String>[];
+    final runner = _runner(
+      store,
+      bTombstones,
+      local: const [], // B 本机文件早已随删除传播消失
+      deletedLocal: deletedLocal,
+    );
+
+    final result = await runner.sync();
+
+    expect(result.error, isNull);
+    expect(store.images.containsKey('img/b.png'), isTrue,
+        reason: '陈旧条目被复活标记抵消，绝不删除已复活的云端 blob');
+    expect(result.deleted, 0);
+    expect(deletedLocal, isEmpty);
+    expect(result.pulled, 1, reason: 'B 反而把复活的图片拉回本机');
+    // B 工作副本：陈旧条目被清除，标记保留（继续抵消，直至过期）。
+    expect(bTombstones.state.entries, isEmpty);
+    expect(bTombstones.state.revived['img/b.png'], now);
+    expect(store.manifest!.generation, 3, reason: '全程不触碰数据代数');
+  });
+
+  test('复活后重新删除：更晚的删除条目压过标记，删除传播恢复', () async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final store = MemorySyncStore()
+      ..manifest = _manifestBase
+      ..images['img/b.png'] = Uint8List.fromList([7, 8, 9])
+      ..tombstones = ImgTombstones(revived: {'img/b.png': now - 5000});
+    // B 在复活之后又删了这张图：条目 deletedAt 晚于一切标记 → 有效删除意图。
+    final bTombstones = MemoryTombstoneStore(
+      ImgTombstones(entries: [ImgTombstoneEntry.deleted('img/b.png', now)]),
+    );
+    final runner = _runner(store, bTombstones, local: const []);
+
+    final result = await runner.sync();
+
+    expect(result.error, isNull);
+    expect(result.deleted, 1);
+    expect(store.images.containsKey('img/b.png'), isFalse,
+        reason: '最后一次操作（删除）为准');
+    expect(store.tombstones!.entries.single.path, 'img/b.png');
+    expect(store.tombstones!.revived['img/b.png'], now - 5000,
+        reason: '标记保留（更晚条目不受它抵消）');
   });
 
   test('过期条目：同步时清除并回写云端墓碑文件（无 blob 动作）', () async {

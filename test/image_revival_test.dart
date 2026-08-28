@@ -6,7 +6,7 @@ import 'helpers/fakes.dart';
 
 void main() {
   group('SyncImageRevivalService.revive（墓碑文件）', () {
-    test('命中条目：删除对应条目并记录撤销，返回 true', () async {
+    test('命中条目：删除对应条目并登记带时间戳的复活标记，返回 true', () async {
       final store = MemoryTombstoneStore(
         ImgTombstones(entries: [
           ImgTombstoneEntry(
@@ -18,12 +18,14 @@ void main() {
       );
       final service = SyncImageRevivalService(store: store);
 
+      final before = DateTime.now().millisecondsSinceEpoch;
       final revived = await service.revive('img/b.png');
+      final after = DateTime.now().millisecondsSinceEpoch;
 
       expect(revived, isTrue);
       expect(store.state.entries, isEmpty);
-      expect(store.state.revoked, ['img/b.png'],
-          reason: '撤销记录用于抵消云端残留条目，防止复活被覆盖');
+      expect(store.state.revived['img/b.png'], inInclusiveRange(before, after),
+          reason: '标记带时间戳、随云端传播：抵消云端残留条目与他机陈旧条目');
     });
 
     test('未命中条目：返回 false 且不修改墓碑', () async {
@@ -42,10 +44,10 @@ void main() {
 
       expect(revived, isFalse);
       expect(store.state.entries.single.path, 'img/b.png');
-      expect(store.state.revoked, isEmpty);
+      expect(store.state.revived, isEmpty);
     });
 
-    test('多次重新添加：撤销清单累积（同步成功后统一消费）', () async {
+    test('多次重新添加：复活标记累积（同步后随副本与云端保留至过期）', () async {
       final store = MemoryTombstoneStore(
         ImgTombstones(entries: [
           ImgTombstoneEntry(
@@ -66,7 +68,7 @@ void main() {
       await service.revive('img/c.png');
 
       expect(store.state.entries, isEmpty);
-      expect(store.state.revoked.toSet(), {'img/b.png', 'img/c.png'});
+      expect(store.state.revived.keys.toSet(), {'img/b.png', 'img/c.png'});
     });
   });
 }

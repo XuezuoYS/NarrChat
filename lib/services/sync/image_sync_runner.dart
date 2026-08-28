@@ -181,8 +181,8 @@ class ImageSyncRunner {
 
     if (_cancelled) return const ImageSyncResult(error: '已取消');
 
-    // —— 墓碑回写：与云端不一致（离线删除 / 撤销 / 过期清除）时覆盖云端
-    // 文件；本地工作副本刷新为合并结果（撤销清单已消费）。
+    // —— 墓碑回写：与云端不一致（离线删除 / 复活标记 / 过期清除）时覆盖云端
+    // 文件；本地工作副本刷新为合并结果（复活标记随副本保留至过期）。
     // 任何 blob 动作完成后都执行；取消路径已提前返回，不消费删除意图。
     await _persistTombstones(mergedTombstones, cloudTombstones);
 
@@ -216,8 +216,10 @@ class ImageSyncRunner {
     return paths.length;
   }
 
-  /// 回写墓碑：合并结果与云端文件不一致时覆盖云端
-  /// `img_tombstones.json`；随后把本地工作副本刷新为合并结果。
+  /// 回写墓碑：合并结果（条目 + 复活标记）与云端文件不一致时覆盖云端
+  /// `img_tombstones.json`——复活标记必须上云传播，否则他机工作副本里的
+  /// 陈旧条目会在下次并集合并时"复活"删除意图、反杀刚重新上传的 blob；
+  /// 随后把本地工作副本刷新为合并结果（标记随副本保留至过期）。
   Future<void> _persistTombstones(
     ImgTombstones merged,
     ImgTombstones cloud,
@@ -225,10 +227,11 @@ class ImageSyncRunner {
     if (!_sameTombstones(merged, cloud)) {
       await store.writeImageTombstones(merged);
     }
-    await tombstoneStore.save(ImgTombstones(entries: merged.entries));
+    await tombstoneStore.save(merged);
   }
 
-  /// 两份墓碑文件是否语义一致（与条目顺序无关，按路径对齐比较）。
+  /// 两份墓碑文件是否语义一致（条目与顺序无关按路径对齐比较；复活标记按
+  /// 路径与时刻全等比较）。
   static bool _sameTombstones(ImgTombstones a, ImgTombstones b) {
     if (a.entries.length != b.entries.length) return false;
     for (final e in a.entries) {
@@ -238,6 +241,10 @@ class ImageSyncRunner {
           matches.single.expiresAt != e.expiresAt) {
         return false;
       }
+    }
+    if (a.revived.length != b.revived.length) return false;
+    for (final e in a.revived.entries) {
+      if (b.revived[e.key] != e.value) return false;
     }
     return true;
   }

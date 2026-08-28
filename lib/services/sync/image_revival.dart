@@ -7,10 +7,11 @@ import 'img_tombstones.dart';
 /// 这张"已复活"的图按删除传播丢到云端。
 ///
 /// 接入点：图片导入 / 粘贴 / 拖拽保存成功后调用 [revive]。
-/// 条目撤销在同步合并时（`img_tombstones.mergeTombstones`）凭 [ImgTombstones.revoked]
-/// 抵消云端残留条目，防止"云端仍存旧条目 → 复活被覆盖"。
+/// 撤销是**全局语义**：登记带时间戳的 [ImgTombstones.revived] 标记，同步合并时
+/// 凭标记抵消云端残留条目**与其它设备工作副本里的陈旧条目**（标记随云端文件
+/// 传播），防止"复活在他端被陈旧墓碑反杀"。
 abstract class ImageRevivalService {
-  /// 图片内容落盘后调用：若 [path] 命中了墓碑条目则删除该条目并记录撤销，
+  /// 图片内容落盘后调用：若 [path] 命中了墓碑条目则删除该条目并登记复活标记，
   /// 返回 true；未命中返回 false。
   Future<bool> revive(String path);
 }
@@ -30,7 +31,11 @@ class SyncImageRevivalService implements ImageRevivalService {
     await _store.save(
       ImgTombstones(
         entries: List.of(current.entries)..removeWhere((e) => e.path == path),
-        revoked: {...current.revoked, path}.toList(),
+        // 复活时刻即撤销时刻：晚于（或等于）删除的标记抵消条目。
+        revived: {
+          ...current.revived,
+          path: DateTime.now().millisecondsSinceEpoch,
+        },
       ),
     );
     return true;
