@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
@@ -13,7 +14,7 @@ class SettingsNavItem {
 /// 全窗口设置页通用外壳：
 /// - 顶栏：品牌图标 + 标题 + 自定义操作（如统一「保存」）+ 关闭按钮；
 /// - 宽屏（≥760）：左侧竖向导航 + 右侧内容区；
-/// - 窄屏：顶部横向标签 + 下方内容区。
+/// - 窄屏：顶部横向标签 + 内容区 PageView（左右滑动切换子页面）。
 class SettingsShell extends StatefulWidget {
   final String title;
   final IconData icon;
@@ -41,6 +42,35 @@ class SettingsShell extends StatefulWidget {
 class _SettingsShellState extends State<SettingsShell> {
   late int _index =
       widget.initialIndex.clamp(0, widget.navItems.length - 1);
+
+  /// 窄屏内容区 PageView 控制器。
+  ///
+  /// 仅在窄屏布局期间挂载；首次进入窄屏或从宽屏切回时以当前 [_index] 重建，
+  /// 避免 PageView 恢复到离开前的旧页，导致标签高亮与内容不一致。
+  PageController? _pageController;
+
+  @override
+  void dispose() {
+    _pageController?.dispose();
+    super.dispose();
+  }
+
+  /// 窄屏：点击顶部标签 → 滑动到对应页（高亮立即切换，内容随动画过渡）。
+  void _onNarrowNavTap(int i) {
+    if (i == _index) return;
+    setState(() => _index = i);
+    _pageController?.animateToPage(
+      i,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeInOut,
+    );
+  }
+
+  /// 窄屏：内容区左右滑动（或动画）停靠后，标签高亮跟随最新页。
+  void _onNarrowPageChanged(int i) {
+    if (i == _index) return;
+    setState(() => _index = i);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,11 +127,16 @@ class _SettingsShellState extends State<SettingsShell> {
                   ),
                 ),
                 const VerticalDivider(width: 1),
-                Expanded(child: _buildContent(context)),
+                Expanded(child: _buildContent(context, _index)),
               ],
             );
           }
-          // 窄屏：顶部横向标签。
+          // 窄屏：顶部横向标签 + 内容区 PageView（左右滑动切换子页面）。
+          // 首次进入窄屏 / 从宽屏切回时重建控制器，保证起始页与当前选中一致。
+          if (_pageController == null || !_pageController!.hasClients) {
+            _pageController?.dispose();
+            _pageController = PageController(initialPage: _index);
+          }
           return Column(
             children: [
               Container(
@@ -127,7 +162,7 @@ class _SettingsShellState extends State<SettingsShell> {
                                 : colors.textSecondary,
                           ),
                           label: Text(widget.navItems[i].label),
-                          onSelected: (_) => setState(() => _index = i),
+                          onSelected: (_) => _onNarrowNavTap(i),
                         ),
                       ],
                     ],
@@ -135,7 +170,17 @@ class _SettingsShellState extends State<SettingsShell> {
                 ),
               ),
               const Divider(height: 1),
-              Expanded(child: _buildContent(context)),
+              Expanded(
+                child: PageView(
+                  controller: _pageController,
+                  onPageChanged: _onNarrowPageChanged,
+                  scrollBehavior: const _NarrowPageSwipeBehavior(),
+                  children: [
+                    for (var i = 0; i < widget.navItems.length; i++)
+                      _buildContent(context, i),
+                  ],
+                ),
+              ),
             ],
           );
         },
@@ -143,7 +188,7 @@ class _SettingsShellState extends State<SettingsShell> {
     );
   }
 
-  Widget _buildContent(BuildContext context) {
+  Widget _buildContent(BuildContext context, int index) {
     // 用 Material（不透明 surface 色）承载内容区，而非 Container 的 ColoredBox，
     // 避免区内 SwitchListTile/ListTile 的墨迹与选中背景被 ColoredBox 遮挡而触发
     // 「ListTile background color or ink splashes may be invisible」断言。
@@ -155,11 +200,36 @@ class _SettingsShellState extends State<SettingsShell> {
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 860),
-            child: widget.contentBuilder(context, _index),
+            child: widget.contentBuilder(context, index),
           ),
         ),
       ),
     );
+  }
+}
+
+/// 窄屏 PageView 的滚动行为：
+/// - 鼠标也可拖拽翻页（Windows 桌面上同样支持左右滑动切换子页面）；
+/// - 不显示滚动条（分页切换控件，滚动条无意义）。
+class _NarrowPageSwipeBehavior extends MaterialScrollBehavior {
+  const _NarrowPageSwipeBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+        PointerDeviceKind.trackpad,
+      };
+
+  @override
+  Widget buildScrollbar(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    return child;
   }
 }
 
