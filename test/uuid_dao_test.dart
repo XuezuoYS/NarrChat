@@ -143,6 +143,39 @@ void main() {
     await modDao.replaceBookMods(bookUuid, changed);
     expect(await GetBookTimes.read(bookUuid), greaterThan(before));
   });
+
+  test('BookModConfig 落库归一化：预置行 mod_uuid 写 NULL，空串不触发外键', () async {
+    final bookDao = BookDao();
+    final bookUuid = await bookDao.insertBook(const Book(title: '书Z'));
+    final modDao = ModDao();
+
+    // 预置 Mod 的 uuid 为空串（Mod.uuid 对预置恒为 ''）；toMap 应把空串归一化
+    // 为 NULL，否则 book_mods 的 mod_uuid 外键（FK → mods.uuid）匹配失败。
+    await modDao.replaceBookMods(bookUuid, [
+      BookModConfig(
+        bookUuid: bookUuid,
+        presetKey: 'web_novel_style',
+        modUuid: '',
+        sortOrder: 0,
+        isEnabled: true,
+      ),
+      BookModConfig(
+        bookUuid: bookUuid,
+        presetKey: 'health_child',
+        modUuid: '',
+        sortOrder: 1,
+        isEnabled: false,
+      ),
+    ]);
+
+    final rows = await modDao.getBookMods(bookUuid);
+    expect(rows, hasLength(2));
+    expect(rows[0].presetKey, 'web_novel_style');
+    expect(rows[0].modUuid, isNull, reason: '预置行 mod_uuid 必须为 NULL');
+    expect(rows[1].presetKey, 'health_child');
+    expect(rows[1].modUuid, isNull);
+    expect(rows[1].isEnabled, isFalse);
+  });
 }
 
 /// 读取书籍设置时间戳（断言 `touchBook` 行为，按主键 uuid 定位）。

@@ -130,4 +130,33 @@ void main() {
     expect(find.text('查看 Mod'), findsOneWidget);
     expect(find.widgetWithText(TextField, '文笔润色'), findsOneWidget);
   });
+
+  testWidgets('未配置过预置 Mod 的书籍：保存时预置行 modUuid 为 null（不违反外键）',
+      (tester) async {
+    // 模拟排障场景：书籍只配置过用户 Mod，未配置任何预置 Mod（
+    // 面板加载时会把预置 Mod 追加为「未启用」，随后任何开关操作都会整体保存）。
+    await pumpPanel(
+      tester,
+      configs: const [
+        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true),
+      ],
+    );
+
+    // 触发保存：关闭 m1 的开关。
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+
+    final saved = dao.bookMods['b1'] ?? const [];
+    expect(saved, isNotEmpty);
+    for (final c in saved) {
+      if (c.presetKey != null) {
+        expect(c.modUuid, isNull,
+            reason: '预置行 mod_uuid 必须为 NULL，空串会违反外键导致保存失败');
+      } else {
+        expect(c.modUuid, isNotNull, reason: '用户行必须带回其 uuid');
+      }
+    }
+    expect(saved.where((c) => c.presetKey != null), isNotEmpty,
+        reason: '未配置的预置 Mod 已被补全为禁用配置');
+  });
 }

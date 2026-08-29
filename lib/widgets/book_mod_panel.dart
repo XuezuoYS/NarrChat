@@ -109,7 +109,9 @@ class _BookModPanelState extends State<BookModPanel> {
         BookModConfig(
           bookUuid: bookUuid ?? '',
           presetKey: mod.presetKey,
-          modUuid: mod.uuid,
+          // 预置 Mod 没有 uuid（[Mod.uuid] 为空串）：引用必须写 NULL 而非空串，
+          // 否则 book_mods 的 mod_uuid 外键（FK → mods.uuid）匹配失败。
+          modUuid: mod.isPreset ? null : mod.uuid,
           isEnabled: false,
           sortOrder: result.length,
         ),

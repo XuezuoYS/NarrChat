@@ -292,11 +292,18 @@ class BookModConfig {
   }
 
   Map<String, Object?> toMap() {
+    // 归一化引用：预置行与用户行只保留一侧（另一侧写 NULL），且空串一律视为
+    // 未设置——book_mods 的 mod_uuid 外键引用 mods.uuid，必须为 NULL 而非空串，
+    // 空串会触发 FOREIGN KEY constraint failed（预置 Mod 的 uuid 恰好是空串，
+    // 曾导致书籍 Mod 面板保存失败；不依赖调用方自觉，落库前统一兜底）。
+    final resolvedModUuid = (modUuid?.isNotEmpty ?? false) ? modUuid : null;
+    final resolvedPresetKey =
+        (presetKey?.isNotEmpty ?? false) ? presetKey : null;
     return {
       'id': id,
       'book_uuid': bookUuid,
-      'preset_key': presetKey,
-      'mod_uuid': modUuid,
+      'preset_key': resolvedModUuid != null ? null : resolvedPresetKey,
+      'mod_uuid': resolvedModUuid,
       'is_enabled': isEnabled ? 1 : 0,
       'sort_order': sortOrder,
     };
