@@ -74,7 +74,6 @@ void main() {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: () async => File(dbPath).readAsBytes(),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemotePlan: (action) async {
         // 删除传播：动作清单里的标识就是本地主键，直接按 uuid 软删。

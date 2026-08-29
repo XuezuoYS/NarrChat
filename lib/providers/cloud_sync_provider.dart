@@ -49,15 +49,19 @@ import '../widgets/sync_conflict_dialog.dart';
 ///
 /// 存储策略（符合 AGENTS.md 数据结构规范）：
 /// - **密码**：写入 `flutter_secure_storage`（系统密钥库），禁止明文落盘；
-/// - 其余设置（服务器地址、用户名、文件夹、保留版本数、自动上传、
-///   同步模式、设备标识）：写入本地明文 JSON 配置文件
-///   `local_config/app_settings.json`（[LocalConfigService]），不进入云存储。
+/// - 其余设置（服务器地址、用户名、文件夹、自动上传、同步模式、设备标识）：
+///   写入本地明文 JSON 配置文件 `local_config/app_settings.json`
+///   （[LocalConfigService]），不进入云存储；
+/// - **保留历史版本**：不落本地，由云端 `sync_config.json` 唯一持有
+///   （[SyncConfig]，见 [refreshKeepVersions] / [saveKeepVersions]）。
 ///
 /// 云端文件约定（新版同步规则）：
 /// - `manifest.json`：数据平面增量索引（仅数据平面读写）；
 /// - `narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db`：数据库快照（版本备份）；
 /// - `img/<hash>.<ext>`：图片 blob（仅图片平面读写）；
-/// - `img_tombstones.json`：图片删除墓碑（仅图片平面读写）。
+/// - `img_tombstones.json`：图片删除墓碑（仅图片平面读写）；
+/// - `sync_config.json`：云同步设置（保留历史版本份数；设置面板/弹窗读写，
+///   数据平面推送时读取用于修剪历史快照）。
 class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   CloudSyncProvider() {
     _coordinator = SyncCoordinator(
@@ -76,19 +80,22 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const String _keyUrl = 'webdavUrl';
   static const String _keyUsername = 'webdavUsername';
   static const String _keyFolder = 'webdavFolder';
-  static const String _keyKeepVersions = 'webdavKeepVersions';
   static const String _keyAutoUpload = 'webdavAutoUpload';
   static const String _keySyncMode = 'syncMode';
   static const String _keyDeviceId = 'syncDeviceId';
 
+  /// 旧版本曾把「保留历史版本」存到本地 JSON；现由云端 sync_config.json
+  /// 唯一持有，[load] 时一次性清除该残留键。
+  static const String _legacyKeyKeepVersions = 'webdavKeepVersions';
+
   static const String defaultFolder = 'narrchat';
-  static const int defaultKeepVersions = 5;
 
   String _webdavUrl = '';
   String _webdavUsername = '';
   String _webdavPassword = '';
   String _folder = defaultFolder;
-  int _keepVersions = defaultKeepVersions;
+  int _keepVersions = SyncConfig.defaultKeepVersions;
+  bool _keepVersionsLoaded = false;
   bool _autoUpload = false;
 
   /// 同步模式：登录后默认全自动，可关闭为半自动（手动「同步」按钮）。
@@ -118,7 +125,17 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   String get webdavUsername => _webdavUsername;
   String get webdavPassword => _webdavPassword;
   String get folder => _folder;
+
+  /// 云端「保留历史版本」份数（内存展示缓存）。
+  ///
+  /// 唯一权威来源是云端 `sync_config.json`：由 [refreshBackups]（面板进入 /
+  /// 刷新时顺带拉取）、[refreshKeepVersions] 与 [saveKeepVersions] 更新，
+  /// **不写入本地文件**；未读到过时保持默认值 5。
   int get keepVersions => _keepVersions;
+
+  /// 本次运行是否已从云端读到过该值（false = 展示「—」）。
+  bool get keepVersionsLoaded => _keepVersionsLoaded;
+
   bool get autoUpload => _autoUpload;
 
   /// 同步模式（auto=全自动 / manual=手动「同步」按钮）。
@@ -350,6 +367,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// 测试用：直接注入「保留历史版本」展示缓存（模拟已从云端读到/保存过）。
+  @visibleForTesting
+  void debugSetKeepVersions(int value) {
+    _keepVersions = value;
+    _keepVersionsLoaded = true;
+    notifyListeners();
+  }
+
   bool get isBusy => _opsBusy || _coordinator.isRunning;
   String? get error => _error ?? _dataError ?? _imageError;
 
@@ -374,14 +399,17 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _webdavUrl = (cfg[_keyUrl] as String?) ?? '';
       _webdavUsername = (cfg[_keyUsername] as String?) ?? '';
       _folder = (cfg[_keyFolder] as String?) ?? defaultFolder;
-      _keepVersions =
-          (cfg[_keyKeepVersions] as num?)?.toInt() ?? defaultKeepVersions;
       _autoUpload = (cfg[_keyAutoUpload] as bool?) ?? false;
       _syncMode = _parseSyncMode(cfg[_keySyncMode]);
       _deviceId = (cfg[_keyDeviceId] as String?) ?? '';
       if (_deviceId.isEmpty) {
         _deviceId = _generateDeviceId();
         await LocalConfigService.update({_keyDeviceId: _deviceId});
+      }
+      // 一次性清理：旧版本把「保留历史版本」存在本地 JSON，现由云端
+      // sync_config.json 唯一持有（取消本地存储此设置项）。
+      if (cfg.remove(_legacyKeyKeepVersions) != null) {
+        await LocalConfigService.write(cfg);
       }
     } catch (e) {
       _error = e.toString();
@@ -392,12 +420,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 保存设置。密码写入安全存储，其余写入本地 JSON 配置文件。
   ///
   /// 云同步是否"已登录"由 [webdavUrl]/[webdavUsername] 是否填写决定。
+  ///（「保留历史版本」不在此保存：它是云端 `sync_config.json` 的配置，
+  /// 由 [saveKeepVersions] 独立读写。）
   Future<bool> save({
     required String webdavUrl,
     required String webdavUsername,
     required String webdavPassword,
     required String folder,
-    required int keepVersions,
     required SyncMode syncMode,
   }) async {
     try {
@@ -415,11 +444,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
         return false;
       }
-      if (keepVersions < 1 || keepVersions > 99) {
-        _error = '保留历史版本数需在 1 ~ 99 之间';
-        notifyListeners();
-        return false;
-      }
       if (webdavPassword.isNotEmpty) {
         await _secureStorage.write(key: _keyPassword, value: webdavPassword);
       }
@@ -430,7 +454,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         _keyUrl: trimmedUrl,
         _keyUsername: trimmedUsername,
         _keyFolder: trimmedFolder,
-        _keyKeepVersions: keepVersions,
         _keyAutoUpload: syncMode == SyncMode.auto,
         _keySyncMode: syncMode.name,
         _keyDeviceId: _deviceId,
@@ -440,7 +463,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _webdavUsername = trimmedUsername;
       _webdavPassword = webdavPassword;
       _folder = trimmedFolder;
-      _keepVersions = keepVersions;
       _syncMode = syncMode;
       _autoUpload = syncMode == SyncMode.auto;
       _error = null;
@@ -471,6 +493,79 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 云端「保留历史版本」配置（sync_config.json，本地不落盘）
+  // ---------------------------------------------------------------------------
+
+  /// 拉取云端「保留历史版本」真值（弹窗打开时调用）。
+  ///
+  /// 成功返回 null 并刷新展示缓存；失败返回**原生异常文本**（原样透出，
+  /// 供弹窗内联展示后重试）。`sync_config.json` 不存在时按默认值处理。
+  Future<String?> refreshKeepVersions() async {
+    if (!isConfigured) return '请先保存 WebDAV 连接配置';
+    if (isBusy) return '正在进行其他同步操作，请稍候';
+    _opsBusy = true;
+    _error = null;
+    notifyListeners();
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      final cfg = await _readCloudSyncConfig(dav);
+      _keepVersions = cfg.keepVersions;
+      _keepVersionsLoaded = true;
+      return null;
+    } catch (e) {
+      _error = e.toString();
+      return e.toString();
+    } finally {
+      dav?.close();
+      _opsBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 保存「保留历史版本」到云端 `sync_config.json`。
+  ///
+  /// - 校验不通过（非整数 / 越界）→ 直接返回文案，**不打网络**；
+  /// - 成功返回 null 并刷新缓存；失败返回原因（原生异常文本原样透出）；
+  /// - **不加 `sync.lock`**：该文件只有「推送新快照」路径读取，并发最坏
+  ///   结果是本轮按旧值修剪、下一次推送修正，不值得为一次 PUT 多付
+  ///   锁的 GET/PUT/DELETE 三个请求；
+  /// - 不触发任何同步：改动在**下一次数据平面推送**时生效。
+  Future<String?> saveKeepVersions(int value) async {
+    final validateError = SyncConfig.validateKeepVersions(value);
+    if (validateError != null) return validateError;
+    if (!isConfigured) return '请先保存 WebDAV 连接配置';
+    if (isBusy) return '正在进行其他同步操作，请稍候';
+    _opsBusy = true;
+    _error = null;
+    notifyListeners();
+    WebDavService? dav;
+    try {
+      dav = _buildDav();
+      final store = WebDavSyncStore(dav: dav, folder: _folder.trim());
+      // 首次使用（文件夹还不存在）时直接 PUT 会被多数服务器 409 拒绝。
+      await store.ensureFolder();
+      await store.writeSyncConfig(SyncConfig(keepVersions: value));
+      _keepVersions = value;
+      _keepVersionsLoaded = true;
+      return null;
+    } catch (e) {
+      _error = e.toString();
+      return e.toString();
+    } finally {
+      dav?.close();
+      _opsBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 读取云端 sync_config.json（缺失 → 默认值）；失败即抛，由调用方决定回退。
+  Future<SyncConfig> _readCloudSyncConfig(WebDavService dav) async {
+    final store = WebDavSyncStore(dav: dav, folder: _folder.trim());
+    return (await store.readSyncConfig()) ?? const SyncConfig();
+  }
+
   static SyncMode _parseSyncMode(Object? raw) {
     if (raw is String) {
       return SyncMode.values.firstWhere(
@@ -493,7 +588,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   static final _rand = math.Random();
 
   /// 删除当前 WebDAV 连接：清除安全存储中的密码与本地 JSON 中的连接配置，
-  /// 恢复到未配置状态（不影响云端备份与本地数据）。
+  /// 恢复到未配置状态（不影响云端备份、云端 sync_config.json 与本地数据）。
   Future<void> disconnect() async {
     try {
       await _secureStorage.delete(key: _keyPassword);
@@ -502,9 +597,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         ..remove(_keyUrl)
         ..remove(_keyUsername)
         ..remove(_keyFolder)
-        ..remove(_keyKeepVersions)
         ..remove(_keyAutoUpload)
-        ..remove(_keySyncMode);
+        ..remove(_keySyncMode)
+        ..remove(_legacyKeyKeepVersions);
       await LocalConfigService.write(cfg);
     } catch (e) {
       _error = e.toString();
@@ -515,7 +610,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _webdavUsername = '';
     _webdavPassword = '';
     _folder = defaultFolder;
-    _keepVersions = defaultKeepVersions;
+    _keepVersions = SyncConfig.defaultKeepVersions;
+    _keepVersionsLoaded = false;
     _autoUpload = false;
     _syncMode = SyncMode.auto;
     _backups = [];
@@ -1046,7 +1142,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: CloudSyncService.buildSnapshotBytes,
       referencedImages: _referencedImages,
-      keepVersions: _keepVersions,
       onProgress: ctx.reportProgress,
       isCancelled: ctx.isCancelled,
       applyRemotePlan: _applyRemotePlan,
@@ -1156,7 +1251,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   // 备份列表 / 数据恢复（与两平面任务共用执行道互斥由调用方 UI 门控）
   // ---------------------------------------------------------------------------
 
-  /// 刷新云端备份列表。
+  /// 刷新云端备份列表（顺带拉一次 sync_config.json 更新展示缓存）。
   Future<void> refreshBackups() async {
     if (isBusy) return;
     _opsBusy = true;
@@ -1166,12 +1261,27 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       dav = _buildDav();
       await _loadBackups(dav);
+      await _syncKeepVersionsFromCloud(dav);
     } catch (e) {
       _error = e.toString();
     } finally {
       dav?.close();
       _opsBusy = false;
       notifyListeners();
+    }
+  }
+
+  /// 展示缓存：读云端 sync_config.json 更新「保留历史版本」。
+  ///
+  /// 失败（云端不可达 / 未配置）静默保留上一次缓存值：展示框与状态卡不因
+  /// 顺带刷新而报错（错误框只归因备份列表），修剪路径会自行判错跳过。
+  Future<void> _syncKeepVersionsFromCloud(WebDavService dav) async {
+    try {
+      final cfg = await _readCloudSyncConfig(dav);
+      _keepVersions = cfg.keepVersions;
+      _keepVersionsLoaded = true;
+    } catch (_) {
+      // 静默：保留上次缓存值（见 doc）。
     }
   }
 

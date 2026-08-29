@@ -43,6 +43,10 @@ class SyncResult {
 /// `img_tombstones.json`——manifest 的 `images` 字段仅承载引用集快照
 ///（派生展示信息，图片缺失/多余都由图片平面按实际清单自愈）。
 ///
+/// 历史快照修剪份数取自云端 `sync_config.json`（[SyncConfig]，唯一权威
+/// 来源，本地不存此设置）；读取失败（非 404）时本轮跳过修剪，绝不删文件
+///（宁多留一份，下一次推送再修）。
+///
 /// 依赖注入以便测试：云存储、同步状态/共基存储、本地快照构建、
 /// 快照字节构建、远端落地回调。工作流见 docs/sync_auto_triggers.md。
 class DatabaseSyncRunner {
@@ -59,7 +63,6 @@ class DatabaseSyncRunner {
   /// 当前本地库引用的图片路径集合（存活集，仅用于 manifest.images）。
   final Future<List<String>> Function() referencedImages;
 
-  final int keepVersions;
   final void Function(SyncProgressEvent)? onProgress;
 
   /// 协作式取消回调：返回 true 表示用户已请求取消本平面的同步，
@@ -95,7 +98,6 @@ class DatabaseSyncRunner {
     required this.buildLocalSnapshot,
     required this.buildSnapshotBytes,
     required this.referencedImages,
-    this.keepVersions = 5,
     this.onProgress,
     this.isCancelled,
     this.applyRemotePlan,
@@ -305,10 +307,13 @@ class DatabaseSyncRunner {
   // ---------------------------------------------------------------------------
   // 内部
   // ---------------------------------------------------------------------------
-  /// 修剪超量快照，始终保留最新 [keepVersions] 份。
+  /// 修剪超量快照，始终保留最新「云端 sync_config.json 声明的份数」份。
+  ///
+  /// 只在 push 路径（已上传新快照后）被调用；云端配置读取失败 → 本轮不修剪。
   Future<void> _pruneSnapshots() async {
+    final keep = await _cloudKeepVersions();
+    if (keep == null) return; // 云端不可达：跳过修剪，绝不删任何快照。
     final names = await store.listSnapshotNames();
-    final keep = keepVersions < 1 ? 1 : keepVersions;
     if (names.length <= keep) return;
     // 按代际新 → 旧排序，超量部分删除（同代字典序即时间序）。
     final ordered = [...names]
@@ -324,6 +329,17 @@ class DatabaseSyncRunner {
       } catch (_) {
         // 单个删除失败不阻断整体。
       }
+    }
+  }
+
+  /// 云端权威保留份数：`sync_config.json` 不存在 → 默认值；读取异常 → null
+  ///（本轮跳过修剪）。
+  Future<int?> _cloudKeepVersions() async {
+    try {
+      return (await store.readSyncConfig())?.keepVersions ??
+          SyncConfig.defaultKeepVersions;
+    } catch (_) {
+      return null;
     }
   }
 

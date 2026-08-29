@@ -94,7 +94,6 @@ void main() {
           SyncLocalSnapshot.build(await DatabaseHelper.instance.database),
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemotePlan: (action) async {
         // 删除传播按 uuid 直取：uuid 就是本地行的主键，没有第二套标识可匹配

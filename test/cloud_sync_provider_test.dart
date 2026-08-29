@@ -246,4 +246,41 @@ void main() {
     provider.dismissSyncResult(error.id);
     expect(provider.resultToasts, hasLength(1));
   });
+
+  // ---------------------------------------------------------------------------
+  // 「保留历史版本」：本地不存，唯一权威来源是云端 sync_config.json
+  // ---------------------------------------------------------------------------
+
+  test('saveKeepVersions：越界直接返回文案，不打网络、缓存不变', () async {
+    final provider = CloudSyncProvider()..debugSetConfigured(value: true);
+
+    expect(await provider.saveKeepVersions(0), '需为 1 ~ 99 的整数');
+    expect(await provider.saveKeepVersions(100), '需为 1 ~ 99 的整数');
+    expect(provider.keepVersions, SyncConfig.defaultKeepVersions,
+        reason: '校验失败不触碰缓存');
+  });
+
+  test('saveKeepVersions：未配置 → 返回「请先保存 WebDAV 连接配置」', () async {
+    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+    expect(await provider.saveKeepVersions(5), '请先保存 WebDAV 连接配置');
+  });
+
+  test('refreshKeepVersions：未配置 → 返回文案且不置已加载', () async {
+    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+    expect(await provider.refreshKeepVersions(), '请先保存 WebDAV 连接配置');
+    expect(provider.keepVersionsLoaded, isFalse);
+  });
+
+  test('keepVersions 初始为默认 5 且未从云端读取过（展示「—」依据）', () {
+    final provider = CloudSyncProvider();
+    expect(provider.keepVersions, SyncConfig.defaultKeepVersions);
+    expect(provider.keepVersionsLoaded, isFalse);
+  });
+
+  test('debugSetKeepVersions：注入缓存后 loaded 为 true（测试钩子）', () {
+    final provider = CloudSyncProvider();
+    provider.debugSetKeepVersions(12);
+    expect(provider.keepVersions, 12);
+    expect(provider.keepVersionsLoaded, isTrue);
+  });
 }

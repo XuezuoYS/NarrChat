@@ -6,6 +6,7 @@ import 'package:narrchat/services/sync/database_sync_runner.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
+import 'package:narrchat/services/sync/sync_remote_store.dart';
 
 import 'helpers/fakes.dart';
 
@@ -28,7 +29,6 @@ DatabaseSyncRunner _service(
     buildLocalSnapshot: () async => buildSnapshot?.call() ?? local,
     buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
     referencedImages: () async => referenced,
-    keepVersions: 5,
     lockRetryDelay: Duration.zero,
   );
 }
@@ -263,7 +263,6 @@ void main() {
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
     );
     // 先放入云端基态：gen 5 无书籍。
@@ -352,7 +351,6 @@ void main() {
           : _matchedLocal,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async => afterPull = true,
     );
@@ -400,7 +398,6 @@ void main() {
       buildLocalSnapshot: () async => _matchedLocal,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (_, _, _) async => applyCalled = true,
     );
@@ -413,5 +410,118 @@ void main() {
     expect(applyCalled, isFalse);
     expect(store.snapshots, isEmpty, reason: '绝不带旧内容推送');
     expect(store.manifest!.generation, 5, reason: 'manifest 未被覆盖');
+  });
+
+  // ---------------------------------------------------------------------------
+  // 历史快照修剪：份数以云端 sync_config.json 为准（本地不存此设置）
+  // ---------------------------------------------------------------------------
+
+  /// 本地有变更（S1 != 共基 S0）→ 走 push 路径；云端预置 [oldSnapshots] 份旧快照。
+  ({MemorySyncStore store, MemorySyncStateStore state, DatabaseSyncRunner svc})
+  pushFixture(int oldSnapshots) {
+    final store = MemorySyncStore()
+      ..manifest = const SyncManifest(
+        generation: 5,
+        lastWriterDeviceId: 'dev-1',
+        knownDevices: ['dev-1'],
+        books: _matchedManifestBooks,
+      );
+    for (var g = 1; g <= oldSnapshots; g++) {
+      store.snapshots['narrchat_snapshot_g${g}_2026010${g}_000000.db'] =
+          Uint8List.fromList([g]);
+    }
+    final state = MemorySyncStateStore()
+      ..bookBases['u1'] = const SyncBookBase(
+        uuid: 'u1',
+        title: '书A',
+        settingsFp: 'S0',
+        roundsFp: 'R1',
+      );
+    final local = SyncLocalSnapshot(
+      books: const {
+        'u1': SyncBookRecord(
+          uuid: 'u1',
+          title: '书A',
+          parts: SyncBookParts(settingsFp: 'S1', roundsFp: 'R1'),
+        ),
+      },
+      bookMeta: const {
+        'u1': SyncBookMeta(settingsUpdatedAt: 500, roundsUpdatedAt: 200),
+      },
+      mods: const {},
+    );
+    final svc = _service(store, state, local);
+    return (store: store, state: state, svc: svc);
+  }
+
+  test('修剪：云端配置 keep=2 + 6 份快照 → 推送后仅保留最新 2 份（含新代）', () async {
+    final f = pushFixture(5);
+    f.store.syncConfig = const SyncConfig(keepVersions: 2);
+
+    final result = await f.svc.sync();
+
+    expect(result.applied, isTrue);
+    expect(result.pushed, isTrue);
+    expect(result.generation, 6);
+    final names = f.store.snapshots.keys.toList();
+    expect(names, hasLength(2), reason: '按云端声明份数修剪');
+    expect(
+      names.any((n) => WebDavSyncStore.generationOf(n) == 6),
+      isTrue,
+      reason: '刚推的新快照必须保留',
+    );
+    expect(
+      names.any((n) => WebDavSyncStore.generationOf(n) == 5),
+      isTrue,
+      reason: '旧代最高者保留',
+    );
+    expect(f.store.readSyncConfigCalls, 1,
+        reason: '修剪路径恰好读一次云端配置');
+  });
+
+  test('修剪：云端无 sync_config.json → 按默认 5 份修剪', () async {
+    final f = pushFixture(5); // 5 旧 + 1 新 = 6
+    f.store.syncConfig = null;
+
+    final result = await f.svc.sync();
+
+    expect(result.pushed, isTrue);
+    expect(f.store.snapshots, hasLength(5), reason: '默认 5 份');
+  });
+
+  test('修剪：云端配置读取异常 → 本轮跳过修剪且同步仍成功（宁多不删）', () async {
+    final f = pushFixture(5);
+    f.store.syncConfigError = StateError('云端不可达');
+
+    final result = await f.svc.sync();
+
+    expect(result.error, isNull);
+    expect(result.pushed, isTrue);
+    expect(f.store.snapshots, hasLength(6), reason: '读取失败一份都不删');
+  });
+
+  test('无变更（不推送）→ 不读云端配置（零额外请求）', () async {
+    final store = MemorySyncStore()
+      ..manifest = const SyncManifest(
+        generation: 5,
+        lastWriterDeviceId: 'dev-1',
+        knownDevices: ['dev-1'],
+        books: _matchedManifestBooks,
+      );
+    final state = MemorySyncStateStore()
+      ..bookBases['u1'] = const SyncBookBase(
+        uuid: 'u1',
+        title: '书A',
+        settingsFp: 'S0',
+        roundsFp: 'R1',
+      );
+    final svc = _service(store, state, _matchedLocal);
+
+    final result = await svc.sync();
+
+    expect(result.applied, isFalse);
+    expect(result.pushed, isFalse);
+    expect(store.readSyncConfigCalls, 0,
+        reason: '懒读：只有推送（修剪）路径才读 sync_config.json');
   });
 }

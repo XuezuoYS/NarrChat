@@ -19,7 +19,7 @@
 | | 数据平面（data） | 图片平面（images） |
 |---|---|---|
 | 迭代 | manifest 代数（**唯一**代数通道） | 无代数；墓碑条目（1 年 TTL）+ 内容寻址 blob 收敛 |
-| 文件 | `manifest.json` / `narrchat_snapshot_gN_*.db` / 本地共基、状态 | `img/*` blob + `img_tombstones.json`（云端与本地工作副本） |
+| 文件 | `manifest.json` / `narrchat_snapshot_gN_*.db` / `sync_config.json`（仅修剪路径读）/ 本地共基、状态 | `img/*` blob + `img_tombstones.json`（云端与本地工作副本） |
 | 规划 | 三向部件合并（`SyncMergePlanner` + `SyncActionPlanner`） | 本地盘 ⊕ 云端 blob ⊕ 墓碑（`ImageSyncPlanner` + `mergeTombstones`） |
 | 复活 | —（数据以 uuid 身份三向合并） | **全局复活标记**（`revived: path → 时刻`，随墓碑文件传播）：合并时抵消所有设备上 `deletedAt <= revivedAt` 的陈旧条目；晚于标记的新删除不受影响 |
 | 失败模式 | 快照 / 清单写失败 → 本轮中止 | 单张 blob 失败 → 下次重试，不挡数据同步，反之亦然 |
@@ -34,6 +34,11 @@
   图片失败重试也不会反复白写快照；
 - 图片平面**不读数据库**：本地 `img/` 盘是云端镜像（含未入正文的导入图）；
   DB 引用集仅作为 manifest.images 展示项由数据平面维护。
+
+> **历史快照修剪份数以云端为准**：数据平面推送新快照后，按云端
+> `sync_config.json`（`SyncConfig`，唯一权威来源，本地不存此设置）声明的
+> 份数修剪；该文件只在「推送（修剪）路径」读取——无变更 / 纯拉取路径零额外
+> 请求；读取失败（非 404）本轮跳过修剪、绝不删文件（宁多留一份，下次推送再修）。
 
 ### 数据平面合并语义（部件级三向；轮次只认"单纯增"）
 

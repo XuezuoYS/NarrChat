@@ -42,7 +42,6 @@ class _FakeCloudSyncProvider extends CloudSyncProvider {
     required String webdavUsername,
     required String webdavPassword,
     required String folder,
-    required int keepVersions,
     required SyncMode syncMode,
   }) async {
     saveCalls++;

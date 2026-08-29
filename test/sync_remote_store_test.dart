@@ -238,4 +238,83 @@ void main() {
           reason: '过期锁可抢占');
     });
   });
+
+  group('云端同步配置（sync_config.json）', () {
+    test('writeSyncConfig → PUT 到 sync_config.json 且可被读回', () async {
+      String? putBody;
+      String? putPath;
+      final client = MockClient((request) async {
+        if (request.method == 'PUT') {
+          putPath = request.url.path;
+          putBody = utf8.decode(request.bodyBytes);
+          return http.Response('', 201);
+        }
+        return http.Response('nf', 404);
+      });
+      final store = WebDavSyncStore(
+        dav: WebDavService(
+          baseUrl: 'https://dav.example.com/dav/',
+          username: 'u',
+          password: 'p',
+          client: client,
+        ),
+        folder: 'narrchat',
+      );
+
+      await store.writeSyncConfig(const SyncConfig(keepVersions: 3));
+
+      expect(putPath, '/dav/narrchat/sync_config.json');
+      expect(SyncConfig.tryParse(putBody)?.keepVersions, 3);
+    });
+
+    test('GET 404（文件不存在）→ 返回 null（未配置）', () async {
+      final client = MockClient((request) async => http.Response('nf', 404));
+      final store = WebDavSyncStore(
+        dav: WebDavService(
+          baseUrl: 'https://dav.example.com/dav/',
+          username: 'u',
+          password: 'p',
+          client: client,
+        ),
+        folder: 'narrchat',
+      );
+
+      expect(await store.readSyncConfig(), isNull);
+    });
+
+    test('GET 500（云端不可达）→ 向上抛出而非当作未配置（调用方跳过修剪）', () async {
+      final client = MockClient((request) async => http.Response('boom', 500));
+      final store = WebDavSyncStore(
+        dav: WebDavService(
+          baseUrl: 'https://dav.example.com/dav/',
+          username: 'u',
+          password: 'p',
+          client: client,
+        ),
+        folder: 'narrchat',
+      );
+
+      await expectLater(
+        store.readSyncConfig(),
+        throwsA(isA<WebDavException>()),
+      );
+    });
+
+    test('GET 200 合法 JSON → 解析出份数', () async {
+      final client = MockClient(
+        (request) async => http.Response('{"keepVersions":7}', 200),
+      );
+      final store = WebDavSyncStore(
+        dav: WebDavService(
+          baseUrl: 'https://dav.example.com/dav/',
+          username: 'u',
+          password: 'p',
+          client: client,
+        ),
+        folder: 'narrchat',
+      );
+
+      expect((await store.readSyncConfig())?.keepVersions, 7);
+    });
+  });
 }

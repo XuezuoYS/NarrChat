@@ -257,6 +257,61 @@ class SyncManifest {
       };
 }
 
+/// 云端同步配置（WebDAV `<folder>/sync_config.json`）。
+///
+/// 跨设备共享、**不写入本地文件**的唯一权威来源：与 manifest / 代数、
+/// 图片墓碑完全解耦——老版本客户端重写 manifest 不影响它；云端从未同步
+/// 过（无 manifest）时也能独立读写。
+class SyncConfig {
+  /// 云端文件名（与 `manifest.json` 同级）。
+  static const String remoteFileName = 'sync_config.json';
+
+  static const int defaultKeepVersions = 5;
+  static const int minKeepVersions = 1;
+  static const int maxKeepVersions = 99;
+
+  /// 保留历史版本份数（解析时已 clamp 到 [minKeepVersions] ~ [maxKeepVersions]）。
+  final int keepVersions;
+
+  const SyncConfig({this.keepVersions = defaultKeepVersions});
+
+  /// 通过 WebDAV 下载后解析；空 / 非法 JSON / 非 Map → null
+  ///（调用方视为「云端未配置」，回落 [defaultKeepVersions]）。
+  static SyncConfig? tryParse(String? json) {
+    if (json == null || json.trim().isEmpty) return null;
+    try {
+      final j = jsonDecode(json);
+      if (j is! Map<String, dynamic>) return null;
+      return SyncConfig.fromJson(j);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  factory SyncConfig.fromJson(Map<String, dynamic> j) {
+    final raw = j['keepVersions'];
+    final value = raw is num
+        ? raw.toInt().clamp(minKeepVersions, maxKeepVersions).toInt()
+        : defaultKeepVersions;
+    return SyncConfig(keepVersions: value);
+  }
+
+  String toJsonString() => jsonEncode(toJson());
+
+  Map<String, dynamic> toJson() => {'keepVersions': keepVersions};
+
+  /// 校验保留份数（1 ~ 99 的整数）；null 通过，否则返回错误文案。
+  ///
+  /// 弹窗与 Provider 共用的唯一校验文案来源（校验不通过时**不打网络**）。
+  static String? validateKeepVersions(int? parsed) {
+    if (parsed == null) return '请输入整数';
+    if (parsed < minKeepVersions || parsed > maxKeepVersions) {
+      return '需为 $minKeepVersions ~ $maxKeepVersions 的整数';
+    }
+    return null;
+  }
+}
+
 /// 云同步结果提示的类型（决定应用级悬浮气泡的图标与关闭语义）。
 ///
 /// - [success]：成功（如「数据已同步到云端」）：短暂悬浮后自动消失；

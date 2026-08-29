@@ -34,7 +34,6 @@ class SettingsFormState extends ChangeNotifier {
         webdavUsername = TextEditingController(text: sync.webdavUsername),
         webdavPassword = TextEditingController(text: sync.webdavPassword),
         webdavFolder = TextEditingController(text: sync.folder),
-        webdavKeepVersions = TextEditingController(text: '${sync.keepVersions}'),
         syncMode = sync.syncMode {
     for (final p in _working) {
       _ensurePlatformControllers(p.id);
@@ -61,7 +60,6 @@ class SettingsFormState extends ChangeNotifier {
   final TextEditingController webdavUsername;
   final TextEditingController webdavPassword;
   final TextEditingController webdavFolder;
-  final TextEditingController webdavKeepVersions;
 
   /// 同步模式（全自动 / 手动「同步」按钮）。由同步模式分段选择器更新。
   SyncMode syncMode;
@@ -215,12 +213,6 @@ class SettingsFormState extends ChangeNotifier {
     }
     if (errors.isNotEmpty) return SettingsSaveResult(errors: errors);
 
-    final keep = int.tryParse(webdavKeepVersions.text.trim());
-    if (keep == null || keep < 1 || keep > 99) {
-      errors.add('云同步：保留历史版本需为 1 ~ 99 的整数');
-    }
-    if (errors.isNotEmpty) return SettingsSaveResult(errors: errors);
-
     final syncUrl = webdavUrl.text.trim();
     final syncUsername = webdavUsername.text.trim();
     final syncConfigured = syncUrl.isNotEmpty && syncUsername.isNotEmpty;
@@ -245,7 +237,6 @@ class SettingsFormState extends ChangeNotifier {
           webdavUsername: webdavUsername.text,
           webdavPassword: webdavPassword.text,
           folder: webdavFolder.text,
-          keepVersions: keep!,
           syncMode: syncMode,
         ),
     ]);
@@ -323,7 +314,6 @@ class SettingsFormState extends ChangeNotifier {
     webdavUsername.dispose();
     webdavPassword.dispose();
     webdavFolder.dispose();
-    webdavKeepVersions.dispose();
     super.dispose();
   }
 }

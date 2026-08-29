@@ -16,6 +16,7 @@ import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/services/sync/img_tombstones.dart';
@@ -600,6 +601,15 @@ class MemorySyncStore extends SyncRemoteStore {
   /// 云端图片删除墓碑文件（null = 文件不存在，首次同步按空处理）。
   ImgTombstones? tombstones;
 
+  /// 云端同步配置（`sync_config.json` 的替身；null = 文件未配置）。
+  SyncConfig? syncConfig;
+
+  /// 非 null：`readSyncConfig` 抛出该异常（模拟云端不可达）。
+  Object? syncConfigError;
+
+  int readSyncConfigCalls = 0;
+  int writeSyncConfigCalls = 0;
+
   /// 当前持锁设备（非空表示锁被占用；`{deviceId, expiresAt}` 模拟）。
   String lockedBy = '';
 
@@ -643,6 +653,20 @@ class MemorySyncStore extends SyncRemoteStore {
 
   @override
   Future<void> writeImageTombstones(ImgTombstones t) async => tombstones = t;
+
+  @override
+  Future<SyncConfig?> readSyncConfig() async {
+    readSyncConfigCalls++;
+    final err = syncConfigError;
+    if (err != null) throw err;
+    return syncConfig;
+  }
+
+  @override
+  Future<void> writeSyncConfig(SyncConfig config) async {
+    writeSyncConfigCalls++;
+    syncConfig = config;
+  }
 
   @override
   Future<bool> acquireLock({String deviceId = '', int ttlSeconds = 300}) async {
@@ -703,4 +727,47 @@ class MemorySyncStateStore implements SyncStateStore {
 
   @override
   Future<void> deleteModBase(String uuid) async => modBases.remove(uuid);
+}
+
+/// [CloudSyncProvider] 替身：覆写「保留历史版本」云端读写，
+/// 切断真实 WebDAV（供弹窗 / 面板 widget 测试复用）。
+class StubCloudSyncProvider extends CloudSyncProvider {
+  StubCloudSyncProvider({
+    this.cloudKeepVersions = SyncConfig.defaultKeepVersions,
+    this.refreshError,
+    this.saveError,
+  });
+
+  /// 模拟的云端真值（refreshKeepVersions 会注入展示缓存）。
+  int cloudKeepVersions;
+
+  /// 非 null：refreshKeepVersions 返回该错误文本（不更新缓存）。
+  String? refreshError;
+
+  /// 非 null：saveKeepVersions 返回该错误文本（不更新缓存）。
+  String? saveError;
+
+  int refreshCalls = 0;
+  int saveCalls = 0;
+  int? lastSavedValue;
+
+  @override
+  Future<String?> refreshKeepVersions() async {
+    refreshCalls++;
+    final err = refreshError;
+    if (err != null) return err;
+    debugSetKeepVersions(cloudKeepVersions);
+    return null;
+  }
+
+  @override
+  Future<String?> saveKeepVersions(int value) async {
+    saveCalls++;
+    lastSavedValue = value;
+    final err = saveError;
+    if (err != null) return err;
+    cloudKeepVersions = value;
+    debugSetKeepVersions(value);
+    return null;
+  }
 }

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/cloud_sync_provider.dart';
@@ -11,6 +10,7 @@ import '../services/sync/sync_models.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import 'keep_versions_dialog.dart';
 import 'settings_form_state.dart';
 import 'sync_restore_dialog.dart';
 
@@ -23,7 +23,8 @@ import 'sync_restore_dialog.dart';
 /// - 状态卡片：连接状态 / 同步模式 / 设备标识 / 上次同步时间；
 /// - 同步模式：全自动（默认）或手动「同步」按钮；
 /// - 连接设置：服务器 / 用户名 / 密码 / 文件夹，测试连接 / 删除连接；
-/// - 云端备份：统一「同步」、保留历史版本、版本列表（下载→合并/替换）；
+/// - 保留历史版本：只读展示框（点击弹窗修改，值保存在云端 sync_config.json）；
+/// - 云端备份：统一「同步」、版本列表（下载→合并/替换）；
 /// - 图片：说明随同步自动多端同步、删除可在云端同步删除。
 class CloudSyncPanel extends StatefulWidget {
   final SettingsFormState form;
@@ -87,7 +88,6 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       _form.webdavUsername.clear();
       _form.webdavPassword.clear();
       _form.webdavFolder.text = CloudSyncProvider.defaultFolder;
-      _form.webdavKeepVersions.text = '${CloudSyncProvider.defaultKeepVersions}';
       _form.syncMode = SyncMode.auto;
     });
     _showSnack('已删除连接');
@@ -117,6 +117,19 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
     if (!mounted) return;
     _showSnack(result == null ? '连接成功：WebDAV 服务器可用' : '连接失败：$result');
+  }
+
+  Future<void> _editKeepVersions() async {
+    final provider = context.read<CloudSyncProvider>();
+    if (!provider.isConfigured) {
+      // 未连接：不联网，仅提示（与展示框「—」一致）。
+      _showSnack('请先保存 WebDAV 连接配置后再修改');
+      return;
+    }
+    final saved = await showKeepVersionsDialog(context, provider: provider);
+    if (saved != null && mounted) {
+      _showSnack('保存成功：云端保留 $saved 份历史版本');
+    }
   }
 
   Future<void> _download(WebDavFile file) async {
@@ -280,7 +293,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                             _Stat(
                               icon: Icons.storage_outlined,
                               label: '保留版本',
-                              value: '${provider.keepVersions}',
+                              value: provider.keepVersionsLoaded
+                                  ? '${provider.keepVersions}'
+                                  : '—',
                             ),
                             _Stat(
                               icon: Icons.devices_outlined,
@@ -521,24 +536,20 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: TextField(
-                  controller: _form.webdavKeepVersions,
-                  onTapOutside: unfocusOnTapOutside,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  maxLength: 2,
-                  decoration: const InputDecoration(
-                    labelText: '保留历史版本',
-                    hintText: '5',
-                    counterText: '',
-                  ),
+                child: _DisplayField(
+                  label: '保留历史版本',
+                  value: provider.isConfigured && provider.keepVersionsLoaded
+                      ? '${provider.keepVersions}'
+                      : '—',
+                  onTap: _editKeepVersions,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 4),
           Text(
-            '云端保留最近「保留历史版本」份快照，便于回溯误操作。',
+            '云端保留最近 N 份快照，便于回溯误操作。该数值保存在云端（sync_config.json），'
+            '多设备共享；点击左侧框修改，下次同步推送时生效。',
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
           const SizedBox(height: 16),
@@ -818,6 +829,58 @@ class _StatStrip extends StatelessWidget {
             Expanded(child: _StatCell(item: stats[i])),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// 只读「展示框」：视觉与相邻 TextField 一致的只读字段，点击触发 [onTap]。
+///
+/// 用于「保留历史版本」：值只展示数字（未连接 / 未读到云端值时显示「—」），
+/// 修改必须点击后在弹窗内完成（见 keep_versions_dialog.dart）。
+class _DisplayField extends StatelessWidget {
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+
+  const _DisplayField({
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final inputTheme = Theme.of(context).inputDecorationTheme;
+    final border =
+        inputTheme.enabledBorder ?? inputTheme.border ?? const OutlineInputBorder();
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        mouseCursor: SystemMouseCursors.click,
+        child: InputDecorator(
+          decoration: InputDecoration(
+            labelText: label,
+            suffixIcon: const Icon(Icons.edit_outlined, size: 16),
+            contentPadding: inputTheme.contentPadding,
+            filled: true,
+            fillColor: inputTheme.fillColor,
+            enabledBorder: border,
+            focusedBorder: border,
+            border: border,
+          ),
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: context.narrColors.textPrimary,
+            ),
+          ),
+        ),
       ),
     );
   }

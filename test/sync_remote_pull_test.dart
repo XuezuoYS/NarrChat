@@ -75,7 +75,6 @@ void main() {
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
         pulledUuids = action.pullBookUuids;
@@ -166,7 +165,6 @@ void main() {
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
         passedPlan = mergePlan;
@@ -244,7 +242,6 @@ void main() {
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
         pulledMods = action.pullModUuids;
@@ -331,7 +328,6 @@ void main() {
       buildLocalSnapshot: () async => local,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (mergePlan, action, bytes) async {
         passedPlan = mergePlan;
@@ -414,7 +410,6 @@ void main() {
       buildLocalSnapshot: () async => _localSnapshot,
       buildSnapshotBytes: () async => Uint8List.fromList([1, 2, 3]),
       referencedImages: () async => const [],
-      keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemoteBooks: (_, _, _) async => called = true,
     );

@@ -38,8 +38,8 @@ void main() {
         ],
         child: MaterialApp(
           theme: theme,
-          home: Material(
-            child: SingleChildScrollView(
+          home: Scaffold(
+            body: SingleChildScrollView(
               child: CloudSyncPanel(form: form),
             ),
           ),
@@ -133,5 +133,49 @@ void main() {
     expect(find.text('云端记录 #7'), findsOneWidget);
     expect(find.text('云端记录 #5'), findsOneWidget);
     expect(find.text('云端记录 #2'), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 「保留历史版本」展示框（点击弹窗修改，值保存在云端 sync_config.json）
+  // ---------------------------------------------------------------------------
+
+  testWidgets('保留历史版本是只读展示框：非 TextField，未连接显示 —', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+
+    // 连接设置卡只剩 4 个可编辑输入框（服务器 / 用户名 / 密码 / 文件夹）。
+    expect(find.byType(TextField), findsNWidgets(4));
+    expect(find.text('—'), findsOneWidget, reason: '未连接 / 未读到云端值时展示占位');
+    expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+  });
+
+  testWidgets('未连接点击展示框：只弹提示，不打开弹窗也不联网', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+
+    await tester.tap(find.text('—'));
+    await tester.pump();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('请先保存 WebDAV 连接配置后再修改'), findsOneWidget);
+  });
+
+  testWidgets('已连接且已读到云端值：展示框显示该数字，点击打开弹窗', (tester) async {
+    final provider = CloudSyncProvider()
+      ..debugSetConfigured(value: true)
+      ..debugSetKeepVersions(8);
+    final form = makeForm(provider: provider);
+    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+
+    expect(find.text('8'), findsWidgets, reason: '状态卡与展示框都显示云端值');
+
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget, reason: '点击打开修改弹窗');
+    // 弹窗打开会尝试 refreshKeepVersions（真实 provider 走 flutter_test 的
+    // 假 HTTP 400 → 内联展示错误；控件行为断言见 keep_versions_dialog_test.dart）。
   });
 }

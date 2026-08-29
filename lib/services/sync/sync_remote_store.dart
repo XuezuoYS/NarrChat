@@ -45,6 +45,15 @@ abstract class SyncRemoteStore {
   /// 覆盖写入云端「图片删除墓碑」文件（默认实现：无此文件支持 - 空写入）。
   Future<void> writeImageTombstones(ImgTombstones tombstones) async {}
 
+  /// 读取云端「同步配置」文件（`sync_config.json`）；不存在/解析失败返回 null
+  ///（调用方视为「云端未配置」，按默认值处理）。
+  ///
+  /// 默认实现：无此文件支持 - 视为未配置。
+  Future<SyncConfig?> readSyncConfig() async => null;
+
+  /// 覆盖写入云端「同步配置」文件（默认实现：无此文件支持 - 空写入）。
+  Future<void> writeSyncConfig(SyncConfig config) async {}
+
   /// 尝试获取云端互斥锁（软锁，TTL 超时后可被抢占）。
   ///
   /// 保证"读 manifest → 写快照 → 写 manifest"临界区同时只有一个设备在跑；
@@ -87,7 +96,8 @@ abstract class SyncRemoteStore {
 /// 文件名约定：
 /// - manifest：`manifest.json`；
 /// - 快照：`narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db`；
-/// - 图片：`img/<hash>.<ext>`（子目录，WebDAV MKCOL 自动建）。
+/// - 图片：`img/<hash>.<ext>`（子目录，WebDAV MKCOL 自动建）；
+/// - 同步配置：`sync_config.json`（云同步设置，跨设备共享，见 [SyncConfig]）。
 class WebDavSyncStore extends SyncRemoteStore {
   /// 云端快照文件名前缀（与 [snapshotName] 对应）。
   static const String snapshotPrefix = 'narrchat_snapshot_';
@@ -277,6 +287,28 @@ class WebDavSyncStore extends SyncRemoteStore {
     } on WebDavException {
       return null;
     }
+  }
+
+  @override
+  Future<SyncConfig?> readSyncConfig() async {
+    try {
+      final bytes = await dav.get(folder, SyncConfig.remoteFileName);
+      return SyncConfig.tryParse(utf8.decode(bytes));
+    } on WebDavException catch (e) {
+      // 仅「文件不存在」视为未配置；其它失败（5xx / 权限 / 网络异常）向上
+      // 抛出，让调用方（修剪路径）跳过本轮删除，避免按错误值误删快照。
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> writeSyncConfig(SyncConfig config) async {
+    await dav.put(
+      folder,
+      SyncConfig.remoteFileName,
+      Uint8List.fromList(utf8.encode(config.toJsonString())),
+    );
   }
 
   @override
