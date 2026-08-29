@@ -8,6 +8,7 @@ import '../utils/focus_utils.dart';
 import '../utils/pinyin_sort.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
+import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
 
@@ -17,7 +18,8 @@ import 'type_badge.dart';
 /// - 「已启用」：可拖动排序调整置入顺序（自上而下）；
 /// - 「未启用」：按名称拼音 a~z 排序，不可拖动；
 /// - 通过开关启用/禁用，改动即时保存：发送请求时，本书启用中的 Mod 将
-///   按顺序自动置入前置词、后置词、系统提示词与世界书。
+///   按顺序自动置入前置词、后置词、系统提示词与世界书；
+/// - 点击条目主体（非开关、非拖动柄区域）打开【预览 mod】只读对话框。
 class BookModPanel extends StatefulWidget {
   /// 所属书籍 uuid；为 null 表示新建书籍草稿模式（改动保存在内存，
   /// 保存书籍后由外层统一落库）。
@@ -299,6 +301,27 @@ class _BookModPanelState extends State<BookModPanel> {
     );
   }
 
+  /// 构建单条 Mod 条目：条目主体（非开关、非拖动柄区域）点击打开
+  /// 【预览 mod】只读对话框。
+  _BookModTile _buildTile({
+    required Key key,
+    required BookModConfig config,
+    required int index,
+    required ValueChanged<bool> onToggle,
+    required bool showDragHandle,
+  }) {
+    final mod = _modByRef[config.ref];
+    return _BookModTile(
+      key: key,
+      config: config,
+      mod: mod,
+      index: index,
+      onToggle: onToggle,
+      onPreview: mod == null ? null : () => showModPreview(context, mod),
+      showDragHandle: showDragHandle,
+    );
+  }
+
   /// 「已启用」列表：支持拖动排序（自上而下）。
   Widget _buildEnabledList() {
     final keywords = splitKeywords(_searchQuery);
@@ -335,10 +358,9 @@ class _BookModPanelState extends State<BookModPanel> {
           onReorderItem: _reorderEnabled,
           children: [
             for (final i in filtered)
-              _BookModTile(
+              _buildTile(
                 key: ValueKey('book_mod_enabled_${_enabled[i].ref}'),
                 config: _enabled[i],
-                mod: _modByRef[_enabled[i].ref],
                 index: i,
                 onToggle: (_) => _disable(i),
                 // 搜索过滤时禁用拖动，避免过滤列表与全量列表索引错位。
@@ -378,10 +400,9 @@ class _BookModPanelState extends State<BookModPanel> {
         ),
         const SizedBox(height: 8),
         for (final i in filtered)
-          _BookModTile(
+          _buildTile(
             key: ValueKey('book_mod_disabled_${_disabled[i].ref}'),
             config: _disabled[i],
-            mod: _modByRef[_disabled[i].ref],
             index: i,
             onToggle: (_) => _enable(i),
             showDragHandle: false,
@@ -399,6 +420,9 @@ class _BookModTile extends StatelessWidget {
   final int index;
   final ValueChanged<bool> onToggle;
 
+  /// 点击条目主体（非开关、非拖动柄区域）时回调：打开【预览 mod】只读对话框。
+  final VoidCallback? onPreview;
+
   /// 是否显示拖动柄（仅「已启用」列表显示，用于调整置入顺序）。
   final bool showDragHandle;
 
@@ -409,6 +433,7 @@ class _BookModTile extends StatelessWidget {
     required this.index,
     required this.onToggle,
     required this.showDragHandle,
+    this.onPreview,
   });
 
   String get _name {
@@ -449,15 +474,24 @@ class _BookModTile extends StatelessWidget {
               : theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
       ),
-      child: Opacity(
-        opacity: config.isEnabled ? 1 : 0.6,
-        // 窄屏（竖版）时拖动柄移到第二行，标题与简介独占整行，避免被挤压。
-        child: ResponsiveBuilder(
-          builder: (context, isWide) {
-            return isWide
-                ? _buildWide(context, theme, name, description, isPreset)
-                : _buildNarrow(context, name, description, isPreset);
-          },
+      // 条目主体可点击预览；开关与拖动柄各自处理手势，不会误触预览。
+      child: Material(
+        type: MaterialType.transparency,
+        borderRadius: BorderRadius.circular(10),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPreview,
+          child: Opacity(
+            opacity: config.isEnabled ? 1 : 0.6,
+            // 窄屏（竖版）时拖动柄移到第二行，标题与简介独占整行，避免被挤压。
+            child: ResponsiveBuilder(
+              builder: (context, isWide) {
+                return isWide
+                    ? _buildWide(context, theme, name, description, isPreset)
+                    : _buildNarrow(context, name, description, isPreset);
+              },
+            ),
+          ),
         ),
       ),
     );
@@ -562,12 +596,19 @@ class _BookModTile extends StatelessWidget {
   }
 
   /// 拖动排序手柄。
+  ///
+  /// 外层 [GestureDetector] 吸收点击（更深一级的点击识别器先赢得竞技场），
+  /// 避免「轻点拖动柄」误触条目主体的预览；拖动仍由
+  /// [ReorderableDragStartListener] 在指针按下时启动。
   Widget _buildDragHandle() {
-    return ReorderableDragStartListener(
-      index: index,
-      child: const Padding(
-        padding: EdgeInsets.all(4),
-        child: Icon(Icons.drag_handle, size: 20),
+    return GestureDetector(
+      onTap: () {},
+      child: ReorderableDragStartListener(
+        index: index,
+        child: const Padding(
+          padding: EdgeInsets.all(4),
+          child: Icon(Icons.drag_handle, size: 20),
+        ),
       ),
     );
   }
