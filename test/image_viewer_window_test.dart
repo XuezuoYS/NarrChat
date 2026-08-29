@@ -28,30 +28,44 @@ void main() {
   group('zoomAt', () {
     test('放大：比例按 factor 变化', () {
       final m = Matrix4.identity()..scaleByDouble(2, 2, 1, 1);
-      final out = zoomAt(m, const Offset(10, 10), 1.1,
-          minScale: 1.0, maxScale: 5.0);
+      final out = zoomAt(
+        m,
+        const Offset(10, 10),
+        1.1,
+        minScale: 1.0,
+        maxScale: 5.0,
+      );
       expect(out.getMaxScaleOnAxis(), closeTo(2.2, 0.001));
     });
 
     test('缩小但被 minScale 钳制', () {
       final m = Matrix4.identity()..scaleByDouble(2, 2, 1, 1);
-      final out = zoomAt(m, const Offset(10, 10), 0.1,
-          minScale: 1.0, maxScale: 5.0);
+      final out = zoomAt(
+        m,
+        const Offset(10, 10),
+        0.1,
+        minScale: 1.0,
+        maxScale: 5.0,
+      );
       expect(out.getMaxScaleOnAxis(), closeTo(1.0, 0.001));
     });
 
     test('放大被 maxScale 钳制', () {
       final m = Matrix4.identity()..scaleByDouble(2, 2, 1, 1);
-      final out = zoomAt(m, const Offset(10, 10), 100,
-          minScale: 1.0, maxScale: 3.0);
+      final out = zoomAt(
+        m,
+        const Offset(10, 10),
+        100,
+        minScale: 1.0,
+        maxScale: 3.0,
+      );
       expect(out.getMaxScaleOnAxis(), closeTo(3.0, 0.001));
     });
 
     test('焦点在缩放前后保持不变（光标下的内容不动）', () {
       final m = Matrix4.identity()..scaleByDouble(1.5, 1.5, 1, 1);
       const focal = Offset(80, 40);
-      final childFocal =
-          MatrixUtils.transformPoint(Matrix4.inverted(m), focal);
+      final childFocal = MatrixUtils.transformPoint(Matrix4.inverted(m), focal);
       final out = zoomAt(m, focal, 1.2, minScale: 1.0, maxScale: 5.0);
       final after = MatrixUtils.transformPoint(out, childFocal);
       expect(after.dx, closeTo(focal.dx, 0.001));
@@ -60,8 +74,13 @@ void main() {
 
     test('factor 为 1 时不改变矩阵', () {
       final m = Matrix4.identity()..scaleByDouble(2, 2, 1, 1);
-      final out = zoomAt(m, const Offset(10, 10), 1.0,
-          minScale: 1.0, maxScale: 5.0);
+      final out = zoomAt(
+        m,
+        const Offset(10, 10),
+        1.0,
+        minScale: 1.0,
+        maxScale: 5.0,
+      );
       expect(out, m);
     });
   });
@@ -159,7 +178,9 @@ void main() {
     });
 
     test('非 warm 窗口解码时 warm 为 false', () {
-      final decoded = ImageWindowArgs.tryDecode('{"images":["a.png"],"index":2}');
+      final decoded = ImageWindowArgs.tryDecode(
+        '{"images":["a.png"],"index":2}',
+      );
       expect(decoded!.warm, isFalse);
       expect(decoded.index, 2);
     });
@@ -167,15 +188,19 @@ void main() {
 
   group('tryDecodeLoadPayload', () {
     test('合法载荷解析出图片组与序号', () {
-      final params =
-          tryDecodeLoadPayload({'images': ['a.png', 'b.png'], 'index': 3});
+      final params = tryDecodeLoadPayload({
+        'images': ['a.png', 'b.png'],
+        'index': 3,
+      });
       expect(params, isNotNull);
       expect(params!.images, ['a.png', 'b.png']);
       expect(params.index, 3);
     });
 
     test('缺省 index 默认为 0', () {
-      final params = tryDecodeLoadPayload({'images': ['a.png']});
+      final params = tryDecodeLoadPayload({
+        'images': ['a.png'],
+      });
       expect(params!.index, 0);
     });
 
@@ -183,7 +208,35 @@ void main() {
       expect(tryDecodeLoadPayload(null), isNull);
       expect(tryDecodeLoadPayload('x'), isNull);
       expect(tryDecodeLoadPayload({'images': <String>[]}), isNull);
-      expect(tryDecodeLoadPayload({'images': [1, 2]}), isNull);
+      expect(
+        tryDecodeLoadPayload({
+          'images': [1, 2],
+        }),
+        isNull,
+      );
+    });
+  });
+
+  group('tryDecodeDeletedPayload', () {
+    test('合法载荷解析出已删除 relPath 列表', () {
+      final payload = tryDecodeDeletedPayload({
+        'relPaths': ['img/a.png', 'img/b.png'],
+      });
+      expect(payload, isNotNull);
+      expect(payload!.relPaths, ['img/a.png', 'img/b.png']);
+    });
+
+    test('非 map / 空列表 / 非字符串列表返回 null', () {
+      expect(tryDecodeDeletedPayload(null), isNull);
+      expect(tryDecodeDeletedPayload('x'), isNull);
+      expect(tryDecodeDeletedPayload({'relPaths': <String>[]}), isNull);
+      expect(
+        tryDecodeDeletedPayload({
+          'relPaths': [1, 2],
+        }),
+        isNull,
+      );
+      expect(tryDecodeDeletedPayload({'relPaths': 'a.png'}), isNull);
     });
   });
 }

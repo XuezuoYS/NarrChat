@@ -73,6 +73,69 @@ ImageViewerLoadParams? tryDecodeLoadPayload(dynamic payload) {
   return ImageViewerLoadParams(images, index);
 }
 
+// ---------------------------------------------------------------------------
+// 子窗口 → 主窗口：查看器窗口内删除图片的通知
+// ---------------------------------------------------------------------------
+
+/// 子窗口 → 主窗口「查看器窗口内删除图片」的跨窗口命令名。
+const String kImageViewerDeletedMethod = 'imagesDeleted';
+
+/// 一条「查看器窗口内删除图片」上报的解析结果（子窗口 → 主窗口，经命令通道送达）。
+class ImageViewerDeletedPayload {
+  final List<String> relPaths;
+
+  const ImageViewerDeletedPayload(this.relPaths);
+}
+
+/// 解析子窗口从命令通道送达的 `imagesDeleted` 载荷；格式不符返回 null。
+ImageViewerDeletedPayload? tryDecodeDeletedPayload(dynamic payload) {
+  if (payload is! Map) return null;
+  final raw = payload['relPaths'];
+  // 立即校验元素类型，避免 `.cast<String>()` 的惰性视图把非字符串列表放行。
+  if (raw is! List || raw.isEmpty || !raw.every((e) => e is String)) {
+    return null;
+  }
+  return ImageViewerDeletedPayload(raw.cast<String>());
+}
+
+/// 主窗口侧：桌面图片查看器子窗口内删除图片的事件通知器。
+///
+/// 子窗口与主窗口是两个独立 Flutter engine、无共享 Provider 树；子窗口删除后
+/// 经跨窗口命令通道上报，主窗口在 [reportDeleted] 时通知图片库等页面即时移除
+/// 对应缩略图（与多选删除等主窗口内删除入口共享同一全局删除语义，互不冲突）。
+class ImageViewerDeletedEvents extends ChangeNotifier {
+  ImageViewerDeletedEvents._();
+
+  static final ImageViewerDeletedEvents instance = ImageViewerDeletedEvents._();
+
+  /// 最近一次子窗口上报的已删除 relPath 集合（供监听者移除对应项）。
+  Set<String>? lastDeleted;
+
+  /// 上报一次「查看器窗口内删除图片」事件。
+  void reportDeleted(Iterable<String> relPaths) {
+    lastDeleted = Set.of(relPaths);
+    notifyListeners();
+  }
+}
+
+/// 子窗口 → 主窗口：上报查看器窗口内删除的 relPath 集合（最佳努力）。
+///
+/// 主窗口需先注册 [ImageViewerWindowManager.listenDeletedFromChild]；
+/// 通道未就绪 / 主窗口不可达（含测试环境）时静默忽略，不影响删除本身。
+Future<void> notifyImageViewerDeleted(Iterable<String> relPaths) async {
+  try {
+    final all = await WindowController.getAll();
+    // 主窗口是唯一 arguments 为空的窗口（子窗口均携带图片组入参）。
+    final mainWindow = all.where((w) => w.arguments.isEmpty).firstOrNull;
+    if (mainWindow == null) return;
+    await WindowController.fromWindowId(
+      mainWindow.windowId,
+    ).invokeMethod(kImageViewerDeletedMethod, {'relPaths': relPaths.toList()});
+  } catch (_) {
+    // 跨窗口通道不可用：静默忽略（删除本身已成功）。
+  }
+}
+
 /// 子窗口入口：设置窗口尺寸/居中后运行查看器 App。
 ///
 /// 由主窗口 `main()` 检侧到本窗口是「图片查看器子窗口」时调用。
@@ -245,8 +308,11 @@ class ImageViewerWindowManager {
     try {
       _controller = await WindowController.create(
         WindowConfiguration(
-          arguments:
-              const ImageWindowArgs(images: [], index: 0, warm: true).encode(),
+          arguments: const ImageWindowArgs(
+            images: [],
+            index: 0,
+            warm: true,
+          ).encode(),
           hiddenAtLaunch: true,
         ),
       );
@@ -291,6 +357,29 @@ class ImageViewerWindowManager {
         // 通道不可用（如测试环境）时忽略。
       }
     });
+  }
+
+  /// 主窗口注册「子查看器窗口删除图片」命令处理器：收到后通知
+  /// [ImageViewerDeletedEvents]（图片库等页面据此即时移除缩略图）。
+  ///
+  /// 在 Windows 主窗口启动后调用一次；子窗口每次删除图片都会上报，
+  /// 主窗口未注册 / 通道不可用（含测试环境）时子窗口侧静默忽略。
+  static Future<void> listenDeletedFromChild() async {
+    try {
+      final controller = await WindowController.fromCurrentEngine();
+      await controller.setWindowMethodHandler((call) async {
+        if (call.method != kImageViewerDeletedMethod) {
+          return <String, dynamic>{'ok': false};
+        }
+        final payload = tryDecodeDeletedPayload(call.arguments);
+        if (payload != null) {
+          ImageViewerDeletedEvents.instance.reportDeleted(payload.relPaths);
+        }
+        return <String, dynamic>{'ok': true};
+      });
+    } catch (e) {
+      debugPrint('注册查看器窗口删除通知处理器失败: $e');
+    }
   }
 }
 
@@ -354,7 +443,10 @@ Matrix4 zoomAt(
   final scaleChange = newScale / currentScale;
   if (scaleChange == 1.0) return m;
   // 把光标点换算到子坐标，围绕该点缩放，保证光标下的内容不动。
-  final focalInChild = MatrixUtils.transformPoint(Matrix4.inverted(m), focalPoint);
+  final focalInChild = MatrixUtils.transformPoint(
+    Matrix4.inverted(m),
+    focalPoint,
+  );
   final zoom = Matrix4.identity()
     ..translateByDouble(focalInChild.dx, focalInChild.dy, 0, 1)
     ..scaleByDouble(scaleChange, scaleChange, 1, 1)
@@ -364,7 +456,12 @@ Matrix4 zoomAt(
 
 /// 生成「整图缩放至适配视口并居中」的矩阵（contain）。
 Matrix4 _fitMatrix(Size viewport, Size img) {
-  final scale = fitScale(viewport.width, viewport.height, img.width, img.height);
+  final scale = fitScale(
+    viewport.width,
+    viewport.height,
+    img.width,
+    img.height,
+  );
   final tx = (viewport.width - img.width * scale) / 2;
   final ty = (viewport.height - img.height * scale) / 2;
   return Matrix4.identity()
@@ -591,6 +688,9 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   /// 图片删除成功后的本地状态更新：移除当前项；最后一张则关闭（预热窗口转为隐藏）窗口。
   void _onImageDeleted(String rel) {
     if (!mounted) return;
+    // 通知主窗口：图片库等页面即时移除该缩略图（跨窗口通知，最佳努力；
+    // 主窗口与子窗口是独立引擎，无共享 Provider 树）。
+    unawaited(notifyImageViewerDeleted([rel]));
     if (_images.length == 1) {
       windowManager.close();
       return;
@@ -623,10 +723,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  _viewport = Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  );
+                  _viewport = Size(constraints.maxWidth, constraints.maxHeight);
                   _applyFitOrClamp();
                   // 右键（鼠标）/ 长按（触屏）弹出操作菜单；原始指针监听不参与手势
                   // 竞技场，与拖动平移 / 滚轮缩放互不干扰（移动超过阈值自动取消长按）。
@@ -634,94 +731,95 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                     onContextMenu: _showActionMenu,
                     child: Stack(
                       children: [
-                      // 图片：InteractiveViewer(constrained:false) 仅作显示（保持图片固有尺寸、
-                      // 应用控制器矩阵、并裁剪到视口）；其手势全部禁用。
-                      // 手势层以 opaque 位于其上：GestureDetector 接拖动、Listener 接滚轮，
-                      // 每次移动都用 clampTransform 精确钳制（未填满轴居中、放大轴贴边），
-                      // 不与 InteractiveViewer 手势互相拉扯 → 无漂移、无黑边。
-                      Positioned.fill(
-                        child: Stack(
-                          children: [
-                            Positioned.fill(
-                              child: _missing
-                                  ? const Center(
-                                      child: Icon(
-                                        Icons.image_outlined,
-                                        color: Colors.white24,
-                                        size: 48,
-                                      ),
-                                    )
-                                  : _absPath == null
-                                      ? const Center(
-                                          child: CircularProgressIndicator(
-                                            color: Colors.white38,
-                                          ),
-                                        )
-                                      : InteractiveViewer(
-                                          transformationController: _transform,
-                                          constrained: false,
-                                          panEnabled: false,
-                                          scaleEnabled: false,
-                                          child: Image.file(
-                                            File(_absPath!),
-                                            fit: BoxFit.contain,
-                                            errorBuilder: (_, _, _) =>
-                                                MissingImage(
-                                                    _images[_index]),
-                                          ),
+                        // 图片：InteractiveViewer(constrained:false) 仅作显示（保持图片固有尺寸、
+                        // 应用控制器矩阵、并裁剪到视口）；其手势全部禁用。
+                        // 手势层以 opaque 位于其上：GestureDetector 接拖动、Listener 接滚轮，
+                        // 每次移动都用 clampTransform 精确钳制（未填满轴居中、放大轴贴边），
+                        // 不与 InteractiveViewer 手势互相拉扯 → 无漂移、无黑边。
+                        Positioned.fill(
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: _missing
+                                    ? const Center(
+                                        child: Icon(
+                                          Icons.image_outlined,
+                                          color: Colors.white24,
+                                          size: 48,
                                         ),
-                            ),
-                            Positioned.fill(
-                              child: Listener(
-                                onPointerSignal: _onWheel,
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onPanUpdate: _onPanUpdate,
+                                      )
+                                    : _absPath == null
+                                    ? const Center(
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white38,
+                                        ),
+                                      )
+                                    : InteractiveViewer(
+                                        transformationController: _transform,
+                                        constrained: false,
+                                        panEnabled: false,
+                                        scaleEnabled: false,
+                                        child: Image.file(
+                                          File(_absPath!),
+                                          fit: BoxFit.contain,
+                                          errorBuilder: (_, _, _) =>
+                                              MissingImage(_images[_index]),
+                                        ),
+                                      ),
+                              ),
+                              Positioned.fill(
+                                child: Listener(
+                                  onPointerSignal: _onWheel,
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onPanUpdate: _onPanUpdate,
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                      // 左右方向箭头。
-                      _ArrowButton(
-                        icon: Icons.chevron_left,
-                        enabled: _index > 0,
-                        tooltip: '上一张',
-                        onPressed: _prev,
-                      ),
-                      _ArrowButton(
-                        icon: Icons.chevron_right,
-                        enabled: _index < _images.length - 1,
-                        tooltip: '下一张',
-                        onPressed: _next,
-                      ),
-                      // 页码指示。
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                '${_index + 1}/${_images.length}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
+                        // 左右方向箭头。
+                        _ArrowButton(
+                          icon: Icons.chevron_left,
+                          enabled: _index > 0,
+                          tooltip: '上一张',
+                          onPressed: _prev,
+                        ),
+                        _ArrowButton(
+                          icon: Icons.chevron_right,
+                          enabled: _index < _images.length - 1,
+                          tooltip: '下一张',
+                          onPressed: _next,
+                        ),
+                        // 页码指示。
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black54,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  '${_index + 1}/${_images.length}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
                       ],
                     ),
                   );
@@ -831,9 +929,7 @@ class _ArrowButton extends StatelessWidget {
           icon: Icon(icon, color: Colors.white),
           tooltip: tooltip,
           visualDensity: VisualDensity.comfortable,
-          style: IconButton.styleFrom(
-            backgroundColor: Colors.black38,
-          ),
+          style: IconButton.styleFrom(backgroundColor: Colors.black38),
           onPressed: enabled ? onPressed : null,
           disabledColor: Colors.white24,
         ),

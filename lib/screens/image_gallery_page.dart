@@ -11,6 +11,7 @@ import '../services/sync/image_deletion.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
 import '../widgets/image_preview.dart';
+import '../widgets/image_viewer_window.dart' show ImageViewerDeletedEvents;
 
 /// 本地图片库（二级页面）：按「小米相册」风格设计。
 ///
@@ -42,7 +43,25 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
   @override
   void initState() {
     super.initState();
+    // 桌面查看器独立窗口内删除图片 → 主窗口事件：即时移除对应缩略图。
+    ImageViewerDeletedEvents.instance.addListener(_onViewerWindowDeleted);
     _load();
+  }
+
+  @override
+  void dispose() {
+    ImageViewerDeletedEvents.instance.removeListener(_onViewerWindowDeleted);
+    super.dispose();
+  }
+
+  /// 桌面查看器窗口内删除图片：按上报的 relPath 精确移除对应项；
+  /// 只更新列表不重置滚动位置，用户停留在浏览位置（不会回到首部）。
+  void _onViewerWindowDeleted() {
+    final deleted = ImageViewerDeletedEvents.instance.lastDeleted;
+    if (deleted == null || deleted.isEmpty || !mounted) return;
+    setState(() {
+      _images?.removeWhere((i) => deleted.contains(i.relPath));
+    });
   }
 
   Future<String?> _pickDirectory() {
@@ -70,8 +89,9 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     }
   }
 
-  List<String> get _relPaths =>
-      [for (final i in _images ?? const <StorageImageInfo>[]) i.relPath];
+  List<String> get _relPaths => [
+    for (final i in _images ?? const <StorageImageInfo>[]) i.relPath,
+  ];
 
   void _toggleSelectMode() {
     setState(() {
@@ -97,14 +117,16 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       context,
       paths,
       index,
-      // 应用内查看器删除后立即移除该项；桌面独立窗口删除后返回时在下方 _load 刷新。
+      // 应用内查看器删除后立即移除该项；桌面独立窗口删除经
+      // _onViewerWindowDeleted（子窗口事件）即时移除，两处缩略图同步消失。
       onDeleted: (rel) {
         if (mounted) {
           setState(() => _images?.removeWhere((i) => i.relPath == rel));
         }
       },
     );
-    // 桌面独立窗口可能已删除图片：返回后重建列表（两种路径统一刷新）。
+    // Windows 上 showImageViewer 打开独立窗口后立即返回（删除由子窗口事件同步）；
+    // 非 Windows 应用内查看器关闭后重建列表，与存储视图保持一致。
     if (mounted) await _load();
   }
 
@@ -134,13 +156,15 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
         final message = count == relPaths.length
             ? '已导出 $count 张到 $dirPath'
             : '已导出 $count/${relPaths.length} 张到 $dirPath（部分图片缺失或失败）';
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('导出失败：$e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出失败：$e')));
       }
     } finally {
       if (mounted) setState(() => _exporting = false);
@@ -154,7 +178,9 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       } else {
         _selected
           ..clear()
-          ..addAll([for (final i in _images ?? const <StorageImageInfo>[]) i.relPath]);
+          ..addAll([
+            for (final i in _images ?? const <StorageImageInfo>[]) i.relPath,
+          ]);
       }
     });
   }
@@ -165,8 +191,10 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除图片'),
-        content: Text('将删除已选的 $count 张图片。删除后，引用它们的剧情将显示为缺失，'
-            '同步后云端与其它设备也会一并删除。确定删除吗？'),
+        content: Text(
+          '将删除已选的 $count 张图片。删除后，引用它们的剧情将显示为缺失，'
+          '同步后云端与其它设备也会一并删除。确定删除吗？',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -202,16 +230,12 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     });
     // 删除意图尽快推送到云端（仅图片平面：墓碑 + blob 收敛，不涉数据；
     // 自动模式；未配置/手动模式内部忽略）。
-    context
-        .read<CloudSyncProvider?>()
-        ?.triggerSync(kind: SyncKind.images);
+    context.read<CloudSyncProvider?>()?.triggerSync(kind: SyncKind.images);
     await _load();
     if (mounted) {
       final messenger = ScaffoldMessenger.of(context);
       messenger.showSnackBar(
-        SnackBar(
-          content: Text(failed == 0 ? '已删除' : '已删除，$failed 张删除失败'),
-        ),
+        SnackBar(content: Text(failed == 0 ? '已删除' : '已删除，$failed 张删除失败')),
       );
     }
   }
@@ -243,7 +267,9 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
   Widget build(BuildContext context) {
     final colors = context.narrColors;
     final allSelected =
-        _images != null && _images!.isNotEmpty && _selected.length == _images!.length;
+        _images != null &&
+        _images!.isNotEmpty &&
+        _selected.length == _images!.length;
     return Scaffold(
       backgroundColor: colors.surface,
       appBar: AppBar(
@@ -260,10 +286,7 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
           if (_images != null && _images!.isNotEmpty)
             TextButton.icon(
               onPressed: _selectMode ? _toggleSelectMode : _toggleSelectMode,
-              icon: Icon(
-                _selectMode ? Icons.done : Icons.checklist,
-                size: 18,
-              ),
+              icon: Icon(_selectMode ? Icons.done : Icons.checklist, size: 18),
               label: Text(_selectMode ? '完成' : '选择'),
             ),
         ],
@@ -271,8 +294,8 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : (_images == null || _images!.isEmpty)
-              ? _buildEmpty(colors)
-              : _buildGrid(colors, allSelected),
+          ? _buildEmpty(colors)
+          : _buildGrid(colors, allSelected),
     );
   }
 
@@ -281,7 +304,11 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.photo_library_outlined, size: 48, color: colors.textSecondary),
+          Icon(
+            Icons.photo_library_outlined,
+            size: 48,
+            color: colors.textSecondary,
+          ),
           const SizedBox(height: 10),
           Text(
             '暂无本地图片',
@@ -313,21 +340,18 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
                     crossAxisSpacing: 4,
                     childAspectRatio: 1,
                   ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, i) {
-                      final info = g.items[i];
-                      final index = _relPaths.indexOf(info.relPath);
-                      return _GalleryTile(
-                        key: ValueKey('gallery_tile:${info.relPath}'),
-                        info: info,
-                        selectMode: _selectMode,
-                        selected: _selected.contains(info.relPath),
-                        onTap: () => _onTapTile(info, index),
-                        onLongPress: () => _onLongPressTile(info),
-                      );
-                    },
-                    childCount: g.items.length,
-                  ),
+                  delegate: SliverChildBuilderDelegate((context, i) {
+                    final info = g.items[i];
+                    final index = _relPaths.indexOf(info.relPath);
+                    return _GalleryTile(
+                      key: ValueKey('gallery_tile:${info.relPath}'),
+                      info: info,
+                      selectMode: _selectMode,
+                      selected: _selected.contains(info.relPath),
+                      onTap: () => _onTapTile(info, index),
+                      onLongPress: () => _onLongPressTile(info),
+                    );
+                  }, childCount: g.items.length),
                 ),
               ),
             ],

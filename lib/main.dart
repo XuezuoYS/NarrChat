@@ -40,6 +40,9 @@ Future<void> main() async {
     await windowManager.ensureInitialized();
     // 若是「图片查看器」独立子窗口，则运行最小查看器并结束（不再初始化业务数据）。
     if (await _runAsImageViewerWindowIfNeeded()) return;
+    // 主窗口注册「子查看器窗口删除图片」通知处理器：图片库等页面据此即时移除
+    // 缩略图，无需退出重进（子窗口删除不经过主窗口回调）。
+    unawaited(ImageViewerWindowManager.listenDeletedFromChild());
   }
   // Windows 11：修复 Win+V 剪贴板历史粘贴（引擎下发的畸形 Ctrl+V 序列）。
   WindowsPasteFix.instance.inject();
@@ -76,7 +79,9 @@ Future<void> main() async {
   // 传入云同步 Provider 以在书籍数据变更节点触发全自动同步。
   final bookProvider = BookProvider(cloudSyncProvider: cloudSyncProvider)
     ..loadBooks();
-  final worldBookProvider = WorldBookProvider(cloudSyncProvider: cloudSyncProvider);
+  final worldBookProvider = WorldBookProvider(
+    cloudSyncProvider: cloudSyncProvider,
+  );
   final modProvider = ModProvider(cloudSyncProvider: cloudSyncProvider)
     ..loadUserMods();
   // 生成完成系统通知：生成任务成功完成且用户不在该书 chat 页时弹出系统通知，
@@ -194,21 +199,15 @@ class NarrChatApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: roundProvider),
         ChangeNotifierProvider.value(value: notificationSettingsProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        Provider<ImageImportService>(
-          create: (_) => PickerImageImportService(),
-        ),
+        Provider<ImageImportService>(create: (_) => PickerImageImportService()),
         // 剪贴板读取（输入框 Ctrl+V / 右键粘贴，含图片）。
         Provider<ClipboardPasteService>(
           create: (_) => const SystemClipboardPasteService(),
         ),
         // 存储管理：本地数据库信息 / 导出、图片目录管理。
-        Provider<StorageService>(
-          create: (_) => LocalStorageService(),
-        ),
+        Provider<StorageService>(create: (_) => LocalStorageService()),
         // 图片"再添加复活"：导入/粘贴保存后取消待推送删除墓碑。
-        Provider<ImageRevivalService>(
-          create: (_) => SyncImageRevivalService(),
-        ),
+        Provider<ImageRevivalService>(create: (_) => SyncImageRevivalService()),
         // 图片删除：删除本机文件 + 记录待推送删除墓碑（同步删云端并传播）。
         Provider<ImageDeletionService>(
           create: (_) => SyncImageDeletionService(),
@@ -254,8 +253,8 @@ class NarrChatApp extends StatelessWidget {
               themeMode: ui.themeMode == AppThemeMode.system
                   ? ThemeMode.system
                   : ui.themeMode == AppThemeMode.dark
-                      ? ThemeMode.dark
-                      : ThemeMode.light,
+                  ? ThemeMode.dark
+                  : ThemeMode.light,
               locale: const Locale('zh', 'CN'),
               supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
               localizationsDelegates: const [
