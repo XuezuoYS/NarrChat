@@ -45,6 +45,20 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="dataSync" />
+        <!-- pasteboard 插件「复制图片到剪贴板」：需经 FileProvider 把缓存目录的
+             图片包装成 content URI（authority 固定为 `${applicationId}.provider`，
+             与插件 PasteboardPlugin.writeImage 的 getUriForFile 调用一致）。
+             缺失该声明时复制图片会报
+             「Couldn't find meta-data for provider with authority ...」→ 复制失败。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

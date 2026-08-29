@@ -12,8 +12,8 @@ import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
-/// 查看器共享动作测试：复制图片（剪贴板写入）、删除（二次确认 + 删除服务 + 回调）、
-/// 操作菜单（右键/长按入口的菜单项与动作路由）。
+/// 查看器共享动作测试：复制图片（剪贴板写入）、另存为（路径选择 + 跨平台落盘分支）、
+/// 删除（二次确认 + 删除服务 + 回调）、操作菜单（右键/长按入口的菜单项与动作路由）。
 ///
 /// 直接构造宿主页面触发动作函数（与应用内查看器共用同一套共享逻辑），
 /// 确认对话框 / 菜单均在 MaterialApp 的 Navigator/Overlay 上完成。
@@ -115,6 +115,137 @@ void main() {
     expect(find.text('复制失败，请重试'), findsOneWidget);
   });
 
+  testWidgets('另存为图片：Windows 选择路径后复制原文件并提示路径', (tester) async {
+    final src = File(p.join(tempDir.path, 'pic.png'))
+      ..writeAsBytesSync([1, 2, 3]);
+    final target = p.join(tempDir.path, 'saved.png');
+    final picker = _FakeSavePicker(outPath: target);
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/pic.png',
+        absPath: src.path,
+        savePicker: picker.pick,
+        needsNativeBytes: () => false,
+      ),
+    ));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('go'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pumpAndSettle();
+
+    expect(picker.requestedFileName, 'pic.png'); // 原图文件名作为保存对话框预填名。
+    expect(picker.requestedBytes, isNull); // Windows 不传字节（原生不落盘）。
+    expect(File(target).readAsBytesSync().toList(), [1, 2, 3]); // Dart 侧复制到目标。
+    expect(find.text('已保存到 $target'), findsOneWidget);
+  });
+
+  testWidgets('另存为图片：Android 传字节由原生 SAF 写入并提示成功', (tester) async {
+    final src = File(p.join(tempDir.path, 'pic.png'))
+      ..writeAsBytesSync([1, 2, 3]);
+    // 插件返回的是拼装的展示路径（真实文件由原生 SAF 写入，Dart 侧不复制）。
+    final displayPath = p.join(tempDir.path, 'fake_display.png');
+    final picker = _FakeSavePicker(outPath: displayPath);
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/pic.png',
+        absPath: src.path,
+        savePicker: picker.pick,
+        needsNativeBytes: () => true,
+      ),
+    ));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('go'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pumpAndSettle();
+
+    expect(picker.requestedBytes?.toList(), [1, 2, 3]); // 字节交给原生 SAF 写入。
+    expect(File(displayPath).existsSync(), isFalse); // Dart 侧不再复制。
+    expect(find.text('图片已保存'), findsOneWidget);
+  });
+
+  testWidgets('另存为图片：用户取消对话框不提示且不复制', (tester) async {
+    final src = File(p.join(tempDir.path, 'pic.png'))
+      ..writeAsBytesSync([7]);
+    final picker = _FakeSavePicker(outPath: null); // 取消。
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/pic.png',
+        absPath: src.path,
+        savePicker: picker.pick,
+        needsNativeBytes: () => false,
+      ),
+    ));
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('图片已保存'), findsNothing);
+    expect(find.textContaining('已保存到'), findsNothing);
+    expect(find.text('保存失败，请重试'), findsNothing);
+  });
+
+  testWidgets('另存为图片：对话框异常提示保存失败', (tester) async {
+    final src = File(p.join(tempDir.path, 'pic.png'))
+      ..writeAsBytesSync([7]);
+    final picker = _FakeSavePicker(error: true);
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/pic.png',
+        absPath: src.path,
+        savePicker: picker.pick,
+        needsNativeBytes: () => false,
+      ),
+    ));
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+    expect(find.text('保存失败，请重试'), findsOneWidget);
+  });
+
+  testWidgets('另存为图片：Windows 复制失败提示保存失败', (tester) async {
+    final src = File(p.join(tempDir.path, 'pic.png'))
+      ..writeAsBytesSync([7]);
+    // 目标父目录不存在 → file.copy 抛异常。
+    final picker = _FakeSavePicker(
+      outPath: p.join(tempDir.path, 'no_such_dir', 'saved.png'),
+    );
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/pic.png',
+        absPath: src.path,
+        savePicker: picker.pick,
+        needsNativeBytes: () => false,
+      ),
+    ));
+    await tester.runAsync(() async {
+      await tester.tap(find.text('go'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('保存失败，请重试'), findsOneWidget);
+  });
+
+  testWidgets('另存为图片：文件缺失提示无法保存', (tester) async {
+    final picker = _FakeSavePicker();
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => saveImageFile(
+        ctx,
+        relPath: 'img/missing.png',
+        absPath: p.join(tempDir.path, 'missing.png'),
+        savePicker: picker.pick,
+      ),
+    ));
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+    expect(picker.requestedFileName, isNull); // 未进入保存对话框。
+    expect(find.text('图片文件已丢失，无法保存'), findsOneWidget);
+  });
+
   testWidgets('删除图片：取消确认则不删除', (tester) async {
     final deletion = FakeImageDeletionService();
     await tester.pumpWidget(buildHost(
@@ -181,6 +312,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('删除图片'), findsOneWidget); // 二次确认对话框
   });
+
+  testWidgets('菜单：Android 不展示复制图片（仅另存为 / 删除）', (tester) async {
+    // 测试宿主为 Windows，用 canCopyImage 注入口模拟 Android 平台判定。
+    await tester.pumpWidget(buildHost(
+      onPressed: (ctx) => showImageViewerMenu(
+        ctx,
+        relPath: 'img/a.png',
+        absPath: null,
+        globalPosition: const Offset(40, 40),
+        canCopyImage: () => false,
+      ),
+    ));
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+    expect(find.text('另存为'), findsOneWidget);
+    expect(find.text('复制图片'), findsNothing);
+    expect(find.text('删除'), findsOneWidget);
+
+    await tester.tap(find.text('删除')); // 删除入口仍可用。
+    await tester.pumpAndSettle();
+    expect(find.text('删除图片'), findsOneWidget);
+  });
 }
 
 /// 剪贴板图片写入替身：记录写入的文件路径与字节，可注入失败。
@@ -199,6 +352,23 @@ class _FakeClipboardWriter implements ClipboardImageWriter {
     if (fail) throw Exception('write failed');
     writtenPath = absPath;
     written = bytes;
+  }
+}
+
+/// 另存为对话框替身：记录文件名与字节参数，可返回路径 / null（取消）/ 抛异常。
+class _FakeSavePicker {
+  _FakeSavePicker({this.outPath, this.error = false});
+
+  final String? outPath;
+  final bool error;
+  String? requestedFileName;
+  Uint8List? requestedBytes;
+
+  Future<String?> pick({required String fileName, Uint8List? bytes}) async {
+    requestedFileName = fileName;
+    requestedBytes = bytes;
+    if (error) throw Exception('save failed');
+    return outPath;
   }
 }
 

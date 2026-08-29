@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- pasteboard 插件「复制图片到剪贴板」的 FileProvider 路径配置：
+     插件把图片写入应用缓存目录（context.cacheDir）后经 FileProvider 暴露。
+     缺少 cache-path 时 getUriForFile 会抛
+     「Failed to find configured root that contains ...」→ 复制失败。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+</paths>

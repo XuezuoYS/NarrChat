@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
@@ -262,12 +263,43 @@ Future<bool> _tryOpenImageViewerWindow(
   }
 }
 
-/// 将图片复制到用户选择的本地路径（取消返回 null；失败给出提示）。
+/// 另存为对话框实现签名（测试可注入替身，避免触碰真实 file_picker 通道）。
+///
+/// [bytes]：Android/iOS 上 `file_picker` 的 saveFile 必须携带非空字节（原生 SAF
+/// 直接写入用户选择的目标）；Windows 上忽略该参数，仅返回用户选择的路径。
+typedef SaveImagePicker = Future<String?> Function({
+  required String fileName,
+  Uint8List? bytes,
+});
+
+/// 默认另存为对话框（file_picker：Windows 选路径、Android/iOS 传字节由原生落盘）。
+Future<String?> _pickSavePath({required String fileName, Uint8List? bytes}) {
+  return FilePicker.platform.saveFile(
+    dialogTitle: '保存图片',
+    fileName: fileName,
+    type: FileType.image,
+    bytes: bytes,
+  );
+}
+
+/// 另存为是否由原生侧直接写入字节（Android/iOS 的 SAF 语义：不经 Dart 复制）。
+bool _saveNeedsNativeBytes() => Platform.isAndroid || Platform.isIOS;
+
+/// 将图片另存为用户所选位置（用户取消不提示；失败给出提示）。
+///
+/// - Android/iOS：读取原图字节交给 [savePicker]（file_picker 经 SAF 直接写入用户
+///   选择的目标，返回的只是拼装的展示路径），成功后仅提示「图片已保存」，不再
+///   二次复制——分区存储下按返回路径复制会失败，且路径不真实；
+/// - Windows：经 [savePicker] 选择路径后，由本函数 `file.copy` 到该路径。
+///
+/// [savePicker] / [needsNativeBytes] 为测试注入口（缺省走真实平台实现）。
 /// 供移动端应用内查看器与桌面端独立窗口查看器复用。
 Future<void> saveImageFile(
   BuildContext context, {
   required String relPath,
   required String absPath,
+  SaveImagePicker? savePicker,
+  bool Function()? needsNativeBytes,
 }) async {
   final file = File(absPath);
   if (!file.existsSync()) {
@@ -278,26 +310,24 @@ Future<void> saveImageFile(
     }
     return;
   }
-  final name = ImageStore.fileNameOf(relPath);
-  final outPath = await FilePicker.platform.saveFile(
-    dialogTitle: '保存图片',
-    fileName: name.isEmpty ? 'image.png' : name,
-    type: FileType.image,
-  );
-  if (outPath == null || !context.mounted) return;
   try {
+    final nativeWrite = (needsNativeBytes ?? _saveNeedsNativeBytes)();
+    final bytes = nativeWrite ? await file.readAsBytes() : null;
+    final name = ImageStore.fileNameOf(relPath);
+    final outPath = await (savePicker ?? _pickSavePath)(
+      fileName: name.isEmpty ? 'image.png' : name,
+      bytes: bytes,
+    );
+    if (outPath == null || !context.mounted) return; // 用户取消（不提示）。
+    if (bytes != null) {
+      // 原生 SAF 已完成写入：outPath 只是插件拼装的展示路径，不再复制。
+      _showViewerSnack(context, '图片已保存');
+      return;
+    }
     await file.copy(outPath);
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已保存到 $outPath')));
-    }
+    if (context.mounted) _showViewerSnack(context, '已保存到 $outPath');
   } catch (_) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败，请重试')));
-    }
+    if (context.mounted) _showViewerSnack(context, '保存失败，请重试');
   }
 }
 
@@ -381,7 +411,12 @@ enum ImageViewerAction { saveAs, copy, delete }
 
 /// 查看器长按（触屏）/ 右键（鼠标）操作菜单：另存为 / 复制图片 / 删除。
 ///
+/// 复制图片仅桌面端（Windows）展示：Android 上剪贴板图片是 pasteboard 原生重编码的
+/// **PNG 像素**（原始 JPEG 等格式不保留），与桌面端「保留原始文件」语义不一致，
+/// 故 Android **移除「复制图片」**，仅保留另存为 / 删除。
+///
 /// [globalPosition] 为触发事件的位置（全局坐标），菜单在该处展开；
+/// [canCopyImage] 为测试注入口（缺省 = 非 Android 平台）；
 /// 其余参数语义见 [saveImageFile] / [copyImageFile] / [deleteImageFile]。
 Future<void> showImageViewerMenu(
   BuildContext context, {
@@ -390,6 +425,7 @@ Future<void> showImageViewerMenu(
   required Offset globalPosition,
   ImageDeletionService? deletionService,
   VoidCallback? onDeleted,
+  bool Function()? canCopyImage,
 }) async {
   final overlay = Overlay.of(context).context.findRenderObject();
   if (overlay is! RenderBox) return;
@@ -426,7 +462,8 @@ Future<void> showImageViewerMenu(
     position: position,
     items: [
       menuItem(Icons.save_alt, '另存为', ImageViewerAction.saveAs),
-      menuItem(Icons.copy_outlined, '复制图片', ImageViewerAction.copy),
+      if ((canCopyImage ?? _canCopyImage)())
+        menuItem(Icons.copy_outlined, '复制图片', ImageViewerAction.copy),
       menuItem(
         Icons.delete_outline,
         '删除',
@@ -460,6 +497,10 @@ void _showViewerSnack(BuildContext context, String message) {
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
 }
+
+/// 是否展示「复制图片」菜单项：Android 剪贴板图片为 PNG 重编码（原格式不保留），
+/// 与桌面端保留原始文件的语义不一致 → Android 不展示（仅另存为 / 删除）。
+bool _canCopyImage() => !Platform.isAndroid;
 
 /// 移动端图片查看器「单击」决策：未放大（initial）时单击退出，否则缩回未放大。
 ///
