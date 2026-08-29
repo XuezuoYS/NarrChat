@@ -549,7 +549,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           const SizedBox(height: 4),
           Text(
             '云端保留最近 N 份快照，便于回溯误操作。该数值保存在云端（sync_config.json），'
-            '多设备共享；点击左侧框修改，下次同步推送时生效。',
+            '多设备共享，下次同步推送时生效。',
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
           const SizedBox(height: 16),
