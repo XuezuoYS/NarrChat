@@ -15,7 +15,7 @@ Widget _buildPage(BuildContext context, int index) => Text('面板 $index');
 ///   标签高亮与显示内容保持同步；宽窄布局切换时显示页与选中项一致。
 void main() {
   const navItems = [
-    SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'API设置'),
+    SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'API 设置'),
     SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),
     SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
     SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
@@ -52,7 +52,7 @@ void main() {
 
     expect(find.byType(PageView), findsOneWidget);
     expect(find.text('面板 0'), findsOneWidget);
-    expect(chip(tester, 'API设置').selected, isTrue);
+    expect(chip(tester, 'API 设置').selected, isTrue);
     expect(chip(tester, 'UI 设置').selected, isFalse);
   });
 
@@ -64,7 +64,7 @@ void main() {
 
     expect(find.text('面板 1'), findsOneWidget);
     expect(chip(tester, 'UI 设置').selected, isTrue);
-    expect(chip(tester, 'API设置').selected, isFalse);
+    expect(chip(tester, 'API 设置').selected, isFalse);
   });
 
   testWidgets('窄屏：点击标签滑动到目标面板（含跨多页动画）', (tester) async {
@@ -75,7 +75,7 @@ void main() {
 
     expect(find.text('面板 2'), findsOneWidget);
     expect(chip(tester, 'Mod 管理').selected, isTrue);
-    expect(chip(tester, 'API设置').selected, isFalse);
+    expect(chip(tester, 'API 设置').selected, isFalse);
   });
 
   testWidgets('窄屏：鼠标拖拽也可翻页（Windows 桌面可用）', (tester) async {

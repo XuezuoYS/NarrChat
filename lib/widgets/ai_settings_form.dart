@@ -8,7 +8,7 @@ import '../utils/focus_utils.dart';
 import 'app_menu.dart';
 import 'settings_form_state.dart';
 
-/// 「API设置」设置面板。
+/// 「API 设置」设置面板。
 ///
 /// 以「平台 → 模型」两级可展开树组织（参考 DeepSeek Harness 的
 /// `providers[].models[]`）：
@@ -73,7 +73,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'API设置',
+                'API 设置',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 4),

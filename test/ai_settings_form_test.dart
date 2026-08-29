@@ -47,7 +47,7 @@ void main() {
     await tester.pump();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('API设置'), findsOneWidget);
+    expect(find.text('API 设置'), findsOneWidget);
     // 图片设置 与 模型设置 两个节标题。
     expect(find.text('图片设置'), findsOneWidget);
     expect(find.text('模型设置'), findsOneWidget);
