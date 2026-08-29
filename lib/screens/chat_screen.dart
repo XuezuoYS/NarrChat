@@ -55,6 +55,12 @@ const double _kContentMaxWidth = 760;
 /// 流式自动跟随滚动：距底部小于该距离视为「位于底部」。
 const double _kAutoScrollThreshold = 80;
 
+/// 滚到底部收敛循环上限（懒加载列表 maxScrollExtent 逐帧收敛，帧级、开销极小）。
+const int _kScrollToBottomMaxRefine = 10;
+
+/// 判定「已到底部」的残余误差（px），收敛停止条件。
+const double _kScrollToBottomEpsilon = 1.0;
+
 /// 楼层跳转：轮起点与视口顶对齐的判定误差（px）。
 /// 小于该值视为「正处于该轮起点」→ 左箭头跳到上一轮，否则跳到当前轮起点。
 const double _kFloorJumpAtStartEpsilon = 4;
@@ -135,6 +141,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
 
+  /// 打开书籍后「加载轮次 → 跳转到底部」的初始化标记（同一本书只执行一次）。
+  /// 防止首帧建造时当前书尚未就绪（异步加载 / 冷启动）而错过跳底。
+  String? _initialScrollBookUuid;
+
   /// 「本轮生成结束」红点：生成结束后若用户未停留在底部则提示
   /// 「有新内容可滚动查看」，滚动回底部后消失。
   ///
@@ -208,14 +218,14 @@ class _ChatScreenState extends State<ChatScreen>
     // 首帧后测量悬浮输入面板高度，驱动消息列表底部留白。
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _measureComposerHeight());
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 打开书籍后跳转到底部，直接查看最新剧情 / 状态：
+      // 书已就绪（列表点击进入）时立即执行；书晚于首帧就绪（冷启动 /
+      // 异步加载）时由 build 兜底补执行（见 _ensureInitialScroll）。
+      _ensureInitialScroll();
+      // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
       final book = context.read<BookProvider>().currentBook;
       if (book == null) return;
-      await context.read<RoundProvider>().loadRounds(book.uuid);
-      if (!mounted) return;
-      // 打开书籍后自动滚动到底部，直接查看最新剧情 / 状态。
-      _scrollToBottom();
-      // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
       context.read<WorldBookProvider>().loadEntries(book.uuid);
       // 全自动同步节点之一：进入书籍时拉取/推送变更（非自动模式内部忽略）。
       context.read<CloudSyncProvider>().triggerSync();
@@ -286,15 +296,76 @@ class _ChatScreenState extends State<ChatScreen>
     super.dispose();
   }
 
-  void _scrollToBottom() {
+  /// 打开书籍的「加载轮次 → 跳转到底部」初始化（同一本书幂等）。
+  ///
+  /// initState 帧末与 build 兜底两处调用：列表点击进入时 currentBook 已就绪，
+  /// 首帧即执行；书籍异步加载晚于首帧就绪时，由 build 在 currentBook 变化后
+  /// 补执行。跳底用瞬时模式（[_scrollToBottom] 的 animated = false），
+  /// 并依赖帧末收敛循环保证懒加载列表真正到达底部。
+  void _ensureInitialScroll() {
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null || _initialScrollBookUuid == book.uuid) return;
+    _initialScrollBookUuid = book.uuid;
+    Future<void>.microtask(() async {
+      if (!mounted) return;
+      await context.read<RoundProvider>().loadRounds(book.uuid);
+      if (!mounted) return;
+      _scrollToBottom(animated: false);
+    });
+  }
+
+  /// 滚动到底部（默认带动画；打开书籍等场景用 [animated] = false 瞬时跳转）。
+  ///
+  /// 消息列表是懒加载 ListView.builder：maxScrollExtent 在尾部项尚未构建时是
+  /// 估算值，动画/跳转只到达当时的估算极限，随后尾部项被构建、真实极限可能
+  /// 更大——旧实现动画停在旧目标，多轮/内容不均时「滚到一半停住」。
+  /// 两种模式完成后都追帧末收敛循环（[_settleScrollToBottom]），
+  /// 直至位置 ≥ 真实 maxScrollExtent - ε 或达到收敛上限。
+  void _scrollToBottom({bool animated = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+      if (!mounted || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (animated && pos.pixels < pos.maxScrollExtent - _kScrollToBottomEpsilon) {
+        pos
+            .animateTo(
+              pos.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            )
+            .then((_) {
+          if (mounted) _settleScrollToBottom(0);
+        });
+      } else {
+        pos.jumpTo(pos.maxScrollExtent);
+        _settleScrollToBottom(0);
       }
+    });
+  }
+
+  /// 帧末复查 + 补滚：jump/动画后视口底部项才被构建，maxScrollExtent 可能
+  /// 继续增长，逐帧校准直至稳定（最多 [_kScrollToBottomMaxRefine] 次）。
+  ///
+  /// 用户已主动上翻（[_userScrolledAway]）时不再强制拉回（动画被用户滚动
+  /// 打断的场景，交由用户接管）；每次补滚后显式 scheduleFrame，保证
+  /// 帧末回调链在真实与测试环境都能持续到收敛。
+  void _settleScrollToBottom(int attempt) {
+    if (!mounted || attempt > _kScrollToBottomMaxRefine) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (_userScrolledAway) return;
+      if (pos.pixels >= pos.maxScrollExtent - _kScrollToBottomEpsilon) {
+        // 跳底完成：收敛经由多帧 jump 定位，期间构建的子项可能以「跳变后
+        // 的滚动位置」上报过期偏移（项序号与偏移错位，楼层检测会误判当前
+        // 轮）。清空楼层测量缓存，后续以纯估算兜底，待用户滚动 / 打开悬浮
+        // 条重建时重新实测上报。
+        _itemHeights.clear();
+        _itemOffsets.clear();
+        return;
+      }
+      pos.jumpTo(pos.maxScrollExtent);
+      WidgetsBinding.instance.scheduleFrame();
+      _settleScrollToBottom(attempt + 1);
     });
   }
 
@@ -306,11 +377,12 @@ class _ChatScreenState extends State<ChatScreen>
       _scheduleFloorJumpDetect();
     }
     if (notification is UserScrollNotification) {
-      if (notification.direction == ScrollDirection.reverse) {
-        // 用户上翻（offset 减小，向历史/顶部方向）→ 已离开底部，暂停自动跟随。
+      if (notification.direction != ScrollDirection.idle) {
+        // 用户滚动开始（上翻阅读历史 / 向下回滚，方向随 offset 变化）：
+        // 已离开底部，暂停自动跟随与补滚；回到底部附近后由 idle 分支恢复。
+        // （仅靠 reverse 判断会漏掉「offset 减小时方向为 forward」的真实语义。）
         _userScrolledAway = true;
-      } else if (notification.direction == ScrollDirection.idle &&
-          _scrollController.hasClients) {
+      } else if (_scrollController.hasClients) {
         // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随、清除红点。
         final pos = _scrollController.position;
         if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
@@ -1473,6 +1545,9 @@ class _ChatScreenState extends State<ChatScreen>
   Widget _buildChatArea(BuildContext context) {
     final roundProvider = context.watch<RoundProvider>();
     final bookProvider = context.watch<BookProvider>();
+    // 首帧建造时当前书可能尚未就绪（异步加载）：书就绪并触发重建后，
+    // 补执行「打开书籍 → 跳转到底部」初始化（幂等，见 _ensureInitialScroll）。
+    _ensureInitialScroll();
     final rounds = roundProvider.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();

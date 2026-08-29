@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/round_provider.dart';
 
 import 'helpers/chat_harness.dart';
@@ -131,5 +132,93 @@ void main() {
     expect(chatOffset(tester), closeTo(chatMax(tester), 1));
 
     await finishStream(tester, ai, roundProvider, sendFuture);
+  });
+
+  /// 驱动「打开书籍 → 跳转到底部 → 帧末收敛」的 postFrame 帧链。
+  ///
+  /// 测试环境没有自持续帧：pumpAndSettle 不会泵「未调度」的帧，而
+  /// 生产代码的跳底（入口 postFrame）与逐帧收敛都排队在帧末回调上；
+  /// 这里显式调度帧并逐帧推进（16ms/帧，40 帧 > 收敛上限 + 动画 300ms）。
+  Future<void> pumpScrollBottomChain(WidgetTester tester) async {
+    for (var i = 0; i < 40; i++) {
+      tester.binding.scheduleFrame();
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+  }
+
+  /// 构造「前短后长」轮次：前 [shortCount] 轮短正文 + 末 [longCount] 轮长正文。
+  /// 懒加载列表的估算 maxScrollExtent 远小于真实值（复现「滚到一半停住」的根因）。
+  Future<FakeRoundDao> buildUnevenRounds({
+    int shortCount = 24,
+    int longCount = 3,
+  }) async {
+    final dao = FakeRoundDao();
+    for (var i = 1; i <= shortCount + longCount; i++) {
+      final isLong = i > shortCount;
+      await dao.insertRound(
+        Round(
+          bookUuid: kHarnessBookUuid,
+          roundIndex: i,
+          userInput: '第 $i 轮的用户输入',
+          aiNarrative: isLong ? '尾部剧情。' * 200 : '好。',
+          currentTime: '第一天 午时',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    return dao;
+  }
+
+  testWidgets('打开内容不均的多轮次书籍：直接位于真实底部且稳定', (tester) async {
+    final dao = await buildUnevenRounds();
+    await pumpChatScreen(tester, roundDao: dao);
+    await pumpScrollBottomChain(tester);
+
+    expect(
+      chatOffset(tester),
+      closeTo(chatMax(tester), 1),
+      reason: '打开书籍后应位于真实底部，而非懒加载估算位置（修复前停在半路）',
+    );
+    // 收敛已完成且稳定：继续泵几帧不漂移、maxScrollExtent 不再增长。
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(chatOffset(tester), closeTo(chatMax(tester), 1));
+  });
+
+  testWidgets('打开单轮书籍：位于底部', (tester) async {
+    await pumpChatScreen(tester, seedRounds: 1);
+    await pumpScrollBottomChain(tester);
+
+    expect(chatOffset(tester), closeTo(chatMax(tester), 1));
+  });
+
+  testWidgets('长列表生成完成后自动跟随贴底（动画路径收敛）', (tester) async {
+    final ai = FakeStreamingAiService();
+    final dao = await buildUnevenRounds();
+    final roundProvider = await pumpChatScreen(tester, ai: ai, roundDao: dao);
+    await pumpScrollBottomChain(tester);
+    expect(chatOffset(tester), closeTo(chatMax(tester), 1));
+
+    // 通过 UI 发送（走生产 _send → _startGeneration / _endGeneration 收尾，
+    // 而非直接调 provider，确保生成结束的底部滚动路径被覆盖）。
+    await tester.enterText(find.byType(TextField).first, '继续剧情');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+    ai.emit('后续内容');
+    await tester.pump();
+
+    // 结束流式（isSending 期间不能 pumpAndSettle：发送按钮有无限转圈动画）。
+    ai.complete();
+    for (var i = 0; i < 20 && roundProvider.isSending; i++) {
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    await pumpScrollBottomChain(tester);
+
+    expect(
+      chatOffset(tester),
+      closeTo(chatMax(tester), 1),
+      reason: '生成结束的动画滚动完成后应收敛到真实底部',
+    );
   });
 }
