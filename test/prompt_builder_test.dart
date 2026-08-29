@@ -14,7 +14,7 @@ void main() {
     const builder = PromptBuilder();
 
     const book = Book(
-      id: 1,
+      uuid: 'b1',
       title: '测试书',
       category: '玄幻',
       baseSetting: '北域修仙世界，宗门林立。',
@@ -28,7 +28,7 @@ void main() {
 
     const lastRound = Round(
       id: 1,
-      bookId: 1,
+      bookUuid: 'b1',
       roundIndex: 1,
       userInput: '我踏入青云宗。',
       aiNarrative: '山门巍峨，云雾缭绕。',
@@ -233,7 +233,7 @@ void main() {
         lastRound,
         Round(
           id: 2,
-          bookId: 1,
+          bookUuid: 'b1',
           roundIndex: 2,
           userInput: '我拔出长剑。',
           aiNarrative: '剑光如虹。',
@@ -248,7 +248,7 @@ void main() {
 
     test('历史轮次为空输入时跳过 user 消息并保留 assistant 占位', () {
       final history = PromptBuilder.buildHistoryMessages(const [
-        Round(bookId: 1, roundIndex: 1, userInput: '', aiNarrative: '正文'),
+        Round(bookUuid: 'b1', roundIndex: 1, userInput: '', aiNarrative: '正文'),
       ]);
       expect(history, hasLength(1));
       expect(history.single['role'], 'assistant');
@@ -258,7 +258,7 @@ void main() {
       final history = PromptBuilder.buildHistoryMessages(
         const [
           Round(
-            bookId: 1,
+            bookUuid: 'b1',
             roundIndex: 1,
             userInput: '看图',
             userImages: ['img/a.png'],

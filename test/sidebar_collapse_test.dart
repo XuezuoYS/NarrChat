@@ -18,7 +18,7 @@ void main() {
             height: 800,
             child: SidebarPanel(
               round: const Round(
-                bookId: 1,
+                bookUuid: 'b1',
                 roundIndex: 1,
                 worldState: '- 地点：青云宗',
                 characterState: '## 女主角\n### 苏清月\n- 心情：平静',
@@ -116,7 +116,11 @@ void main() {
             width: 380,
             height: 500,
             child: SidebarPanel(
-              round: Round(bookId: 1, roundIndex: 1, characterState: sb.toString()),
+              round: Round(
+                bookUuid: 'b1',
+                roundIndex: 1,
+                characterState: sb.toString(),
+              ),
               isHistoryView: false,
               onAutoSaveField: (r, f, v) async => true,
               onBackToCurrent: () {},

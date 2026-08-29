@@ -11,7 +11,7 @@ void main() {
   Future<void> pumpHome(WidgetTester tester) async {
     await pumpHomeScreen(
       tester,
-      books: const [Book(id: 1, title: '测试书')],
+      books: const [Book(uuid: kHarnessBookUuid, title: '测试书')],
       size: const Size(400, 800),
     );
   }

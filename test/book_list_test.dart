@@ -20,8 +20,8 @@ void main() {
     await pumpHomeScreen(
       tester,
       books: const [
-        Book(id: 1, title: '剑来', category: '玄幻'),
-        Book(id: 2, title: '三体', category: '科幻'),
+        Book(uuid: 'b1', title: '剑来', category: '玄幻'),
+        Book(uuid: 'b2', title: '三体', category: '科幻'),
       ],
     );
 
@@ -37,7 +37,7 @@ void main() {
   });
 
   testWidgets('搜索：无结果显示空态，可清空恢复', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '剑来')]);
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '剑来')]);
 
     await tester.enterText(find.byType(TextField), '不存在的书');
     await tester.pump();
@@ -52,9 +52,9 @@ void main() {
     await pumpHomeScreen(
       tester,
       books: const [
-        Book(id: 1, title: '张三'),
-        Book(id: 2, title: '阿伟'),
-        Book(id: 3, title: 'Book'),
+        Book(uuid: 'b1', title: '张三'),
+        Book(uuid: 'b2', title: '阿伟'),
+        Book(uuid: 'b3', title: 'Book'),
       ],
     );
 
@@ -67,17 +67,18 @@ void main() {
     await pumpHomeScreen(
       tester,
       books: const [
-        Book(id: 1, title: 'A'),
-        Book(id: 2, title: 'B'),
-        Book(id: 3, title: 'C'),
+        Book(uuid: 'b1', title: 'A'),
+        Book(uuid: 'b2', title: 'B'),
+        Book(uuid: 'b3', title: 'C'),
       ],
-      times: {2: DateTime(2026, 8, 10), 1: DateTime(2026, 8, 1)},
+      // 最近对话时间的键就是书籍 uuid；C 无轮次 → 垫底。
+      times: {'b2': DateTime(2026, 8, 10), 'b1': DateTime(2026, 8, 1)},
     );
     expect(visibleTitles(tester), ['B', 'A', 'C']);
   });
 
   testWidgets('点击书籍进入对话页，返回按钮回到首页', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '测试书')]);
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
 
     await tester.tap(find.text('测试书'));
     await tester.pumpAndSettle();
@@ -91,7 +92,7 @@ void main() {
   });
 
   testWidgets('对话页点击顶栏书名直接进入书籍设置', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '测试书')]);
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
 
     await tester.tap(find.text('测试书'));
     await tester.pumpAndSettle();
@@ -105,7 +106,7 @@ void main() {
   });
 
   testWidgets('列表无编辑 / 书籍设置入口，仅保留删除', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '测试书')]);
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
 
     expect(find.text('编辑'), findsNothing);
     expect(find.byIcon(Icons.edit_outlined), findsNothing);
@@ -118,7 +119,7 @@ void main() {
   });
 
   testWidgets('删除书籍走软删：确认后从列表移除', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(id: 1, title: '测试书')]);
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
     expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
 
     await tester.tap(find.byTooltip('更多操作'));
@@ -144,7 +145,7 @@ void main() {
   });
 
   testWidgets('系统通知未开启时主页显示提示条', (tester) async {
-    const books = [Book(id: 1, title: '测试书')];
+    const books = [Book(uuid: 'b1', title: '测试书')];
     final bookDao = FakeBookDao(books: books);
     final bookProvider = BookProvider(dao: bookDao)..loadBooks();
     final service = GenerationNotificationService(

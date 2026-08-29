@@ -106,10 +106,12 @@ abstract class SyncStateStore {
   Future<void> saveState(SyncStateRecord s);
   Future<Map<String, SyncBookBase>> getAllBookBases();
   Future<void> putBookBase(SyncBookBase b);
-  Future<void> deleteBookBase(String title);
+  /// 按 uuid（= `sync_book_base` 主键）删除共基行。
+  Future<void> deleteBookBase(String uuid);
   Future<Map<String, SyncModBase>> getAllModBases();
   Future<void> putModBase(SyncModBase b);
-  Future<void> deleteModBase(String name);
+  /// 按 uuid（= `sync_mod_base` 主键）删除共基行。
+  Future<void> deleteModBase(String uuid);
 }
 
 /// 云同步状态 / 共基数据访问对象（仅读写同步辅助表，不触碰业务表）。

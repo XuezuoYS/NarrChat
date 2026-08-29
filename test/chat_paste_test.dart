@@ -14,7 +14,7 @@ import 'helpers/fakes.dart';
 /// 依赖 [pumpChatScreen]（已注入 [FakeClipboardPasteService]）与
 /// [FakeClipboardPasteService]，不触碰真实剪贴板 / 文件系统。
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
   /// 主输入框（悬浮输入卡内，按占位文案定位）。
   Finder composerField() => find.byWidgetPredicate(

@@ -106,7 +106,9 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除 Mod'),
-        content: Text('确定删除自定义 Mod「${mod.name}」吗？\n引用该 Mod 的书籍将不再注入其内容。'),
+        content: Text(
+          '确定删除自定义 Mod「${mod.name}」吗？\n引用该 Mod 的书籍将不再注入其内容。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -121,7 +123,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     );
     if (confirmed != true || !mounted) return;
     final provider = context.read<ModProvider>();
-    final ok = await provider.deleteMod(mod.id!);
+    final ok = await provider.deleteMod(mod.uuid);
     if (!mounted) return;
     _showMessage(ok ? '已删除' : '删除失败：${provider.error ?? '未知错误'}');
   }

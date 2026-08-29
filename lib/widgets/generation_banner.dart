@@ -12,17 +12,17 @@ const double _kContentMaxWidth = 760;
 /// 跨书进程提示栏：其他书籍正在生成时置顶展示计数横幅（x本书正在生成……），
 /// 点击弹出「正在生成的书」对话框，选择对应书籍后回调 [onOpenBook] 跳转。
 ///
-/// 对话页传入 [excludeBookId]（当前查看书，其自身不显示）；首页传 null 展示全部。
+/// 对话页传入 [excludeBookUuid]（当前查看书，其自身不显示）；首页传 null 展示全部。
 class GenerationBanner extends StatelessWidget {
   const GenerationBanner({
     super.key,
-    this.excludeBookId,
+    this.excludeBookUuid,
     this.maxWidth = _kContentMaxWidth,
     required this.onOpenBook,
   });
 
-  /// 需要排除的书籍 id（如当前对话页的书，其自身不显示在横幅）。
-  final int? excludeBookId;
+  /// 需要排除的书籍 uuid（如当前对话页的书，其自身不显示在横幅）。
+  final String? excludeBookUuid;
 
   /// 横幅最大宽度（默认对齐对话内容区 760）。
   final double maxWidth;
@@ -33,10 +33,10 @@ class GenerationBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final roundProvider = context.watch<RoundProvider>();
-    final activeIds = roundProvider.activeGenerationBookIds
-        .where((id) => id != excludeBookId)
+    final activeUuids = roundProvider.activeGenerationBookUuids
+        .where((uuid) => uuid != excludeBookUuid)
         .toList();
-    if (activeIds.isEmpty) return const SizedBox.shrink();
+    if (activeUuids.isEmpty) return const SizedBox.shrink();
 
     // 圆角悬浮卡片：水平居中限宽 + 四周留白，宽屏下不与窗口/容器边缘齐平（不被截断）；
     // 无阴影（Material 零高程），仅圆角背景 + 水波纹点击反馈。
@@ -55,7 +55,7 @@ class GenerationBanner extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
             clipBehavior: Clip.antiAlias,
             child: InkWell(
-              onTap: () => _showGeneratingBooksDialog(context, activeIds),
+              onTap: () => _showGeneratingBooksDialog(context, activeUuids),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -71,7 +71,7 @@ class GenerationBanner extends StatelessWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        '${activeIds.length}本书正在生成……',
+                        '${activeUuids.length}本书正在生成……',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -98,11 +98,14 @@ class GenerationBanner extends StatelessWidget {
 
   /// 「正在生成的书」对话框：列出正在生成的书（书名 + 进度），
   /// 点击对应条目回调 [onOpenBook]。
-  void _showGeneratingBooksDialog(BuildContext context, List<int> activeIds) {
+  void _showGeneratingBooksDialog(
+    BuildContext context,
+    List<String> activeUuids,
+  ) {
     final books = context.read<BookProvider>().books;
     final entries = <Book>[];
-    for (final id in activeIds) {
-      final book = _bookById(books, id);
+    for (final uuid in activeUuids) {
+      final book = _bookByUuid(books, uuid);
       if (book != null) entries.add(book);
     }
     if (entries.isEmpty) return;
@@ -152,10 +155,10 @@ class GenerationBanner extends StatelessWidget {
     );
   }
 
-  /// 按 id 查书（未找到返回 null）。
-  Book? _bookById(List<Book> books, int id) {
+  /// 按 uuid 查书（未找到返回 null）。
+  Book? _bookByUuid(List<Book> books, String uuid) {
     for (final b in books) {
-      if (b.id == id) return b;
+      if (b.uuid == uuid) return b;
     }
     return null;
   }

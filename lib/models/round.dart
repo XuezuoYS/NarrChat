@@ -1,9 +1,12 @@
 import 'dart:convert';
 
-/// 轮次模型，对应数据库 `rounds` 表，通过 [bookId] 关联书籍。
+/// 轮次模型，对应数据库 `rounds` 表，通过 [bookUuid] 关联书籍。
 class Round {
+  /// 本轮自增主键（子表保留 int id，仅本地行标识，不参与同步身份）。
   final int? id;
-  final int bookId;
+
+  /// 所属书籍 uuid（`rounds.book_uuid`，FK → `books.uuid`）。
+  final String bookUuid;
   final int roundIndex;
   final String userInput;
   final String aiNarrative;
@@ -27,7 +30,7 @@ class Round {
 
   const Round({
     this.id,
-    required this.bookId,
+    required this.bookUuid,
     required this.roundIndex,
     this.userInput = '',
     this.aiNarrative = '',
@@ -47,7 +50,7 @@ class Round {
   factory Round.fromMap(Map<String, Object?> map) {
     return Round(
       id: map['id'] as int?,
-      bookId: (map['book_id'] as int?) ?? 0,
+      bookUuid: (map['book_uuid'] as String?) ?? '',
       roundIndex: (map['round_index'] as int?) ?? 0,
       userInput: (map['user_input'] as String?) ?? '',
       aiNarrative: (map['ai_narrative'] as String?) ?? '',
@@ -70,7 +73,7 @@ class Round {
   Map<String, Object?> toMap() {
     return {
       'id': id,
-      'book_id': bookId,
+      'book_uuid': bookUuid,
       'round_index': roundIndex,
       'user_input': userInput,
       'ai_narrative': aiNarrative,
@@ -103,7 +106,7 @@ class Round {
 
   Round copyWith({
     int? id,
-    int? bookId,
+    String? bookUuid,
     int? roundIndex,
     String? userInput,
     String? aiNarrative,
@@ -121,7 +124,7 @@ class Round {
   }) {
     return Round(
       id: id ?? this.id,
-      bookId: bookId ?? this.bookId,
+      bookUuid: bookUuid ?? this.bookUuid,
       roundIndex: roundIndex ?? this.roundIndex,
       userInput: userInput ?? this.userInput,
       aiNarrative: aiNarrative ?? this.aiNarrative,

@@ -9,7 +9,7 @@ import 'helpers/fakes.dart';
 
 /// 楼层跳转（FloorJumpBar）测试：按钮布局/箭头跳转/回车/缺口/流式/动画/Tooltip。
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
   /// 预置 rounds 轮（单轮正文足够高，最后一轮起点可达视口顶），
   /// 并 pump 对话页。返回 RoundProvider（用于缺口删除等用例）。
@@ -281,7 +281,7 @@ void main() {
     // 删除第 3 轮（DAO 不重编号，产生缺口：1,2,4,5,6）。
     final round3 = dao.rounds.firstWhere((r) => r.roundIndex == 3);
     await dao.deleteRound(round3.id!);
-    await provider.loadRounds(1);
+    await provider.loadRounds(kHarnessBookUuid);
     await tester.pumpAndSettle();
 
     await openFloorBar(tester);

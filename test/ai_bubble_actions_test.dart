@@ -28,7 +28,7 @@ Future<void> _pump(
             width: width,
             child: AiBubbleActions(
               round: Round(
-                bookId: 1,
+                bookUuid: 'b1',
                 roundIndex: 1,
                 tokensIn: 3395,
                 tokensOut: 3395,

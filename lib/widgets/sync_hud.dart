@@ -15,7 +15,7 @@ import '../theme/app_theme.dart';
 /// - 默认**水平居中**、位于标题栏下方（不遮挡控件）；
 /// - 左侧拖动手柄图标提示可拖动（桌面端悬停显示移动光标）；
 /// - **不记忆拖动位置**：同步结束后 HUD 消失，下一次显示时回到默认初始位置；
-/// - 当 `GenerationBanner` 可见（`RoundProvider.activeGenerationBookIds` 非空）时
+/// - 当 `GenerationBanner` 可见（`RoundProvider.activeGenerationBookUuids` 非空）时
 ///   自动下移一排，避免互相遮挡。
 class SyncHud extends StatefulWidget {
   const SyncHud({super.key});
@@ -47,7 +47,7 @@ class _SyncHudState extends State<SyncHud> {
     }
 
     final bannerVisible =
-        context.watch<RoundProvider>().activeGenerationBookIds.isNotEmpty;
+        context.watch<RoundProvider>().activeGenerationBookUuids.isNotEmpty;
     final media = MediaQuery.of(context);
     final safeTop = media.padding.top;
     // 默认位：标题栏（AppBar）下方 + 8；拖动偏移附加；GenerationBanner 可见时再下移一排。

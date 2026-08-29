@@ -88,9 +88,9 @@ class ModProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> deleteMod(int id) async {
+  Future<bool> deleteMod(String uuid) async {
     try {
-      await _dao.deleteMod(id);
+      await _dao.deleteMod(uuid);
       await loadUserMods();
       _cloudSyncProvider?.triggerSync();
       return true;
@@ -104,9 +104,9 @@ class ModProvider extends ChangeNotifier {
   // ---------- 书籍 Mod 关联 ----------
 
   /// 获取某本书已保存的 Mod 配置（不含未保存的 Mod，由 UI 自行补齐）。
-  Future<List<BookModConfig>> getBookModConfigs(int bookId) async {
+  Future<List<BookModConfig>> getBookModConfigs(String bookUuid) async {
     try {
-      return await _dao.getBookMods(bookId);
+      return await _dao.getBookMods(bookUuid);
     } catch (e) {
       _error = e.toString();
       notifyListeners();
@@ -115,9 +115,12 @@ class ModProvider extends ChangeNotifier {
   }
 
   /// 保存某本书的完整 Mod 配置（整体替换）。
-  Future<bool> saveBookModConfigs(int bookId, List<BookModConfig> configs) async {
+  Future<bool> saveBookModConfigs(
+    String bookUuid,
+    List<BookModConfig> configs,
+  ) async {
     try {
-      await _dao.replaceBookMods(bookId, configs);
+      await _dao.replaceBookMods(bookUuid, configs);
       _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
@@ -134,15 +137,15 @@ class ModProvider extends ChangeNotifier {
   /// 世界书条目与书籍世界书行为一致：关键词非空时扫描本轮输入与最近历史轮次、
   /// 命中才注入；关键词为空时恒定生效。每次发送请求时调用，从数据库实时读取。
   Future<ModsBundle> resolveModsBundle({
-    required int bookId,
+    required String bookUuid,
     required String userInput,
     required List<Round> historyRounds,
   }) async {
-    final configs = await _dao.getBookMods(bookId);
+    final configs = await _dao.getBookMods(bookUuid);
     if (configs.isEmpty) return ModsBundle.empty;
 
     final userMods = await _dao.getAllMods();
-    final userById = {for (final m in userMods) m.id: m};
+    final userByUuid = {for (final m in userMods) m.uuid: m};
 
     final pre = StringBuffer();
     final post = StringBuffer();
@@ -153,7 +156,7 @@ class ModProvider extends ChangeNotifier {
       if (!config.isEnabled) continue;
       final mod = config.presetKey != null
           ? PresetMods.byKey(config.presetKey)
-          : userById[config.modId];
+          : userByUuid[config.modUuid];
       if (mod == null) continue;
       if (mod.prePrompt.trim().isNotEmpty) {
         pre.writeln(mod.prePrompt.trim());
@@ -203,7 +206,7 @@ class ModProvider extends ChangeNotifier {
             entries: [
               for (final e in keywordEntries)
                 WorldBookEntry(
-                  bookId: 0,
+                  bookUuid: '',
                   keyword: e.keyword,
                   content: e.content,
                 ),

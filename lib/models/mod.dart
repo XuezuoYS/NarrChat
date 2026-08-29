@@ -66,13 +66,11 @@ class ModWorldBookEntry {
 /// 当书籍启用了某个 Mod 后，向 AI 发送请求时会自动将其内容置入对应的提示词
 /// 位置（与用户手动填写效果一致）。名称与简介仅用于辨识，不会发送给 AI。
 ///
-/// - 预置 Mod：仅可查看、不可修改（[presetKey] 非空、[id] 为 null）；
-/// - 用户自定义 Mod：可查看、编辑、导出与导入（[id] 非空、[presetKey] 为 null）。
+/// - 预置 Mod：仅可查看、不可修改（[presetKey] 非空）；
+/// - 用户自定义 Mod：可查看、编辑、导出与导入（[uuid] 即数据库主键、[presetKey] 为 null）。
 class Mod {
-  /// 用户自定义 Mod 的数据库主键；预置 Mod 为 null。
-  final int? id;
-
-  /// 跨设备同步身份（UUID v4，用户 Mod 才有）。本地插入时自动生成。
+  /// 数据库主键（UUID v4，用户 Mod 才有）。本地新建时由 [ModDao.insertMod] 生成；
+  /// 空串仅表示「未落库的草稿」，已落库实例必非空。
   final String uuid;
 
   /// 预置 Mod 的稳定标识（如 `web_novel_style`）；用户自定义 Mod 为 null。
@@ -101,7 +99,6 @@ class Mod {
   final DateTime? updatedAt;
 
   const Mod({
-    this.id,
     this.uuid = '',
     this.presetKey,
     this.name = '',
@@ -117,12 +114,11 @@ class Mod {
   /// 是否为预置 Mod（仅可查看）。
   bool get isPreset => presetKey != null;
 
-  /// 唯一引用标识：预置用 `preset:<key>`，用户自定义用 `user:<id>`。
-  String get ref => isPreset ? 'preset:$presetKey' : 'user:$id';
+  /// 唯一引用标识：预置用 `preset:<key>`，用户自定义用 `user:<uuid>`。
+  String get ref => isPreset ? 'preset:$presetKey' : 'user:$uuid';
 
   factory Mod.fromMap(Map<String, Object?> map) {
     return Mod(
-      id: map['id'] as int?,
       uuid: (map['uuid'] as String?) ?? '',
       presetKey: null,
       name: (map['name'] as String?) ?? '',
@@ -142,7 +138,6 @@ class Mod {
 
   Map<String, Object?> toMap() {
     return {
-      'id': id,
       'uuid': uuid,
       'name': name,
       'description': description,
@@ -156,7 +151,6 @@ class Mod {
   }
 
   Mod copyWith({
-    int? id,
     String? uuid,
     String? presetKey,
     String? name,
@@ -169,7 +163,6 @@ class Mod {
     DateTime? updatedAt,
   }) {
     return Mod(
-      id: id ?? this.id,
       uuid: uuid ?? this.uuid,
       presetKey: presetKey ?? this.presetKey,
       name: name ?? this.name,
@@ -255,15 +248,20 @@ class ModsBundle {
 }
 
 /// 书籍与 Mod 的关联配置（启用状态 + 置入顺序）。
+///
+/// 两端引用均为 uuid：[bookUuid] → `books.uuid`、[modUuid] → `mods.uuid`。
 class BookModConfig {
+  /// 关联行自增主键（子表保留 int id，仅本地行标识）。
   final int? id;
-  final int bookId;
+
+  /// 所属书籍 uuid（`book_mods.book_uuid`，FK → `books.uuid`）。
+  final String bookUuid;
 
   /// 预置 Mod 标识（仅预置 Mod 使用）。
   final String? presetKey;
 
-  /// 用户自定义 Mod 的数据库 id（仅用户 Mod 使用）。
-  final int? modId;
+  /// 用户自定义 Mod 的 uuid（`book_mods.mod_uuid`，FK → `mods.uuid`；预置为 null）。
+  final String? modUuid;
 
   final bool isEnabled;
 
@@ -272,22 +270,22 @@ class BookModConfig {
 
   const BookModConfig({
     this.id,
-    this.bookId = 0,
+    this.bookUuid = '',
     this.presetKey,
-    this.modId,
+    this.modUuid,
     this.isEnabled = true,
     this.sortOrder = 0,
   });
 
   /// 唯一引用标识，与 [Mod.ref] 对应。
-  String get ref => presetKey != null ? 'preset:$presetKey' : 'user:$modId';
+  String get ref => presetKey != null ? 'preset:$presetKey' : 'user:$modUuid';
 
   factory BookModConfig.fromMap(Map<String, Object?> map) {
     return BookModConfig(
       id: map['id'] as int?,
-      bookId: (map['book_id'] as int?) ?? 0,
+      bookUuid: (map['book_uuid'] as String?) ?? '',
       presetKey: map['preset_key'] as String?,
-      modId: map['mod_id'] as int?,
+      modUuid: map['mod_uuid'] as String?,
       isEnabled: (map['is_enabled'] as int? ?? 1) == 1,
       sortOrder: (map['sort_order'] as int?) ?? 0,
     );
@@ -296,9 +294,9 @@ class BookModConfig {
   Map<String, Object?> toMap() {
     return {
       'id': id,
-      'book_id': bookId,
+      'book_uuid': bookUuid,
       'preset_key': presetKey,
-      'mod_id': modId,
+      'mod_uuid': modUuid,
       'is_enabled': isEnabled ? 1 : 0,
       'sort_order': sortOrder,
     };
@@ -306,17 +304,17 @@ class BookModConfig {
 
   BookModConfig copyWith({
     int? id,
-    int? bookId,
+    String? bookUuid,
     String? presetKey,
-    int? modId,
+    String? modUuid,
     bool? isEnabled,
     int? sortOrder,
   }) {
     return BookModConfig(
       id: id ?? this.id,
-      bookId: bookId ?? this.bookId,
+      bookUuid: bookUuid ?? this.bookUuid,
       presetKey: presetKey ?? this.presetKey,
-      modId: modId ?? this.modId,
+      modUuid: modUuid ?? this.modUuid,
       isEnabled: isEnabled ?? this.isEnabled,
       sortOrder: sortOrder ?? this.sortOrder,
     );

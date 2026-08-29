@@ -435,15 +435,14 @@ class DatabaseSyncRunner {
     return false;
   }
 
-  /// 远端 manifest 条目 → uuid 键的部件映射（uuid 为空时用 legacy 键回退）。
+  /// 远端 manifest 条目 → uuid 键的部件映射。
   ///
-  /// 部件内的 [RemoteBookParts.uuid] 同样使用**有效键**（含 legacy 回退），
-  /// 保证决策 / 动作清单里的远端标识可直接用于落地层定位。
+  /// uuid 即两侧库的主键，清单里的标识可直接用于落地层定位。
   Map<String, RemoteBookParts> _toRemoteBooks(List<SyncBookEntry> books) {
     return {
       for (final b in books)
-        _remoteKey(b.uuid, b.title): RemoteBookParts(
-          uuid: _remoteKey(b.uuid, b.title),
+        b.uuid: RemoteBookParts(
+          uuid: b.uuid,
           title: b.title,
           deleted: b.deleted,
           settingsFp: b.settingsFp,
@@ -457,8 +456,8 @@ class DatabaseSyncRunner {
   Map<String, RemoteModParts> _toRemoteMods(List<SyncModEntry> mods) {
     return {
       for (final m in mods)
-        _remoteKey(m.uuid, m.name): RemoteModParts(
-          uuid: _remoteKey(m.uuid, m.name),
+        m.uuid: RemoteModParts(
+          uuid: m.uuid,
           name: m.name,
           deleted: m.deleted,
           fingerprint: m.fingerprint,
@@ -466,8 +465,6 @@ class DatabaseSyncRunner {
     };
   }
 
-  static String _remoteKey(String uuid, String name) =>
-      uuid.isNotEmpty ? uuid : 'legacy:$name';
 
   List<SyncBookEntry> _toBookEntries(
     Map<String, SyncBookRecord> books,

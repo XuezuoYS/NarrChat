@@ -14,18 +14,18 @@ import 'markdown_editing_controller.dart';
 /// App 会扫描本轮输入与最近历史轮次，命中关键词的条目内容将注入 System Prompt。
 /// 支持新增、编辑、启用/停用与删除。
 class WorldBookPanel extends StatefulWidget {
-  /// 所属书籍 ID；为 null 表示新建书籍草稿模式（条目保存在内存，
+  /// 所属书籍 uuid；为 null 表示新建书籍草稿模式（条目保存在内存，
   /// 保存书籍后由外层统一落库）。
-  final int? bookId;
+  final String? bookUuid;
 
-  /// 草稿模式（bookId 为 null）下当前的世界书条目；改动后通过
+  /// 草稿模式（[bookUuid] 为 null）下当前的世界书条目；改动后通过
   /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
   final List<WorldBookEntry>? pendingEntries;
   final ValueChanged<List<WorldBookEntry>>? onPendingChanged;
 
   const WorldBookPanel({
     super.key,
-    this.bookId,
+    this.bookUuid,
     this.pendingEntries,
     this.onPendingChanged,
   });
@@ -38,20 +38,20 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
   final TextEditingController _keywordController = TextEditingController();
   final MarkdownEditingController _contentController = MarkdownEditingController();
 
-  /// 草稿模式下的本地条目（仅 bookId 为 null 时使用）。
+  /// 草稿模式下的本地条目（仅 [WorldBookPanel.bookUuid] 为 null 时使用）。
   late List<WorldBookEntry> _pending;
 
-  bool get _isDraft => widget.bookId == null;
+  bool get _isDraft => widget.bookUuid == null;
 
   @override
   void initState() {
     super.initState();
     _pending = List.of(widget.pendingEntries ?? const []);
-    final bookId = widget.bookId;
-    if (bookId != null) {
+    final bookUuid = widget.bookUuid;
+    if (bookUuid != null) {
       // 进入时加载该书籍的世界书条目。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        context.read<WorldBookProvider>().loadEntries(bookId);
+        context.read<WorldBookProvider>().loadEntries(bookUuid);
       });
     }
   }
@@ -83,7 +83,7 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       setState(() {
         _pending.add(
           WorldBookEntry(
-            bookId: 0,
+            bookUuid: '',
             keyword: keyword,
             content: content,
             isActive: true,

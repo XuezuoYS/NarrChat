@@ -1,5 +1,20 @@
 import 'dart:math';
 
+/// 由书籍 uuid 推导 Android 通知槽 id（FNV-1a 32 位哈希，取低 31 位保证非负）。
+///
+/// 纯函数：同一 uuid 恒定得到同一 id（可 cancel），不同 uuid 落在
+/// `0..0x7fffffff`；无任何内存/持久状态，模块重启后仍可 cancel 旧通知。
+/// uuid 为空串返回 0（正常流程不会出现：uuid 即主键，必非空）。
+int notificationIdForUuid(String uuid) {
+  if (uuid.isEmpty) return 0;
+  var h = 0x811c9dc5;
+  for (final c in uuid.codeUnits) {
+    h ^= c;
+    h = (h * 0x01000193) & 0xFFFFFFFF;
+  }
+  return h & 0x7FFFFFFF;
+}
+
 /// UUID v4 生成工具（RFC 4122，无需外部依赖）。
 ///
 /// 书籍 / Mod 的跨设备同步身份：本地生成、全球唯一，服务器不参与分配。

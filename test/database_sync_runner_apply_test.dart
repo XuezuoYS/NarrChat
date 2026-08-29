@@ -43,13 +43,19 @@ void main() {
 
   test('远端删除的书 → 本地软删并落地（uuid 匹配）', () async {
     final bookDao = BookDao();
-    final bookId = await bookDao.insertBook(const Book(title: '书A', category: '玄幻'));
+    // insertBook 返回的就是这本书的主键 uuid（本地与跨设备同一身份）。
+    final uuid = await bookDao.insertBook(
+      const Book(title: '书A', category: '玄幻'),
+    );
 
     // 本地部件指纹（用于共基比对，使本地未改 → deletedOnRemote）。
-    final localSnap = await SyncLocalSnapshot.build(await DatabaseHelper.instance.database);
-    final record = localSnap.books.values.single;
-    final parts = record.parts;
-    final uuid = record.uuid;
+    final localSnap = await SyncLocalSnapshot.build(
+      await DatabaseHelper.instance.database,
+    );
+    final record = localSnap.books[uuid];
+    expect(record, isNotNull, reason: '本地快照以 uuid 为键');
+    final parts = record!.parts;
+    expect(record.uuid, uuid);
 
     final store = MemorySyncStore()
       ..manifest = SyncManifest(
@@ -91,11 +97,11 @@ void main() {
       keepVersions: 5,
       lockRetryDelay: Duration.zero,
       applyRemotePlan: (action) async {
+        // 删除传播按 uuid 直取：uuid 就是本地行的主键，没有第二套标识可匹配
+        //（与 CloudSyncProvider._applyRemotePlan 同语义）。
         final dao = BookDao();
-        for (final b in await dao.getAllBooks()) {
-          if (action.deleteLocalBookUuids.contains(b.uuid) && b.id != null) {
-            await dao.softDeleteBook(b.id!);
-          }
+        for (final bookUuid in action.deleteLocalBookUuids) {
+          await dao.softDeleteBook(bookUuid);
         }
       },
     );
@@ -109,10 +115,12 @@ void main() {
     // 本地软删落地：默认列表隐藏。
     expect(await bookDao.getAllBooks(), isEmpty);
     // includeDeleted 可见且带删除标记。
-    final softDeleted = await bookDao.getBookById(bookId, includeDeleted: true);
+    final softDeleted =
+        await bookDao.getBookByUuid(uuid, includeDeleted: true);
     expect(softDeleted, isNotNull);
+    expect(softDeleted!.uuid, uuid);
     final row = (await DatabaseHelper.instance.database)
-        .query('books', where: 'id = ?', whereArgs: [bookId]);
+        .query('books', where: 'uuid = ?', whereArgs: [uuid]);
     expect((await row).first['deleted_at'], isNotNull);
     // manifest 保持当前代（删除墓碑本来就在远端清单中）。
     expect(store.manifest!.generation, 2);

@@ -135,7 +135,11 @@ void main() {
       options: OpenDatabaseOptions(version: 8, onCreate: _createV8Schema),
     );
     // 模拟 v9：先补上 model_name 列（前一版本迁移），此时无 user_images/ai_images。
-    await db9.execute("ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''");
+    await db9.execute(
+      "ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''",
+    );
+    // v16 迁移按父表 JOIN 重建子表：轮次必须有父书，否则视为孤儿被丢弃。
+    await db9.insert('books', {'title': '书D'});
     await db9.insert('rounds', {
       'book_id': 1,
       'round_index': 1,
@@ -473,7 +477,7 @@ void main() {
     await db.close();
   });
 
-  test('v14→v15 迁移：移除图片删除墓碑表（图片不再走数据库）', () async {
+  test('v14→v16 迁移：移除图片删除墓碑表（图片不再走数据库）', () async {
     final path = _newDbPath();
 
     final db14 = await databaseFactoryFfi.openDatabase(
@@ -509,6 +513,352 @@ void main() {
     final books = await db.query('books');
     expect(books.single['title'], '书I');
     await db.close();
+  });
+
+  // ========================================================================
+  // v16：books / mods 去除本地 int 主键，uuid 成为唯一身份（子表改按 uuid 引用）
+  // ========================================================================
+
+  test('v9→v16 全链路：uuid 即主键，数据全保留，无中间表残留', () async {
+    final path = _newDbPath();
+    final db9 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 9, onCreate: _createV9Schema),
+    );
+    await db9.insert('books', {
+      'title': '书A',
+      'category': '玄幻',
+      'failed_user_input': '半截输入',
+    });
+    await db9.insert('books', {'title': '书B'});
+    await db9.insert('rounds', {
+      'book_id': 1,
+      'round_index': 1,
+      'user_input': '你好',
+      'ai_narrative': 'A 正文',
+      'model_name': 'gpt-x',
+      'created_at': DateTime(2026, 8, 16).toIso8601String(),
+    });
+    await db9.insert('rounds', {
+      'book_id': 2,
+      'round_index': 1,
+      'user_input': '第二本',
+      'ai_narrative': 'B 正文',
+    });
+    await db9.insert('world_book_entries', {
+      'book_id': 1,
+      'keyword': '张三',
+      'content': '佩剑剑客',
+    });
+    await db9.insert('mods', {'name': '自定义 Mod', 'pre_prompt': '前置'});
+    await db9.insert('book_mods', {
+      'book_id': 1,
+      'preset_key': 'timeline',
+      'sort_order': 0,
+    });
+    await db9.insert('book_mods', {'book_id': 1, 'mod_id': 1, 'sort_order': 1});
+    await db9.close();
+
+    final db = await _openUpgraded(path);
+    expect(
+      (await db.rawQuery('PRAGMA user_version')).first.values.first,
+      DatabaseHelper.currentDbVersion,
+    );
+
+    // 父表：uuid 即主键，不再存在第二个 id 列（也不新增 created_at 列）。
+    final bookCols = _columnNames(await db.rawQuery('PRAGMA table_info(books)'));
+    expect(bookCols, contains('uuid'));
+    expect(bookCols, isNot(contains('id')));
+    expect(bookCols, isNot(contains('created_at')));
+    expect(
+      _columnNames(await db.rawQuery('PRAGMA table_info(mods)')),
+      isNot(contains('id')),
+    );
+    final bookSql = (await db.rawQuery(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='books'",
+    )).single['sql'] as String;
+    expect(bookSql, contains('uuid TEXT PRIMARY KEY'));
+
+    // 子表：自身 int 主键保留，父引用列名换为 uuid。
+    final roundCols = _columnNames(
+      await db.rawQuery('PRAGMA table_info(rounds)'),
+    );
+    expect(roundCols, containsAll(['id', 'book_uuid']));
+    expect(roundCols, isNot(contains('book_id')));
+
+    // 业务数据：两本书 / 两条轮次 / 一条世界书 / 一条 Mod / 两条挂载。
+    final books = await db.query('books', orderBy: 'title ASC');
+    expect(books.map((b) => b['title']), ['书A', '书B']);
+    final bookA = books.first;
+    expect(bookA['uuid'], isNotEmpty);
+    expect(bookA['category'], '玄幻');
+    expect(bookA['failed_user_input'], '半截输入');
+    final roundsA = await db.query(
+      'rounds',
+      where: 'book_uuid = ?',
+      whereArgs: [bookA['uuid']],
+    );
+    expect(roundsA.single['ai_narrative'], 'A 正文');
+    expect(roundsA.single['model_name'], 'gpt-x');
+    expect(
+      (await db.query('world_book_entries')).single['book_uuid'],
+      bookA['uuid'],
+    );
+    final modRow = (await db.query('mods')).single;
+    expect(modRow['uuid'], isNotEmpty);
+    final mounts = await db.query(
+      'book_mods',
+      where: 'book_uuid = ?',
+      whereArgs: [bookA['uuid']],
+      orderBy: 'sort_order ASC',
+    );
+    expect(mounts, hasLength(2));
+    // 预置行（旧 mod_id 为 NULL）必须保住；用户行指向该 Mod 的 uuid。
+    expect(mounts.first['preset_key'], 'timeline');
+    expect(mounts.first['mod_uuid'], isNull);
+    expect(mounts.last['mod_uuid'], modRow['uuid']);
+    // 子表自增 id 原样保留（仅本地行标识，同步从不引用）。
+    expect(
+      (await db.query('rounds', orderBy: 'id ASC')).map((r) => r['id']).toList(),
+      [1, 2],
+    );
+
+    // 无 *_new 中间表 / 旧索引残留，外键检查干净。
+    final leftovers = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE instr(name, '_new') > 0",
+    );
+    expect(leftovers, isEmpty);
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    await db.close();
+  });
+
+  test('v15→v16 预清洗：空 uuid 补发身份，重复 uuid 只留最小 id 那行的原值', () async {
+    final path = _newDbPath();
+    final db15 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+    );
+    await db15.insert('books', {'title': '空身份', 'uuid': ''});
+    await db15.insert('books', {'title': '重复甲', 'uuid': 'dup'});
+    await db15.insert('books', {'title': '重复乙', 'uuid': 'dup'});
+    await db15.insert('mods', {'name': 'Mod甲', 'uuid': ''});
+    await db15.insert('mods', {'name': 'Mod乙', 'uuid': ''});
+    await db15.insert('rounds', {
+      'book_id': 1,
+      'round_index': 1,
+      'ai_narrative': '空身份轮次',
+    });
+    await db15.insert('rounds', {
+      'book_id': 2,
+      'round_index': 1,
+      'ai_narrative': '重复甲轮次',
+    });
+    await db15.insert('rounds', {
+      'book_id': 3,
+      'round_index': 1,
+      'ai_narrative': '重复乙轮次',
+    });
+    await db15.close();
+
+    final db = await _openUpgraded(path);
+    final books = await db.query('books');
+    expect(books, hasLength(3));
+    final uuidByTitle = {
+      for (final b in books) b['title'] as String: b['uuid'] as String,
+    };
+    // 非空且互不相同（uuid 即将成为主键的前提）。
+    expect(uuidByTitle.values.every((u) => u.isNotEmpty), isTrue);
+    expect(uuidByTitle.values.toSet(), hasLength(3));
+    // 重复组保留 id 最小那行的原值，其余行另发新 uuid。
+    expect(uuidByTitle['重复甲'], 'dup');
+    expect(uuidByTitle['重复乙'], isNot('dup'));
+    // 子行跟随各自的父书，绝不串书。
+    for (final title in ['空身份', '重复甲', '重复乙']) {
+      final rows = await db.query(
+        'rounds',
+        where: 'book_uuid = ?',
+        whereArgs: [uuidByTitle[title]],
+      );
+      expect(rows.single['ai_narrative'], '$title轮次');
+    }
+    final modUuids = (await db.query('mods')).map((m) => m['uuid'] as String);
+    expect(modUuids.every((u) => u.isNotEmpty), isTrue);
+    expect(modUuids.toSet(), hasLength(2));
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    await db.close();
+  });
+
+  test('v15→v16 外键顺序：RENAME 后外键指向 books(uuid) / mods(uuid) 且级联生效',
+      () async {
+    final path = _newDbPath();
+    final db15 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+    );
+    await db15.insert('books', {'title': '书A', 'uuid': 'u-keep'});
+    await db15.insert('mods', {'name': 'ModA', 'uuid': 'm-keep'});
+    await db15.insert('rounds', {'book_id': 1, 'round_index': 1});
+    await db15.insert('world_book_entries', {'book_id': 1, 'keyword': 'k'});
+    await db15.insert('book_mods', {'book_id': 1, 'mod_id': 1});
+    await db15.close();
+
+    final db = await _openUpgraded(path);
+    // 建表时外键只能指向 books_new / mods_new（旧表 uuid 无唯一索引）；
+    // RENAME 把引用改写为最终表名 + uuid 父列 —— 顺序正确性的可断言证据。
+    expect(_fkTargets(await db.rawQuery('PRAGMA foreign_key_list(rounds)')), {
+      'books': 'uuid',
+    });
+    expect(
+      _fkTargets(
+        await db.rawQuery('PRAGMA foreign_key_list(world_book_entries)'),
+      ),
+      {'books': 'uuid'},
+    );
+    expect(_fkTargets(await db.rawQuery('PRAGMA foreign_key_list(book_mods)')), {
+      'books': 'uuid',
+      'mods': 'uuid',
+    });
+
+    await db.delete('book_mods', where: 'book_uuid = ?', whereArgs: ['u-keep']);
+    await db.delete('books', where: 'uuid = ?', whereArgs: ['u-keep']);
+    expect(await db.query('rounds'), isEmpty, reason: '删书应级联清理轮次');
+    expect(await db.query('world_book_entries'), isEmpty);
+    await db.close();
+  });
+
+  test('v15→v16：父行不存在的孤儿子行随拷贝丢弃，其余数据不受影响', () async {
+    final path = _newDbPath();
+    final db15 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+    );
+    await db15.insert('books', {'title': '活书', 'uuid': 'u-live'});
+    await db15.insert('rounds', {
+      'book_id': 1,
+      'round_index': 1,
+      'ai_narrative': '正常轮次',
+    });
+    // 旧库外键在部分历史版本未生效，可能留下父行不存在的孤儿行。
+    await db15.insert('rounds', {
+      'book_id': 99,
+      'round_index': 1,
+      'ai_narrative': '孤儿轮次',
+    });
+    await db15.insert('world_book_entries', {
+      'book_id': 99,
+      'keyword': '孤儿条目',
+    });
+    await db15.close();
+
+    final db = await _openUpgraded(path);
+    final rounds = await db.query('rounds');
+    expect(rounds, hasLength(1));
+    expect(rounds.single['ai_narrative'], '正常轮次');
+    expect(rounds.single['book_uuid'], 'u-live');
+    expect(await db.query('world_book_entries'), isEmpty);
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    await db.close();
+  });
+
+  test(
+    'v15→v16：开发期墓碑表 sync_pending_del / sync_image_revived 无条件清除',
+    () async {
+      final path = _newDbPath();
+      final db15 = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+      );
+      await db15.insert('books', {'title': '书J', 'uuid': 'u-j'});
+      // 异常残留：现行 schema 从不建这两张表，但历史开发构建的库里可能还在。
+      // 清理并入 v16 分支后，「升到 v16 即无墓碑表」成为无条件不变量。
+      await db15.execute(
+        'CREATE TABLE sync_pending_del '
+        '(path TEXT NOT NULL, deleted_at INTEGER NOT NULL)',
+      );
+      await db15.execute(
+        'CREATE TABLE sync_image_revived '
+        '(path TEXT NOT NULL, revived_at INTEGER NOT NULL)',
+      );
+      await db15.insert(
+        'sync_pending_del',
+        {'path': 'img/a.png', 'deleted_at': 100},
+      );
+      await db15.insert(
+        'sync_image_revived',
+        {'path': 'img/b.png', 'revived_at': 200},
+      );
+      expect(await _tableNames(db15), containsAll([
+        'sync_pending_del',
+        'sync_image_revived',
+      ]));
+      await db15.close();
+
+      final db = await _openUpgraded(path);
+      final tables = await _tableNames(db);
+      expect(
+        tables,
+        isNot(contains('sync_pending_del')),
+        reason: '墓碑已文件化（img_tombstones.dart），库内不应再有该表',
+      );
+      expect(
+        tables,
+        isNot(contains('sync_image_revived')),
+        reason: '复活标记同样只存在于墓碑文件，不进数据库',
+      );
+      // 清理不影响 uuid 主键改造与业务数据。
+      final book = (await db.query('books')).single;
+      expect(book['uuid'], 'u-j');
+      expect(book['title'], '书J');
+      expect(
+        _columnNames(await db.rawQuery('PRAGMA table_info(books)')),
+        isNot(contains('id')),
+        reason: 'books 主键即 uuid，无第二个 int id',
+      );
+      await db.close();
+    },
+  );
+  test('v15→v16 迁移结果与全新安装库的业务表 DDL 一致', () async {
+    final migratedPath = _newDbPath();
+    final db15 = await databaseFactoryFfi.openDatabase(
+      migratedPath,
+      options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+    );
+    await db15.insert('books', {'title': '书A', 'uuid': 'u-1'});
+    await db15.close();
+    final migrated = await _openUpgraded(migratedPath);
+
+    // 全新安装：走生产 onCreate（DatabaseHelper 单例 + 路径覆盖）。
+    final freshPath = _newDbPath();
+    DatabaseHelper.debugDatabasePathOverride = freshPath;
+    final fresh = await DatabaseHelper.instance.database;
+    addTearDown(() async {
+      DatabaseHelper.debugDatabasePathOverride = null;
+      await DatabaseHelper.instance.close();
+    });
+
+    const names = [
+      'books',
+      'rounds',
+      'world_book_entries',
+      'mods',
+      'book_mods',
+      'idx_rounds_book_index',
+      'idx_world_book_book_uuid',
+      'idx_book_mods_book_uuid',
+    ];
+    final migratedSchema = await _businessSchema(migrated, names);
+    final freshSchema = await _businessSchema(fresh, names);
+    // 迁移产物不引入「第二套 schema」：归一化后与新装库完全相同。
+    expect(migratedSchema.keys.toList()..sort(),
+        freshSchema.keys.toList()..sort());
+    for (final name in names) {
+      expect(
+        migratedSchema[name],
+        freshSchema[name],
+        reason: '$name 的 DDL 在新装库与迁移库之间不一致',
+      );
+    }
+    await migrated.close();
   });
 }
 
@@ -790,4 +1140,67 @@ Future<void> _createCommonTables(Database db) async {
       is_enabled INTEGER NOT NULL DEFAULT 1
     )
   ''');
+}
+
+/// 库内全部表名（墓碑表等「不应存在」的断言用）。
+Future<Set<String>> _tableNames(Database db) async {
+  final rows = await db.rawQuery(
+    "SELECT name FROM sqlite_master WHERE type='table'",
+  );
+  return rows.map((r) => r['name'] as String).toSet();
+}
+
+/// 以生产迁移入口把 [path] 的库升级到当前版本（外键按生产配置打开）。
+Future<Database> _openUpgraded(String path) =>
+    databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: DatabaseHelper.currentDbVersion,
+        onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+        onUpgrade: DatabaseHelper.migrate,
+      ),
+    );
+
+List<String> _columnNames(List<Map<String, Object?>> rows) =>
+    rows.map((r) => r['name'] as String).toList();
+
+/// \`PRAGMA foreign_key_list\` → {父表名: 父列名}。
+Map<String, String> _fkTargets(List<Map<String, Object?>> rows) => {
+      for (final r in rows) r['table'] as String: r['to'] as String,
+    };
+
+/// 业务表 / 索引的 DDL（去引号、压空白），用于跨库比较。
+Future<Map<String, String>> _businessSchema(
+  Database db,
+  List<String> names,
+) async {
+  final rows = await db.rawQuery(
+    "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL",
+  );
+  final all = {
+    for (final r in rows)
+    r['name'] as String:
+        (r['sql'] as String)
+          .replaceAll('"', '')
+          .replaceAll(
+      RegExp(r'\\s+'),
+      ' ',
+    ).trim(),
+  };
+  return {for (final n in names) if (all.containsKey(n)) n: all[n]!};
+}
+
+/// 已发布 v9 schema（v8 + rounds.model_name）。
+Future<void> _createV9Schema(Database db, int version) async {
+  await _createV8Schema(db, version);
+  await db.execute(
+    "ALTER TABLE rounds ADD COLUMN model_name TEXT DEFAULT ''",
+  );
+}
+
+/// 已发布 v15 schema（v14 去掉图片墓碑表；books/mods 仍是 int 主键 + uuid 列）。
+Future<void> _createV15Schema(Database db, int version) async {
+  await _createV14Schema(db, version);
+  await db.execute('DROP TABLE IF EXISTS sync_pending_del');
+  await db.execute('DROP TABLE IF EXISTS sync_image_revived');
 }

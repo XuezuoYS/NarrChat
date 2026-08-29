@@ -18,7 +18,7 @@ void main() {
     roleCategories: Constants.defaultRoleCategories,
   );
   const lastRound = Round(
-    bookId: 1,
+    bookUuid: '',
     roundIndex: 2,
     userInput: '我祭出飞剑。',
     aiNarrative: '剑光如虹，劈开云雾。',

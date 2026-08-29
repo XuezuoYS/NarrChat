@@ -2,8 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:narrchat/services/sync/sync_merge_planner.dart';
 
-/// 三向部件级合并规划器测试（uuid 身份 + title/name 唯一回退）。
-/// 设置类为 5 个子部件：本组"设置"用例以 info 子部件为代表。
+/// 三向部件级合并规划器测试。**身份只有 uuid**：共基 / 本地 / 远端三侧的键
+/// 就是各自库的主键，title / name 仅随决策携带供展示，从不参与身份判定。
+/// 设置为单部件（含全部设置字段）：本组「设置」用例以 settings 部件为代表。
 void main() {
   group('三向部件级规划', () {
     // 共基：书A（uuid u1）有 1-12 轮，设置 S0；远端设置 S0。
@@ -50,7 +51,7 @@ void main() {
         baseMods: baseMods,
       );
 
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.presence, SyncBookPresence.both);
       expect(a.rounds, SyncPartStatus.localOnly); // 自动用本地（15 轮）
       expect(a.settings, SyncPartStatus.unchanged);
@@ -86,7 +87,7 @@ void main() {
         remoteMods: const {},
         baseMods: baseMods,
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.rounds, SyncPartStatus.conflict);
       expect(a.hasConflict, isTrue);
     });
@@ -130,7 +131,7 @@ void main() {
         remoteMods: const {},
         baseMods: baseMods,
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.rounds, SyncPartStatus.conflict);
       expect(a.hasConflict, isTrue);
     });
@@ -166,7 +167,7 @@ void main() {
         remoteMods: const {},
         baseMods: baseMods,
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.rounds, SyncPartStatus.remoteOnly); // 自动拉
       expect(a.settings, SyncPartStatus.localOnly); // 自动推
       expect(a.hasConflict, isFalse); // 分开判定，互不牵连
@@ -201,7 +202,7 @@ void main() {
         remoteMods: const {},
         baseMods: baseMods,
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.settings, SyncPartStatus.conflict);
       expect(a.rounds, SyncPartStatus.remoteOnly); // 轮次仍自动拉
       expect(a.hasConflict, isTrue);
@@ -228,12 +229,14 @@ void main() {
         remoteMods: const {},
         baseMods: const {},
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.firstWhere((d) => d.localUuid == 'uA');
       expect(a.presence, SyncBookPresence.localOnly);
       expect(a.localUuid, 'uA');
-      final b = plan.books.firstWhere((b) => b.title == '书B');
+      expect(a.remoteUuid, isNull, reason: '标题不参与匹配：远端那本是另一本书');
+      final b = plan.books.firstWhere((d) => d.remoteUuid == 'uB');
       expect(b.presence, SyncBookPresence.remoteOnly);
       expect(b.remoteUuid, 'uB');
+      expect(b.localUuid, isNull);
     });
 
     test('两端都无变化 → 全部 unchanged', () {
@@ -265,17 +268,53 @@ void main() {
         remoteMods: const {},
         baseMods: baseMods,
       );
-      final a = plan.books.firstWhere((b) => b.title == '书A');
+      final a = plan.books.single;
       expect(a.settings, SyncPartStatus.unchanged);
       expect(a.rounds, SyncPartStatus.unchanged);
       expect(a.hasConflict, isFalse);
     });
   });
 
-  group('uuid 身份 + 名称唯一回退', () {
-    test('两侧 uuid 不同但书名唯一相同（首连/手动合并过渡态）→ 按书名回退视为同一本书', () {
+  group('身份只有 uuid：三侧只按 uuid 对齐', () {
+    test('同名不同 uuid（两台设备各建同名书）→ 两个独立实体，各自 localOnly / remoteOnly', () {
       final plan = SyncMergePlanner.plan(
-        // 共基为远端 uuid（手动合并后 adopt 云端共基的过渡态）。
+        base: const {},
+        local: const {
+          'uL': SyncBookRecord(
+            uuid: 'uL',
+            title: '书A',
+            parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R12'),
+          ),
+        },
+        remote: const {
+          // 远端那本：书名相同、内容也完全一致，但 uuid 不同 → 仍是另一本书。
+          'uR': RemoteBookParts(
+            uuid: 'uR',
+            title: '书A',
+            settingsFp: 'S0',
+            roundsFp: 'R12',
+          ),
+        },
+        localMods: const {},
+        remoteMods: const {},
+        baseMods: const {},
+      );
+      // 不做标题回退：两条独立决策，绝不并成一本。
+      expect(plan.books, hasLength(2));
+      final local = plan.books.firstWhere((b) => b.localUuid == 'uL');
+      expect(local.presence, SyncBookPresence.localOnly);
+      expect(local.remoteUuid, isNull);
+      expect(local.settings, SyncPartStatus.unchanged);
+      final remote = plan.books.firstWhere((b) => b.remoteUuid == 'uR');
+      expect(remote.presence, SyncBookPresence.remoteOnly);
+      expect(remote.localUuid, isNull);
+      expect(remote.settings, SyncPartStatus.unchanged);
+      expect(plan.hasConflict, isFalse);
+    });
+
+    test('共基只按 uuid 命中：base 与远端同 uuid、本地为另一 uuid → 不链接（本地推送 / 远端删除传播）', () {
+      final plan = SyncMergePlanner.plan(
+        // 共基记的是远端那一本的 uuid（同名不会把本地这本拉进同一组）。
         base: const {
           'uR': SyncBookBaseParts(
             title: '书A',
@@ -284,7 +323,6 @@ void main() {
           ),
         },
         local: const {
-          // 本地保留自己的 uuid，书名相同、设置未改。
           'uL': SyncBookRecord(
             uuid: 'uL',
             title: '书A',
@@ -303,14 +341,16 @@ void main() {
         remoteMods: const {},
         baseMods: const {},
       );
-      // 三侧只应出现一条决策（同一本书），且未被孤立成 localOnly/remoteOnly。
-      expect(plan.books, hasLength(1));
-      final a = plan.books.single;
-      expect(a.presence, SyncBookPresence.both);
-      expect(a.settings, SyncPartStatus.unchanged);
-      expect(a.localUuid, 'uL');
-      expect(a.remoteUuid, 'uR');
-      expect(a.hasConflict, isFalse);
+      expect(plan.books, hasLength(2));
+      // 本地这本没有共基 → 独立新书，走推送。
+      expect(
+        plan.books.firstWhere((b) => b.localUuid == 'uL').presence,
+        SyncBookPresence.localOnly,
+      );
+      // 远端那本有共基且本地已无此 uuid → 按删除传播，而不是「和另一本同名书合并」。
+      final remoteSide = plan.books.firstWhere((b) => b.remoteUuid == 'uR');
+      expect(remoteSide.presence, SyncBookPresence.deletedOnLocal);
+      expect(remoteSide.localUuid, isNull);
     });
 
     test('重命名（uuid 相同、书名不同）→ 视为设置变更，不是删除+新建', () {
@@ -348,9 +388,9 @@ void main() {
       expect(a.hasConflict, isFalse);
     });
 
-    test('同名多书（一侧多本同名 → 该侧名称不唯一）→ 不链接，各自按独立实体判定', () {
-      // 本地有两本同名「重名」（本地名称不唯一 → 不参与回退链接）；
-      // 远端有一本「重名」→ 按独立实体：本地两本 localOnly、远端一本 remoteOnly。
+    test('多本同名书（uuid 各不相同）→ 三个独立实体：本地两本 localOnly、远端一本 remoteOnly', () {
+      // 本地两本 + 远端一本同名「重名」，三个 uuid 互不相同 → 各自独立判定，
+      // 绝不按标题把远端那一本并进本地任何一本。
       final plan = SyncMergePlanner.plan(
         base: const {},
         local: const {
@@ -385,7 +425,7 @@ void main() {
       );
     });
 
-    test('同名 Mod 回退：两侧 uuid 不同但名称唯一相同 → 视为同一 Mod', () {
+    test('同名 Mod 不同 uuid → 两个独立 Mod：本地 localOnly 推送、远端 remoteOnly 导入', () {
       final plan = SyncMergePlanner.plan(
         base: const {},
         local: const {},
@@ -394,51 +434,53 @@ void main() {
           'mL': SyncModRecord(uuid: 'mL', name: '风格', fingerprint: 'F1'),
         },
         remoteMods: const {
+          // 名称与内容都一样，但 uuid 不同 → 不再链接成同一个 Mod。
           'mR': RemoteModParts(uuid: 'mR', name: '风格', fingerprint: 'F1'),
         },
         baseMods: const {},
       );
-      // 同名链接成一条决策。
-      expect(plan.mods, hasLength(1));
-      expect(plan.mods.single.status, SyncModStatus.unchanged);
-      expect(plan.mods.single.localUuid, 'mL');
-      expect(plan.mods.single.remoteUuid, 'mR');
+      expect(plan.mods, hasLength(2));
+      final local = plan.mods.firstWhere((m) => m.localUuid == 'mL');
+      expect(local.status, SyncModStatus.localOnly);
+      expect(local.remoteUuid, isNull);
+      final remote = plan.mods.firstWhere((m) => m.remoteUuid == 'mR');
+      expect(remote.status, SyncModStatus.remoteOnly);
+      expect(remote.localUuid, isNull);
+      // 本地没有这一本 → 全新 Mod 属增量导入，不进人工确认通道。
+      expect(remote.needsReview, isFalse);
+      expect(plan.hasConflict, isFalse);
     });
 
-    test('旧版清单（远端 uuid 为空 → legacy 键）按名称回退匹配，与 legacy 共基对齐', () {
+    test('同名不同 uuid 计入摘要：push / pull 各一，conflict 为零', () {
       final plan = SyncMergePlanner.plan(
-        base: const {
-          'legacy:书A': SyncBookBaseParts(
-            title: '书A',
-            settingsFp: 'S0',
-            roundsFp: 'R12',
-          ),
-        },
+        base: const {},
         local: const {
           'uL': SyncBookRecord(
             uuid: 'uL',
-            title: '书A',
-            parts: SyncBookParts(settingsFp: 'S0', roundsFp: 'R12'),
+            title: '重名',
+            parts: SyncBookParts(settingsFp: 'SL'),
           ),
         },
         remote: const {
-          // DatabaseSyncRunner 已把缺失 uuid 的清单条目归一化为 legacy 键（见 _toRemoteBooks）。
-          'legacy:书A': RemoteBookParts(
-            uuid: 'legacy:书A',
-            title: '书A',
-            settingsFp: 'S0',
-            roundsFp: 'R12',
-          ),
+          'uR': RemoteBookParts(uuid: 'uR', title: '重名', settingsFp: 'SR'),
         },
         localMods: const {},
         remoteMods: const {},
         baseMods: const {},
       );
-      expect(plan.books, hasLength(1));
-      final a = plan.books.single;
-      expect(a.presence, SyncBookPresence.both);
-      expect(a.settings, SyncPartStatus.unchanged);
-      expect(a.remoteUuid, 'legacy:书A');
+      // 两台设备各建同名书 → 两本独立：一本推、一本拉，标题只是展示字段。
+      expect(
+        plan.summarize(),
+        {
+          'push': 1,
+          'pull': 1,
+          'deleteLocal': 0,
+          'deleteRemote': 0,
+          'conflict': 0,
+        },
+      );
+      expect(plan.books.map((b) => b.title).toList(), ['重名', '重名']);
+      expect(plan.needsReview, isFalse);
     });
 
     test('Mod 双向删除 → absent；远端删 Mod 且本地未改 → deletedOnRemote', () {

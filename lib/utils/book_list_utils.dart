@@ -29,34 +29,38 @@ List<Book> filterBooks(List<Book> books, String query) {
 
 /// 对书籍排序。
 ///
-/// - [BookSortMode.time]：按 [lastRoundTimes] 倒序（最近对话在前）；
-///   无轮次的书排最后，相互之间按 id 倒序（新创建在前）。
-/// - [BookSortMode.az]：标题拼音 A-Z，标题相同按 id 升序。
+/// [lastRoundTimes] 以书籍 uuid 为键（即 `BookDao.getLastRoundTimes()` 的返回）。
+///
+/// - [BookSortMode.time]：按最近对话时间倒序（最近在前）；无轮次的书排最后，
+///   相互之间按 uuid 稳定排序；时间相同也按 uuid 稳定排序。
+/// - [BookSortMode.az]：标题拼音 A-Z，标题相同按 uuid 升序。
+///
+/// 一律以 uuid 决胜，不依赖创建先后 / 行序——那些是本地自增语义，跨设备不一致。
 List<Book> sortBooks(
   List<Book> books,
   BookSortMode mode,
-  Map<int, DateTime> lastRoundTimes,
+  Map<String, DateTime> lastRoundTimes,
 ) {
   final list = List.of(books);
   switch (mode) {
     case BookSortMode.time:
       list.sort((a, b) {
-        final ta = lastRoundTimes[a.id];
-        final tb = lastRoundTimes[b.id];
+        final ta = lastRoundTimes[a.uuid];
+        final tb = lastRoundTimes[b.uuid];
         if (ta == null && tb == null) {
-          return (b.id ?? 0).compareTo(a.id ?? 0);
+          return b.uuid.compareTo(a.uuid); // 无轮次：相互之间按 uuid 稳定排序
         }
         if (ta == null) return 1;
         if (tb == null) return -1;
         final c = tb.compareTo(ta);
         if (c != 0) return c;
-        return (a.id ?? 0).compareTo(b.id ?? 0);
+        return a.uuid.compareTo(b.uuid);
       });
     case BookSortMode.az:
       list.sort((a, b) {
         final c = PinyinSort.compare(a.title, b.title);
         if (c != 0) return c;
-        return (a.id ?? 0).compareTo(b.id ?? 0);
+        return a.uuid.compareTo(b.uuid);
       });
   }
   return list;

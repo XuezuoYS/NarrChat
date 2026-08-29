@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../services/app_paths.dart';
@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 15;
+  static const int _dbVersion = 16;
 
   Database? _database;
 
@@ -51,6 +51,7 @@ class DatabaseHelper {
         await _createWorldBookTable(db);
         await _createModsTable(db);
         await _createBookModsTable(db);
+        await _createBookIndexes(db);
         await _createSyncTables(db);
       },
       onUpgrade: migrate,
@@ -76,7 +77,7 @@ class DatabaseHelper {
     int newVersion,
   ) async {
     if (oldVersion < 2) {
-      await _createWorldBookTable(db);
+      await _createLegacyWorldBookTable(db);
     }
     if (oldVersion < 3) {
           // 新增角色类别详细描述格式列。
@@ -98,8 +99,8 @@ class DatabaseHelper {
         }
         if (oldVersion < 5) {
           // Mod 功能：mods（用户自定义 Mod）+ book_mods（书籍启用与顺序）。
-          await _createModsTable(db);
-          await _createBookModsTable(db);
+          await _createLegacyModsTable(db);
+          await _createLegacyBookModsTable(db);
         }
         if (oldVersion < 6) {
           // 历史中间版本曾在 rounds 表加入失败列（未发布），此处先补列以便后续重建。
@@ -260,14 +261,173 @@ class DatabaseHelper {
                 failed_fp = COALESCE(NULLIF(failed_fp, ''), settings_fp)
           ''');
         }
-        if (oldVersion < 15) {
-          // 图片删除墓碑改为文件化（WebDAV `img_tombstones.json` + 本地工作副本
-          // `local_config/img_tombstones.json`，见 img_tombstones.dart），不再进数据库：
-          // 移除早期（本系列开发期）的 sync_pending_del / sync_image_revived 表。
+        if (oldVersion < 16) {
+          // v16 前置清理：图片删除墓碑早已改为文件化（WebDAV
+          // `img_tombstones.json` + 本地工作副本，见 img_tombstones.dart），
+          // 本系列开发期遗留的 sync_pending_del / sync_image_revived 两张表在
+          // 现行 schema 中已不存在（`onCreate` 从不建它们）。清理放在 v16 分支
+          // 而非按版本分叉，使「升级到 v16 后库内必无墓碑表」成为无条件不变量。
           await db.execute('DROP TABLE IF EXISTS sync_pending_del');
           await db.execute('DROP TABLE IF EXISTS sync_image_revived');
+          // v16：books / mods 去除本地 int 主键，uuid 成为唯一身份（顺序见
+          // [_recreateWithUuidIdentity]）。
+          await _recreateWithUuidIdentity(db);
         }
   }
+
+  /// v15 → v16：`books` / `mods` 去 int 主键，改由 uuid 承担唯一身份；子表
+  /// `rounds` / `world_book_entries` / `book_mods` 的 `book_id` / `mod_id` 改为
+  /// `book_uuid` / `mod_uuid`（TEXT，FK → 父表 uuid；子表自身 int 主键保留）。
+  ///
+  /// **外键陷阱（顺序不可改）**：本库在 `onConfigure` 里开了
+  /// `PRAGMA foreign_keys = ON`，而 sqflite 的 `onUpgrade` 在事务内执行，事务内
+  /// 无法关闭外键，且 `DROP TABLE` 会先做隐式 DELETE 并触发子表的
+  /// `ON DELETE CASCADE`。因此顺序固定为：
+  /// 1. 预清洗 uuid（补空 / 去重）—— uuid 即将成为主键，非空且唯一是前提；
+  /// 2. 建全部 `*_new` 表：新子表的外键**只能**指向 `books_new` / `mods_new`——
+  ///    旧 `books` 的 uuid 列上没有唯一索引，FK 指向它写数据会直接
+  ///    `foreign key mismatch`（实测）。`ALTER TABLE ... RENAME` 会把外键引用改写
+  ///    为最终表名，迁移测试用 `PRAGMA foreign_key_list` 锁死这一行为；
+  /// 3. 拷贝：父表先、子表后；子表 JOIN 旧父表把 int 主键换成父表 uuid，
+  ///    父行不存在的孤儿轮次 / 条目随 JOIN 丢弃（新表有 FK，留着写不进去）；
+  /// 4. 按「子 → 父」顺序 DROP 旧表；此时 `*_new` 引用的是新表名，旧父表的隐式
+  ///    DELETE 级联不到已拷好的数据；
+  /// 5. RENAME 全部 `*_new` → 最终名（先父后子，与建表引用方向一致）；
+  /// 6. 重建三张索引（索引随旧表 DROP 一并消失）。
+  static Future<void> _recreateWithUuidIdentity(Database db) async {
+    await _normalizeIdentityUuids(db, 'books');
+    await _normalizeIdentityUuids(db, 'mods');
+
+    await _createBooksTable(db, suffix: '_new');
+    await _createModsTable(db, suffix: '_new');
+    await _createRoundsTable(db, suffix: '_new', booksTable: 'books_new');
+    await _createWorldBookTable(db, suffix: '_new', booksTable: 'books_new');
+    await _createBookModsTable(
+      db,
+      suffix: '_new',
+      booksTable: 'books_new',
+      modsTable: 'mods_new',
+    );
+
+    await db.execute('''
+      INSERT INTO books_new (
+        uuid, title, category, base_setting, writing_requirements,
+        writing_style, global_pre_prompt, global_post_prompt, history_rounds,
+        role_hierarchy, role_hierarchy_detail, failed_user_input,
+        failed_error_message, failed_user_images, settings_updated_at,
+        rounds_updated_at, deleted_at
+      )
+      SELECT
+        uuid, title, category, base_setting, writing_requirements,
+        writing_style, global_pre_prompt, global_post_prompt, history_rounds,
+        role_hierarchy, role_hierarchy_detail, failed_user_input,
+        failed_error_message, failed_user_images, settings_updated_at,
+        rounds_updated_at, deleted_at
+      FROM books
+    ''');
+    await db.execute('''
+      INSERT INTO mods_new (
+        uuid, name, description, pre_prompt, post_prompt, system_prompt,
+        world_book, created_at, updated_at, deleted_at
+      )
+      SELECT
+        uuid, name, description, pre_prompt, post_prompt, system_prompt,
+        world_book, created_at, updated_at, deleted_at
+      FROM mods
+    ''');
+    // 子表保留原自增 id（仅本地行标识，同步从不引用）；书籍身份取父表 uuid。
+    await db.execute('''
+      INSERT INTO rounds_new (
+        id, book_uuid, round_index, user_input, ai_narrative, world_state,
+        character_state, memory_summary, current_time, recommended_action,
+        tokens_in, tokens_out, model_name, user_images, ai_images, created_at,
+        updated_at
+      )
+      SELECT
+        r.id, b.uuid, r.round_index, r.user_input, r.ai_narrative,
+        r.world_state, r.character_state, r.memory_summary, r.current_time,
+        r.recommended_action, r.tokens_in, r.tokens_out, r.model_name,
+        r.user_images, r.ai_images, r.created_at, r.updated_at
+      FROM rounds r
+      JOIN books b ON b.id = r.book_id
+    ''');
+    await db.execute('''
+      INSERT INTO world_book_entries_new (
+        id, book_uuid, keyword, content, is_active, created_at, updated_at
+      )
+      SELECT
+        w.id, b.uuid, w.keyword, w.content, w.is_active, w.created_at,
+        w.updated_at
+      FROM world_book_entries w
+      JOIN books b ON b.id = w.book_id
+    ''');
+    // LEFT JOIN mods：预置 Mod 行 mod_id 为 NULL，必须保住（INNER JOIN 会丢行）。
+    await db.execute('''
+      INSERT INTO book_mods_new (
+        id, book_uuid, preset_key, mod_uuid, sort_order, is_enabled
+      )
+      SELECT
+        bm.id, b.uuid, bm.preset_key, m.uuid, bm.sort_order, bm.is_enabled
+      FROM book_mods bm
+      JOIN books b ON b.id = bm.book_id
+      LEFT JOIN mods m ON m.id = bm.mod_id
+    ''');
+
+    await db.execute('DROP TABLE rounds');
+    await db.execute('DROP TABLE world_book_entries');
+    await db.execute('DROP TABLE book_mods');
+    await db.execute('DROP TABLE books');
+    await db.execute('DROP TABLE mods');
+
+    await db.execute('ALTER TABLE books_new RENAME TO books');
+    await db.execute('ALTER TABLE mods_new RENAME TO mods');
+    await db.execute('ALTER TABLE rounds_new RENAME TO rounds');
+    await db.execute(
+      'ALTER TABLE world_book_entries_new RENAME TO world_book_entries',
+    );
+    await db.execute('ALTER TABLE book_mods_new RENAME TO book_mods');
+
+    await _createBookIndexes(db);
+  }
+
+  /// v16 前置清洗：把 [table]（旧 int 主键形态）的 uuid 规整为「非空且唯一」。
+  ///
+  /// - 空 uuid（v13 之前的遗留行）→ 分配新 v4；
+  /// - 重复 uuid → 保留 `MIN(id)` 那行的原值，其余行重新分配 v4；
+  /// - 新生成的值仍可能撞上既有 uuid，故 while 直到未出现过才收。
+  ///
+  /// 只在 v15 → v16 分支内使用，跑完即弃：不留任何 uuid ↔ int 映射。
+  static Future<void> _normalizeIdentityUuids(
+    Database db,
+    String table,
+  ) async {
+    final rows = await db.query(
+      table,
+      columns: ['id', 'uuid'],
+      orderBy: 'id ASC',
+    );
+    final taken = <String>{};
+    for (final row in rows) {
+      final id = row['id'];
+      if (id == null) continue;
+      final raw = (row['uuid'] as String? ?? '').trim();
+      if (raw.isNotEmpty && !taken.contains(raw)) {
+        taken.add(raw);
+        continue;
+      }
+      var uuid = UuidUtils.generateUuidV4();
+      while (taken.contains(uuid)) {
+        uuid = UuidUtils.generateUuidV4();
+      }
+      debugPrint(
+        '[db][v16] $table id=$id 的 uuid '
+        '${raw.isEmpty ? '为空' : '重复（$raw）'} → 重新分配为 $uuid',
+      );
+      await db.update(table, {'uuid': uuid}, where: 'id = ?', whereArgs: [id]);
+      taken.add(uuid);
+    }
+  }
+
 
   /// 判断 [table] 是否已包含 [column] 列。
   ///
@@ -373,11 +533,22 @@ class DatabaseHelper {
     );
   }
 
-  static Future<void> _createBooksTable(Database db) async {
+  // ---------------------------------------------------------------------------
+  // v16 业务表（books / mods 以 uuid 为主键；子表以 uuid 引用父表，自身 int 主键保留）
+  //
+  // 表名后缀参数 [suffix] 仅供 v16 迁移建中间表（`*_new`）复用同一份 DDL：
+  // 新库（onCreate）传空后缀，迁移传 `_new`。**新装库与迁移结果逐字一致**，
+  // 不存在第二套 schema 定义。
+  // ---------------------------------------------------------------------------
+
+  /// `books`：uuid 即主键，无第二个 id 列。
+  static Future<void> _createBooksTable(
+    Database db, {
+    String suffix = '',
+  }) async {
     await db.execute('''
-      CREATE TABLE books (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT NOT NULL DEFAULT '',
+      CREATE TABLE books@S@ (
+        uuid TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         category TEXT DEFAULT '',
         base_setting TEXT DEFAULT '',
@@ -395,15 +566,20 @@ class DatabaseHelper {
         rounds_updated_at INTEGER NOT NULL DEFAULT 0,
         deleted_at INTEGER
       )
-    ''');
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_books_uuid ON books (uuid)');
+    '''.replaceAll('@S@', suffix));
   }
 
-  static Future<void> _createRoundsTable(Database db) async {
+  /// `rounds`：自增 id 保留，所属书籍以 [booksTable]（v16 迁移期为 `books_new`）
+  /// 的 uuid 外键引用。
+  static Future<void> _createRoundsTable(
+    Database db, {
+    String suffix = '',
+    String booksTable = 'books',
+  }) async {
     await db.execute('''
-      CREATE TABLE rounds (
+      CREATE TABLE rounds@S@ (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        book_id INTEGER NOT NULL,
+        book_uuid TEXT NOT NULL,
         round_index INTEGER NOT NULL,
         user_input TEXT DEFAULT '',
         ai_narrative TEXT DEFAULT '',
@@ -419,15 +595,97 @@ class DatabaseHelper {
         ai_images TEXT NOT NULL DEFAULT '[]',
         created_at DATETIME,
         updated_at INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+        FOREIGN KEY (book_uuid) REFERENCES @B@ (uuid) ON DELETE CASCADE
       )
-    ''');
+    '''.replaceAll('@S@', suffix).replaceAll('@B@', booksTable));
+  }
+
+  /// `world_book_entries`：自增 id 保留，书籍以 uuid 引用。
+  static Future<void> _createWorldBookTable(
+    Database db, {
+    String suffix = '',
+    String booksTable = 'books',
+  }) async {
+    await db.execute('''
+      CREATE TABLE world_book_entries@S@ (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_uuid TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        content TEXT DEFAULT '',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at DATETIME,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (book_uuid) REFERENCES @B@ (uuid) ON DELETE CASCADE
+      )
+    '''.replaceAll('@S@', suffix).replaceAll('@B@', booksTable));
+  }
+
+  /// `mods`：uuid 即主键，无第二个 id 列。
+  static Future<void> _createModsTable(
+    Database db, {
+    String suffix = '',
+  }) async {
+    await db.execute('''
+      CREATE TABLE mods@S@ (
+        uuid TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        pre_prompt TEXT DEFAULT '',
+        post_prompt TEXT DEFAULT '',
+        system_prompt TEXT DEFAULT '',
+        world_book TEXT DEFAULT '',
+        created_at DATETIME,
+        updated_at DATETIME,
+        deleted_at INTEGER
+      )
+    '''.replaceAll('@S@', suffix));
+  }
+
+  /// `book_mods`：自增 id 保留，书 / Mod 均以 uuid 引用（预置行为 mod_uuid NULL）。
+  static Future<void> _createBookModsTable(
+    Database db, {
+    String suffix = '',
+    String booksTable = 'books',
+    String modsTable = 'mods',
+  }) async {
+    await db.execute('''
+      CREATE TABLE book_mods@S@ (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_uuid TEXT NOT NULL,
+        preset_key TEXT,
+        mod_uuid TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (book_uuid) REFERENCES @B@ (uuid) ON DELETE CASCADE,
+        FOREIGN KEY (mod_uuid) REFERENCES @M@ (uuid) ON DELETE CASCADE
+      )
+    '''
+        .replaceAll('@S@', suffix)
+        .replaceAll('@B@', booksTable)
+        .replaceAll('@M@', modsTable));
+  }
+
+  /// 三张子表的检索索引（v16 迁移在 RENAME 之后调用；旧索引随旧表 DROP 消失）。
+  static Future<void> _createBookIndexes(Database db) async {
     await db.execute(
-      'CREATE INDEX idx_rounds_book_index ON rounds (book_id, round_index)',
+      'CREATE INDEX idx_rounds_book_index ON rounds (book_uuid, round_index)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_world_book_book_uuid ON world_book_entries (book_uuid)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_book_mods_book_uuid ON book_mods (book_uuid)',
     );
   }
 
-  static Future<void> _createWorldBookTable(Database db) async {
+  // ---------------------------------------------------------------------------
+  // 迁移链起点的历史表形状（v2 / v5 分支）
+  //
+  // 仅用于「比 v16 更老的版本」逐版本 ALTER 的中间形态（int 主键 + book_id 引用），
+  // 迁移链末尾的 v16 分支会统一重建为上面的最终形状。新装库不走这里。
+  // ---------------------------------------------------------------------------
+
+  static Future<void> _createLegacyWorldBookTable(Database db) async {
     await db.execute('''
       CREATE TABLE world_book_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -435,17 +693,12 @@ class DatabaseHelper {
         keyword TEXT NOT NULL,
         content TEXT DEFAULT '',
         is_active INTEGER NOT NULL DEFAULT 1,
-        created_at DATETIME,
-        updated_at INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+        created_at DATETIME
       )
     ''');
-    await db.execute(
-      'CREATE INDEX idx_world_book_book_id ON world_book_entries (book_id)',
-    );
   }
 
-  static Future<void> _createModsTable(Database db) async {
+  static Future<void> _createLegacyModsTable(Database db) async {
     await db.execute('''
       CREATE TABLE mods (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -457,14 +710,12 @@ class DatabaseHelper {
         system_prompt TEXT DEFAULT '',
         world_book TEXT DEFAULT '',
         created_at DATETIME,
-        updated_at DATETIME,
-        deleted_at INTEGER
+        updated_at DATETIME
       )
     ''');
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_mods_uuid ON mods (uuid)');
   }
 
-  static Future<void> _createBookModsTable(Database db) async {
+  static Future<void> _createLegacyBookModsTable(Database db) async {
     await db.execute('''
       CREATE TABLE book_mods (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -472,22 +723,22 @@ class DatabaseHelper {
         preset_key TEXT,
         mod_id INTEGER,
         sort_order INTEGER NOT NULL DEFAULT 0,
-        is_enabled INTEGER NOT NULL DEFAULT 1,
-        FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE,
-        FOREIGN KEY (mod_id) REFERENCES mods (id) ON DELETE CASCADE
+        is_enabled INTEGER NOT NULL DEFAULT 1
       )
     ''');
-    await db.execute(
-      'CREATE INDEX idx_book_mods_book_id ON book_mods (book_id)',
-    );
   }
+
 
   /// 云同步相关辅助表。
   ///
   /// - `sync_state`：单行，记录本设备标识、上次同步时间/代数、同步进行中标记与上次阶段/错误；
-  /// - `sync_book_base`：per‑book 三向合并的 common base（以 uuid 为主键，title 仅展示/回退）；
-  /// - `sync_mod_base`：per‑mod 合并共基（以 uuid 为主键，name 仅展示/回退）；
-  /// - `sync_pending_del`：断网时暂存待推送的图片删除墓碑。
+  /// - `sync_book_base`：per‑book 三向合并的 common base（主键即书籍 uuid；
+  ///   title 仅供展示，从不参与身份匹配）；
+  /// - `sync_mod_base`：per‑mod 合并共基（主键即 Mod uuid；name 同上）。
+  ///
+  /// 图片删除墓碑**不在数据库中**：由 `img_tombstones.dart` 的云端文件 +
+  /// 本地工作副本承载；开发期遗留的 `sync_pending_del` / `sync_image_revived`
+  /// 已在 v16 迁移里彻底移除，此处不再建表。
   static Future<void> _createSyncTables(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS sync_state (
@@ -541,20 +792,21 @@ class DatabaseHelper {
   /// - 轮次变更 → [rounds]（`books.rounds_updated_at`）；
   /// - 世界书 / 书‑Mod 挂载 / 设置变更 → [settings]（`books.settings_updated_at`）。
   ///
-  /// 接收 [DatabaseExecutor] 以便在既有事务内一并提交；`bookId <= 0` 为无效引用时静默跳过。
+  /// 接收 [DatabaseExecutor] 以便在既有事务内一并提交；[bookUuid] 为空（未落库
+  /// 草稿 / 预置行）时静默跳过——uuid 即主键，没有第二种标识可回退。
   static Future<void> touchBook(
     DatabaseExecutor db,
-    int bookId, {
+    String bookUuid, {
     bool settings = false,
     bool rounds = false,
   }) async {
-    if (bookId <= 0) return;
+    if (bookUuid.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     final data = <String, Object?>{
       if (settings) 'settings_updated_at': now,
       if (rounds) 'rounds_updated_at': now,
     };
     if (data.isEmpty) return;
-    await db.update('books', data, where: 'id = ?', whereArgs: [bookId]);
+    await db.update('books', data, where: 'uuid = ?', whereArgs: [bookUuid]);
   }
 }

@@ -146,12 +146,11 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     super.dispose();
   }
 
-  /// 解析 [base] 同 id 的最新书籍实例（Provider 列表优先；无则回退传入快照）。
+  /// 解析 [base] 同 uuid 的最新书籍实例（Provider 列表优先；无则回退传入快照）。
   Book _resolveFresh(Book base) {
-    final id = base.id;
-    if (id == null) return base;
+    if (base.uuid.isEmpty) return base;
     for (final b in context.read<BookProvider>().books) {
-      if (b.id == id) return b;
+      if (b.uuid == base.uuid) return b;
     }
     return base;
   }
@@ -210,7 +209,6 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     }
     setState(() => _isSaving = true);
     final book = Book(
-      id: _book?.id,
       uuid: _book?.uuid ?? '',
       title: title,
       category: _category.text.trim(),
@@ -254,14 +252,14 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   /// 新建书籍成功后，将草稿阶段配置的世界书条目与 Mod 配置落库到新书。
   Future<void> _commitDraftData(List<String> errors) async {
     // 所有 Provider 在首个 await 之前获取，避免跨异步间隙使用 context。
-    final bookId = context.read<BookProvider>().currentBook?.id;
+    final bookUuid = context.read<BookProvider>().currentBook?.uuid ?? '';
     final wbProvider = context.read<WorldBookProvider>();
     final modProvider = context.read<ModProvider>();
-    if (bookId == null) return;
+    if (bookUuid.isEmpty) return;
 
     // 世界书条目（逐条插入）。
     if (_draftWorldBookEntries.isNotEmpty) {
-      await wbProvider.loadEntries(bookId);
+      await wbProvider.loadEntries(bookUuid);
       for (final entry in _draftWorldBookEntries) {
         final ok = await wbProvider.addEntry(
           keyword: entry.keyword,
@@ -275,11 +273,13 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       }
     }
 
-    // Mod 配置（整体替换，bookId 由草稿占位 0 改为新书 ID）。
+    // Mod 配置（整体替换，草稿期占位的空 uuid 补成新书 uuid）。
     if (_draftModConfigs.isNotEmpty) {
       final ok = await modProvider.saveBookModConfigs(
-        bookId,
-        _draftModConfigs.map((c) => c.copyWith(bookId: bookId)).toList(),
+        bookUuid,
+        _draftModConfigs
+            .map((c) => c.copyWith(bookUuid: bookUuid))
+            .toList(),
       );
       if (!ok) {
         errors.add('Mod 配置保存失败');
@@ -319,7 +319,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
             return _buildBaseSetting(context);
           case 3:
             return WorldBookPanel(
-              bookId: widget.book?.id,
+              bookUuid: widget.book?.uuid,
               pendingEntries: _draftWorldBookEntries,
               onPendingChanged: (entries) => _draftWorldBookEntries = entries,
             );
@@ -327,7 +327,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
             return _buildWritingStyle(context);
           default:
             return BookModPanel(
-              bookId: widget.book?.id,
+              bookUuid: widget.book?.uuid,
               pendingConfigs: _draftModConfigs.isEmpty ? null : _draftModConfigs,
               onPendingChanged: (configs) => _draftModConfigs = configs,
             );

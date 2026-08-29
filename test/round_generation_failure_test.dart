@@ -92,7 +92,7 @@ class _StreamFailThenOkAiService extends AiService {
 /// stop_generation_test：两文件都验证「失败条目落库 + 红框 UI」，独特用例
 /// 全部保留）。
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
   group('自动重试', () {
     testWidgets('网络类失败自动重试：灰字「错误重连（x/3）」并最终成功', (tester) async {

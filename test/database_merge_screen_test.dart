@@ -16,42 +16,58 @@ void main() {
     final local = await createMergeDb();
     final backup = await createMergeDb();
     try {
-      // 冲突书：本地与备份同名但轮次不同。
-      final lokA = await local.insert('books', {'title': 'A', 'category': '旧'});
+      // 冲突书：本地与备份同名但轮次不同（uuid 各自独立，判同看书名）。
+      await local.insert('books', {
+        'uuid': 'lok-a',
+        'title': 'A',
+        'category': '旧',
+      });
       await local.insert('rounds', {
-        'book_id': lokA,
+        'book_uuid': 'lok-a',
         'round_index': 1,
         'user_input': '本地内容',
         'ai_narrative': '本地正文',
         'created_at': DateTime(2026, 1, 1).toIso8601String(),
       });
-      final bakA = await backup.insert('books', {'title': 'A', 'category': '新'});
+      await backup.insert('books', {
+        'uuid': 'bak-a',
+        'title': 'A',
+        'category': '新',
+      });
       await backup.insert('rounds', {
-        'book_id': bakA,
+        'book_uuid': 'bak-a',
         'round_index': 1,
         'user_input': '备份内容',
         'ai_narrative': '备份正文',
         'created_at': DateTime(2026, 2, 1).toIso8601String(),
       });
       // 仅导入有：B。
-      final bakB = await backup.insert('books', {'title': 'B'});
+      await backup.insert('books', {'uuid': 'bak-b', 'title': 'B'});
       await backup.insert('rounds', {
-        'book_id': bakB,
+        'book_uuid': 'bak-b',
         'round_index': 1,
         'user_input': '云端B',
       });
       // 仅本地有：C。
-      await local.insert('books', {'title': 'C'});
+      await local.insert('books', {'uuid': 'lok-c', 'title': 'C'});
       // 全一致：D。
-      final lokD = await local.insert('books', {'title': 'D', 'category': '同'});
+      await local.insert('books', {
+        'uuid': 'lok-d',
+        'title': 'D',
+        'category': '同',
+      });
       await local.insert('rounds', {
-        'book_id': lokD,
+        'book_uuid': 'lok-d',
         'round_index': 1,
         'user_input': '一致',
       });
-      final bakD = await backup.insert('books', {'title': 'D', 'category': '同'});
+      await backup.insert('books', {
+        'uuid': 'bak-d',
+        'title': 'D',
+        'category': '同',
+      });
       await backup.insert('rounds', {
-        'book_id': bakD,
+        'book_uuid': 'bak-d',
         'round_index': 1,
         'user_input': '一致',
       });
@@ -431,8 +447,16 @@ Future<DatabaseMergePlan> _buildModPlan() async {
   final local = await createMergeDb();
   final backup = await createMergeDb();
   try {
-    await local.insert('mods', {'name': 'M', 'description': '本地描述'});
-    await backup.insert('mods', {'name': 'M', 'description': '云端描述'});
+    await local.insert('mods', {
+      'uuid': 'lok-m',
+      'name': 'M',
+      'description': '本地描述',
+    });
+    await backup.insert('mods', {
+      'uuid': 'bak-m',
+      'name': 'M',
+      'description': '云端描述',
+    });
     return await DatabaseMergeService.buildPlan(backup, local);
   } finally {
     await local.close();
@@ -446,17 +470,25 @@ Future<DatabaseMergePlan> _buildTiePlan() async {
   final local = await createMergeDb();
   final backup = await createMergeDb();
   try {
-    final lokA = await local.insert('books', {'title': 'A', 'category': '本地'});
+    await local.insert('books', {
+      'uuid': 'lok-a',
+      'title': 'A',
+      'category': '本地',
+    });
     await local.insert('rounds', {
-      'book_id': lokA,
+      'book_uuid': 'lok-a',
       'round_index': 1,
       'user_input': '本地内容',
       'ai_narrative': '本地正文',
       'created_at': DateTime(2026, 1, 1).toIso8601String(),
     });
-    final bakA = await backup.insert('books', {'title': 'A', 'category': '备份'});
+    await backup.insert('books', {
+      'uuid': 'bak-a',
+      'title': 'A',
+      'category': '备份',
+    });
     await backup.insert('rounds', {
-      'book_id': bakA,
+      'book_uuid': 'bak-a',
       'round_index': 1,
       'user_input': '备份内容',
       'ai_narrative': '备份正文',

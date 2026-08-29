@@ -19,7 +19,7 @@ class WorldBookProvider extends ChangeNotifier {
   final CloudSyncProvider? _cloudSyncProvider;
 
   List<WorldBookEntry> _entries = [];
-  int? _bookId;
+  String _bookUuid = '';
   String? _error;
 
   List<WorldBookEntry> get entries => List.unmodifiable(_entries);
@@ -30,10 +30,10 @@ class WorldBookProvider extends ChangeNotifier {
 
   String? get error => _error;
 
-  Future<void> loadEntries(int bookId) async {
-    _bookId = bookId;
+  Future<void> loadEntries(String bookUuid) async {
+    _bookUuid = bookUuid;
     try {
-      _entries = await _dao.getEntriesByBook(bookId);
+      _entries = await _dao.getEntriesByBook(bookUuid);
     } catch (e) {
       _error = e.toString();
     }
@@ -42,9 +42,8 @@ class WorldBookProvider extends ChangeNotifier {
 
   /// 重新加载当前书籍的世界书条目（云同步恢复数据后调用）。
   Future<void> reloadCurrent() async {
-    final id = _bookId;
-    if (id == null) return;
-    await loadEntries(id);
+    if (_bookUuid.isEmpty) return;
+    await loadEntries(_bookUuid);
   }
 
   Future<bool> addEntry({
@@ -52,19 +51,19 @@ class WorldBookProvider extends ChangeNotifier {
     required String content,
     bool isActive = true,
   }) async {
-    final bookId = _bookId;
-    if (bookId == null) return false;
+    final bookUuid = _bookUuid;
+    if (bookUuid.isEmpty) return false;
     try {
       await _dao.insertEntry(
         WorldBookEntry(
-          bookId: bookId,
+          bookUuid: bookUuid,
           keyword: keyword.trim(),
           content: content,
           isActive: isActive,
           createdAt: DateTime.now(),
         ),
       );
-      await loadEntries(bookId);
+      await loadEntries(bookUuid);
       _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
@@ -77,9 +76,7 @@ class WorldBookProvider extends ChangeNotifier {
   Future<bool> updateEntry(WorldBookEntry entry) async {
     try {
       await _dao.updateEntry(entry);
-      if (_bookId != null) {
-        await loadEntries(_bookId!);
-      }
+      await loadEntries(_bookUuid);
       _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
@@ -92,9 +89,7 @@ class WorldBookProvider extends ChangeNotifier {
   Future<bool> removeEntry(int id) async {
     try {
       await _dao.deleteEntry(id);
-      if (_bookId != null) {
-        await loadEntries(_bookId!);
-      }
+      await loadEntries(_bookUuid);
       _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {

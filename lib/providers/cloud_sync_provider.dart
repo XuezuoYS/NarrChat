@@ -864,7 +864,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// 用于「本地覆盖云端 / 恢复备份 / 合并决策落定」之后：本地从此被视为
   /// 相对远端的新版本，下一次同步会以 localOnly 推送本地（云端回滚到本地状态）。
-  /// uuid 缺失（旧版清单）时以 `legacy:<title/name>` 键写入，合并层按名称回退匹配。
+  /// 清单条目的 uuid 即两侧库主键，直接作为共基键写入（无任何名称回退键）。
   Future<void> _adoptRemoteAsBase(WebDavSyncStore davStore) async {
     final manifest = await davStore.readManifest();
     if (manifest == null) return;
@@ -872,7 +872,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     for (final b in manifest.books) {
       await dao.putBookBase(
         SyncBookBase(
-          uuid: b.uuid.isNotEmpty ? b.uuid : 'legacy:${b.title}',
+          uuid: b.uuid,
           title: b.title,
           settingsFp: b.settingsFp,
           roundsFp: b.roundsFp,
@@ -886,7 +886,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     for (final m in manifest.mods) {
       await dao.putModBase(
         SyncModBase(
-          uuid: m.uuid.isNotEmpty ? m.uuid : 'legacy:${m.name}',
+          uuid: m.uuid,
           name: m.name,
           fingerprint: m.fingerprint,
           updatedAt: m.updatedAt,
@@ -1075,40 +1075,19 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         action.deleteLocalModUuids.isEmpty) {
       return;
     }
+    // 删除传播按 uuid 直取：uuid 就是两侧库的主键，没有第二套标识可匹配。
     final bookDao = BookDao();
-    if (action.deleteLocalBookUuids.isNotEmpty) {
-      final books = await bookDao.getAllBooks();
-      for (final uuid in action.deleteLocalBookUuids) {
-        for (final b in books) {
-          if (b.id != null && _matchesRef(b.uuid, b.title, uuid)) {
-            await bookDao.softDeleteBook(b.id!);
-          }
-        }
-      }
+    for (final uuid in action.deleteLocalBookUuids) {
+      await bookDao.softDeleteBook(uuid);
     }
     if (action.deleteLocalModUuids.isNotEmpty) {
       final modDao = ModDao();
       final syncDao = SyncStateDao();
-      final mods = await modDao.getAllMods();
       for (final uuid in action.deleteLocalModUuids) {
-        for (final m in mods) {
-          if (m.id != null && _matchesRef(m.uuid, m.name, uuid)) {
-            await modDao.deleteMod(m.id!);
-            if (m.uuid.isNotEmpty) {
-              await syncDao.deleteModBase(m.uuid);
-            }
-          }
-        }
+        await modDao.deleteMod(uuid);
+        await syncDao.deleteModBase(uuid);
       }
     }
-  }
-
-  /// uuid 精确匹配，或 legacy 键（`legacy:<名称>`）回退到名称匹配。
-  static bool _matchesRef(String uuid, String name, String refUuid) {
-    if (refUuid.startsWith('legacy:')) {
-      return name == refUuid.substring('legacy:'.length);
-    }
-    return uuid == refUuid;
   }
 
   /// 收集当前库实际引用的图片路径（存活集；仅写入 manifest.images 展示项）。

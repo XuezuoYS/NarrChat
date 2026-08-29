@@ -39,7 +39,8 @@ void main() {
       expect(restored.worldBookEntries.first.content, '宗门设定');
       expect(restored.worldBookEntries.last.keyword, '');
       expect(restored.worldBookEntries.last.content, '恒定生效内容');
-      expect(restored.id, isNull);
+      // 导出 / 导入只携带内容，不携带身份：导入结果即未落库草稿（uuid 为空串）。
+      expect(restored.uuid, isEmpty);
       expect(restored.isPreset, isFalse);
     });
 
@@ -62,7 +63,7 @@ void main() {
 
     test('fromMap / toMap 数据库列映射（世界书存 JSON 数组）', () {
       const mod = Mod(
-        id: 7,
+        uuid: 'm7',
         name: '映射',
         prePrompt: 'P',
         postPrompt: 'Q',
@@ -70,7 +71,9 @@ void main() {
         worldBookEntries: [ModWorldBookEntry(keyword: 'K', content: 'W')],
       );
       final map = mod.toMap();
-      expect(map['id'], 7);
+      // uuid 即主键：映射里没有第二个 int id 列。
+      expect(map['uuid'], 'm7');
+      expect(map.containsKey('id'), isFalse);
       expect(map['name'], '映射');
       expect(map['pre_prompt'], 'P');
       expect(map['post_prompt'], 'Q');
@@ -79,7 +82,7 @@ void main() {
       expect(map['world_book'], contains('"content"'));
 
       final restored = Mod.fromMap(map);
-      expect(restored.id, 7);
+      expect(restored.uuid, 'm7');
       expect(restored.name, '映射');
       expect(restored.prePrompt, 'P');
       expect(restored.worldBookEntries, hasLength(1));
@@ -89,9 +92,9 @@ void main() {
 
     test('ref：预置与自定义的唯一标识', () {
       expect(const Mod(presetKey: 'abc').ref, 'preset:abc');
-      expect(const Mod(id: 5).ref, 'user:5');
+      expect(const Mod(uuid: 'm5').ref, 'user:m5');
       expect(const Mod(presetKey: 'abc').isPreset, isTrue);
-      expect(const Mod(id: 5).isPreset, isFalse);
+      expect(const Mod(uuid: 'm5').isPreset, isFalse);
     });
 
     test('copyWith 只修改指定字段', () {
@@ -148,15 +151,16 @@ void main() {
   group('BookModConfig', () {
     test('ref 与 fromMap/toMap', () {
       const config = BookModConfig(
-        bookId: 3,
+        bookUuid: 'b3',
         presetKey: 'web_novel_style',
         isEnabled: false,
         sortOrder: 2,
       );
       expect(config.ref, 'preset:web_novel_style');
       final map = config.toMap();
-      expect(map['book_id'], 3);
+      expect(map['book_uuid'], 'b3');
       expect(map['preset_key'], 'web_novel_style');
+      expect(map['mod_uuid'], isNull);
       expect(map['is_enabled'], 0);
       expect(map['sort_order'], 2);
 
@@ -165,9 +169,16 @@ void main() {
       expect(restored.isEnabled, isFalse);
       expect(restored.sortOrder, 2);
 
-      expect(const BookModConfig(modId: 9).ref, 'user:9');
+      // 预置行 mod_uuid 为 null；用户行的 mod_uuid 就是 mods.uuid 主键。
       expect(
-        const BookModConfig(modId: 9).copyWith(isEnabled: true).isEnabled,
+        const BookModConfig(bookUuid: 'b1', modUuid: 'm9').toMap()['mod_uuid'],
+        'm9',
+      );
+      expect(const BookModConfig(bookUuid: 'b1', modUuid: 'm9').ref, 'user:m9');
+      expect(
+        const BookModConfig(bookUuid: 'b1', modUuid: 'm9')
+            .copyWith(isEnabled: true)
+            .isEnabled,
         isTrue,
       );
     });
@@ -190,7 +201,7 @@ void main() {
         dao: _MockModDao(
           mods: const [
             Mod(
-              id: 1,
+              uuid: 'm1',
               name: '测试 Mod',
               prePrompt: 'PRE',
               postPrompt: 'POST',
@@ -202,14 +213,19 @@ void main() {
             ),
           ],
           configs: const [
-            BookModConfig(bookId: 1, modId: 1, isEnabled: true, sortOrder: 0),
+            BookModConfig(
+              bookUuid: 'b1',
+              modUuid: 'm1',
+              isEnabled: true,
+              sortOrder: 0,
+            ),
           ],
         ),
       );
 
       // 命中关键词：恒定条目 + 命中条目都注入
       final hit = await provider.resolveModsBundle(
-        bookId: 1,
+        bookUuid: 'b1',
         userInput: '我踏入青云宗。',
         historyRounds: const [],
       );
@@ -221,7 +237,7 @@ void main() {
 
       // 未命中关键词：只注入恒定条目
       final miss = await provider.resolveModsBundle(
-        bookId: 1,
+        bookUuid: 'b1',
         userInput: '我在集市闲逛。',
         historyRounds: const [],
       );
@@ -230,12 +246,12 @@ void main() {
 
       // 历史轮次命中关键词也注入
       final fromHistory = await provider.resolveModsBundle(
-        bookId: 1,
+        bookUuid: 'b1',
         userInput: '继续前行。',
         historyRounds: const [
           Round(
             id: 1,
-            bookId: 1,
+            bookUuid: 'b1',
             roundIndex: 1,
             aiNarrative: '山门巍峨，云雾缭绕。',
           ),
@@ -248,35 +264,80 @@ void main() {
       final provider = ModProvider(
         dao: _MockModDao(
           mods: const [
-            Mod(id: 1, name: 'A', worldBookEntries: [
+            Mod(uuid: 'm1', name: 'A', worldBookEntries: [
               ModWorldBookEntry(content: 'A 恒定'),
             ]),
           ],
           configs: const [
-            BookModConfig(bookId: 1, modId: 1, isEnabled: false, sortOrder: 0),
-            BookModConfig(bookId: 1, modId: 999, isEnabled: true, sortOrder: 1),
+            BookModConfig(
+              bookUuid: 'b1',
+              modUuid: 'm1',
+              isEnabled: false,
+              sortOrder: 0,
+            ),
+            // 引用不存在的 Mod uuid：即使启用也忽略。
+            BookModConfig(
+              bookUuid: 'b1',
+              modUuid: 'm999',
+              isEnabled: true,
+              sortOrder: 1,
+            ),
           ],
         ),
       );
       final bundle = await provider.resolveModsBundle(
-        bookId: 1,
+        bookUuid: 'b1',
         userInput: 'x',
         historyRounds: const [],
       );
       expect(bundle.isEmpty, isTrue);
     });
+
+    test('同名不同 uuid 的 Mod 是两台独立实体：只按 uuid 命中', () async {
+      final provider = ModProvider(
+        dao: _MockModDao(
+          mods: const [
+            Mod(uuid: 'm1', name: '同名', worldBookEntries: [
+              ModWorldBookEntry(content: 'm1 的内容'),
+            ]),
+            Mod(uuid: 'm2', name: '同名', worldBookEntries: [
+              ModWorldBookEntry(content: 'm2 的内容'),
+            ]),
+          ],
+          // 书 b1 只引用 m2；m1 即便同名同内容也不会被拉进来。
+          configs: const [
+            BookModConfig(bookUuid: 'b1', modUuid: 'm2', isEnabled: true),
+          ],
+        ),
+      );
+      final bundle = await provider.resolveModsBundle(
+        bookUuid: 'b1',
+        userInput: 'x',
+        historyRounds: const [],
+      );
+      expect(bundle.worldBooks, contains('m2 的内容'));
+      expect(bundle.worldBooks, isNot(contains('m1 的内容')));
+
+      // 另一本书（uuid 不同）没有自己的关联行 → 什么都不注入。
+      final other = await provider.resolveModsBundle(
+        bookUuid: 'b2',
+        userInput: 'x',
+        historyRounds: const [],
+      );
+      expect(other.isEmpty, isTrue);
+    });
   });
 
   group('PromptBuilder Mod 注入', () {
     const book = Book(
-      id: 1,
+      uuid: 'b1',
       title: '测试书',
       baseSetting: '修仙世界',
       globalPrePrompt: '用户前置',
       globalPostPrompt: '用户后置',
     );
 
-    const lastRound = Round(id: 1, bookId: 1, roundIndex: 1);
+    const lastRound = Round(id: 1, bookUuid: 'b1', roundIndex: 1);
 
     test('启用 Mod 时注入前置词/后置词/系统提示词/世界书', () {
       const mods = ModsBundle(
@@ -346,6 +407,6 @@ class _MockModDao extends ModDao {
   Future<List<Mod>> getAllMods() async => mods;
 
   @override
-  Future<List<BookModConfig>> getBookMods(int bookId) async =>
-      configs.where((c) => c.bookId == bookId).toList();
+  Future<List<BookModConfig>> getBookMods(String bookUuid) async =>
+      configs.where((c) => c.bookUuid == bookUuid).toList();
 }

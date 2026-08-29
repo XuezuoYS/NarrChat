@@ -24,17 +24,17 @@ class _AllDisabledSettings extends AiSettingsProvider {
   bool get lastSearch => false;
 }
 
-/// 记录生成完成回调的测试记录器。
+/// 记录生成完成回调的测试记录器（参数 = 书籍 uuid + 书名）。
 class _RecordingCompletion {
-  final List<({int bookId, String bookTitle})> calls = [];
+  final List<({String bookUuid, String bookTitle})> calls = [];
 
-  void call(int bookId, String bookTitle) {
-    calls.add((bookId: bookId, bookTitle: bookTitle));
+  void call(String bookUuid, String bookTitle) {
+    calls.add((bookUuid: bookUuid, bookTitle: bookTitle));
   }
 }
 
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
   /// 主输入框（悬浮输入卡内，按占位文案定位，避免与侧栏字段混淆）。
   Finder composerField() => find.byWidgetPredicate(
@@ -254,7 +254,7 @@ void main() {
     await waitSendDone(tester, roundProvider);
 
     expect(completion.calls, hasLength(1));
-    expect(completion.calls.single.bookId, book.id);
+    expect(completion.calls.single.bookUuid, book.uuid);
     expect(completion.calls.single.bookTitle, book.title);
   });
 

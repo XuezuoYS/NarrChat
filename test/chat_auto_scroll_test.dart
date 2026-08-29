@@ -55,7 +55,7 @@ Future<void> finishStream(
 }
 
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
   testWidgets('流式输出时触屏按住上滑，不会被自动滚动拉回底部', (tester) async {
     final ai = FakeStreamingAiService();

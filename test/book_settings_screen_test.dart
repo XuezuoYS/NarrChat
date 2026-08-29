@@ -18,7 +18,7 @@ void main() {
   setUp(() async {
     dao = FakeBookDao(books: [
       const Book(
-        id: 1,
+        uuid: 'b1',
         title: '当前标题',
         category: '当前分类',
         baseSetting: '当前设定',
@@ -63,7 +63,7 @@ void main() {
     // 调用方传入陈旧快照（同步落地前打开的对话页遗留引用）。
     await pumpSettings(
       tester,
-      book: const Book(id: 1, title: '陈旧标题', category: '旧分类'),
+      book: const Book(uuid: 'b1', title: '陈旧标题', category: '旧分类'),
     );
 
     expect(find.widgetWithText(TextField, '云端新标题'), findsOneWidget,

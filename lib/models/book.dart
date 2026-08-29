@@ -2,10 +2,11 @@ import '../utils/constants.dart';
 import 'role_category.dart';
 
 /// 书籍模型，对应数据库 `books` 表。
+///
+/// 身份：[uuid] 即数据库主键，本地与跨设备唯一，不存在第二个 id。
 class Book {
-  final int? id;
-
-  /// 跨设备同步身份（UUID v4）。本地插入时自动生成；空串表示尚未落库（草稿）。
+  /// 数据库主键（UUID v4）。本地新建时由 [BookDao.insertBook] 生成；
+  /// 空串仅表示「未落库的草稿」，已落库实例必非空。
   final String uuid;
 
   final String title;
@@ -26,7 +27,6 @@ class Book {
   final List<RoleCategory> roleCategories;
 
   const Book({
-    this.id,
     this.uuid = '',
     required this.title,
     this.category = '',
@@ -42,7 +42,6 @@ class Book {
 
   factory Book.fromMap(Map<String, Object?> map) {
     return Book(
-      id: map['id'] as int?,
       uuid: (map['uuid'] as String?) ?? '',
       title: (map['title'] as String?) ?? '',
       category: (map['category'] as String?) ?? '',
@@ -60,7 +59,6 @@ class Book {
 
   Map<String, Object?> toMap() {
     return {
-      'id': id,
       'uuid': uuid,
       'title': title,
       'category': category,
@@ -76,7 +74,6 @@ class Book {
   }
 
   Book copyWith({
-    int? id,
     String? uuid,
     String? title,
     String? category,
@@ -90,7 +87,6 @@ class Book {
     List<RoleCategory>? roleCategories,
   }) {
     return Book(
-      id: id ?? this.id,
       uuid: uuid ?? this.uuid,
       title: title ?? this.title,
       category: category ?? this.category,

@@ -65,8 +65,8 @@ Future<void> _pumpUntil(bool Function() cond) async {
 }
 
 void main() {
-  const bookA = Book(id: 1, title: '书A');
-  const bookB = Book(id: 2, title: '书B');
+  const bookA = Book(uuid: 'b1', title: '书A');
+  const bookB = Book(uuid: 'b2', title: '书B');
 
   group('并发与跨轮隔离', () {
     test('停止后立即重发：旧流残留不注入新一轮（令牌守卫）', () async {
@@ -79,7 +79,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      await rp.loadRounds(1);
+      await rp.loadRounds('b1');
 
       // 第一轮流式开始并输出部分内容。
       final f1 = rp.sendRound(userInput: '第一轮', book: bookA);
@@ -89,7 +89,7 @@ void main() {
       expect(rp.streamingContent, 'AAAA');
 
       // 用户点击停止，随后第一轮调用结束（复位状态）。
-      rp.cancelGeneration(bookId: 1);
+      rp.cancelGeneration(bookUuid: 'b1');
       s1.completer.complete(
         const AiCallResult(
           content: _fullContent,
@@ -129,7 +129,10 @@ void main() {
       // 第一轮被取消未落库；第二轮以 roundIndex 1 落库（书 A 第零轮之后）。
       expect(
         dao.rounds.where(
-          (r) => r.bookId == 1 && r.roundIndex == 1 && r.userInput == '第二轮',
+          (r) =>
+              r.bookUuid == 'b1' &&
+              r.roundIndex == 1 &&
+              r.userInput == '第二轮',
         ),
         hasLength(1),
       );
@@ -145,7 +148,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      await rp.loadRounds(1);
+      await rp.loadRounds('b1');
 
       // 书 A 开始生成。
       final fA = rp.sendRound(userInput: 'A 的请求', book: bookA);
@@ -155,12 +158,12 @@ void main() {
       expect(rp.streamingContent, 'AAA');
 
       // 打开书 B：B 不应显示 A 的流式状态。
-      await rp.loadRounds(2);
+      await rp.loadRounds('b2');
       expect(rp.isSending, isFalse, reason: '书 B 未生成，不应显示生成中');
       expect(rp.isStreaming, isFalse);
       expect(rp.streamingContent, isEmpty);
       expect(rp.pendingUserInput, isEmpty);
-      expect(rp.activeGenerationBookIds, [1], reason: '书 A 仍在生成');
+      expect(rp.activeGenerationBookUuids, ['b1'], reason: '书 A 仍在生成');
 
       // 书 B 可并发生成（不被书 A 的 isSending 阻塞）。
       final fB = rp.sendRound(userInput: 'B 的请求', book: bookB);
@@ -168,10 +171,10 @@ void main() {
       final sB = ai.sessions[1];
       sB.onChunk?.call(const AiStreamChunk(contentDelta: 'BBB'));
       expect(rp.streamingContent, 'BBB');
-      expect(rp.activeGenerationBookIds, containsAll([1, 2]));
+      expect(rp.activeGenerationBookUuids, containsAll(['b1', 'b2']));
 
       // 切回书 A：A 的流式内容仍独立保留，未受 B 影响。
-      await rp.loadRounds(1);
+      await rp.loadRounds('b1');
       expect(rp.streamingContent, 'AAA');
 
       // 完成书 A：轮次落入书 A。
@@ -183,11 +186,11 @@ void main() {
         ),
       );
       expect(await fA, isTrue);
-      expect(dao.rounds.where((r) => r.bookId == 1 && r.roundIndex == 1),
+      expect(dao.rounds.where((r) => r.bookUuid == 'b1' && r.roundIndex == 1),
           hasLength(1));
 
       // 完成书 B：轮次落入书 B。
-      await rp.loadRounds(2);
+      await rp.loadRounds('b2');
       sB.completer.complete(
         const AiCallResult(
           content: _fullContent,
@@ -196,7 +199,7 @@ void main() {
         ),
       );
       expect(await fB, isTrue);
-      expect(dao.rounds.where((r) => r.bookId == 2 && r.roundIndex == 1),
+      expect(dao.rounds.where((r) => r.bookUuid == 'b2' && r.roundIndex == 1),
           hasLength(1));
     });
 
@@ -210,7 +213,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      await rp.loadRounds(1);
+      await rp.loadRounds('b1');
 
       // 书 A 开始生成。
       final fA = rp.sendRound(userInput: 'A 的请求', book: bookA);
@@ -218,7 +221,7 @@ void main() {
       final sA = ai.sessions.single;
 
       // 切到书 B（此时书 B 仅有自动创建的第零轮）。
-      await rp.loadRounds(2);
+      await rp.loadRounds('b2');
       expect(rp.rounds.where((r) => r.roundIndex == 0), hasLength(1));
 
       // 书 A 完成。
@@ -232,13 +235,13 @@ void main() {
       expect(await fA, isTrue);
 
       // 书 A 的轮次已落库（第零轮 + 本轮）；但当前查看仍是书 B（未被 A 覆盖）。
-      expect(dao.rounds.where((r) => r.bookId == 1 && r.roundIndex == 1),
+      expect(dao.rounds.where((r) => r.bookUuid == 'b1' && r.roundIndex == 1),
           hasLength(1));
       expect(rp.rounds, hasLength(1), reason: '仍为书 B 的第零轮');
       expect(rp.rounds.single.roundIndex, 0);
 
       // 切回书 A 可见新轮次。
-      await rp.loadRounds(1);
+      await rp.loadRounds('b1');
       expect(rp.rounds.where((r) => r.roundIndex == 1), hasLength(1));
     });
   });
@@ -289,7 +292,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      await roundProvider.loadRounds(2);
+      await roundProvider.loadRounds('b2');
       final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       await pumpChat(
@@ -339,7 +342,7 @@ void main() {
     });
 
     testWidgets('多本书生成：横幅计数，弹窗列出全部并可选跳转', (tester) async {
-      const bookC = Book(id: 3, title: '书C');
+      const bookC = Book(uuid: 'b3', title: '书C');
       final bookDao = FakeBookDao(books: [bookA, bookB, bookC]);
       final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
@@ -353,7 +356,7 @@ void main() {
         aiService: ai,
         retryDelay: Duration.zero,
       );
-      await roundProvider.loadRounds(2);
+      await roundProvider.loadRounds('b2');
       final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       await pumpChat(

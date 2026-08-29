@@ -2,8 +2,11 @@
 ///
 /// 每条目包含一个或多个关键词（用逗号/顿号分隔）与命中后注入 System Prompt 的内容。
 class WorldBookEntry {
+  /// 条目自增主键（子表保留 int id，仅本地行标识）。
   final int? id;
-  final int bookId;
+
+  /// 所属书籍 uuid（`world_book_entries.book_uuid`，FK → `books.uuid`）。
+  final String bookUuid;
 
   /// 触发关键词，多个可用逗号 `,`、顿号 `、`、分号 `;` 分隔。
   final String keyword;
@@ -18,7 +21,7 @@ class WorldBookEntry {
 
   const WorldBookEntry({
     this.id,
-    required this.bookId,
+    required this.bookUuid,
     required this.keyword,
     required this.content,
     this.isActive = true,
@@ -35,7 +38,7 @@ class WorldBookEntry {
   factory WorldBookEntry.fromMap(Map<String, Object?> map) {
     return WorldBookEntry(
       id: map['id'] as int?,
-      bookId: (map['book_id'] as int?) ?? 0,
+      bookUuid: (map['book_uuid'] as String?) ?? '',
       keyword: (map['keyword'] as String?) ?? '',
       content: (map['content'] as String?) ?? '',
       isActive: (map['is_active'] as int? ?? 1) == 1,
@@ -48,7 +51,7 @@ class WorldBookEntry {
   Map<String, Object?> toMap() {
     return {
       'id': id,
-      'book_id': bookId,
+      'book_uuid': bookUuid,
       'keyword': keyword,
       'content': content,
       'is_active': isActive ? 1 : 0,
@@ -58,7 +61,7 @@ class WorldBookEntry {
 
   WorldBookEntry copyWith({
     int? id,
-    int? bookId,
+    String? bookUuid,
     String? keyword,
     String? content,
     bool? isActive,
@@ -66,7 +69,7 @@ class WorldBookEntry {
   }) {
     return WorldBookEntry(
       id: id ?? this.id,
-      bookId: bookId ?? this.bookId,
+      bookUuid: bookUuid ?? this.bookUuid,
       keyword: keyword ?? this.keyword,
       content: content ?? this.content,
       isActive: isActive ?? this.isActive,

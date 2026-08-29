@@ -33,9 +33,10 @@ import 'world_book_provider.dart';
 /// isCancelled）捕获发起时的令牌，一旦与当前 [token] 不一致即丢弃 / 中止，
 /// 从根源上杜绝「上一轮流式输出注入本轮」与双流式并存。
 class _BookGenState {
-  _BookGenState(this.bookId);
+  _BookGenState(this.bookUuid);
 
-  final int bookId;
+  /// 所属书籍 uuid（并发生成的分组键）。
+  final String bookUuid;
 
   /// 生成令牌：新请求使旧残留回调失效。
   int token = 0;
@@ -98,7 +99,7 @@ class RoundProvider extends ChangeNotifier {
     WorldBookProvider? worldBookProvider,
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
-    /// 生成成功回调（bookId, bookTitle）：由 main 接入系统通知服务；
+    /// 生成成功回调（书籍 uuid, 书名）：由 main 接入系统通知服务；
     /// 仅生成成功时触发，取消 / 失败不触发。
     this.onGenerationCompleted,
     /// 生成任务活动状态回调（active=true 首个任务开始 / false 全部结束）：
@@ -151,8 +152,8 @@ class RoundProvider extends ChangeNotifier {
   /// 网络类失败重试间隔。
   final Duration _retryDelay;
 
-  /// 生成成功回调（bookId, bookTitle）。
-  final void Function(int bookId, String bookTitle)? onGenerationCompleted;
+  /// 生成成功回调（书籍 uuid, 书名）。
+  final void Function(String bookUuid, String bookTitle)? onGenerationCompleted;
 
   /// 生成任务活动状态回调（首个任务开始 / 全部任务结束）。
   final void Function(bool active)? onGenerationActiveChanged;
@@ -164,18 +165,20 @@ class RoundProvider extends ChangeNotifier {
   /// 轮次未变化却随每次 chunk 触发侧栏等无关组件重建。
   List<Round> _roundsView = const [];
 
-  /// 各书运行时生成状态（key = bookId；支持多本书并发生成互不干扰）。
-  final Map<int, _BookGenState> _gens = {};
+  /// 各书运行时生成状态（key = 书籍 uuid；支持多本书并发生成互不干扰）。
+  final Map<String, _BookGenState> _gens = {};
 
   /// 各成功轮次的 RAW 时间线（内存，key = roundId；切换书籍时清理）。
   final Map<int, List<RawExchange>> _rawDataByRound = {};
 
   String? _error;
-  int? _bookId;
+
+  /// 当前查看书籍的 uuid（空串 = 未加载任何书）。
+  String _bookUuid = '';
 
   /// 获取（必要时创建）指定书的运行时生成状态。
-  _BookGenState _gen(int bookId) =>
-      _gens.putIfAbsent(bookId, () => _BookGenState(bookId));
+  _BookGenState _gen(String bookUuid) =>
+      _gens.putIfAbsent(bookUuid, () => _BookGenState(bookUuid));
 
   /// 当前是否至少有一本书正在生成（用于通知服务保活启停）。
   bool _hasActiveGeneration() => _gens.values.any((g) => g.isSending);
@@ -183,7 +186,7 @@ class RoundProvider extends ChangeNotifier {
   List<Round> get rounds => _roundsView;
 
   /// 当前查看书的运行时生成状态（未加载任何书或从未生成时为 null）。
-  _BookGenState? get _curGen => _bookId == null ? null : _gens[_bookId];
+  _BookGenState? get _curGen => _gens[_bookUuid];
 
   bool get isSending => _curGen?.isSending ?? false;
   bool get isStreaming => _curGen?.isStreaming ?? false;
@@ -227,18 +230,18 @@ class RoundProvider extends ChangeNotifier {
   /// 失败条目的错误信息（空串 = 用户中断「已截断」）。
   String get failedErrorMessage => failedAttempt.errorMessage;
 
-  /// 当前正在生成中的书籍 id（供跨书进程提示栏展示，点击可跳转对应书籍）。
-  List<int> get activeGenerationBookIds =>
-      [for (final g in _gens.values) if (g.isSending) g.bookId];
+  /// 当前正在生成中的书籍 uuid（供跨书进程提示栏展示，点击可跳转对应书籍）。
+  List<String> get activeGenerationBookUuids =>
+      [for (final g in _gens.values) if (g.isSending) g.bookUuid];
 
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 
   /// 中断指定书（默认当前查看书）的生成（流式会中止 HTTP 连接；非流式丢弃结果）。
-  void cancelGeneration({int? bookId}) {
-    final id = bookId ?? _bookId;
-    if (id == null) return;
-    final gen = _gens[id];
+  void cancelGeneration({String? bookUuid}) {
+    final target = (bookUuid ?? _bookUuid);
+    if (target.isEmpty) return;
+    final gen = _gens[target];
     if (gen == null || !gen.isSending) return;
     gen.cancelRequested = true;
     notifyListeners();
@@ -254,43 +257,43 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// 若书籍尚无任何轮次，自动创建「第零轮」（round_index = 0），
   /// 用于在开始对话前编辑初始的世界状态与角色状态。
-  Future<void> loadRounds(int bookId) async {
+  Future<void> loadRounds(String bookUuid) async {
     // 切换书籍：清理旧书的内存 RAW 数据，避免跨书误配。
-    if (_bookId != null && _bookId != bookId) {
+    if (_bookUuid.isNotEmpty && _bookUuid != bookUuid) {
       _rawDataByRound.clear();
     }
-    _bookId = bookId;
+    _bookUuid = bookUuid;
     try {
-      _setRounds(await _dao.getRoundsByBook(bookId));
+      _setRounds(await _dao.getRoundsByBook(bookUuid));
       if (_rounds.isEmpty) {
         await _dao.insertRound(
-          Round(bookId: bookId, roundIndex: 0, createdAt: DateTime.now()),
+          Round(bookUuid: bookUuid, roundIndex: 0, createdAt: DateTime.now()),
         );
-        _setRounds(await _dao.getRoundsByBook(bookId));
+        _setRounds(await _dao.getRoundsByBook(bookUuid));
       }
     } catch (e) {
       _error = e.toString();
     }
     // 加载本书「失败条目」（best-effort：读取失败不影响轮次加载）。
-    await _loadFailedAttempt(bookId);
+    await _loadFailedAttempt(bookUuid);
     notifyListeners();
   }
 
   /// 加载本书「失败条目」；读取失败时置空（不打扰用户）。
-  Future<void> _loadFailedAttempt(int bookId) async {
+  Future<void> _loadFailedAttempt(String bookUuid) async {
     try {
-      _gen(bookId).failedAttempt = await _bookDao.getFailedAttempt(bookId);
+      _gen(bookUuid).failedAttempt = await _bookDao.getFailedAttempt(bookUuid);
     } catch (_) {
-      _gen(bookId).failedAttempt = const FailedAttempt();
+      _gen(bookUuid).failedAttempt = const FailedAttempt();
     }
   }
 
   /// 写入本书「失败条目」（内存 + 数据库）；空条目即清空。返回是否成功落库。
-  Future<bool> _setFailedAttempt(int bookId, FailedAttempt attempt) async {
-    _gen(bookId).failedAttempt = attempt;
+  Future<bool> _setFailedAttempt(String bookUuid, FailedAttempt attempt) async {
+    _gen(bookUuid).failedAttempt = attempt;
     notifyListeners();
     try {
-      await _bookDao.setFailedAttempt(bookId, attempt);
+      await _bookDao.setFailedAttempt(bookUuid, attempt);
       return true;
     } catch (_) {
       return false;
@@ -299,10 +302,9 @@ class RoundProvider extends ChangeNotifier {
 
   /// 清除本书「失败条目」（UI「清除失败条目」入口）。
   Future<void> clearFailedAttempt() async {
-    final id = _bookId;
-    if (id == null) return;
-    _gen(id).failedRawExchanges = null;
-    await _setFailedAttempt(id, const FailedAttempt());
+    if (_bookUuid.isEmpty) return;
+    _gen(_bookUuid).failedRawExchanges = null;
+    await _setFailedAttempt(_bookUuid, const FailedAttempt());
   }
 
   /// 重新加载当前书籍的轮次（云同步恢复数据后调用）。
@@ -310,15 +312,14 @@ class RoundProvider extends ChangeNotifier {
   /// 云同步「删除并恢复」后，当前书籍可能已被覆盖删除：
   /// 先确认书籍仍存在，避免对已删除书籍误建「第零轮」触发外键错误。
   Future<void> reloadCurrent() async {
-    final id = _bookId;
-    if (id == null) return;
-    final exists = await _bookDao.getBookById(id) != null;
+    if (_bookUuid.isEmpty) return;
+    final exists = await _bookDao.getBookByUuid(_bookUuid) != null;
     if (!exists) {
       _setRounds([]);
       notifyListeners();
       return;
     }
-    await loadRounds(id);
+    await loadRounds(_bookUuid);
   }
 
   /// 发送新一轮：
@@ -337,12 +338,12 @@ class RoundProvider extends ChangeNotifier {
     List<String>? userImages,
   }) async {
     final b = book;
-    if (b == null || b.id == null) {
+    if (b == null || b.uuid.isEmpty) {
       _error = '尚未选择书籍';
       notifyListeners();
       return false;
     }
-    final gen = _gen(b.id!);
+    final gen = _gen(b.uuid);
     if (gen.isSending) {
       _error = '正在请求中，请稍候';
       return false;
@@ -371,7 +372,7 @@ class RoundProvider extends ChangeNotifier {
     if (!wasActive) onGenerationActiveChanged?.call(true);
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
-      await _setFailedAttempt(b.id!, const FailedAttempt());
+      await _setFailedAttempt(b.uuid, const FailedAttempt());
       final lastRound = latestRound;
       final recentRounds = _takeRecent(b.historyRounds);
       final worldBookEntries = _worldBookScanner.scan(
@@ -384,7 +385,7 @@ class RoundProvider extends ChangeNotifier {
       final modsBundle = _modProvider == null
           ? null
           : await _modProvider.resolveModsBundle(
-              bookId: b.id!,
+              bookUuid: b.uuid,
               userInput: userInput,
               historyRounds: recentRounds,
             );
@@ -506,11 +507,11 @@ class RoundProvider extends ChangeNotifier {
         gen.agentEvents.clear();
         gen.failedRawExchanges = List.of(gen.rawExchanges);
         await _setFailedAttempt(
-          b.id!,
+          b.uuid,
           FailedAttempt(
-          userInput: userInput,
-          userImages: userImages ?? const [],
-        ),
+            userInput: userInput,
+            userImages: userImages ?? const [],
+          ),
         );
         return false;
       }
@@ -521,7 +522,7 @@ class RoundProvider extends ChangeNotifier {
       final parsed = AiResponseParser.parse(result.content);
 
       final newRound = Round(
-        bookId: b.id!,
+        bookUuid: b.uuid,
         roundIndex: (lastRound?.roundIndex ?? 0) + 1,
         userInput: userInput,
         aiNarrative: parsed.aiNarrative,
@@ -544,11 +545,11 @@ class RoundProvider extends ChangeNotifier {
       gen.rawExchanges.clear();
       // 自动云同步：所有生成结束路径（成功 / 失败 / 中断）统一在 finally 触发，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
-      if (_bookId == b.id) {
-        await loadRounds(b.id!);
+      if (_bookUuid == b.uuid) {
+        await loadRounds(b.uuid);
       }
       // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
-      onGenerationCompleted?.call(b.id!, b.title);
+      onGenerationCompleted?.call(b.uuid, b.title);
       return true;
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
@@ -559,7 +560,7 @@ class RoundProvider extends ChangeNotifier {
       _error = null;
       gen.failedRawExchanges = List.of(gen.rawExchanges);
       await _setFailedAttempt(
-        b.id!,
+        b.uuid,
         FailedAttempt(
           userInput: userInput,
           userImages: userImages ?? const [],
@@ -573,7 +574,7 @@ class RoundProvider extends ChangeNotifier {
       gen.agentEvents.clear();
       gen.failedRawExchanges = List.of(gen.rawExchanges);
       final saved = await _setFailedAttempt(
-        b.id!,
+        b.uuid,
         FailedAttempt(
           userInput: userInput,
           errorMessage: e.toString(),
@@ -989,8 +990,8 @@ class RoundProvider extends ChangeNotifier {
   Future<void> deleteRound(Round round, {required bool deleteFollowing}) async {
     try {
       await _dao.deleteRound(round.id!, deleteFollowing: deleteFollowing);
-      if (_bookId != null) {
-        await loadRounds(_bookId!);
+      if (_bookUuid.isNotEmpty) {
+        await loadRounds(_bookUuid);
       }
     } catch (e) {
       _error = e.toString();
@@ -1003,7 +1004,7 @@ class RoundProvider extends ChangeNotifier {
   /// 2. 以当前轮次的用户输入重新请求 AI（本轮被新结果替换）。
   Future<void> refreshRound(Round round, {Book? book}) async {
     final b = book;
-    if (b == null || b.id == null || _gen(b.id!).isSending) return;
+    if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
     await deleteRound(round, deleteFollowing: true);
     await sendRound(
       userInput: round.userInput,
@@ -1023,7 +1024,7 @@ class RoundProvider extends ChangeNotifier {
     List<String>? images,
   }) async {
     final b = book;
-    if (b == null || b.id == null || _gen(b.id!).isSending) return;
+    if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
     await updateUserInput(round.id!, editedInput);
     await deleteRound(round, deleteFollowing: true);
     await sendRound(userInput: editedInput, book: b, userImages: images);
@@ -1033,8 +1034,8 @@ class RoundProvider extends ChangeNotifier {
   Future<void> updateNarrative(int roundId, String narrative) async {
     try {
       await _dao.updateRoundFields(roundId, {'ai_narrative': narrative});
-      if (_bookId != null) {
-        await loadRounds(_bookId!);
+      if (_bookUuid.isNotEmpty) {
+        await loadRounds(_bookUuid);
       }
     } catch (e) {
       _error = e.toString();
@@ -1046,8 +1047,8 @@ class RoundProvider extends ChangeNotifier {
   Future<void> updateUserInput(int roundId, String input) async {
     try {
       await _dao.updateRoundFields(roundId, {'user_input': input});
-      if (_bookId != null) {
-        await loadRounds(_bookId!);
+      if (_bookUuid.isNotEmpty) {
+        await loadRounds(_bookUuid);
       }
     } catch (e) {
       _error = e.toString();
@@ -1070,8 +1071,8 @@ class RoundProvider extends ChangeNotifier {
     if (!allowed.contains(field)) return false;
     try {
       await _dao.updateRoundFields(roundId, {field: value});
-      if (_bookId != null) {
-        await loadRounds(_bookId!);
+      if (_bookUuid.isNotEmpty) {
+        await loadRounds(_bookUuid);
       }
       return true;
     } catch (e) {

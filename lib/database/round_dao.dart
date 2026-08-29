@@ -5,12 +5,12 @@ import 'database_helper.dart';
 class RoundDao {
   final DatabaseHelper _helper = DatabaseHelper.instance;
 
-  Future<List<Round>> getRoundsByBook(int bookId) async {
+  Future<List<Round>> getRoundsByBook(String bookUuid) async {
     final db = await _helper.database;
     final rows = await db.query(
       'rounds',
-      where: 'book_id = ?',
-      whereArgs: [bookId],
+      where: 'book_uuid = ?',
+      whereArgs: [bookUuid],
       orderBy: 'round_index ASC',
     );
     return rows.map(Round.fromMap).toList();
@@ -27,7 +27,7 @@ class RoundDao {
     final db = await _helper.database;
     final map = round.toMap()..remove('id');
     final id = await db.insert('rounds', map);
-    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    await DatabaseHelper.touchBook(db, round.bookUuid, rounds: true);
     return id;
   }
 
@@ -35,7 +35,7 @@ class RoundDao {
     final db = await _helper.database;
     final map = round.toMap()..remove('id');
     final count = await db.update('rounds', map, where: 'id = ?', whereArgs: [round.id]);
-    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    await DatabaseHelper.touchBook(db, round.bookUuid, rounds: true);
     return count;
   }
 
@@ -45,7 +45,7 @@ class RoundDao {
     final round = await getRoundById(roundId);
     final count = await db.update('rounds', fields, where: 'id = ?', whereArgs: [roundId]);
     if (round != null) {
-      await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+      await DatabaseHelper.touchBook(db, round.bookUuid, rounds: true);
     }
     return count;
   }
@@ -61,19 +61,19 @@ class RoundDao {
     if (deleteFollowing) {
       await db.delete(
         'rounds',
-        where: 'book_id = ? AND round_index >= ?',
-        whereArgs: [round.bookId, round.roundIndex],
+        where: 'book_uuid = ? AND round_index >= ?',
+        whereArgs: [round.bookUuid, round.roundIndex],
       );
     } else {
       await db.delete('rounds', where: 'id = ?', whereArgs: [roundId]);
     }
-    await DatabaseHelper.touchBook(db, round.bookId, rounds: true);
+    await DatabaseHelper.touchBook(db, round.bookUuid, rounds: true);
   }
 
   /// 删除某本书的全部轮次（书籍删除时使用）。
-  Future<void> deleteRoundsByBook(int bookId) async {
+  Future<void> deleteRoundsByBook(String bookUuid) async {
     final db = await _helper.database;
-    await db.delete('rounds', where: 'book_id = ?', whereArgs: [bookId]);
-    await DatabaseHelper.touchBook(db, bookId, rounds: true);
+    await db.delete('rounds', where: 'book_uuid = ?', whereArgs: [bookUuid]);
+    await DatabaseHelper.touchBook(db, bookUuid, rounds: true);
   }
 }

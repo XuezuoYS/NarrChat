@@ -1,122 +1,118 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/sync/sync_fingerprint.dart';
 
-/// 同步内容指纹测试：纯内容（时间戳不参与）、幂等（同内容同指纹）、
-/// 区分性（任一内容字段变化 → 指纹变化）、跨设备一致性（id/时间戳无关）。
+/// 内容指纹与身份列（uuid）/ 时间戳无关，且任一内容字段变化都会改变指纹。
+///
+/// 行内引用一律是 uuid（`book_uuid` / `mod_uuid`），没有需要归一化的 int id；
+/// `bookMods` 的第二参数是 Mod 的 uuid → 名称映射。
 void main() {
   Map<String, Object?> bookRow({
+    String uuid = 'u-1',
     String title = '书A',
     String category = '玄幻',
-    String postPrompt = '请继续',
-    int historyRounds = 3,
-    String uuid = 'u-1',
-  }) => {
-        'id': 1,
-        'uuid': uuid,
-        'title': title,
-        'category': category,
-        'base_setting': '',
-        'writing_requirements': '',
-        'writing_style': '',
-        'global_pre_prompt': '',
-        'global_post_prompt': postPrompt,
-        'history_rounds': historyRounds,
-        'role_hierarchy': '',
-        'role_hierarchy_detail': '',
-        'failed_user_input': '',
-        'failed_error_message': '',
-        'failed_user_images': '[]',
-        'settings_updated_at': 100,
-        'rounds_updated_at': 200,
-      };
+    String postPrompt = '后置',
+    int settingsAt = 1000,
+    int roundsAt = 2000,
+  }) {
+    return {
+      'uuid': uuid,
+      'title': title,
+      'category': category,
+      'base_setting': '',
+      'writing_style': '',
+      'writing_requirements': '',
+      'global_pre_prompt': '',
+      'global_post_prompt': postPrompt,
+      'history_rounds': 1,
+      'role_hierarchy': '',
+      'settings_updated_at': settingsAt,
+      'rounds_updated_at': roundsAt,
+    };
+  }
 
   Map<String, Object?> modRow({
+    String uuid = 'u-mod-1',
     String name = '风格',
     String prePrompt = 'pre',
-    String? createdAt = '2026-01-01T00:00:00.000',
-    String? updatedAt = '2026-01-02T00:00:00.000',
-    String uuid = 'm-1',
-  }) => {
-        'id': 1,
-        'uuid': uuid,
-        'name': name,
-        'description': '',
-        'pre_prompt': prePrompt,
-        'post_prompt': '',
-        'system_prompt': '',
-        'world_book': '',
-        'created_at': createdAt,
-        'updated_at': updatedAt,
-      };
+    String createdAt = '2026-01-01T00:00:00.000',
+    String updatedAt = '2026-01-02T00:00:00.000',
+  }) {
+    return {
+      'uuid': uuid,
+      'name': name,
+      'pre_prompt': prePrompt,
+      'post_prompt': 'post',
+      'system_prompt': 'sys',
+      'description': '',
+      'world_book': '[]',
+      'created_at': createdAt,
+      'updated_at': updatedAt,
+    };
+  }
 
-  group('mod 指纹', () {
-    test('内容相同但 updated_at 不同 → 指纹相同（时间戳不参与）', () {
+  group('Mod 部件（按 uuid 定名）', () {
+    test('created_at 不同 / uuid 不同 → 指纹相同（跨设备一致）', () {
       final a = SyncFingerprint.mod(modRow(updatedAt: '2026-01-02T00:00:00.000'));
       final b = SyncFingerprint.mod(modRow(updatedAt: '2026-03-04T05:06:07.000'));
-      expect(a, b, reason: '保存刷新 updated_at 不应改变指纹');
-    });
-
-    test('created_at 不同 / 行 id 不同 → 指纹相同（跨设备一致）', () {
-      final a = SyncFingerprint.mod(modRow(createdAt: '2026-01-01T00:00:00.000'));
-      final b = SyncFingerprint.mod(
-        modRow(createdAt: '2026-02-02T02:02:02.000'),
-      );
       expect(a, b);
+      expect(
+        SyncFingerprint.mod(modRow(createdAt: '2026-02-02T00:00:00.000')),
+        a,
+        reason: '时间戳每次保存都刷新，纳入会造成假变更',
+      );
+      expect(
+        SyncFingerprint.mod(modRow(uuid: 'u-mod-other')),
+        a,
+        reason: 'uuid 是身份、不入内容指纹（实体分组只按 uuid）',
+      );
     });
 
-    test('任一内容字段变化 → 指纹变化', () {
+    test('内容字段变化 → 指纹变化', () {
       final base = SyncFingerprint.mod(modRow());
       expect(SyncFingerprint.mod(modRow(prePrompt: 'pre2')), isNot(base));
       expect(SyncFingerprint.mod(modRow(name: '风格2')), isNot(base));
     });
   });
 
-  group('worldBooks 指纹', () {
-    test('内容相同但 created_at 不同 → 指纹相同', () {
-      final a = SyncFingerprint.worldBooks([
-        {'keyword': '主角', 'content': '内容', 'is_active': 1, 'created_at': '2026-01-01'},
-        {'keyword': '反派', 'content': '反派内容', 'is_active': 0, 'created_at': '2026-01-02'},
-      ]);
-      final b = SyncFingerprint.worldBooks([
-        {'keyword': '主角', 'content': '内容', 'is_active': 1, 'created_at': '2026-05-01'},
-        {'keyword': '反派', 'content': '反派内容', 'is_active': 0, 'created_at': '2026-05-02'},
-      ]);
-      expect(a, b);
-    });
+  group('书-Mod 部件', () {
+    // Mod 的 uuid → 名称：身份是 uuid，名称是内容。
+    const modNames = {'u-mod-1': '风格', 'u-mod-2': '润色'};
 
-    test('条目顺序无关（按 keyword 排序）', () {
-      final a = SyncFingerprint.worldBooks([
-        {'keyword': '主角', 'content': '内容', 'is_active': 1},
-        {'keyword': '反派', 'content': '反派内容', 'is_active': 1},
-      ]);
-      final b = SyncFingerprint.worldBooks([
-        {'keyword': '反派', 'content': '反派内容', 'is_active': 1},
-        {'keyword': '主角', 'content': '内容', 'is_active': 1},
-      ]);
-      expect(a, b);
-    });
-  });
-
-  group('书-Mod 指纹', () {
-    const modNames = {1: '风格', 2: '润色'};
-    const modUuids = {1: 'u-mod-1', 2: 'u-mod-2'};
-
-    test('相同配置（不同行 id）→ 相同指纹（跨设备一致）', () {
+    test('相同配置（行顺序不同）→ 相同指纹（跨设备一致）', () {
       final a = SyncFingerprint.bookMods(
         [
-          {'mod_id': 1, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
-          {'mod_id': 2, 'preset_key': null, 'sort_order': 1, 'is_enabled': 0},
+          {
+            'mod_uuid': 'u-mod-1',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
+          {
+            'mod_uuid': 'u-mod-2',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 0
+          },
         ],
         modNames,
-        modUuids,
       );
+      // 另一台设备：行内容一致，只是读出的先后顺序不同。
       final b = SyncFingerprint.bookMods(
         [
-          {'mod_id': 21, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
-          {'mod_id': 22, 'preset_key': null, 'sort_order': 1, 'is_enabled': 0},
+          {
+            'mod_uuid': 'u-mod-2',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 0
+          },
+          {
+            'mod_uuid': 'u-mod-1',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
         ],
-        {21: '风格', 22: '润色'},
-        {21: 'u-mod-1', 22: 'u-mod-2'},
+        modNames,
       );
       expect(a, b);
     });
@@ -124,42 +120,113 @@ void main() {
     test('置入顺序变化 → 指纹变化（顺序是内容）', () {
       final a = SyncFingerprint.bookMods(
         [
-          {'mod_id': 1, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
-          {'mod_id': 2, 'preset_key': null, 'sort_order': 1, 'is_enabled': 1},
+          {
+            'mod_uuid': 'u-mod-1',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
+          {
+            'mod_uuid': 'u-mod-2',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 1
+          },
         ],
         modNames,
-        modUuids,
       );
       final b = SyncFingerprint.bookMods(
         [
-          {'mod_id': 2, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
-          {'mod_id': 1, 'preset_key': null, 'sort_order': 1, 'is_enabled': 1},
+          {
+            'mod_uuid': 'u-mod-1',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 1
+          },
+          {
+            'mod_uuid': 'u-mod-2',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
         ],
         modNames,
-        modUuids,
       );
       expect(a, isNot(b));
     });
 
-    test('同名 Mod 以 uuid 稳定定序（跨设备行 id 不同不漂移）', () {
+    test('同名 Mod 以 uuid 稳定定序（行顺序不同也不漂移）', () {
       final a = SyncFingerprint.bookMods(
         [
-          {'mod_id': 1, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
-          {'mod_id': 2, 'preset_key': null, 'sort_order': 1, 'is_enabled': 1},
+          {
+            'mod_uuid': 'u-a',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
+          {
+            'mod_uuid': 'u-b',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 1
+          },
         ],
-        {1: '同名', 2: '同名'},
-        {1: 'u-a', 2: 'u-b'},
+        const {'u-a': '同名', 'u-b': '同名'},
       );
-      // 另一台设备行 id 不同、插入顺序相反，但 uuid/内容一致 → 排序结果一致。
+      // 另一台设备读出顺序相反，但 uuid/内容一致 → 排序结果一致。
       final b = SyncFingerprint.bookMods(
         [
-          {'mod_id': 32, 'preset_key': null, 'sort_order': 1, 'is_enabled': 1},
-          {'mod_id': 31, 'preset_key': null, 'sort_order': 0, 'is_enabled': 1},
+          {
+            'mod_uuid': 'u-b',
+            'preset_key': null,
+            'sort_order': 1,
+            'is_enabled': 1
+          },
+          {
+            'mod_uuid': 'u-a',
+            'preset_key': null,
+            'sort_order': 0,
+            'is_enabled': 1
+          },
         ],
-        {31: '同名', 32: '同名'},
-        {31: 'u-a', 32: 'u-b'},
+        const {'u-a': '同名', 'u-b': '同名'},
       );
       expect(a, b);
+    });
+
+    test('名称按 mod_uuid 查表：映射键必须是 uuid', () {
+      final rows = [
+        {
+          'mod_uuid': 'u-mod-1',
+          'preset_key': null,
+          'sort_order': 0,
+          'is_enabled': 1
+        },
+      ];
+      expect(
+        SyncFingerprint.bookMods(rows, const {'u-mod-1': '风格'}),
+        isNot(SyncFingerprint.bookMods(rows, const {'u-mod-1': '风格2'})),
+        reason: 'Mod 名称是内容，改名改变书-Mod 部件指纹',
+      );
+      expect(
+        SyncFingerprint.bookMods(rows, const {'风格': '风格'}),
+        isNot(SyncFingerprint.bookMods(rows, const {'u-mod-1': '风格'})),
+        reason: '按非 uuid 键查不到名称 → 退化为空串',
+      );
+      expect(
+        SyncFingerprint.bookMods(rows, const {}),
+        SyncFingerprint.bookMods(
+          [
+            {
+              'preset_key': null,
+              'sort_order': 0,
+              'is_enabled': 1
+            }, // 预置行：无 mod_uuid
+          ],
+          const {},
+        ),
+        reason: '无 mod_uuid 的行名称恒为空串，与查不到同一口径',
+      );
     });
   });
 
@@ -168,6 +235,12 @@ void main() {
       final a = SyncFingerprint.bookSettings(bookRow(uuid: 'u-1'));
       final b = SyncFingerprint.bookSettings(bookRow(uuid: 'u-999'));
       expect(a, b, reason: '身份与时间戳不算内容');
+      expect(
+        SyncFingerprint.bookSettings(
+            bookRow(uuid: 'u-999', settingsAt: 123, roundsAt: 456)),
+        a,
+        reason: '时间戳每次保存都刷新，纳入即造成假变更',
+      );
       expect(
         SyncFingerprint.bookSettings(bookRow(postPrompt: '改后')),
         isNot(a),
@@ -216,6 +289,61 @@ void main() {
         SyncFingerprint.bookSettings(bookRow(title: '书B')),
         isNot(SyncFingerprint.bookSettings(row)),
       );
+    });
+  });
+
+  group('轮次部件', () {
+    test('与顺序无关：同内容乱序 → 相同指纹', () {
+      final a = [
+        {'round_index': 1, 'user_input': 'x', 'ai_narrative': 'y'},
+        {'round_index': 2, 'user_input': 'x2', 'ai_narrative': 'y2'},
+      ];
+      final b = [
+        {'round_index': 2, 'user_input': 'x2', 'ai_narrative': 'y2'},
+        {'round_index': 1, 'user_input': 'x', 'ai_narrative': 'y'},
+      ];
+      final book = bookRow();
+      expect(
+        SyncFingerprint.roundsWithFailed(a, book),
+        SyncFingerprint.roundsWithFailed(b, book),
+      );
+    });
+
+    test('内容不同 → 指纹不同', () {
+      final book = bookRow();
+      expect(
+        SyncFingerprint.roundsWithFailed(
+          [
+            {'round_index': 1, 'user_input': 'x', 'ai_narrative': '改后'},
+          ],
+          book,
+        ),
+        isNot(SyncFingerprint.roundsWithFailed(
+          [
+            {'round_index': 1, 'user_input': 'x', 'ai_narrative': '原'},
+          ],
+          book,
+        )),
+      );
+    });
+  });
+
+  group('世界书部件', () {
+    test('按 keyword 排序，与写入顺序无关；内容变化则变', () {
+      final a = [
+        {'keyword': 'b', 'content': '1', 'is_active': 1},
+        {'keyword': 'a', 'content': '2', 'is_active': 1},
+      ];
+      final b = [
+        {'keyword': 'a', 'content': '2', 'is_active': 1},
+        {'keyword': 'b', 'content': '1', 'is_active': 1},
+      ];
+      expect(SyncFingerprint.worldBooks(a), SyncFingerprint.worldBooks(b));
+      final c = [
+        {'keyword': 'a', 'content': '改', 'is_active': 1},
+        {'keyword': 'b', 'content': '1', 'is_active': 1},
+      ];
+      expect(SyncFingerprint.worldBooks(a), isNot(SyncFingerprint.worldBooks(c)));
     });
   });
 }

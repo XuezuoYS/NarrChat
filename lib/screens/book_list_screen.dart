@@ -56,7 +56,7 @@ class _BookListScreenState extends State<BookListScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => const ChatScreen(),
-        settings: RouteSettings(name: chatRouteName, arguments: book.id),
+        settings: RouteSettings(name: chatRouteName, arguments: book.uuid),
       ),
     );
     if (!mounted) return;
@@ -259,7 +259,7 @@ class _BookListScreenState extends State<BookListScreen> {
     Book book,
   ) {
     final theme = Theme.of(context);
-    final lastTime = provider.lastRoundTimes[book.id];
+    final lastTime = provider.lastRoundTimes[book.uuid];
     return ListTile(
       // 收紧「更多操作」按钮与卡片右缘的间距（M3 默认右内边距 24 使右侧空白偏大）。
       contentPadding: const EdgeInsetsDirectional.only(start: 16, end: 8),

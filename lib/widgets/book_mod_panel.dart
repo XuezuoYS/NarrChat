@@ -19,11 +19,11 @@ import 'type_badge.dart';
 /// - 通过开关启用/禁用，改动即时保存：发送请求时，本书启用中的 Mod 将
 ///   按顺序自动置入前置词、后置词、系统提示词与世界书。
 class BookModPanel extends StatefulWidget {
-  /// 所属书籍 ID；为 null 表示新建书籍草稿模式（改动保存在内存，
+  /// 所属书籍 uuid；为 null 表示新建书籍草稿模式（改动保存在内存，
   /// 保存书籍后由外层统一落库）。
-  final int? bookId;
+  final String? bookUuid;
 
-  /// 草稿模式（bookId 为 null）下完整的 Mod 配置（已启用 + 未启用），
+  /// 草稿模式（[bookUuid] 为 null）下完整的 Mod 配置（已启用 + 未启用），
   /// 为 null 时首次进入按「全部未启用」初始化；改动后通过
   /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
   final List<BookModConfig>? pendingConfigs;
@@ -31,7 +31,7 @@ class BookModPanel extends StatefulWidget {
 
   const BookModPanel({
     super.key,
-    this.bookId,
+    this.bookUuid,
     this.pendingConfigs,
     this.onPendingChanged,
   });
@@ -74,10 +74,10 @@ class _BookModPanelState extends State<BookModPanel> {
   Future<void> _load() async {
     final provider = context.read<ModProvider>();
     await provider.loadUserMods();
-    final bookId = widget.bookId;
-    // 草稿模式（bookId 为 null）读取外层暂存的配置；编辑模式从数据库读取。
-    final saved = bookId != null
-        ? await provider.getBookModConfigs(bookId)
+    final bookUuid = widget.bookUuid;
+    // 草稿模式（bookUuid 为 null）读取外层暂存的配置；编辑模式从数据库读取。
+    final saved = bookUuid != null
+        ? await provider.getBookModConfigs(bookUuid)
         : widget.pendingConfigs;
     if (!mounted) return;
 
@@ -94,7 +94,7 @@ class _BookModPanelState extends State<BookModPanel> {
         if (seen.contains(c.ref)) continue;
         seen.add(c.ref);
         if (_modByRef.containsKey(c.ref)) {
-          result.add(c.copyWith(bookId: bookId ?? 0));
+          result.add(c.copyWith(bookUuid: bookUuid ?? ''));
         }
       }
     }
@@ -105,9 +105,9 @@ class _BookModPanelState extends State<BookModPanel> {
       seen.add(ref);
       result.add(
         BookModConfig(
-          bookId: bookId ?? 0,
+          bookUuid: bookUuid ?? '',
           presetKey: mod.presetKey,
-          modId: mod.id,
+          modUuid: mod.uuid,
           isEnabled: false,
           sortOrder: result.length,
         ),
@@ -159,24 +159,28 @@ class _BookModPanelState extends State<BookModPanel> {
   }
 
   Future<void> _doSave() async {
-    final bookId = widget.bookId;
+    final bookUuid = widget.bookUuid ?? '';
     final configs = <BookModConfig>[
       for (var i = 0; i < _enabled.length; i++)
-        _enabled[i].copyWith(bookId: bookId ?? 0, sortOrder: i, isEnabled: true),
+        _enabled[i].copyWith(
+          bookUuid: bookUuid,
+          sortOrder: i,
+          isEnabled: true,
+        ),
       for (var i = 0; i < _disabled.length; i++)
         _disabled[i].copyWith(
-          bookId: bookId ?? 0,
+          bookUuid: bookUuid,
           sortOrder: _enabled.length + i,
           isEnabled: false,
         ),
     ];
-    if (bookId == null) {
+    if (widget.bookUuid == null) {
       // 草稿模式：仅回传内存配置，由外层在保存书籍后统一落库。
       widget.onPendingChanged?.call(configs);
       return;
     }
     final provider = context.read<ModProvider>();
-    final ok = await provider.saveBookModConfigs(bookId, configs);
+    final ok = await provider.saveBookModConfigs(bookUuid, configs);
     if (!ok && mounted) {
       _showMessage('保存失败：${provider.error ?? '未知错误'}');
     }

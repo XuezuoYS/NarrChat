@@ -106,27 +106,27 @@ class SyncFingerprint {
     );
   }
 
-  /// 「书‑Mod 部件」指纹：按 （预置/用户类型, 名称, preset_key, uuid）稳定排序后逐条哈希。
+  /// 「书‑Mod 部件」指纹：按 （名称, preset_key, mod_uuid）稳定排序后逐条哈希。
   ///
-  /// - [modNameById]：mod_id → mod 名（用于把 mod_id 归一化，避免 id 不同导致指纹漂移）；
-  /// - [modUuidById]：mod_id → uuid（同名 Mod 的稳定定序键，跨设备一致）。
+  /// - [modNameByUuid]：mod 的 uuid → 名称。名称是内容（参与指纹），uuid 是身份
+  ///   （只做同名 Mod 之间的稳定定序键），两者都跨设备一致；
+  /// - 行内引用本身就是 uuid，无需任何 id 归一化。
   /// 排序 + 内容（名称 / preset_key / sort_order / is_enabled）共同构成指纹。
   static String bookMods(
     List<Map<String, Object?>> rows,
-    Map<int, String> modNameById,
-    Map<int, String> modUuidById,
+    Map<String, String> modNameByUuid,
   ) {
     final sorted = [...rows]..sort((a, b) {
-        final an = _modName(a, modNameById);
-        final bn = _modName(b, modNameById);
+        final an = _modName(a, modNameByUuid);
+        final bn = _modName(b, modNameByUuid);
         final byName = an.compareTo(bn);
         if (byName != 0) return byName;
         final ap = a['preset_key'] as String? ?? '';
         final bp = b['preset_key'] as String? ?? '';
         if (ap != bp) return ap.compareTo(bp);
         // 同名且同类型（如两个同名用户 Mod）：以 uuid 稳定定序，跨设备一致。
-        final au = _modRef(a, modUuidById);
-        final bu = _modRef(b, modUuidById);
+        final au = _modRef(a);
+        final bu = _modRef(b);
         if (au != bu) return au.compareTo(bu);
         return (a['sort_order'] as int? ?? 0)
             .compareTo(b['sort_order'] as int? ?? 0);
@@ -134,7 +134,7 @@ class SyncFingerprint {
     return jsonEncode(
       sorted
           .map((bm) => [
-                _modName(bm, modNameById),
+                _modName(bm, modNameByUuid),
                 bm['preset_key'],
                 bm['sort_order'],
                 bm['is_enabled'],
@@ -160,23 +160,18 @@ class SyncFingerprint {
 
   static String _modName(
     Map<String, Object?> bm,
-    Map<int, String> modNameById,
+    Map<String, String> modNameByUuid,
   ) {
-    final id = bm['mod_id'] as int?;
-    if (id == null) return '';
-    return modNameById[id] ?? '';
+    final uuid = bm['mod_uuid'] as String?;
+    if (uuid == null || uuid.isEmpty) return '';
+    return modNameByUuid[uuid] ?? '';
   }
 
   /// 稳定定序键：预置用 `preset:<key>`，用户 Mod 用 `user:<uuid>`。
-  static String _modRef(
-    Map<String, Object?> bm,
-    Map<int, String> modUuidById,
-  ) {
+  static String _modRef(Map<String, Object?> bm) {
     final presetKey = bm['preset_key'] as String?;
     if (presetKey != null && presetKey.isNotEmpty) return 'preset:$presetKey';
-    final id = bm['mod_id'] as int?;
-    if (id == null) return 'user:';
-    return 'user:${modUuidById[id] ?? ''}';
+    return 'user:${bm['mod_uuid'] as String? ?? ''}';
   }
 
   static int _asInt(Object? v) => (v is int) ? v : (v is num) ? v.toInt() : 0;

@@ -9,19 +9,19 @@ import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
-/// 假 RoundProvider：可控返回「正在生成的书」，供 HUD 避让横幅测试。
+/// 假 RoundProvider：可控返回「正在生成的书 uuid」，供 HUD 避让横幅测试。
 class _FakeRoundProvider extends RoundProvider {
-  _FakeRoundProvider(this.ids)
+  _FakeRoundProvider(this.uuids)
       : super(
           dao: FakeRoundDao(),
           aiService: ToggleAiService(),
           bookDao: FakeBookDao(),
         );
 
-  final List<int> ids;
+  final List<String> uuids;
 
   @override
-  List<int> get activeGenerationBookIds => ids;
+  List<String> get activeGenerationBookUuids => uuids;
 }
 
 void main() {
@@ -280,7 +280,7 @@ void main() {
         phase: SyncPhase.pullManifest,
         label: '读取清单',
       ),
-      roundProvider: _FakeRoundProvider(const [1, 2]),
+      roundProvider: _FakeRoundProvider(const ['b1', 'b2']),
     );
     expect(find.textContaining('读取清单'), findsOneWidget);
     expect(tester.takeException(), isNull);

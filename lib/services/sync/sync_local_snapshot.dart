@@ -14,7 +14,7 @@ class SyncBookMeta {
   });
 }
 
-/// 本地一本书的同步记录：uuid 为跨设备身份，title 用于展示与首连/兼容回退。
+/// 本地一本书的同步记录：uuid 为唯一身份（同时是库主键），title 仅展示。
 class SyncBookRecord {
   final String uuid;
   final String title;
@@ -61,36 +61,35 @@ class SyncLocalSnapshot {
   static Future<SyncLocalSnapshot> build(Database db) async {
     final bookRows = await db.query('books');
 
-    // 轮次：group by book → 聚合指纹。
-    final roundsByBook = <int, List<Map<String, Object?>>>{};
+    // 子表一律按 book_uuid 分组（uuid 即父表主键，无需任何 id 中转）。
+    final roundsByBook = <String, List<Map<String, Object?>>>{};
     for (final r in await db.query('rounds')) {
-      final bookId = r['book_id'] as int?;
-      if (bookId == null) continue;
-      (roundsByBook[bookId] ??= []).add(r);
+      final bookUuid = (r['book_uuid'] as String? ?? '').trim();
+      if (bookUuid.isEmpty) continue;
+      (roundsByBook[bookUuid] ??= []).add(r);
     }
-
-    // 世界书：group by book。
-    final wbByBook = <int, List<Map<String, Object?>>>{};
+    final wbByBook = <String, List<Map<String, Object?>>>{};
     for (final r in await db.query('world_book_entries')) {
-      final bookId = r['book_id'] as int?;
-      if (bookId == null) continue;
-      (wbByBook[bookId] ??= []).add(r);
+      final bookUuid = (r['book_uuid'] as String? ?? '').trim();
+      if (bookUuid.isEmpty) continue;
+      (wbByBook[bookUuid] ??= []).add(r);
+    }
+    final bookModsByBook = <String, List<Map<String, Object?>>>{};
+    for (final r in await db.query('book_mods')) {
+      final bookUuid = (r['book_uuid'] as String? ?? '').trim();
+      if (bookUuid.isEmpty) continue;
+      (bookModsByBook[bookUuid] ??= []).add(r);
     }
 
-    // Mod 名 → id 映射（用于 book_mods 指纹归一化）；软删 Mod 不参与。
-    final modRows = await db.query('mods', where: 'deleted_at IS NULL');
-    final modIdToName = <int, String>{};
-    final modIdToUuid = <int, String>{};
+    // uuid → 名称（书-Mod 指纹按名称归一化：名称是内容，uuid 是身份）。
+    // 软删 Mod 不参与。
+    final modNameByUuid = <String, String>{};
     final localMods = <String, SyncModRecord>{};
-    for (final m in modRows) {
-      final id = m['id'] as int?;
+    for (final m in await db.query('mods', where: 'deleted_at IS NULL')) {
+      final uuid = (m['uuid'] as String? ?? '').trim();
       final name = (m['name'] as String? ?? '').trim();
-      if (id == null || name.isEmpty) continue;
-      modIdToName[id] = name;
-      final uuid = (m['uuid'] as String? ?? '').isEmpty
-          ? 'legacy-mod:$id'
-          : m['uuid'] as String;
-      modIdToUuid[id] = uuid;
+      if (uuid.isEmpty || name.isEmpty) continue;
+      modNameByUuid[uuid] = name;
       localMods[uuid] = SyncModRecord(
         uuid: uuid,
         name: name,
@@ -98,41 +97,29 @@ class SyncLocalSnapshot {
       );
     }
 
-    // 书-Mod：group by book。
-    final bookModsByBook = <int, List<Map<String, Object?>>>{};
-    for (final r in await db.query('book_mods')) {
-      final bookId = r['book_id'] as int?;
-      if (bookId == null) continue;
-      (bookModsByBook[bookId] ??= []).add(r);
-    }
-
     final books = <String, SyncBookRecord>{};
     final bookMeta = <String, SyncBookMeta>{};
     for (final r in bookRows) {
-      final id = r['id'] as int?;
+      final uuid = (r['uuid'] as String? ?? '').trim();
       final title = (r['title'] as String? ?? '').trim();
-      if (id == null || title.isEmpty) continue;
-      final rounds = [
-        for (final rr in roundsByBook[id] ?? const <Map<String, Object?>>[]) rr,
-      ];
-      final wb = [
-        for (final w in wbByBook[id] ?? const <Map<String, Object?>>[]) w,
-      ];
-      final bm = [
-        for (final b in bookModsByBook[id] ?? const <Map<String, Object?>>[]) b,
-      ];
-      final uuid = (r['uuid'] as String? ?? '').isEmpty
-          ? 'legacy-book:$id'
-          : r['uuid'] as String;
+      if (uuid.isEmpty || title.isEmpty) continue;
       books[uuid] = SyncBookRecord(
         uuid: uuid,
         title: title,
         parts: SyncBookParts(
           deleted: r['deleted_at'] != null,
           settingsFp: SyncFingerprint.bookSettings(r),
-          roundsFp: SyncFingerprint.roundsWithFailed(rounds, r),
-          worldBookFp: SyncFingerprint.worldBooks(wb),
-          bookModsFp: SyncFingerprint.bookMods(bm, modIdToName, modIdToUuid),
+          roundsFp: SyncFingerprint.roundsWithFailed(
+            [...roundsByBook[uuid] ?? const []],
+            r,
+          ),
+          worldBookFp: SyncFingerprint.worldBooks(
+            [...wbByBook[uuid] ?? const []],
+          ),
+          bookModsFp: SyncFingerprint.bookMods(
+            [...bookModsByBook[uuid] ?? const []],
+            modNameByUuid,
+          ),
         ),
       );
       bookMeta[uuid] = SyncBookMeta(

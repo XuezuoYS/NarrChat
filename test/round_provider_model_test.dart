@@ -8,7 +8,7 @@ import 'helpers/fakes.dart';
 
 /// 每轮模型名（`{{model}}` 解析值）随轮次落库的持久化测试。
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: 'b1', title: '测试书');
 
   test('sendRound 落库模型名：使用 {{model}} 而非友好名称', () async {
     final dao = FakeRoundDao();
@@ -70,7 +70,7 @@ void main() {
       aiService: ToggleAiService(),
       aiSettingsProvider: AiSettingsProvider(),
     );
-    await provider.loadRounds(1);
+    await provider.loadRounds(book.uuid);
     await provider.sendRound(
       userInput: '原始输入',
       book: book,

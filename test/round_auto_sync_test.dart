@@ -23,7 +23,7 @@ class _RecordingSyncProvider extends CloudSyncProvider {
 }
 
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: 'b1', title: '测试书');
 
   Future<(RoundProvider, _RecordingSyncProvider)> build() async {
     final dao = FakeRoundDao();
@@ -36,7 +36,7 @@ void main() {
       cloudSyncProvider: cloud,
       retryDelay: Duration.zero,
     );
-    await rp.loadRounds(1);
+    await rp.loadRounds('b1');
     return (rp, cloud);
   }
 
@@ -63,7 +63,7 @@ void main() {
       cloudSyncProvider: cloud,
       retryDelay: Duration.zero,
     );
-    await rp.loadRounds(1);
+    await rp.loadRounds('b1');
 
     final ok = await rp.sendRound(userInput: '失败轮', book: book);
 
@@ -83,10 +83,10 @@ void main() {
       cloudSyncProvider: cloud,
       retryDelay: Duration.zero,
     );
-    await rp.loadRounds(1);
+    await rp.loadRounds('b1');
 
     final future = rp.sendRound(userInput: '中断轮', book: book);
-    rp.cancelGeneration(bookId: 1);
+    rp.cancelGeneration(bookUuid: 'b1');
     final ok = await future;
 
     expect(ok, isFalse);

@@ -50,51 +50,92 @@ class FakeImageRevivalService implements ImageRevivalService {
 }
 
 /// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。
+///
+/// 身份一律为 uuid（书籍主键）；`insertBook` 对空 uuid 补发身份并回写列表，
+/// 与真实实现同语义，测试不触碰真实数据库。
 class FakeBookDao extends BookDao {
   FakeBookDao({List<Book> books = const [], this.times = const {}})
       : books = List.of(books);
 
   final List<Book> books;
-  final Map<int, DateTime> times;
+
+  /// 「最近对话时间」映射（键 = 书籍 uuid）。
+  final Map<String, DateTime> times;
   FailedAttempt failed = const FailedAttempt();
+
+  /// 每次 insertBook 分配的 uuid（可预置队列；耗尽则按序号自动生成）。
+  final List<String> uuidQueue = [];
+  int _insertSeq = 0;
 
   @override
   Future<List<Book>> getAllBooks({bool includeDeleted = false}) async =>
       List.of(books);
 
+  @override
+  Future<Book?> getBookByUuid(
+    String uuid, {
+    bool includeDeleted = false,
+  }) async {
+    if (uuid.isEmpty) return null;
+    for (final b in books) {
+      if (b.uuid == uuid) return b;
+    }
+    return null;
+  }
+
   /// 软删：从内存列表移除（等价于真实实现中 `deleted_at` 墓碑被过滤）。
   @override
-  Future<void> softDeleteBook(int id) async {
-    books.removeWhere((b) => b.id == id);
+  Future<void> softDeleteBook(String uuid) async {
+    books.removeWhere((b) => b.uuid == uuid);
   }
 
   @override
-  Future<Map<int, DateTime>> getLastRoundTimes() async => times;
+  Future<Map<String, DateTime>> getLastRoundTimes() async => times;
 
   @override
-  Future<FailedAttempt> getFailedAttempt(int bookId) async => failed;
+  Future<String> insertBook(Book book) async {
+    final uuid = uuidQueue.isNotEmpty
+        ? uuidQueue.removeAt(0)
+        : ((book.uuid.isNotEmpty) ? book.uuid : 'book-${++_insertSeq}');
+    final stored = book.uuid.isEmpty && uuid != book.uuid
+        ? book.copyWith(uuid: uuid)
+        : book;
+    if (!books.any((b) => b.uuid == stored.uuid)) books.add(stored);
+    return stored.uuid;
+  }
 
   @override
-  Future<void> setFailedAttempt(int bookId, FailedAttempt attempt) async {
+  Future<int> updateBook(Book book) async {
+    final index = books.indexWhere((b) => b.uuid == book.uuid);
+    if (index < 0) return 0;
+    books[index] = book;
+    return 1;
+  }
+
+  @override
+  Future<FailedAttempt> getFailedAttempt(String bookUuid) async => failed;
+
+  @override
+  Future<void> setFailedAttempt(String bookUuid, FailedAttempt attempt) async {
     failed = attempt;
   }
 }
 
-/// 内存版 [RoundDao]：轮次按 bookId 过滤、insert 分配递增 id、
+/// 内存版 [RoundDao]：轮次按 bookUuid 过滤、insert 分配递增 id（轮次自身主键）、
 /// delete 支持“仅本轮 / 后续全部”两种语义（与真实实现一致）。
 class FakeRoundDao extends RoundDao {
   final List<Round> rounds = [];
   int _nextId = 1;
 
   @override
-  Future<List<Round>> getRoundsByBook(int bookId) async =>
-      List.of(rounds.where((r) => r.bookId == bookId));
+  Future<List<Round>> getRoundsByBook(String bookUuid) async =>
+      List.of(rounds.where((r) => r.bookUuid == bookUuid));
 
   @override
   Future<int> insertRound(Round round) async {
     final created = Round(
       id: _nextId++,
-      bookId: round.bookId,
+      bookUuid: round.bookUuid,
       roundIndex: round.roundIndex,
       userInput: round.userInput,
       aiNarrative: round.aiNarrative,
@@ -123,7 +164,7 @@ class FakeRoundDao extends RoundDao {
     if (index < 0) return 0;
     final updated = Round(
       id: roundId,
-      bookId: rounds[index].bookId,
+      bookUuid: rounds[index].bookUuid,
       roundIndex: rounds[index].roundIndex,
       userInput: (fields['user_input'] as String?) ?? rounds[index].userInput,
       aiNarrative: (fields['ai_narrative'] as String?) ??
@@ -160,7 +201,9 @@ class FakeRoundDao extends RoundDao {
     if (target == null) return;
     if (deleteFollowing) {
       rounds.removeWhere(
-        (r) => r.bookId == target!.bookId && r.roundIndex >= target.roundIndex,
+        (r) =>
+            r.bookUuid == target!.bookUuid &&
+            r.roundIndex >= target.roundIndex,
       );
     } else {
       rounds.removeWhere((r) => r.id == roundId);
@@ -171,23 +214,67 @@ class FakeRoundDao extends RoundDao {
 /// 内存版 [WorldBookDao]：默认返回空条目。
 class FakeWorldBookDao extends WorldBookDao {
   @override
-  Future<List<WorldBookEntry>> getEntriesByBook(int bookId) async => [];
+  Future<List<WorldBookEntry>> getEntriesByBook(String bookUuid) async => [];
 }
 
-/// 内存版 [ModDao]：默认空 Mod 列表 / 无书-Mod 配置。
+/// 内存版 [ModDao]：Mod 主键即 uuid（无 int id），书-Mod 配置按 bookUuid 分桶。
 class FakeModDao extends ModDao {
   FakeModDao({List<Mod> mods = const []}) : mods = List.of(mods);
 
   final List<Mod> mods;
 
+  /// 书籍挂载：键 = 书籍 uuid。
+  final Map<String, List<BookModConfig>> bookMods = {};
+
+  int _insertSeq = 0;
+
   @override
   Future<List<Mod>> getAllMods() async => List.of(mods);
 
   @override
-  Future<List<BookModConfig>> getBookMods(int bookId) async => [];
+  Future<Mod?> getModByUuid(String uuid) async {
+    if (uuid.isEmpty) return null;
+    for (final m in mods) {
+      if (m.uuid == uuid) return m;
+    }
+    return null;
+  }
 
   @override
-  Future<void> replaceBookMods(int bookId, List<BookModConfig> configs) async {}
+  Future<String> insertMod(Mod mod) async {
+    final uuid = mod.uuid.isNotEmpty ? mod.uuid : 'mod-${++_insertSeq}';
+    final stored = mod.uuid == uuid ? mod : mod.copyWith(uuid: uuid);
+    if (!mods.any((m) => m.uuid == stored.uuid)) mods.add(stored);
+    return stored.uuid;
+  }
+
+  @override
+  Future<int> updateMod(Mod mod) async {
+    final index = mods.indexWhere((m) => m.uuid == mod.uuid);
+    if (index < 0) return 0;
+    mods[index] = mod;
+    return 1;
+  }
+
+  @override
+  Future<void> deleteMod(String uuid) async {
+    mods.removeWhere((m) => m.uuid == uuid);
+    bookMods.updateAll(
+      (key, list) => list.where((c) => c.modUuid != uuid).toList(),
+    );
+  }
+
+  @override
+  Future<List<BookModConfig>> getBookMods(String bookUuid) async =>
+      List.of(bookMods[bookUuid] ?? const []);
+
+  @override
+  Future<void> replaceBookMods(
+    String bookUuid,
+    List<BookModConfig> configs,
+  ) async {
+    bookMods[bookUuid] = List.of(configs);
+  }
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，
@@ -274,16 +361,16 @@ class FakeNotificationBackend implements NotificationBackend {
   final List<int> cancelled = [];
   final List<int> startedForeground = [];
   int stopForegroundCount = 0;
-  void Function(int bookId)? onTap;
+  void Function(String bookUuid)? onTap;
 
   /// 是否允许通知（null = 非 Android / 未知）。
   bool? notificationsEnabled;
 
-  /// 冷启动点通知的 bookId（null = 非冷启动）。
-  int? launchPayload;
+  /// 冷启动点通知的书籍 uuid（null = 非冷启动）。
+  String? launchPayload;
 
   @override
-  Future<void> init({required void Function(int bookId) onTap}) async {
+  Future<void> init({required void Function(String bookUuid) onTap}) async {
     this.onTap = onTap;
   }
 
@@ -301,7 +388,7 @@ class FakeNotificationBackend implements NotificationBackend {
   Future<void> cancel(int id) async => cancelled.add(id);
 
   @override
-  Future<int?> launchNotificationPayload() async => launchPayload;
+  Future<String?> launchNotificationPayload() async => launchPayload;
 
   @override
   Future<bool?> areNotificationsEnabled() async => notificationsEnabled;
@@ -323,8 +410,8 @@ class FakeNotificationBackend implements NotificationBackend {
     stopForegroundCount++;
   }
 
-  /// 模拟用户点击通知。
-  void tap(int bookId) => onTap?.call(bookId);
+  /// 模拟用户点击通知（参数 = 通知 payload 里的书籍 uuid）。
+  void tap(String bookUuid) => onTap?.call(bookUuid);
 }
 
 /// 可控图片导入替身：按 [results] 顺序返回结果，并记录调用次数与参数。

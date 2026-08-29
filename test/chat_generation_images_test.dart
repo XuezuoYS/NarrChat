@@ -14,7 +14,7 @@ void main() {
     final dao = FakeRoundDao();
     await dao.insertRound(
       Round(
-        bookId: 1,
+        bookUuid: kHarnessBookUuid,
         roundIndex: 1,
         userInput: '第 1 轮的用户输入',
         aiNarrative: '第 1 轮的剧情正文。',

@@ -211,12 +211,12 @@ class _ChatScreenState extends State<ChatScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final book = context.read<BookProvider>().currentBook;
       if (book == null) return;
-      await context.read<RoundProvider>().loadRounds(book.id!);
+      await context.read<RoundProvider>().loadRounds(book.uuid);
       if (!mounted) return;
       // 打开书籍后自动滚动到底部，直接查看最新剧情 / 状态。
       _scrollToBottom();
       // 加载当前书籍的世界书条目（供关键词扫描注入 System Prompt）。
-      context.read<WorldBookProvider>().loadEntries(book.id!);
+      context.read<WorldBookProvider>().loadEntries(book.uuid);
       // 全自动同步节点之一：进入书籍时拉取/推送变更（非自动模式内部忽略）。
       context.read<CloudSyncProvider>().triggerSync();
     });
@@ -1269,8 +1269,8 @@ class _ChatScreenState extends State<ChatScreen>
                   left: 0,
                   right: 0,
                   child: GenerationBanner(
-                    excludeBookId:
-                        context.watch<BookProvider>().currentBook?.id,
+                    excludeBookUuid:
+                        context.watch<BookProvider>().currentBook?.uuid,
                     onOpenBook: _jumpToBook,
                   ),
                 ),
@@ -1343,7 +1343,7 @@ class _ChatScreenState extends State<ChatScreen>
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => const ChatScreen(),
-        settings: RouteSettings(name: chatRouteName, arguments: book.id),
+        settings: RouteSettings(name: chatRouteName, arguments: book.uuid),
       ),
     );
   }

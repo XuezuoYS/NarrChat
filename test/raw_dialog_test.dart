@@ -84,7 +84,7 @@ const _fullContent = '## 剧情演绎\n正文内容\n'
     '## 记忆总结\n';
 
 void main() {
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: 'b1', title: '测试书');
 
   group('RawDialog 纯函数', () {
     test('expandEscapes 展开转义序列为真实换行 / 制表符', () {
@@ -212,7 +212,7 @@ void main() {
         aiSettingsProvider: _SearchDisabledSettings(),
         retryDelay: Duration.zero,
       );
-      await provider.loadRounds(1);
+      await provider.loadRounds('b1');
 
       expect(await provider.sendRound(userInput: '你好', book: book), isTrue);
 
@@ -263,7 +263,7 @@ void main() {
         webSearchTool: _FakeWebSearchTool(),
         retryDelay: Duration.zero,
       );
-      await provider.loadRounds(1);
+      await provider.loadRounds('b1');
 
       expect(
         await provider.sendRound(userInput: '查一下青云宗', book: book),
@@ -343,7 +343,7 @@ void main() {
         searchService: search,
         retryDelay: Duration.zero,
       );
-      await provider.loadRounds(1);
+      await provider.loadRounds('b1');
 
       // 运行期间监听事件（sendRound 成功后 _agentEvents 会被清空，须实时捕获）。
       var searchDone = false;
@@ -388,7 +388,7 @@ void main() {
         aiSettingsProvider: _SearchDisabledSettings(),
         retryDelay: Duration.zero,
       );
-      await provider.loadRounds(1);
+      await provider.loadRounds('b1');
 
       expect(await provider.sendRound(userInput: '触发失败', book: book), isFalse);
 

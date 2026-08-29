@@ -76,8 +76,8 @@ class DatabaseMergeService {
     Database local,
   ) async {
     // 一次性读入两侧全量数据，便于分书分组与计算指纹（规模同现有并集合并）。
-    final backupBooks = await backup.query('books', orderBy: 'id ASC');
-    final localBooks = await local.query('books', orderBy: 'id ASC');
+    final backupBooks = await backup.query('books', orderBy: 'uuid ASC');
+    final localBooks = await local.query('books', orderBy: 'uuid ASC');
     final backupRounds = await backup.query('rounds', orderBy: 'round_index ASC');
     final localRounds = await local.query('rounds', orderBy: 'round_index ASC');
     final backupWb = await backup.query('world_book_entries');
@@ -87,19 +87,22 @@ class DatabaseMergeService {
     final backupBookMods = await backup.query('book_mods');
     final localBookMods = await local.query('book_mods');
 
-    final backupRoundsByBook = _groupByBookId(backupRounds);
-    final localRoundsByBook = _groupByBookId(localRounds);
-    final backupWbByBook = _groupByBookId(backupWb);
-    final localWbByBook = _groupByBookId(localWb);
-    final backupBookModsByBook = _groupByBookId(backupBookMods);
-    final localBookModsByBook = _groupByBookId(localBookMods);
-    final backupModsById = <int, Map<String, Object?>>{
+    // 子表按 book_uuid 分组；Mod 行按 uuid 索引（uuid 即两侧主键）。
+    final backupRoundsByBook = _groupByBookUuid(backupRounds);
+    final localRoundsByBook = _groupByBookUuid(localRounds);
+    final backupWbByBook = _groupByBookUuid(backupWb);
+    final localWbByBook = _groupByBookUuid(localWb);
+    final backupBookModsByBook = _groupByBookUuid(backupBookMods);
+    final localBookModsByBook = _groupByBookUuid(localBookMods);
+    final backupModsByUuid = <String, Map<String, Object?>>{
       for (final m in backupMods)
-        if (m['id'] != null) m['id'] as int: m,
+        if ((m['uuid'] as String? ?? '').isNotEmpty)
+          m['uuid'] as String: m,
     };
-    final localModsById = <int, Map<String, Object?>>{
+    final localModsByUuid = <String, Map<String, Object?>>{
       for (final m in localMods)
-        if (m['id'] != null) m['id'] as int: m,
+        if ((m['uuid'] as String? ?? '').isNotEmpty)
+          m['uuid'] as String: m,
     };
 
     final backupByTitle = _indexByTitle(backupBooks);
@@ -115,19 +118,19 @@ class DatabaseMergeService {
           ? null
           : _buildSide(
               backupRow: backupRow,
-              rounds: backupRoundsByBook[backupRow['id']] ?? const [],
-              worldBooks: backupWbByBook[backupRow['id']] ?? const [],
-              bookMods: backupBookModsByBook[backupRow['id']] ?? const [],
-              modsById: backupModsById,
+              rounds: backupRoundsByBook[backupRow['uuid']] ?? const [],
+              worldBooks: backupWbByBook[backupRow['uuid']] ?? const [],
+              bookMods: backupBookModsByBook[backupRow['uuid']] ?? const [],
+              modsByUuid: backupModsByUuid,
             );
       final localSide = localRow == null
           ? null
           : _buildSide(
               backupRow: localRow,
-              rounds: localRoundsByBook[localRow['id']] ?? const [],
-              worldBooks: localWbByBook[localRow['id']] ?? const [],
-              bookMods: localBookModsByBook[localRow['id']] ?? const [],
-              modsById: localModsById,
+              rounds: localRoundsByBook[localRow['uuid']] ?? const [],
+              worldBooks: localWbByBook[localRow['uuid']] ?? const [],
+              bookMods: localBookModsByBook[localRow['uuid']] ?? const [],
+              modsByUuid: localModsByUuid,
             );
 
       final MergeBookStatus status;
@@ -239,7 +242,7 @@ class DatabaseMergeService {
   /// 冲突书按「设置部件 / 内容部件」独立选择（[BookPartDecisions]）：
   /// - 设置部件导入 → books 设置列 + 世界书 + 书‑Mod 配置采用导入侧；
   /// - 内容部件导入 → 轮次 + 失败条目采用导入侧；
-  /// 同名书就地更新（不删除重建，保留本地行 id 与共基身份）。
+  /// 同名书就地更新（不删除重建，保留本地行 uuid 与共基身份）。
   @visibleForTesting
   static Future<DatabaseMergeResult> applyPlan(
     Database local,
@@ -249,9 +252,9 @@ class DatabaseMergeService {
   ) async {
     final result = DatabaseMergeResult();
     await local.transaction((txn) async {
-      // 1. 先落地 Mod 决策，得到「导入 Mod 名 → 本地 Mod id」映射，
+      // 1. 先落地 Mod 决策，得到「导入 Mod 名 → 本地 Mod uuid」映射，
       //    供导入书时解析其 book_mods 引用。
-      final importModNameToId = await _applyModDecisions(
+      final importModNameToUuid = await _applyModDecisions(
         txn,
         plan,
         modDecisions,
@@ -275,20 +278,20 @@ class DatabaseMergeService {
           await _insertImportedBook(
             txn,
             entry.imported!,
-            importModNameToId,
+            importModNameToUuid,
             result,
           );
           continue;
         }
 
         // conflict：按部件独立落地（就地更新，不删除重建）。
-        final localId = await _localBookIdByTitle(txn, entry.title);
-        if (localId == null) {
+        final localUuid = await _localBookUuidByTitle(txn, entry.title);
+        if (localUuid == null) {
           // 极端情形：本地书已不存在（如被删除）→ 整本保留导入。
           await _insertImportedBook(
             txn,
             entry.imported!,
-            importModNameToId,
+            importModNameToUuid,
             result,
           );
           continue;
@@ -298,14 +301,14 @@ class DatabaseMergeService {
           await _applySettingsPart(
             txn,
             entry.imported!,
-            localId,
-            importModNameToId,
+            localUuid,
+            importModNameToUuid,
             result,
           );
           applied = true;
         }
         if (decision.content == MergePartChoice.import) {
-          await _applyContentPart(txn, entry.imported!, localId, result);
+          await _applyContentPart(txn, entry.imported!, localUuid, result);
           applied = true;
         }
         if (applied) {
@@ -318,19 +321,46 @@ class DatabaseMergeService {
     return result;
   }
 
-  /// 按书名（去首尾空白）查找本地书 id。
-  static Future<int?> _localBookIdByTitle(
+  /// 按书名（去首尾空白）查找本地书的 uuid。
+  static Future<String?> _localBookUuidByTitle(
     DatabaseExecutor txn,
     String title,
   ) async {
     final normalized = title.trim();
     final rows = await txn.query('books', where: 'title = ?', whereArgs: [title]);
     for (final r in rows) {
-      if ((r['title'] as String? ?? '').trim() == normalized) {
-        return r['id'] as int?;
-      }
+      if ((r['title'] as String? ?? '').trim() != normalized) continue;
+      final uuid = (r['uuid'] as String? ?? '').trim();
+      if (uuid.isNotEmpty) return uuid;
     }
     return null;
+  }
+
+  /// 待写入行的 uuid：为空（旧备份缺该列）或与该表既有行冲突时另发一个新 v4。
+  /// uuid 即主键，冲突时不改写已有行——导入副本自此是独立实体。
+  static Future<String> _usableUuid(
+    DatabaseExecutor txn,
+    String table,
+    String uuid,
+  ) async {
+    Future<bool> taken(String candidate) async {
+      final rows = await txn.query(
+        table,
+        columns: ['uuid'],
+        where: 'uuid = ?',
+        whereArgs: [candidate],
+        limit: 1,
+      );
+      return rows.isNotEmpty;
+    }
+
+    final wanted = uuid.trim();
+    if (wanted.isNotEmpty && !await taken(wanted)) return wanted;
+    var candidate = UuidUtils.generateUuidV4();
+    while (await taken(candidate)) {
+      candidate = UuidUtils.generateUuidV4();
+    }
+    return candidate;
   }
 
   /// 落地「设置部件」：books 设置列（不含 title，避免改名扰乱匹配）+
@@ -338,36 +368,43 @@ class DatabaseMergeService {
   static Future<void> _applySettingsPart(
     DatabaseExecutor txn,
     BookMergeSide imported,
-    int localId,
-    Map<String, int> importModNameToId,
+    String localUuid,
+    Map<String, String> importModNameToUuid,
     DatabaseMergeResult result,
   ) async {
     final settings = imported.book.toMap()
-      ..remove('id')
       ..remove('title')
       ..remove('uuid');
-    await txn.update('books', settings, where: 'id = ?', whereArgs: [localId]);
+    await txn.update(
+      'books',
+      settings,
+      where: 'uuid = ?',
+      whereArgs: [localUuid],
+    );
 
-    await txn.delete('world_book_entries', where: 'book_id = ?', whereArgs: [localId]);
+    await txn.delete(
+      'world_book_entries',
+      where: 'book_uuid = ?',
+      whereArgs: [localUuid],
+    );
     for (final w in imported.worldBooks) {
       await txn.insert(
         'world_book_entries',
         Map<String, Object?>.from(w)
           ..remove('id')
-          ..remove('book_id')
-          ..['book_id'] = localId,
+          ..['book_uuid'] = localUuid,
       );
       result.worldBookAdded++;
     }
 
-    await txn.delete('book_mods', where: 'book_id = ?', whereArgs: [localId]);
+    await txn.delete('book_mods', where: 'book_uuid = ?', whereArgs: [localUuid]);
     for (final bm in imported.bookMods) {
-      final modName = (imported.mods[bm.modId]?['name'] as String? ?? '').trim();
-      final modId = modName.isEmpty ? null : importModNameToId[modName];
+      final modName =
+          (imported.mods[bm.modUuid ?? '']?['name'] as String? ?? '').trim();
       await txn.insert('book_mods', {
-        'book_id': localId,
+        'book_uuid': localUuid,
         'preset_key': bm.presetKey,
-        'mod_id': modId,
+        'mod_uuid': modName.isEmpty ? null : importModNameToUuid[modName],
         'sort_order': bm.sortOrder,
         'is_enabled': bm.isEnabled,
       });
@@ -379,16 +416,16 @@ class DatabaseMergeService {
   static Future<void> _applyContentPart(
     DatabaseExecutor txn,
     BookMergeSide imported,
-    int localId,
+    String localUuid,
     DatabaseMergeResult result,
   ) async {
-    await txn.delete('rounds', where: 'book_id = ?', whereArgs: [localId]);
+    await txn.delete('rounds', where: 'book_uuid = ?', whereArgs: [localUuid]);
     for (final r in imported.rounds) {
       await txn.insert(
         'rounds',
         r.toMap()
           ..remove('id')
-          ..['book_id'] = localId,
+          ..['book_uuid'] = localUuid,
       );
       result.roundsAdded++;
     }
@@ -399,8 +436,8 @@ class DatabaseMergeService {
         'failed_error_message': imported.failedErrorMessage,
         'failed_user_images': imported.failedUserImages,
       },
-      where: 'id = ?',
-      whereArgs: [localId],
+      where: 'uuid = ?',
+      whereArgs: [localUuid],
     );
   }
 
@@ -418,19 +455,21 @@ class DatabaseMergeService {
   // 内部工具
   // ---------------------------------------------------------------------------
 
-  /// 落地 Mod 决策，返回「导入 Mod 名 → 本地 Mod id」映射（供导入书解析 book_mods）。
-  static Future<Map<String, int>> _applyModDecisions(
+  /// 落地 Mod 决策，返回「导入 Mod 名 → 本地 Mod uuid」映射（供导入书解析
+  /// book_mods 引用）。
+  static Future<Map<String, String>> _applyModDecisions(
     DatabaseExecutor txn,
     DatabaseMergePlan plan,
     Map<String, ModMergeDecision> modDecisions,
     DatabaseMergeResult result,
   ) async {
-    final importNameToId = <String, int>{};
+    final importNameToUuid = <String, String>{};
     final localModRows = await txn.query('mods');
-    final localNameToId = <String, int>{
+    final localNameToUuid = <String, String>{
       for (final m in localModRows)
-        if ((m['name'] as String? ?? '').trim().isNotEmpty)
-          (m['name'] as String? ?? '').trim(): m['id'] as int,
+        if ((m['name'] as String? ?? '').trim().isNotEmpty &&
+            (m['uuid'] as String? ?? '').isNotEmpty)
+          (m['name'] as String? ?? '').trim(): m['uuid'] as String,
     };
 
     for (final e in plan.modEntries) {
@@ -439,94 +478,111 @@ class DatabaseMergeService {
       switch (e.status) {
         case ModMergeStatus.localOnly:
         case ModMergeStatus.identical:
-          final lid = localNameToId[e.name];
-          if (lid != null) importNameToId[e.name] = lid;
+          final own = localNameToUuid[e.name];
+          if (own != null) importNameToUuid[e.name] = own;
           break;
         case ModMergeStatus.importOnly:
-          // 仅导入有的 Mod 始终导入。
-          final row = e.imported!.mod;
-          final newId = await txn.insert(
-            'mods',
-            _ensureUuid(Map<String, Object?>.from(row)..remove('id')),
+          // 仅导入有的 Mod 始终导入（保留其 uuid，身份自此跨设备一致）。
+          final uuid = await _insertRemoteModRow(
+            txn,
+            Map<String, Object?>.from(e.imported!.mod),
           );
-          localNameToId[e.name] = newId;
-          importNameToId[e.name] = newId;
+          localNameToUuid[e.name] = uuid;
+          importNameToUuid[e.name] = uuid;
           result.modsAdded++;
           break;
         case ModMergeStatus.conflict:
           switch (decision) {
             case ModMergeDecision.keepLocal:
-              final lid = localNameToId[e.name];
-              if (lid != null) importNameToId[e.name] = lid;
+              final own = localNameToUuid[e.name];
+              if (own != null) importNameToUuid[e.name] = own;
               break;
             case ModMergeDecision.import:
-              // 用导入内容覆盖本地同名 Mod（就地更新，id 不变，引用不失效）。
-              // 本地 uuid 保留（同步身份以本地为准，内容变更随推送传播）；
-              // 导入行 uuid 缺失时补齐（旧备份 schema 无该列）。
-              final row = e.imported!.mod;
-              final lid = localNameToId[e.name];
-              int modId;
-              if (lid != null) {
+              // 用导入内容覆盖本地同名 Mod（就地更新，uuid 不变，引用不失效）。
+              // 本地 uuid 保留：同步身份以本地为准，内容变更随推送传播。
+              final row = Map<String, Object?>.from(e.imported!.mod);
+              final own = localNameToUuid[e.name];
+              if (own != null) {
                 await txn.update(
                   'mods',
-                  Map<String, Object?>.from(row)
-                    ..remove('id')
-                    ..remove('uuid'),
-                  where: 'id = ?',
-                  whereArgs: [lid],
+                  row..remove('uuid')..remove('id'),
+                  where: 'uuid = ?',
+                  whereArgs: [own],
                 );
-                modId = lid;
               } else {
-                modId = await txn.insert(
-                  'mods',
-                  _ensureUuid(Map<String, Object?>.from(row)..remove('id')),
-                );
-                localNameToId[e.name] = modId;
+                final uuid = await _insertRemoteModRow(txn, row);
+                localNameToUuid[e.name] = uuid;
                 result.modsAdded++;
               }
-              importNameToId[e.name] = modId;
+              importNameToUuid[e.name] = own ?? localNameToUuid[e.name]!;
               result.modsReplaced++;
               break;
             case ModMergeDecision.rename:
               // 重命名为「{原名} - 导入」另存为新 Mod，本地同名 Mod 保留。
               final renamed = '${e.name} - 导入';
-              final row = e.imported!.mod;
-              final newId = await txn.insert(
-                'mods',
-                _ensureUuid(
-                  Map<String, Object?>.from(row)
-                    ..remove('id')
-                    ..['name'] = renamed,
-                ),
-              );
-              localNameToId[renamed] = newId;
-              importNameToId[e.name] = newId;
+              final row = Map<String, Object?>.from(e.imported!.mod)
+                ..['name'] = renamed;
+              final uuid = await _insertRemoteModRow(txn, row);
+              localNameToUuid[renamed] = uuid;
+              importNameToUuid[e.name] = uuid;
               result.modsRenamed++;
               break;
           }
           break;
       }
     }
-    return importNameToId;
+    return importNameToUuid;
   }
 
-  /// 导入行 uuid 缺失（旧备份 schema）时补生成，保证落地后的行具备同步身份。
-  static Map<String, Object?> _ensureUuid(Map<String, Object?> row) {
-    if ((row['uuid'] as String? ?? '').isNotEmpty) return row;
-    return {...row, 'uuid': UuidUtils.generateUuidV4()};
+  /// 插入一个导入侧 Mod 行（uuid 缺失 / 冲突时另发新 v4），返回落地的 uuid。
+  ///
+  /// [row] 来自备份库原始行，可能带旧 schema 的多余列（如早期的 `id`），
+  /// 写库前按新表列白名单收敛。
+  static Future<String> _insertRemoteModRow(
+    DatabaseExecutor txn,
+    Map<String, Object?> row,
+  ) async {
+    final uuid = await _usableUuid(txn, 'mods', (row['uuid'] as String? ?? ''));
+    final content = <String, Object?>{
+      for (final c in _modColumns)
+        if (row.containsKey(c)) c: row[c],
+      'uuid': uuid,
+    };
+    await txn.insert('mods', content);
+    return uuid;
   }
+
+  /// `mods` 表的内容列（uuid 之外的全部列）。
+  static const List<String> _modColumns = [
+    'name',
+    'description',
+    'pre_prompt',
+    'post_prompt',
+    'system_prompt',
+    'world_book',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+  ];
 
   /// 整本插入导入侧书籍快照（设置字段 + 轮次 + 世界书 + 书-Mod 配置）。
   ///
-  /// [importModNameToId]：导入 Mod 名 → 本地 Mod id（由 [applyPlan] 先落地 Mod 决策得到）。
+  /// [importModNameToUuid]：导入 Mod 名 → 本地 Mod uuid（由 [applyPlan] 先落地
+  /// Mod 决策得到）；书籍 uuid 缺失 / 与本地既有行冲突时另发新 v4。
   static Future<void> _insertImportedBook(
     DatabaseExecutor txn,
     BookMergeSide side,
-    Map<String, int> importModNameToId,
+    Map<String, String> importModNameToUuid,
     DatabaseMergeResult result,
   ) async {
-    final bookMap = _ensureUuid(side.book.toMap()..remove('id'));
-    final newBookId = await txn.insert('books', bookMap);
+    final bookMap = side.book.toMap();
+    final bookUuid = await _usableUuid(
+      txn,
+      'books',
+      (bookMap['uuid'] as String? ?? ''),
+    );
+    bookMap['uuid'] = bookUuid;
+    await txn.insert('books', bookMap);
     result.booksAdded++;
 
     for (final round in side.rounds) {
@@ -534,7 +590,7 @@ class DatabaseMergeService {
         'rounds',
         round.toMap()
           ..remove('id')
-          ..['book_id'] = newBookId,
+          ..['book_uuid'] = bookUuid,
       );
       result.roundsAdded++;
     }
@@ -544,19 +600,18 @@ class DatabaseMergeService {
         'world_book_entries',
         Map<String, Object?>.from(wb)
           ..remove('id')
-          ..remove('book_id')
-          ..['book_id'] = newBookId,
+          ..['book_uuid'] = bookUuid,
       );
       result.worldBookAdded++;
     }
 
     for (final bm in side.bookMods) {
-      final modName = (side.mods[bm.modId]?['name'] as String? ?? '').trim();
-      final modId = modName.isEmpty ? null : importModNameToId[modName];
+      final modName =
+          (side.mods[bm.modUuid ?? '']?['name'] as String? ?? '').trim();
       await txn.insert('book_mods', {
-        'book_id': newBookId,
+        'book_uuid': bookUuid,
         'preset_key': bm.presetKey,
-        'mod_id': modId,
+        'mod_uuid': modName.isEmpty ? null : importModNameToUuid[modName],
         'sort_order': bm.sortOrder,
         'is_enabled': bm.isEnabled,
       });
@@ -570,7 +625,7 @@ class DatabaseMergeService {
     required List<Map<String, Object?>> rounds,
     required List<Map<String, Object?>> worldBooks,
     required List<Map<String, Object?>> bookMods,
-    required Map<int, Map<String, Object?>> modsById,
+    required Map<String, Map<String, Object?>> modsByUuid,
   }) {
     final roundModels = [
       for (final r in rounds) Round.fromMap(r),
@@ -586,21 +641,21 @@ class DatabaseMergeService {
       for (final bm in bookMods)
         BookModAssign(
           presetKey: bm['preset_key'] as String?,
-          modId: bm['mod_id'] as int?,
+          modUuid: bm['mod_uuid'] as String?,
           sortOrder: (bm['sort_order'] as int?) ?? 0,
           isEnabled: (bm['is_enabled'] as int?) ?? 1,
         ),
     ]..sort((a, b) {
-        final an = _modName(a.modId, modsById);
-        final bn = _modName(b.modId, modsById);
+        final an = _modName(a.modUuid, modsByUuid);
+        final bn = _modName(b.modUuid, modsByUuid);
         final byName = an.compareTo(bn);
         if (byName != 0) return byName;
         return (a.presetKey ?? '').compareTo(b.presetKey ?? '');
       });
-    final referencedMods = <int, Map<String, Object?>>{
+    final referencedMods = <String, Map<String, Object?>>{
       for (final bm in assignments)
-        if (bm.modId != null && modsById.containsKey(bm.modId))
-          bm.modId!: modsById[bm.modId]!,
+        if (bm.modUuid != null && modsByUuid.containsKey(bm.modUuid))
+          bm.modUuid!: modsByUuid[bm.modUuid]!,
     };
 
     DateTime? lastTime;
@@ -619,7 +674,7 @@ class DatabaseMergeService {
       worldBooks: worldBooksCopy,
       bookMods: assignments,
       mods: referencedMods,
-      dbId: backupRow['id'] as int?,
+      dbUuid: backupRow['uuid'] as String?,
       roundsCount: roundModels.length,
       lastTime: lastTime,
       fingerprint: _fingerprint(
@@ -633,7 +688,7 @@ class DatabaseMergeService {
         backupRow,
         worldBooksCopy,
         assignments,
-        modsById,
+        modsByUuid,
       ),
       contentFp: _contentPartFingerprint(backupRow, roundModels),
       failedUserInput: (backupRow['failed_user_input'] as String?) ?? '',
@@ -647,7 +702,7 @@ class DatabaseMergeService {
     Map<String, Object?> row,
     List<Map<String, Object?>> worldBooks,
     List<BookModAssign> bookMods,
-    Map<int, Map<String, Object?>> modsById,
+    Map<String, Map<String, Object?>> modsByUuid,
   ) {
     final worldBooksJson = [
       for (final w in worldBooks)
@@ -656,7 +711,7 @@ class DatabaseMergeService {
     final bookModsJson = [
       for (final bm in bookMods)
         [
-          _modName(bm.modId, modsById),
+          _modName(bm.modUuid, modsByUuid),
           bm.presetKey,
           bm.sortOrder,
           bm.isEnabled,
@@ -711,11 +766,11 @@ class DatabaseMergeService {
   }
 
   static String _modName(
-    int? modId,
-    Map<int, Map<String, Object?>> modsById,
+    String? modUuid,
+    Map<String, Map<String, Object?>> modsByUuid,
   ) {
-    if (modId == null) return '';
-    return (modsById[modId]?['name'] as String? ?? '').trim();
+    if (modUuid == null || modUuid.isEmpty) return '';
+    return (modsByUuid[modUuid]?['name'] as String? ?? '').trim();
   }
 
   /// 与行 id 无关的书籍内容指纹：任一字段不同则指纹不同。
@@ -725,10 +780,9 @@ class DatabaseMergeService {
     List<Round> rounds,
     List<Map<String, Object?>> worldBooks,
     List<BookModAssign> bookMods,
-    Map<int, Map<String, Object?>> modsById,
+    Map<String, Map<String, Object?>> modsByUuid,
   ) {
     final settings = Map<String, Object?>.from(bookRow)
-      ..remove('id')
       ..remove('uuid')
       ..remove('settings_updated_at')
       ..remove('rounds_updated_at')
@@ -764,7 +818,7 @@ class DatabaseMergeService {
     final bookModsJson = [
       for (final bm in bookMods)
         [
-          _modName(bm.modId, modsById),
+          _modName(bm.modUuid, modsByUuid),
           bm.presetKey,
           bm.sortOrder,
           bm.isEnabled,
@@ -809,14 +863,14 @@ class DatabaseMergeService {
     return false;
   }
 
-  static Map<int, List<Map<String, Object?>>> _groupByBookId(
+  static Map<String, List<Map<String, Object?>>> _groupByBookUuid(
     List<Map<String, Object?>> rows,
   ) {
-    final map = <int, List<Map<String, Object?>>>{};
+    final map = <String, List<Map<String, Object?>>>{};
     for (final row in rows) {
-      final id = row['book_id'] as int?;
-      if (id == null) continue;
-      (map[id] ??= []).add(row);
+      final uuid = row['book_uuid'] as String?;
+      if (uuid == null || uuid.isEmpty) continue;
+      (map[uuid] ??= []).add(row);
     }
     return map;
   }
@@ -848,7 +902,7 @@ class DatabaseMergeService {
   static ModMergeSide _buildModSide(Map<String, Object?> row) {
     return ModMergeSide(
       mod: Map<String, Object?>.from(row),
-      dbId: row['id'] as int?,
+      dbUuid: row['uuid'] as String?,
       fingerprint: _modFingerprint(row),
     );
   }
@@ -1038,11 +1092,11 @@ class BookMergeSide {
   final List<Map<String, Object?>> worldBooks;
   final List<BookModAssign> bookMods;
 
-  /// 被本书引用的 Mod 行（按 oldModId），用于并集重建与 id 映射。
-  final Map<int, Map<String, Object?>> mods;
+  /// 被本书引用的 Mod 行（键 = Mod uuid），用于导入书时解析 book_mods 引用。
+  final Map<String, Map<String, Object?>> mods;
 
-  /// 本书在该库中的行 id（落地时用于关联映射）。
-  final int? dbId;
+  /// 本书在该库中的主键 uuid（落地时用于关联映射）。
+  final String? dbUuid;
   final int roundsCount;
   final DateTime? lastTime;
 
@@ -1066,7 +1120,7 @@ class BookMergeSide {
     required this.worldBooks,
     required this.bookMods,
     required this.mods,
-    this.dbId,
+    this.dbUuid,
     required this.roundsCount,
     this.lastTime,
     required this.fingerprint,
@@ -1081,13 +1135,15 @@ class BookMergeSide {
 /// 书-Mod 配置项（`book_mods` 行）。
 class BookModAssign {
   final String? presetKey;
-  final int? modId;
+
+  /// 用户 Mod 的 uuid（预置行为 null）。
+  final String? modUuid;
   final int sortOrder;
   final int isEnabled;
 
   const BookModAssign({
     this.presetKey,
-    this.modId,
+    this.modUuid,
     this.sortOrder = 0,
     this.isEnabled = 1,
   });
@@ -1133,15 +1189,15 @@ class ModMergeSide {
   /// 完整 mod 行（含 name/description/pre_prompt/post_prompt/system_prompt/world_book 等）。
   final Map<String, Object?> mod;
 
-  /// 该书在该库中的行 id（落地时用于关联映射）。
-  final int? dbId;
+  /// 该 Mod 在该库中的主键 uuid。
+  final String? dbUuid;
 
-  /// 与行 id 无关的内容指纹（冲突判定）。
+  /// 与身份无关的内容指纹（冲突判定）。
   final String fingerprint;
 
   const ModMergeSide({
     required this.mod,
-    this.dbId,
+    this.dbUuid,
     required this.fingerprint,
   });
 }

@@ -88,7 +88,7 @@ class SyncProgressEvent {
 /// 兼容：旧清单 `settingsFp` 单值直接使用；过渡期清单（子部件字段 infoFp 等）取
 /// 首个非空子部件值（会触发一次重写后自愈）。
 class SyncBookEntry {
-  /// 跨设备同步身份（UUID）；format=1 旧清单缺省为空，由合并层按 title 回退。
+  /// 跨设备同步身份：books 表主键，永不为空。
   final String uuid;
   final String title;
   final bool deleted;
@@ -154,7 +154,7 @@ class SyncBookEntry {
 
 /// 云端 manifest 中一个 Mod 的同步记录。
 class SyncModEntry {
-  /// 跨设备同步身份（UUID）；format=1 旧清单缺省为空，由合并层按 name 回退。
+  /// 跨设备同步身份：mods 表主键，永不为空。
   final String uuid;
   final String name;
   final bool deleted;
@@ -188,7 +188,8 @@ class SyncModEntry {
 
 /// 云端索引（manifest）：增量计算与并发控制的唯一基准。
 ///
-/// `format`：1 = 无 uuid（旧版/未发布格式）；2 = uuid 身份（现版本）。
+/// `format`：恒为 2（uuid 身份）。写出时保留该字段仅作清单自描述，读入时不据其
+/// 分支——条目 uuid 就是两侧库主键，没有「无 uuid」的清单形态。
 ///
 /// 图片删除不再进 manifest：独立为 WebDAV 墓碑文件（`img_tombstones.json`），
 /// 见 `img_tombstones.dart`——manifest 只承载书籍 / Mod / 图片引用集合。

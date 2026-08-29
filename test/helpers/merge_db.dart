@@ -3,7 +3,11 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// 构建与正式库同构的内存数据库，供合并规划 / 决策测试复用。
+/// 构建与正式库同构（v16：uuid 即身份）的内存数据库，供合并规划 / 决策测试复用。
+///
+/// v16 起 books / mods 两张表**没有 id 列**：`uuid TEXT PRIMARY KEY` 就是唯一身份；
+/// rounds / world_book_entries / book_mods 仍保留自己的 int 自增 id（本地行号，
+/// 不参与云同步），但一律改以 `book_uuid` / `mod_uuid` 引用父书的 uuid。
 ///
 /// 涵盖 `database_merge_service.dart` 的 `buildPlan` / `applyPlan` 会读写的全部表与列
 /// （books 含失败条目列、rounds 含 model_name/user_images/ai_images）。
@@ -18,18 +22,22 @@ Future<Database> createMergeDb() async {
   return db;
 }
 
-/// 创建与正式库同构的临时文件备份库（写入一本书 [title] 后关闭），返回文件路径。
+/// 创建与正式库同构的临时文件备份库（写入一本 uuid=[uuid] / 书名 [title]
+/// 的书后关闭），返回文件路径。
 ///
 /// 供「本地数据库导入」测试使用：模拟用户选择了一个 `.db` 备份文件。
 /// 调用方负责删除该文件的父目录（位于系统临时目录）。
-Future<String> createMergeFileDb({String title = '导入书'}) async {
+Future<String> createMergeFileDb({
+  String title = '导入书',
+  String uuid = 'file-import-book',
+}) async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   final dir = await Directory.systemTemp.createTemp('narrchat_import_');
   final path = p.join(dir.path, 'backup.db');
   final db = await databaseFactoryFfi.openDatabase(path);
   await _createSchema(db);
-  await db.insert('books', {'title': title});
+  await db.insert('books', {'uuid': uuid, 'title': title});
   await db.close();
   return path;
 }
@@ -37,8 +45,7 @@ Future<String> createMergeFileDb({String title = '导入书'}) async {
 Future<void> _createSchema(Database db) async {
   await db.execute('''
     CREATE TABLE books (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      uuid TEXT NOT NULL DEFAULT '',
+      uuid TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       category TEXT DEFAULT '',
       base_setting TEXT DEFAULT '',
@@ -60,7 +67,7 @@ Future<void> _createSchema(Database db) async {
   await db.execute('''
     CREATE TABLE rounds (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
+      book_uuid TEXT NOT NULL,
       round_index INTEGER NOT NULL,
       user_input TEXT DEFAULT '',
       ai_narrative TEXT DEFAULT '',
@@ -74,23 +81,24 @@ Future<void> _createSchema(Database db) async {
       model_name TEXT DEFAULT '',
       user_images TEXT NOT NULL DEFAULT '[]',
       ai_images TEXT NOT NULL DEFAULT '[]',
-      created_at DATETIME
+      created_at DATETIME,
+      updated_at INTEGER NOT NULL DEFAULT 0
     )
   ''');
   await db.execute('''
     CREATE TABLE world_book_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
+      book_uuid TEXT NOT NULL,
       keyword TEXT NOT NULL,
       content TEXT DEFAULT '',
       is_active INTEGER NOT NULL DEFAULT 1,
-      created_at DATETIME
+      created_at DATETIME,
+      updated_at INTEGER NOT NULL DEFAULT 0
     )
   ''');
   await db.execute('''
     CREATE TABLE mods (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      uuid TEXT NOT NULL DEFAULT '',
+      uuid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT DEFAULT '',
       pre_prompt TEXT DEFAULT '',
@@ -105,9 +113,9 @@ Future<void> _createSchema(Database db) async {
   await db.execute('''
     CREATE TABLE book_mods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
+      book_uuid TEXT NOT NULL,
       preset_key TEXT,
-      mod_id INTEGER,
+      mod_uuid TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       is_enabled INTEGER NOT NULL DEFAULT 1
     )

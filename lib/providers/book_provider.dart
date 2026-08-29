@@ -22,17 +22,18 @@ class BookProvider extends ChangeNotifier {
   String? _error;
 
   /// 每本书最近一轮对话的创建时间（首页「时间排序」用，无轮次的书不包含在内）。
-  Map<int, DateTime> _lastRoundTimes = {};
+  /// 键为书籍 uuid。
+  Map<String, DateTime> _lastRoundTimes = {};
 
   List<Book> get books => List.unmodifiable(_books);
   Book? get currentBook => _currentBook;
   bool get isLoading => _isLoading;
   String? get error => _error;
-  Map<int, DateTime> get lastRoundTimes => Map.unmodifiable(_lastRoundTimes);
+  Map<String, DateTime> get lastRoundTimes => Map.unmodifiable(_lastRoundTimes);
 
   /// 加载书籍列表；若当前书籍已被删除则自动重置，无选中时默认选第一本。
   ///
-  /// 重新加载后会用**最新实例**替换当前选中项（同一 id）——云同步拉取落地后
+  /// 重新加载后会用**最新实例**替换当前选中项（同一 uuid）——云同步拉取落地后
   /// 调用本方法即让 currentBook 携带最新设置字段；否则保留旧实例会让
   /// 对话页 / 书籍设置页持续展示陈旧数据。
   Future<void> loadBooks() async {
@@ -54,12 +55,12 @@ class BookProvider extends ChangeNotifier {
     }
   }
 
-  /// 返回与 [book] 同 id 的最新实例；[book] 已不在最新列表中（如被删除）返回 null。
+  /// 返回与 [book] 同 uuid 的最新实例；[book] 已不在最新列表中（如被删除）返回 null。
   Book? _refreshCurrent(Book? book) {
-    final id = book?.id;
-    if (id == null) return null;
+    final uuid = book?.uuid ?? '';
+    if (uuid.isEmpty) return null;
     for (final b in _books) {
-      if (b.id == id) return b;
+      if (b.uuid == uuid) return b;
     }
     return null;
   }
@@ -77,10 +78,10 @@ class BookProvider extends ChangeNotifier {
   /// 新建书籍，成功后自动选中。
   Future<bool> createBook(Book book) async {
     try {
-      final id = await _dao.insertBook(book);
+      final uuid = await _dao.insertBook(book);
       await loadBooks();
       _currentBook = _books.firstWhere(
-        (b) => b.id == id,
+        (b) => b.uuid == uuid,
         orElse: () => _books.isNotEmpty ? _books.first : book,
       );
       notifyListeners();
@@ -113,8 +114,8 @@ class BookProvider extends ChangeNotifier {
   /// 删除书籍（软删：打下跌碑并隐藏，行暂留用于云同步删除传播）。
   Future<bool> deleteBook(Book book) async {
     try {
-      await _dao.softDeleteBook(book.id!);
-      if (_currentBook?.id == book.id) {
+      await _dao.softDeleteBook(book.uuid);
+      if (_currentBook?.uuid == book.uuid) {
         _currentBook = null;
       }
       await loadBooks();
@@ -129,7 +130,7 @@ class BookProvider extends ChangeNotifier {
 
   /// 切换当前书籍。
   ///
-  /// 统一以 [books] 中的**最新实例**为准（同 id 重复选中同样生效）：
+  /// 统一以 [books] 中的**最新实例**为准（同 uuid 重复选中同样生效）：
   /// 云同步落地后即使传入的是旧快照，选中后 currentBook 也立即携带最新字段。
   void selectBook(Book book) {
     final fresh = _refreshCurrent(book) ?? book;

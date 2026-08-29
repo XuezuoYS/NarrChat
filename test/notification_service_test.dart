@@ -10,12 +10,15 @@ import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/utils/uuid_utils.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
-const bookA = Book(id: 1, title: '书A');
-const bookB = Book(id: 2, title: '书B');
+/// 书籍身份即 uuid（TEXT 主键）：通知槽 id 只是 uuid 的派生哈希，
+/// 业务侧（payload / 路由参数 / 栈顶判定）一律直接使用 uuid 字符串。
+const bookA = Book(uuid: 'f3a1b7c2-1d2e-4a5b-9c8d-1e2f3a4b5c61', title: '书A');
+const bookB = Book(uuid: 'c7d5e3f1-6a7b-4c8d-9e0f-a1b2c3d4e5f6', title: '书B');
 
 /// 构造一个已初始化、注入假后端的服务。
 Future<GenerationNotificationService> _makeService(
@@ -32,10 +35,10 @@ Future<GenerationNotificationService> _makeService(
   return service;
 }
 
-/// 构造一条标记为「书 [bookId] 的 chat 页」的路由。
-Route<void> chatRoute(int bookId) => MaterialPageRoute<void>(
+/// 构造一条标记为「书 [bookUuid] 的 chat 页」的路由（路由参数 = 书籍 uuid）。
+Route<void> chatRoute(String bookUuid) => MaterialPageRoute<void>(
       builder: (_) => const SizedBox(),
-      settings: RouteSettings(name: chatRouteName, arguments: bookId),
+      settings: RouteSettings(name: chatRouteName, arguments: bookUuid),
     );
 
 void main() {
@@ -43,11 +46,11 @@ void main() {
     final backend = FakeNotificationBackend();
     final service = await _makeService(backend);
 
-    // 模拟栈顶正在查看书 1 的 chat 页（生命周期默认 resumed）。
-    service.routeObserver.didPush(chatRoute(1), null);
-    expect(service.topChatBookId, 1);
+    // 模拟栈顶正在查看书 A 的 chat 页（生命周期默认 resumed）。
+    service.routeObserver.didPush(chatRoute(bookA.uuid), null);
+    expect(service.topChatBookUuid, bookA.uuid);
 
-    service.onGenerationCompleted(1, '书A');
+    service.onGenerationCompleted(bookA.uuid, '书A');
 
     expect(backend.shown, isEmpty);
   });
@@ -57,11 +60,12 @@ void main() {
     final service = await _makeService(backend);
     service.didChangeAppLifecycleState(AppLifecycleState.paused);
 
-    service.onGenerationCompleted(1, '书A');
+    service.onGenerationCompleted(bookA.uuid, '书A');
 
     expect(backend.shown, hasLength(1));
-    expect(backend.shown.single.id, 1);
-    expect(backend.shown.single.payload, '1');
+    // 槽位 id = uuid 的派生哈希，payload 就是 uuid 本身。
+    expect(backend.shown.single.id, notificationIdForUuid(bookA.uuid));
+    expect(backend.shown.single.payload, bookA.uuid);
     expect(backend.shown.single.title, '《书A》本轮已完成');
     expect(backend.shown.single.body, '点击打开');
   });
@@ -70,26 +74,31 @@ void main() {
     final backend = FakeNotificationBackend();
     final service = await _makeService(backend);
 
-    service.onGenerationCompleted(2, '书B');
+    service.onGenerationCompleted(bookB.uuid, '书B');
 
     expect(backend.shown, hasLength(1));
-    expect(backend.shown.single.id, 2);
+    expect(backend.shown.single.id, notificationIdForUuid(bookB.uuid));
+    expect(
+      backend.shown.single.id,
+      isNot(notificationIdForUuid(bookA.uuid)),
+      reason: '每本书各自派生槽位，互不覆盖',
+    );
   });
 
   testWidgets('进入对应书 chat 页时自动删除该通知', (tester) async {
     final backend = FakeNotificationBackend();
     final service = await _makeService(backend);
 
-    // 后台先弹出一条书 2 的通知。
+    // 后台先弹出一条书 B 的通知。
     service.didChangeAppLifecycleState(AppLifecycleState.paused);
-    service.onGenerationCompleted(2, '书B');
+    service.onGenerationCompleted(bookB.uuid, '书B');
     backend.cancelled.clear();
 
-    // 前台进入书 2 的 chat 页。
+    // 前台进入书 B 的 chat 页。
     service.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    service.routeObserver.didPush(chatRoute(2), null);
+    service.routeObserver.didPush(chatRoute(bookB.uuid), null);
 
-    expect(backend.cancelled, contains(2));
+    expect(backend.cancelled, contains(notificationIdForUuid(bookB.uuid)));
   });
 
   testWidgets('生成任务进行中启动保活前台服务，全部结束后停止', (tester) async {
@@ -150,11 +159,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 模拟点击「书 B 生成完成」通知。
-    backend.tap(bookB.id!);
+    // 模拟点击「书 B 生成完成」通知（回调参数 = payload 里的书籍 uuid）。
+    backend.tap(bookB.uuid);
     await tester.pumpAndSettle();
 
     expect(find.byType(ChatScreen), findsOneWidget);
-    expect(bookProvider.currentBook?.id, bookB.id);
+    expect(bookProvider.currentBook?.uuid, bookB.uuid);
+    // 路由以 uuid 标记栈顶 chat 页，故跳转后即视为正在查看该书。
+    expect(service.topChatBookUuid, bookB.uuid);
   });
 }

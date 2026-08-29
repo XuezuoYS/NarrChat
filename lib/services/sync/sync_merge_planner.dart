@@ -4,11 +4,9 @@ import 'sync_local_snapshot.dart';
 /// 三向部件级合并规划器（纯逻辑，不写库、不联网）。
 ///
 /// 输入是**指纹级**快照：本机共基（`sync_book_base`）、本地现状、远端 manifest，
-/// 全部以 **uuid** 为键（跨设备身份）。title / name 仅作展示与回退匹配：
-/// - 同一 uuid 在三侧出现 → 按 uuid 精确对齐；
-/// - 某侧 uuid 缺失或不同（旧版 format=1 清单、首连双端、手动合并后"保留本地"
-///   的过渡态）→ 按 title / name **唯一**匹配回退（每侧恰一个候选）；
-///   不唯一（同名多书/多 Mod）→ 不链接，按各自实体独立判定（冲突场景走人工）。
+/// 全部以 **uuid** 为键。uuid 同时是两侧库的主键，因此三侧对齐**只按 uuid**：
+/// 同名不同 uuid 的书/Mod 就是两个独立实体（各自 localOnly / remoteOnly），
+/// title / name 仅随决策携带供展示，从不参与身份判定。
 ///
 /// 输出每个书 / Mod 的部件级决策，供同步服务决定：
 /// - 哪些部件可**自动**采用某侧（localOnly / remoteOnly）；
@@ -236,7 +234,11 @@ class SyncMergePlanner {
       );
 
   // ---------------------------------------------------------------------------
-  // 身份分组：uuid 精确匹配 + title/name 唯一回退
+  // 身份分组：只有 uuid
+  //
+  // 三侧（共基 / 本地 / 远端）的键就是各自库的主键 uuid，同一 uuid 即同一实体。
+  // title / name 不参与匹配：同名不同 uuid 的书 / Mod 是两个独立实体，各自走
+  // localOnly / remoteOnly（§9.6：两台设备各建同名书 → 两本独立，不并书）。
   // ---------------------------------------------------------------------------
 
   static List<_BookParty> _groupBooks({
@@ -244,25 +246,12 @@ class SyncMergePlanner {
     required Map<String, SyncBookRecord> local,
     required Map<String, RemoteBookParts> remote,
   }) {
-    final localByTitle = _unambiguous(local, (r) => r.title);
-    final remoteByTitle = _unambiguous(remote, (r) => r.title);
-    final baseByTitle = _unambiguous(base, (b) => b.title);
-
-    final groups = _linkGroups(
-      namesOf: {
-        'local': localByTitle,
-        'remote': remoteByTitle,
-        'base': baseByTitle,
-      },
-      uuids: {...base.keys, ...local.keys, ...remote.keys},
-    );
-
     return [
-      for (final uuids in groups.values)
+      for (final uuid in {...base.keys, ...local.keys, ...remote.keys})
         _BookParty(
-          base: _firstOf(base, uuids),
-          local: _firstOf(local, uuids),
-          remote: _firstOf(remote, uuids),
+          base: base[uuid],
+          local: local[uuid],
+          remote: remote[uuid],
         ),
     ];
   }
@@ -272,109 +261,14 @@ class SyncMergePlanner {
     required Map<String, SyncModRecord> local,
     required Map<String, RemoteModParts> remote,
   }) {
-    final localByName = _unambiguous(local, (r) => r.name);
-    final remoteByName = _unambiguous(remote, (r) => r.name);
-    final baseByName = _unambiguous(base, (b) => b.name);
-
-    final groups = _linkGroups(
-      namesOf: {
-        'local': localByName,
-        'remote': remoteByName,
-        'base': baseByName,
-      },
-      uuids: {...base.keys, ...local.keys, ...remote.keys},
-    );
-
     return [
-      for (final uuids in groups.values)
+      for (final uuid in {...base.keys, ...local.keys, ...remote.keys})
         _ModParty(
-          base: _firstOf(base, uuids),
-          local: _firstOf(local, uuids),
-          remote: _firstOf(remote, uuids),
+          base: base[uuid],
+          local: local[uuid],
+          remote: remote[uuid],
         ),
     ];
-  }
-
-  /// 名称 → uuid 的唯一映射（该名称在源 Map 中出现多次则整个跳过）。
-  static Map<String, String> _unambiguous<K, V>(
-    Map<K, V> source,
-    String Function(V) nameOf,
-  ) {
-    final result = <String, String>{};
-    final count = <String, int>{};
-    for (final e in source.entries) {
-      final name = nameOf(e.value).trim();
-      if (name.isEmpty) continue;
-      count[name] = (count[name] ?? 0) + 1;
-      result[name] = e.key.toString();
-    }
-    // 同名多候选 → 撤销该名称的链接（按独立实体判定）。
-    return {
-      for (final e in count.entries)
-        if (e.value == 1) e.key: result[e.key]!,
-    };
-  }
-
-  /// 书名/Mod 名唯一回退链接：同一名称在 ≥2 侧各有一个候选 → 并成一个实体。
-  ///
-  /// 并查集实现；[namesOf] 的值为"名称 → 各侧唯一 uuid"。
-  static Map<String, List<String>> _linkGroups({
-    required Map<String, Map<String, String>> namesOf,
-    required Set<String> uuids,
-  }) {
-    final parent = <String, String>{for (final u in uuids) u: u};
-    String find(String x) {
-      var r = x;
-      while (parent[r] != r) {
-        r = parent[r]!;
-      }
-      // 路径压缩。
-      var cur = x;
-      while (parent[cur] != cur) {
-        final next = parent[cur]!;
-        parent[cur] = r;
-        cur = next;
-      }
-      return r;
-    }
-
-    void union(String a, String b) {
-      final ra = find(a);
-      final rb = find(b);
-      if (ra != rb) parent[rb] = ra;
-    }
-
-    final names = <String>{};
-    for (final m in namesOf.values) {
-      names.addAll(m.keys);
-    }
-    for (final name in names) {
-      final candidates = <String>{};
-      for (final m in namesOf.values) {
-        final u = m[name];
-        if (u != null) candidates.add(u);
-      }
-      if (candidates.length >= 2) {
-        final first = candidates.first;
-        for (final u in candidates) {
-          union(u, first);
-        }
-      }
-    }
-
-    final groups = <String, List<String>>{};
-    for (final u in uuids) {
-      groups.putIfAbsent(find(u), () => []).add(u);
-    }
-    return groups;
-  }
-
-  static V? _firstOf<K, V>(Map<K, V> source, List<String> uuids) {
-    for (final u in uuids) {
-      final v = source[u];
-      if (v != null) return v;
-    }
-    return null;
   }
 }
 

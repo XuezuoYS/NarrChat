@@ -11,7 +11,7 @@ void main() {
       const scanner = WorldBookScanner();
       const entry = WorldBookEntry(
         id: 1,
-        bookId: 1,
+        bookUuid: 'b1',
         keyword: '青云宗, 苏清月',
         content: '青云宗是北域的修仙大派。',
         isActive: true,
@@ -36,7 +36,7 @@ void main() {
       const scanner = WorldBookScanner();
       const entry = WorldBookEntry(
         id: 1,
-        bookId: 1,
+        bookUuid: 'b1',
         keyword: '青云宗',
         content: '青云宗是北域的修仙大派。',
         isActive: false,
@@ -53,7 +53,7 @@ void main() {
       const scanner = WorldBookScanner();
       const entry = WorldBookEntry(
         id: 1,
-        bookId: 1,
+        bookUuid: 'b1',
         keyword: '青云宗',
         content: '青云宗是北域的修仙大派。',
         isActive: true,
@@ -61,7 +61,7 @@ void main() {
       final result = scanner.scan(
         userInput: '继续前行',
         historyRounds: const [
-          Round(bookId: 1, roundIndex: 1, userInput: '我进入了青云宗'),
+          Round(bookUuid: 'b1', roundIndex: 1, userInput: '我进入了青云宗'),
         ],
         entries: const [entry],
       );

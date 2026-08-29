@@ -31,6 +31,9 @@ import 'fakes.dart';
 /// 约定：仅包含“把被测页面 pump 起来”的公共流程；具体交互与断言
 /// 留在各测试文件内。
 
+/// 脚手架预置书籍的 uuid（书籍主键即身份，测试断言直接引用）。
+const String kHarnessBookUuid = 'book-1';
+
 /// 以 [size] 视口 pump 对话页（ChatScreen），返回 RoundProvider。
 ///
 /// 参数均为可覆盖项：
@@ -51,7 +54,7 @@ Future<RoundProvider> pumpChatScreen(
   AiSettingsProvider? settings,
   ImageImportService? imageImport,
   ClipboardPasteService? clipboardPaste,
-  void Function(int bookId, String bookTitle)? onGenerationCompleted,
+  void Function(String bookUuid, String bookTitle)? onGenerationCompleted,
   Duration retryDelay = const Duration(milliseconds: 800),
   int seedRounds = 0,
   int seedBodyRepeats = 40,
@@ -62,14 +65,14 @@ Future<RoundProvider> pumpChatScreen(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  const book = Book(id: 1, title: '测试书');
+  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
   final bookDao0 = bookDao ?? FakeBookDao(books: [book]);
   final dao = roundDao ?? FakeRoundDao();
   final worldDao = worldBookDao ?? FakeWorldBookDao();
   for (var i = 1; i <= seedRounds; i++) {
     await dao.insertRound(
       Round(
-        bookId: 1,
+        bookUuid: kHarnessBookUuid,
         roundIndex: i,
         userInput: '第 $i 轮的用户输入',
         aiNarrative: '第 $i 轮的剧情正文。' * seedBodyRepeats,
@@ -86,7 +89,7 @@ Future<RoundProvider> pumpChatScreen(
     retryDelay: retryDelay,
     onGenerationCompleted: onGenerationCompleted,
   );
-  await roundProvider.loadRounds(1);
+  await roundProvider.loadRounds(kHarnessBookUuid);
 
   await tester.pumpWidget(
     MultiProvider(
@@ -122,7 +125,7 @@ Future<RoundProvider> pumpChatScreen(
 
 /// 以 [size] 视口 pump 首页（HomeScreen，书籍列表）。
 ///
-/// [books] / [times] 注入书籍列表与最近对话时间；
+/// [books] / [times]（键 = 书籍 uuid）注入书籍列表与最近对话时间；
 /// [notificationBackend] 注入通知后端（缺省时用 [FakeNotificationBackend]，
 /// 避免默认走真实 flutter_local_notifications 插件）；
 /// [notificationSettings] 注入预先构建（已 refresh）的通知设置 Provider，
@@ -130,7 +133,7 @@ Future<RoundProvider> pumpChatScreen(
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
   required List<Book> books,
-  Map<int, DateTime> times = const {},
+  Map<String, DateTime> times = const {},
   NotificationBackend? notificationBackend,
   NotificationSettingsProvider? notificationSettings,
   Size size = const Size(1400, 900),
@@ -179,6 +182,67 @@ Future<BookProvider> pumpHomeScreen(
   );
   await tester.pumpAndSettle();
   return bookProvider;
+}
+
+/// 以 [service] 的 navigatorKey / 路由观察者 pump 一个「首页 + 通知服务」宿主。
+///
+/// 与 [pumpChatScreen] 的区别：首页不是对话页，通知跳转（含冷启动点通知）
+/// 会真实地把 ChatScreen 推上栈，供通知链路测试观察栈顶与选中书籍。
+/// Provider 组合与 [pumpChatScreen] 保持一致，`onGenerationCompleted` 已接到
+/// [service]（生成完成 → 通知的接线由生产代码负责）。
+Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
+  WidgetTester tester, {
+  required GenerationNotificationService service,
+  required BookProvider bookProvider,
+  required FakeBookDao bookDao,
+  FakeRoundDao? roundDao,
+  AiService? ai,
+  Size size = const Size(1400, 900),
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+
+  final dao = roundDao ?? FakeRoundDao();
+  final roundProvider = RoundProvider(
+    dao: dao,
+    aiService: ai ?? ToggleAiService(),
+    bookDao: bookDao,
+    onGenerationCompleted: service.onGenerationCompleted,
+  );
+
+  await tester.pumpWidget(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+        ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
+        ChangeNotifierProvider(
+          create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
+        ),
+        ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
+        ChangeNotifierProvider(create: (_) => SidebarProvider()),
+        ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
+        Provider<ImageImportService>(
+          create: (_) => FakeImageImportService(),
+        ),
+        Provider<ClipboardPasteService>(
+          create: (_) => FakeClipboardPasteService(),
+        ),
+        Provider<ImageRevivalService>(
+          create: (_) => FakeImageRevivalService(),
+        ),
+      ],
+      child: MaterialApp(
+        theme: NarrChatTheme.light,
+        navigatorKey: service.navigatorKey,
+        navigatorObservers: [service.routeObserver],
+        home: const Scaffold(body: Center(child: Text('首页'))),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return (books: bookProvider, rounds: roundProvider);
 }
 
 /// 等待 sendRound 结束（isSending 期间发送按钮有无限转圈动画，

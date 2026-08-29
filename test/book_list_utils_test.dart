@@ -2,12 +2,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/utils/book_list_utils.dart';
 
+/// 首页书籍列表的搜索过滤与排序逻辑单元测试（纯函数，无需 widget）。
+///
+/// 书籍唯一身份是 uuid（TEXT 主键）：所有并列决胜都按 uuid 比较，
+/// 与创建先后 / 列表入参顺序无关（那是旧的本地自增语义，跨设备不一致）。
 void main() {
   group('filterBooks', () {
     const books = [
-      Book(id: 1, title: '剑来', category: '玄幻'),
-      Book(id: 2, title: '三体', category: '科幻'),
-      Book(id: 3, title: 'The Hobbit', category: 'Fantasy'),
+      Book(uuid: 'b1', title: '剑来', category: '玄幻'),
+      Book(uuid: 'b2', title: '三体', category: '科幻'),
+      Book(uuid: 'b3', title: 'The Hobbit', category: 'Fantasy'),
     ];
 
     test('空查询返回全部', () {
@@ -17,19 +21,19 @@ void main() {
 
     test('按标题过滤（大小写不敏感）', () {
       final r = filterBooks(books, '剑');
-      expect(r.map((b) => b.id), [1]);
+      expect(r.map((b) => b.uuid), ['b1']);
       final r2 = filterBooks(books, 'hobbit');
-      expect(r2.map((b) => b.id), [3]);
+      expect(r2.map((b) => b.uuid), ['b3']);
     });
 
     test('按分类过滤', () {
       final r = filterBooks(books, '科幻');
-      expect(r.map((b) => b.id), [2]);
+      expect(r.map((b) => b.uuid), ['b2']);
     });
 
     test('多关键词：全部命中才通过（标题或分类）', () {
       final r = filterBooks(books, '剑 玄幻');
-      expect(r.map((b) => b.id), [1]);
+      expect(r.map((b) => b.uuid), ['b1']);
     });
 
     test('多关键词：部分命中不通过', () {
@@ -38,12 +42,12 @@ void main() {
 
     test('多关键词：可跨字段命中（标题 + 分类）', () {
       final r = filterBooks(books, '三 科');
-      expect(r.map((b) => b.id), [2]);
+      expect(r.map((b) => b.uuid), ['b2']);
     });
 
     test('多关键词：大小写不敏感且忽略多余空格', () {
       final r = filterBooks(books, '  hobbit   fantasy  ');
-      expect(r.map((b) => b.id), [3]);
+      expect(r.map((b) => b.uuid), ['b3']);
     });
 
     test('无匹配返回空列表', () {
@@ -53,50 +57,53 @@ void main() {
 
   group('sortBooks A-Z', () {
     const books = [
-      Book(id: 1, title: '张三'),
-      Book(id: 2, title: '阿伟'),
-      Book(id: 3, title: 'Book'),
-      Book(id: 4, title: '张三'), // 标题相同按 id 升序
+      Book(uuid: 'b1', title: '张三'),
+      Book(uuid: 'b2', title: '阿伟'),
+      Book(uuid: 'b3', title: 'Book'),
+      Book(uuid: 'b4', title: '张三'), // 标题相同按 uuid 升序
     ];
 
     test('汉字按拼音，非汉字原样', () {
       final r = sortBooks(books, BookSortMode.az, const {});
-      expect(r.map((b) => b.id), [2, 3, 1, 4]); // 阿伟 < Book < 张三
+      expect(r.map((b) => b.uuid), ['b2', 'b3', 'b1', 'b4']); // 阿伟 < Book < 张三
     });
 
-    test('标题相同按 id 升序', () {
+    test('标题相同按 uuid 升序', () {
       final r = sortBooks(books, BookSortMode.az, const {});
-      expect(r[2].id, 1);
-      expect(r[3].id, 4);
+      expect(r[2].uuid, 'b1');
+      expect(r[3].uuid, 'b4');
     });
   });
 
   group('sortBooks 时间', () {
     const books = [
-      Book(id: 1, title: 'A'),
-      Book(id: 2, title: 'B'),
-      Book(id: 3, title: 'C'),
-      Book(id: 4, title: 'D'),
+      Book(uuid: 'b1', title: 'A'),
+      Book(uuid: 'b2', title: 'B'),
+      Book(uuid: 'b3', title: 'C'),
+      Book(uuid: 'b4', title: 'D'),
     ];
     final times = {
-      2: DateTime(2026, 8, 10),
-      1: DateTime(2026, 8, 1),
+      'b2': DateTime(2026, 8, 10),
+      'b1': DateTime(2026, 8, 1),
     };
 
-    test('最近对话在前，无对话排最后（按 id 倒序）', () {
+    test('最近对话在前，无对话排最后（无轮次之间按 uuid 倒序）', () {
       final r = sortBooks(books, BookSortMode.time, times);
-      expect(r.map((b) => b.id), [2, 1, 4, 3]);
+      expect(r.map((b) => b.uuid), ['b2', 'b1', 'b4', 'b3']);
     });
 
-    test('时间相同按 id 升序', () {
-      final same = {1: DateTime(2026, 8, 1), 2: DateTime(2026, 8, 1)};
+    test('时间相同按 uuid 升序', () {
+      final same = {
+        'b1': DateTime(2026, 8, 1),
+        'b2': DateTime(2026, 8, 1),
+      };
       final r = sortBooks(books, BookSortMode.time, same);
-      expect(r.map((b) => b.id), [1, 2, 4, 3]);
+      expect(r.map((b) => b.uuid), ['b1', 'b2', 'b4', 'b3']);
     });
 
-    test('全部无对话按 id 倒序', () {
+    test('全部无对话按 uuid 倒序（不再暗示“新建在前”）', () {
       final r = sortBooks(books, BookSortMode.time, const {});
-      expect(r.map((b) => b.id), [4, 3, 2, 1]);
+      expect(r.map((b) => b.uuid), ['b4', 'b3', 'b2', 'b1']);
     });
   });
 
