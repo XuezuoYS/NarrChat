@@ -169,6 +169,7 @@ Future<BookProvider> pumpHomeScreen(
               service: GenerationNotificationService(
                 bookProvider: bookProvider,
                 backend: notificationBackend ?? FakeNotificationBackend(),
+                attentionBackend: FakeTaskbarAttentionBackend(),
               ),
             ),
           ),

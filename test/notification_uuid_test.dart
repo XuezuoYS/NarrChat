@@ -35,6 +35,7 @@ void main() {
     final service = GenerationNotificationService(
       bookProvider: provider,
       backend: backend,
+      attentionBackend: FakeTaskbarAttentionBackend(),
     );
     await service.init();
     await pumpNotificationHost(
@@ -56,6 +57,7 @@ void main() {
     final service = GenerationNotificationService(
       bookProvider: provider,
       backend: backend,
+      attentionBackend: FakeTaskbarAttentionBackend(),
     );
     await service.init();
     final ctx = await pumpNotificationHost(

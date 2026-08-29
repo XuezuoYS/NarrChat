@@ -10,6 +10,7 @@ import '../models/book.dart';
 import '../utils/uuid_utils.dart';
 import '../providers/book_provider.dart';
 import '../screens/chat_screen.dart';
+import 'taskbar_attention_backend.dart';
 
 /// 生成完成系统通知服务。
 ///
@@ -17,17 +18,23 @@ import '../screens/chat_screen.dart';
 /// - 监听应用生命周期（前台 / 后台 / 未聚焦）；
 /// - 通过内部 [NavigatorObserver] 跟踪「当前栈顶是否正在查看某本书的对话页」；
 /// - 生成任务成功完成且用户不在该书 chat 页时弹出系统通知（点击可回到对应书 chat 页）；
+/// - 生成任务在非前台（最小化 / 未聚焦）完成时让 Windows 任务栏闪烁
+///   （同 QQ 的后台消息提示），窗口回到前台即停止；
 /// - 用户未点击但自行进入对应书 chat 页时自动删除该通知。
 class GenerationNotificationService with WidgetsBindingObserver {
   GenerationNotificationService({
     required BookProvider bookProvider,
     NotificationBackend? backend,
+    TaskbarAttentionBackend? attentionBackend,
   })  : _backend = backend ?? FlutterLocalNotificationBackend(),
+        _attentionBackend =
+            attentionBackend ?? Win32TaskbarAttentionBackend(),
         // ignore: prefer_initializing_formals
         _bookProvider = bookProvider;
 
   final BookProvider _bookProvider;
   final NotificationBackend _backend;
+  final TaskbarAttentionBackend _attentionBackend;
 
   /// 挂到 [MaterialApp.navigatorKey]，供通知点击回调在全局任意位置导航。
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -64,9 +71,11 @@ class GenerationNotificationService with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycle = state;
-    // 回到前台（窗口重新获得焦点 / 应用回到前台）时，
-    // 若当前正在查看某本书的 chat 页，则删除该书的通知。
+    // 回到前台（窗口重新获得焦点 / 应用回到前台）时：
+    // - 停掉任务栏闪烁（后台通知用户的任务已打开）；
+    // - 若当前正在查看某本书的 chat 页，则删除该书的通知。
     if (state == AppLifecycleState.resumed) {
+      unawaited(_attentionBackend.stop());
       final uuid = _topChatBookUuid;
       if (uuid != null) unawaited(dismissForBook(uuid));
     }
@@ -86,11 +95,17 @@ class GenerationNotificationService with WidgetsBindingObserver {
   ///
   /// 用户当前正在前台查看该书的 chat 页时不弹；其余情况（后台 / 未聚焦 /
   /// 在设置、首页、其它书等页面）弹出系统通知。
+  /// 窗口未聚焦（最小化 / 被遮挡）时额外让 Windows 任务栏闪烁提醒，
+  /// 窗口回到前台即停止（见 [didChangeAppLifecycleState]）。
   void onGenerationCompleted(String bookUuid, String bookTitle) {
     if (bookUuid.isEmpty) return;
     if (_lifecycle == AppLifecycleState.resumed &&
         _topChatBookUuid == bookUuid) {
       return;
+    }
+    if (_lifecycle != AppLifecycleState.resumed) {
+      // 后台完成：任务栏闪烁提醒（非 Windows 平台为空操作）。
+      unawaited(_attentionBackend.start());
     }
     unawaited(
       _backend.show(

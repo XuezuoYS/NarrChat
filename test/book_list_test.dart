@@ -151,6 +151,7 @@ void main() {
     final service = GenerationNotificationService(
       bookProvider: bookProvider,
       backend: FakeNotificationBackend(notificationsEnabled: false),
+      attentionBackend: FakeTaskbarAttentionBackend(),
     );
     // 用预构建（已 refresh）的设置 Provider pump 首页，模拟通知关闭态。
     final settings = NotificationSettingsProvider(service: service);

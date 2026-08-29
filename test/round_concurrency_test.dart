@@ -435,6 +435,7 @@ void main() {
               create: (_) => NotificationSettingsProvider(
                 service: GenerationNotificationService(
                   bookProvider: bookProvider,
+                  attentionBackend: FakeTaskbarAttentionBackend(),
                 ),
               ),
             ),

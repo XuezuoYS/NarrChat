@@ -21,6 +21,7 @@ import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/services/sync/img_tombstones.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/sync/sync_remote_store.dart';
+import 'package:narrchat/services/taskbar_attention_backend.dart';
 import 'package:narrchat/database/sync_dao.dart';
 import 'package:path/path.dart' as p;
 
@@ -412,6 +413,22 @@ class FakeNotificationBackend implements NotificationBackend {
 
   /// 模拟用户点击通知（参数 = 通知 payload 里的书籍 uuid）。
   void tap(String bookUuid) => onTap?.call(bookUuid);
+}
+
+/// 记录闪烁调用次数的假任务栏闪烁后端。
+class FakeTaskbarAttentionBackend implements TaskbarAttentionBackend {
+  int startCount = 0;
+  int stopCount = 0;
+
+  @override
+  Future<void> start() async {
+    startCount++;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount++;
+  }
 }
 
 /// 可控图片导入替身：按 [results] 顺序返回结果，并记录调用次数与参数。

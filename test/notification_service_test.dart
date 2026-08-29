@@ -30,6 +30,7 @@ Future<GenerationNotificationService> _makeService(
   final service = GenerationNotificationService(
     bookProvider: bookProvider,
     backend: backend,
+    attentionBackend: FakeTaskbarAttentionBackend(),
   );
   await service.init();
   return service;
@@ -130,6 +131,7 @@ void main() {
     final service = GenerationNotificationService(
       bookProvider: bookProvider,
       backend: backend,
+      attentionBackend: FakeTaskbarAttentionBackend(),
     );
     await service.init();
 
