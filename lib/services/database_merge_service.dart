@@ -151,12 +151,16 @@ class DatabaseMergeService {
             : MergeBookStatus.localOnly;
       }
 
-      // 各部件默认：内容按"保留最后更新时间较新的一侧"；设置默认保留本地。
+      // 各部件默认：内容按"保留最后更新时间较新的一侧"；设置按
+      // "设置最后修改时间较新的一侧"；持平 / 未记录时一律默认采用导入。
       final suggestedContent = status != MergeBookStatus.conflict
           ? MergePartChoice.keepLocal
           : (_suggestContentImport(imported, localSide)
               ? MergePartChoice.import
               : MergePartChoice.keepLocal);
+      final suggestedSettings = status != MergeBookStatus.conflict
+          ? MergePartChoice.keepLocal
+          : _suggestSettingsImport(imported, localSide);
 
       entries.add(
         BookMergeEntry(
@@ -167,7 +171,7 @@ class DatabaseMergeService {
           imported: imported,
           local: localSide,
           suggestedDecision: _suggestDecision(status, imported, localSide),
-          suggestedSettings: MergePartChoice.keepLocal,
+          suggestedSettings: suggestedSettings,
           suggestedContent: suggestedContent,
         ),
       );
@@ -375,6 +379,10 @@ class DatabaseMergeService {
     final settings = imported.book.toMap()
       ..remove('title')
       ..remove('uuid');
+    // 采用导入侧的设置内容 → 时间戳一并对齐（未记录时保持本地值，不降级）。
+    if (imported.settingsUpdatedAt > 0) {
+      settings['settings_updated_at'] = imported.settingsUpdatedAt;
+    }
     await txn.update(
       'books',
       settings,
@@ -429,13 +437,18 @@ class DatabaseMergeService {
       );
       result.roundsAdded++;
     }
+    final patch = <String, Object?>{
+      'failed_user_input': imported.failedUserInput,
+      'failed_error_message': imported.failedErrorMessage,
+      'failed_user_images': imported.failedUserImages,
+    };
+    // 采用导入侧的轮次内容 → 时间戳一并对齐（未记录时保持本地值，不降级）。
+    if (imported.roundsUpdatedAt > 0) {
+      patch['rounds_updated_at'] = imported.roundsUpdatedAt;
+    }
     await txn.update(
       'books',
-      {
-        'failed_user_input': imported.failedUserInput,
-        'failed_error_message': imported.failedErrorMessage,
-        'failed_user_images': imported.failedUserImages,
-      },
+      patch,
       where: 'uuid = ?',
       whereArgs: [localUuid],
     );
@@ -582,6 +595,13 @@ class DatabaseMergeService {
       (bookMap['uuid'] as String? ?? ''),
     );
     bookMap['uuid'] = bookUuid;
+    // 整本导入时保留导入侧的时间戳（未记录时交表默认值 0）。
+    if (side.settingsUpdatedAt > 0) {
+      bookMap['settings_updated_at'] = side.settingsUpdatedAt;
+    }
+    if (side.roundsUpdatedAt > 0) {
+      bookMap['rounds_updated_at'] = side.roundsUpdatedAt;
+    }
     await txn.insert('books', bookMap);
     result.booksAdded++;
 
@@ -677,6 +697,8 @@ class DatabaseMergeService {
       dbUuid: backupRow['uuid'] as String?,
       roundsCount: roundModels.length,
       lastTime: lastTime,
+      settingsUpdatedAt: (backupRow['settings_updated_at'] as int?) ?? 0,
+      roundsUpdatedAt: (backupRow['rounds_updated_at'] as int?) ?? 0,
       fingerprint: _fingerprint(
         book.toMap(),
         roundModels,
@@ -827,7 +849,7 @@ class DatabaseMergeService {
     return jsonEncode([settings, roundsJson, worldBooksJson, bookModsJson]);
   }
 
-  /// 默认决策：冲突书「保留最后更新时间较新的一侧」（时间相同/未知默认保留本地）。
+  /// 默认决策：冲突书「保留最后更新时间较新的一侧」（时间相同/未知默认采用导入）。
   static MergeBookDecision _suggestDecision(
     MergeBookStatus status,
     BookMergeSide? imported,
@@ -843,7 +865,7 @@ class DatabaseMergeService {
         if (l != null && (i == null || l.isAfter(i))) {
           return MergeBookDecision.keepLocal;
         }
-        return MergeBookDecision.keepLocal;
+        return MergeBookDecision.keepImported;
       case MergeBookStatus.importOnly:
         return MergeBookDecision.keepImported;
       case MergeBookStatus.localOnly:
@@ -861,6 +883,19 @@ class DatabaseMergeService {
     final l = local?.lastTime;
     if (i != null && (l == null || !l.isAfter(i))) return true;
     return false;
+  }
+
+  /// 设置部件默认：设置最后修改时间（`settings_updated_at`，epoch 毫秒）较新一侧胜出；
+  /// 持平 / 未记录（相等或均为 0）时默认采用导入，与内容部件「持平优先导入」一致。
+  ///
+  /// 仅本地设置时间**严格更新**时保留本地。
+  static MergePartChoice _suggestSettingsImport(
+    BookMergeSide? imported,
+    BookMergeSide? local,
+  ) {
+    final iAt = imported?.settingsUpdatedAt ?? 0;
+    final lAt = local?.settingsUpdatedAt ?? 0;
+    return lAt > iAt ? MergePartChoice.keepLocal : MergePartChoice.import;
   }
 
   static Map<String, List<Map<String, Object?>>> _groupByBookUuid(
@@ -1068,7 +1103,8 @@ class BookMergeEntry {
   final BookMergeSide? local;
   final MergeBookDecision suggestedDecision;
 
-  /// 各部件默认选择（内容部件按"保留轮次较新侧"建议；设置部件默认保留本地）。
+  /// 各部件默认选择（内容部件按"保留轮次较新侧"建议；设置部件按
+  /// 设置最后修改时间较新侧建议，持平 / 未记录默认采用导入）。
   final MergePartChoice suggestedSettings;
   final MergePartChoice suggestedContent;
 
@@ -1100,6 +1136,15 @@ class BookMergeSide {
   final int roundsCount;
   final DateTime? lastTime;
 
+  /// 设置部件最后修改时间（`books.settings_updated_at`，epoch 毫秒；0 = 未记录）。
+  ///
+  /// 设置部件含书籍设置列 + 世界书 + 书‑Mod 配置，任一侧变动时该列都会被刷新，
+  /// 是「设置部件何时被修改」的唯一时钟（轮次时间与设置修改无关）。
+  final int settingsUpdatedAt;
+
+  /// 内容部件最后修改时间（`books.rounds_updated_at`，epoch 毫秒；0 = 未记录）。
+  final int roundsUpdatedAt;
+
   /// 与行 id 无关的内容指纹（冲突判定）。
   final String fingerprint;
 
@@ -1123,6 +1168,8 @@ class BookMergeSide {
     this.dbUuid,
     required this.roundsCount,
     this.lastTime,
+    this.settingsUpdatedAt = 0,
+    this.roundsUpdatedAt = 0,
     required this.fingerprint,
     required this.settingsFp,
     required this.contentFp,

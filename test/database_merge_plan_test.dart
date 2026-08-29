@@ -112,6 +112,28 @@ void main() {
       }
     });
 
+    test('元数据：设置/内容写时间戳从书籍行解析，未设置为 0', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        await _addBook(backup, 'bak-t', 'T',
+            settingsUpdatedAt: 1111, roundsUpdatedAt: 2222);
+        await _addBook(backup, 'bak-u', 'U');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final sideT = plan.entries.firstWhere((e) => e.title == 'T').imported!;
+        expect(sideT.settingsUpdatedAt, 1111);
+        expect(sideT.roundsUpdatedAt, 2222);
+        final sideU = plan.entries.firstWhere((e) => e.title == 'U').imported!;
+        expect(sideU.settingsUpdatedAt, 0,
+            reason: '未写入时间戳列 → 按未记录处理（0）');
+        expect(sideU.roundsUpdatedAt, 0);
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
     test('建议决策：默认保留最后更新较新的一侧', () async {
       final local = await createMergeDb();
       final backup = await createMergeDb();
@@ -126,9 +148,10 @@ void main() {
           plan.entries.single.suggestedDecision,
           MergeBookDecision.keepImported,
         );
-        // 内容部件按"最后更新较新的一侧"建议导入；设置部件默认保留本地。
+        // 内容部件按"最后更新较新的一侧"建议导入；设置部件两侧时间均为 0
+        // （持平/未记录）→ 同样默认采用导入。
         expect(plan.entries.single.suggestedContent, MergePartChoice.import);
-        expect(plan.entries.single.suggestedSettings, MergePartChoice.keepLocal);
+        expect(plan.entries.single.suggestedSettings, MergePartChoice.import);
         expect(plan.entries.single.contentConflict, isTrue);
       } finally {
         await local.close();
@@ -149,11 +172,13 @@ void main() {
         final plan = await DatabaseMergeService.buildPlan(backup, local);
         expect(
           plan.entries.single.suggestedDecision,
-          MergeBookDecision.keepLocal,
+          MergeBookDecision.keepImported,
+          reason: '两侧轮次时间相同（持平）→ 整书默认采用导入',
         );
         expect(plan.entries.single.suggestedContent, MergePartChoice.import,
             reason: '轮次时间/数量相同 → 内容部件优先采用导入');
-        expect(plan.entries.single.suggestedSettings, MergePartChoice.keepLocal);
+        expect(plan.entries.single.suggestedSettings, MergePartChoice.import,
+            reason: '设置时间均为 0（持平/未记录）→ 设置部件优先采用导入');
       } finally {
         await local.close();
         await backup.close();
@@ -248,6 +273,95 @@ void main() {
         expect(result.booksSkipped, 1);
         final rounds = await local.query('rounds');
         expect(rounds.single['user_input'], '本地');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('冲突书设置部件采用导入 → 本地 books.settings_updated_at 对齐导入侧', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        final lokUuid = await _addBook(local, 'lok-a', 'A',
+            category: '旧', settingsUpdatedAt: 1000);
+        await _addRound(local, lokUuid, 1, userInput: '本地');
+        final bakUuid = await _addBook(backup, 'bak-a', 'A',
+            category: '新', settingsUpdatedAt: 5000);
+        await _addRound(backup, bakUuid, 1, userInput: '备份');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          {plan.entries.single.title: const BookPartDecisions(settings: MergePartChoice.import, content: MergePartChoice.keepLocal)},
+          const {},
+        );
+
+        final book = (await local.query('books')).single;
+        expect(book['settings_updated_at'], 5000,
+            reason: '采用导入侧设置 → 时间戳一并对齐导入侧');
+        expect(book['rounds_updated_at'], 0,
+            reason: '内容未采用导入 → 保持本地原值（0）');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('冲突书内容部件采用导入 → 本地 books.rounds_updated_at 对齐导入侧', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        final lokUuid = await _addBook(local, 'lok-a', 'A',
+            category: '旧', roundsUpdatedAt: 1000);
+        await _addRound(local, lokUuid, 1, userInput: '本地');
+        final bakUuid = await _addBook(backup, 'bak-a', 'A',
+            category: '新', roundsUpdatedAt: 7000);
+        await _addRound(backup, bakUuid, 1, userInput: '备份');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          {plan.entries.single.title: const BookPartDecisions(settings: MergePartChoice.keepLocal, content: MergePartChoice.import)},
+          const {},
+        );
+
+        final book = (await local.query('books')).single;
+        expect(book['rounds_updated_at'], 7000,
+            reason: '采用导入侧轮次内容 → 时间戳一并对齐导入侧');
+        expect(book['settings_updated_at'], 0,
+            reason: '设置未采用导入 → 保持本地原值（0）');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('导入侧时间戳未记录（0）时保持本地原值，不降级覆盖', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        final lokUuid = await _addBook(local, 'lok-a', 'A',
+            category: '旧', settingsUpdatedAt: 1000, roundsUpdatedAt: 1000);
+        await _addRound(local, lokUuid, 1, userInput: '本地');
+        // 备份侧未记录任何时间戳（旧备份 / 迁移数据）。
+        final bakUuid = await _addBook(backup, 'bak-a', 'A', category: '新');
+        await _addRound(backup, bakUuid, 1, userInput: '备份');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          {plan.entries.single.title: const BookPartDecisions(settings: MergePartChoice.import, content: MergePartChoice.import)},
+          const {},
+        );
+
+        final book = (await local.query('books')).single;
+        expect(book['settings_updated_at'], 1000,
+            reason: '导入侧为 0（未记录）时保持本地值，不得降级为 0');
+        expect(book['rounds_updated_at'], 1000);
       } finally {
         await local.close();
         await backup.close();
@@ -481,18 +595,25 @@ void main() {
 }
 
 /// 写入一本书：v16 起 uuid 即主键（无自增 id），故显式给定 uuid，返回它。
+///
+/// [settingsUpdatedAt] / [roundsUpdatedAt] 为同步写时间戳（books 列，epoch 毫秒），
+/// 未传时不写（交列 DEFAULT 0），用于构造「设置 / 内容部件修改时间」可比较的用例。
 Future<String> _addBook(
   Database db,
   String uuid,
   String title, {
   String category = '',
   String baseSetting = '',
+  int? settingsUpdatedAt,
+  int? roundsUpdatedAt,
 }) async {
   await db.insert('books', {
     'uuid': uuid,
     'title': title,
     'category': category,
     'base_setting': baseSetting,
+    'settings_updated_at': ?settingsUpdatedAt,
+    'rounds_updated_at': ?roundsUpdatedAt,
   });
   return uuid;
 }

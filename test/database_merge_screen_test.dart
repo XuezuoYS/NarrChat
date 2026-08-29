@@ -11,6 +11,9 @@ void main() {
   late DatabaseMergePlan plan;
   late DatabaseMergePlan modPlan;
   late DatabaseMergePlan tiePlan;
+  // 两侧设置时间戳 / 轮次时间可定制的冲突计划（见 [_buildSettingsStampPlan]）。
+  late DatabaseMergePlan importNewerSettingsPlan;
+  late DatabaseMergePlan localNewerSettingsPlan;
 
   setUp(() async {
     final local = await createMergeDb();
@@ -79,6 +82,18 @@ void main() {
     }
     modPlan = await _buildModPlan();
     tiePlan = await _buildTiePlan();
+    importNewerSettingsPlan = await _buildSettingsStampPlan(
+      localSettingsAt: 1000,
+      backupSettingsAt: 5000,
+      localRoundAt: DateTime(2026, 2, 15),
+      backupRoundAt: DateTime(2026, 1, 1),
+    );
+    localNewerSettingsPlan = await _buildSettingsStampPlan(
+      localSettingsAt: 9000,
+      backupSettingsAt: 1000,
+      localRoundAt: DateTime(2026, 2, 15),
+      backupRoundAt: DateTime(2026, 1, 1),
+    );
   });
 
   testWidgets('列出书籍，冲突展示两侧轮次/时间与状态徽标', (tester) async {
@@ -134,7 +149,10 @@ void main() {
     );
     expect(decisions, isEmpty);
 
-    // 默认建议：冲突书 A 的备份较新 → 轮次内容建议采用导入；此处把「轮次内容」切为保留本地。
+    // 默认建议：冲突书 A 的备份较新且设置时间持平 → 设置/内容均采用导入；
+    // 此处把「书籍设置」与「轮次内容」都切为保留本地，验证决策被正确传递。
+    await tester.tap(find.text('保留本地').at(0));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('保留本地').at(1));
     await tester.pumpAndSettle();
     await tester.tap(find.text('合并'));
@@ -193,8 +211,8 @@ void main() {
 
     expect(decisions['A']!.content, MergePartChoice.import,
         reason: '备份时间更新 → 内容部件建议导入');
-    expect(decisions['A']!.settings, MergePartChoice.keepLocal,
-        reason: '备份时间严格更新（非持平）→ 设置部件保持保留本地');
+    expect(decisions['A']!.settings, MergePartChoice.import,
+        reason: '两侧设置时间均为 0（持平/未记录）→ 设置部件默认采用导入');
     expect(decisions['B']!.allImport, isTrue);
     expect(decisions['D']!.allLocal, isTrue);
   });
@@ -272,6 +290,56 @@ void main() {
         reason: '两侧时间持平 → 轮次内容优先采用导入');
     expect(decisions['A']!.settings, MergePartChoice.import,
         reason: '两侧时间持平（均持平）→ 书籍设置同样采用导入');
+  });
+
+  testWidgets('默认按轮次时间最新：导入侧设置更新、本地轮次更新 → 设置采用导入、内容保留本地', (tester) async {
+    // 复现 bug：一端（备份侧）修改书籍设置（时间戳更新），另一端本地轮次更晚；
+    // 修复前设置部件因轮次时间不等而错误勾选「保留本地」。
+    final stampPlan = importNewerSettingsPlan;
+    final decisions = <String, BookPartDecisions>{};
+    await _pumpScreen(
+      tester,
+      stampPlan,
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
+        return DatabaseMergeResult();
+      },
+    );
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(decisions['A']!.settings, MergePartChoice.import,
+        reason: '导入侧设置时间戳更新（5000 > 1000）→ 设置部件建议采用导入');
+    expect(decisions['A']!.content, MergePartChoice.keepLocal,
+        reason: '本地轮次时间更新（02-15 > 01-01）→ 内容部件保留本地');
+  });
+
+  testWidgets('默认按轮次时间最新：本地设置更新 → 设置保留本地', (tester) async {
+    final stampPlan = localNewerSettingsPlan;
+    final decisions = <String, BookPartDecisions>{};
+    await _pumpScreen(
+      tester,
+      stampPlan,
+      onApply: (p, bd, md) async {
+        decisions.addAll(bd);
+        return DatabaseMergeResult();
+      },
+    );
+    await tester.tap(find.text('合并'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    expect(decisions['A']!.settings, MergePartChoice.keepLocal,
+        reason: '本地设置时间戳更新（9000 > 1000）→ 设置部件保留本地');
+    expect(decisions['A']!.content, MergePartChoice.keepLocal,
+        reason: '本地轮次时间更新 → 内容部件保留本地');
   });
 
   testWidgets('点预览打开书籍内容对话框', (tester) async {
@@ -493,6 +561,49 @@ Future<DatabaseMergePlan> _buildTiePlan() async {
       'user_input': '备份内容',
       'ai_narrative': '备份正文',
       'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
+    return await DatabaseMergeService.buildPlan(backup, local);
+  } finally {
+    await local.close();
+    await backup.close();
+  }
+}
+/// 构建一个「冲突书 A 两侧设置时间戳可定制、轮次时间可定制」的计划，
+/// 供「默认按轮次时间最新」下设置部件按 settings_updated_at 决策的用例使用。
+Future<DatabaseMergePlan> _buildSettingsStampPlan({
+  required int localSettingsAt,
+  required int backupSettingsAt,
+  required DateTime localRoundAt,
+  required DateTime backupRoundAt,
+}) async {
+  final local = await createMergeDb();
+  final backup = await createMergeDb();
+  try {
+    await local.insert('books', {
+      'uuid': 'lok-a',
+      'title': 'A',
+      'category': '本地旧',
+      'settings_updated_at': localSettingsAt,
+    });
+    await local.insert('rounds', {
+      'book_uuid': 'lok-a',
+      'round_index': 1,
+      'user_input': '本地内容',
+      'ai_narrative': '本地正文',
+      'created_at': localRoundAt.toIso8601String(),
+    });
+    await backup.insert('books', {
+      'uuid': 'bak-a',
+      'title': 'A',
+      'category': '云端新',
+      'settings_updated_at': backupSettingsAt,
+    });
+    await backup.insert('rounds', {
+      'book_uuid': 'bak-a',
+      'round_index': 1,
+      'user_input': '备份内容',
+      'ai_narrative': '备份正文',
+      'created_at': backupRoundAt.toIso8601String(),
     });
     return await DatabaseMergeService.buildPlan(backup, local);
   } finally {

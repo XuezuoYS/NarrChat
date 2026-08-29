@@ -124,6 +124,18 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     };
   }
 
+  /// 设置部件默认：设置最后修改时间（`settings_updated_at`，epoch 毫秒）
+  /// 较新一侧胜出；持平 / 未记录（相等或均为 0）时默认采用导入，
+  /// 与内容部件「时间持平优先导入」保持一致——仅本地设置时间严格更新才保留本地。
+  static MergePartChoice _defaultSettingsChoice(
+    BookMergeSide imported,
+    BookMergeSide local,
+  ) {
+    return local.settingsUpdatedAt > imported.settingsUpdatedAt
+        ? MergePartChoice.keepLocal
+        : MergePartChoice.import;
+  }
+
   BookPartDecisions _decisionFor(BookMergeEntry e, _BulkRule rule) {
     switch (e.status) {
       case MergeBookStatus.localOnly:
@@ -141,8 +153,9 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
       case MergeBookStatus.conflict:
         final imported = e.imported!;
         final local = e.local!;
-        // 内容部件默认随规则；设置部件默认「保留本地」，仅「全本地 / 全导入」
-        // 及轮次比对**持平**（时间相同 / 轮次数相等）时设置部件跟随。
+        // 内容部件默认随规则；设置部件与轮次比对无关，统一按「设置最后修改
+        // 时间（settings_updated_at）」较新一侧选择（持久化默认见
+        // [_defaultSettingsChoice]）。
         switch (rule) {
           case _BulkRule.allLocal:
             return const BookPartDecisions(
@@ -161,11 +174,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
             final content = (i != null && (l == null || !l.isAfter(i)))
                 ? MergePartChoice.import
                 : MergePartChoice.keepLocal;
-            // 两侧时间**均持平**（都存在且相等）时，书籍设置同样优先采用导入，
-            // 与轮次内容的默认选择保持一致。
-            final tied = i != null && l != null && !i.isAfter(l) && !l.isAfter(i);
             return BookPartDecisions(
-              settings: tied ? MergePartChoice.import : MergePartChoice.keepLocal,
+              settings: _defaultSettingsChoice(imported, local),
               content: content,
             );
           case _BulkRule.mostRounds:
@@ -173,11 +183,8 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
             final content = imported.roundsCount >= local.roundsCount
                 ? MergePartChoice.import
                 : MergePartChoice.keepLocal;
-            // 两侧轮次数**均持平**（相等）时，书籍设置同样优先采用导入，
-            // 与轮次内容的默认选择保持一致。
-            final tied = imported.roundsCount == local.roundsCount;
             return BookPartDecisions(
-              settings: tied ? MergePartChoice.import : MergePartChoice.keepLocal,
+              settings: _defaultSettingsChoice(imported, local),
               content: content,
             );
         }
