@@ -57,6 +57,8 @@ dependencies:
   # 图片模块：平台文件选择（Windows/Android）、桌面拖拽、剪贴板图片读取、
   # SHA-256 哈希、ZIP 备份。
   file_picker: ^8.1.7
+  # 任务栏闪烁（Windows）：user32 FlashWindowEx / 窗口枚举所需的原生内存分配。
+  ffi: ^2.2.0
   desktop_drop: ^0.8.0
   # 剪贴板图片读取（Ctrl+V / 右键粘贴图片）：Windows/Android 等桌面/移动端读 PNG。
   pasteboard: ^0.4.0
