@@ -1,15 +1,14 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:pasteboard/pasteboard.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/cloud_sync_provider.dart';
+import '../services/clipboard_image_service.dart';
 import '../services/image_store.dart';
 import '../services/sync/image_deletion.dart';
 import '../services/sync/sync_models.dart';
@@ -298,21 +297,6 @@ Future<void> saveImageFile(
   }
 }
 
-/// 剪贴板图片写入器（查看器「复制图片」动作）。
-///
-/// 抽成可注入接口：测试可用替身，避免触碰真实 `pasteboard` 平台通道。
-abstract class ClipboardImageWriter {
-  Future<void> writeImage(Uint8List bytes);
-}
-
-/// 真实实现：写入系统剪贴板（Windows / Android 均支持图片）。
-class SystemClipboardImageWriter implements ClipboardImageWriter {
-  const SystemClipboardImageWriter();
-
-  @override
-  Future<void> writeImage(Uint8List bytes) => Pasteboard.writeImage(bytes);
-}
-
 /// 查看器「复制图片」：读取图片字节写入系统剪贴板。
 Future<void> copyImageFile(
   BuildContext context, {
@@ -326,7 +310,7 @@ Future<void> copyImageFile(
     return;
   }
   try {
-    await writer.writeImage(await file.readAsBytes());
+    await writer.writeImage(absPath: absPath, bytes: await file.readAsBytes());
     if (context.mounted) _showViewerSnack(context, '图片已复制到剪贴板');
   } catch (_) {
     if (context.mounted) _showViewerSnack(context, '复制失败，请重试');

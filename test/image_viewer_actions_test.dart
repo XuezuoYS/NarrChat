@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/clipboard_image_service.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/widgets/image_preview.dart';
 import 'package:path/path.dart' as p;
@@ -73,6 +74,7 @@ void main() {
     });
     await tester.pumpAndSettle();
 
+    expect(writer.writtenPath, file.path); // 原始文件路径透传（供 CF_HDROP）
     expect(writer.written?.toList(), [1, 2, 3]);
     expect(find.text('图片已复制到剪贴板'), findsOneWidget);
   });
@@ -181,16 +183,21 @@ void main() {
   });
 }
 
-/// 剪贴板图片写入替身：记录写入字节，可注入失败。
+/// 剪贴板图片写入替身：记录写入的文件路径与字节，可注入失败。
 class _FakeClipboardWriter implements ClipboardImageWriter {
   _FakeClipboardWriter({this.fail = false});
 
   final bool fail;
+  String? writtenPath;
   Uint8List? written;
 
   @override
-  Future<void> writeImage(Uint8List bytes) async {
+  Future<void> writeImage({
+    required String absPath,
+    required Uint8List bytes,
+  }) async {
     if (fail) throw Exception('write failed');
+    writtenPath = absPath;
     written = bytes;
   }
 }
