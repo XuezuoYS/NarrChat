@@ -190,8 +190,13 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
             child: ImagePreviewStrip(
               images: List.of(_images),
               size: 72,
-              onTapImage: (_, i) =>
-                  showImageViewer(context, List.of(_images), i),
+              onTapImage: (_, i) => showImageViewer(
+                context,
+                List.of(_images),
+                i,
+                // 查看器删除后同步移除对话框内列表项。
+                onDeleted: (rel) => setState(() => _images.remove(rel)),
+              ),
               onRemove: (rel) => setState(() => _images.remove(rel)),
             ),
           ),

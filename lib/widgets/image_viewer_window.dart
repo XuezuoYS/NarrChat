@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/image_store.dart';
+import '../services/sync/image_deletion.dart';
+import 'bubble_pointer_listener.dart';
 import 'image_preview.dart';
 
 // ---------------------------------------------------------------------------
@@ -416,6 +418,14 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   static const double _maxScale = 6.0;
 
   late int _index = widget.initialIndex;
+
+  // 本窗口持有的可变图片列表：删除后移除当前项并更新页码/标题/画布。
+  late final List<String> _images = List.of(widget.images);
+
+  // 子窗口无 Provider 树：直接使用真实删除实现（本机文件 + 同步墓碑）。
+  // 删除意图由下次云同步拾取（与本机其它删除入口同一语义）。
+  final ImageDeletionService _deletionService = SyncImageDeletionService();
+
   final TransformationController _transform = TransformationController();
 
   String? _absPath;
@@ -455,7 +465,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
 
   /// 更新窗口标题为「NarrChat 图像查看器 - {当前图片文件名}」。
   void _updateTitle() {
-    final name = ImageStore.fileNameOf(widget.images[_index]);
+    final name = ImageStore.fileNameOf(_images[_index]);
     _title = 'NarrChat 图像查看器 - $name';
     try {
       windowManager.setTitle(_title);
@@ -476,9 +486,9 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
     });
     String abs;
     try {
-      abs = await ImageStore.resolveAbsolute(widget.images[_index]);
+      abs = await ImageStore.resolveAbsolute(_images[_index]);
     } catch (_) {
-      abs = widget.images[_index];
+      abs = _images[_index];
     }
     if (!mounted) return;
     final provider = FileImage(File(abs));
@@ -525,7 +535,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
   }
 
   void _next() {
-    if (_index >= widget.images.length - 1) return;
+    if (_index >= _images.length - 1) return;
     setState(() {
       _index++;
       _absPath = null;
@@ -565,6 +575,38 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
     );
   }
 
+  /// 右键（鼠标）/ 长按（触屏）弹出当前图片的操作菜单（另存为 / 复制 / 删除）。
+  void _showActionMenu(Offset globalPosition) {
+    final rel = _images[_index];
+    showImageViewerMenu(
+      context,
+      relPath: rel,
+      absPath: _absPath,
+      globalPosition: globalPosition,
+      deletionService: _deletionService,
+      onDeleted: () => _onImageDeleted(rel),
+    );
+  }
+
+  /// 图片删除成功后的本地状态更新：移除当前项；最后一张则关闭（预热窗口转为隐藏）窗口。
+  void _onImageDeleted(String rel) {
+    if (!mounted) return;
+    if (_images.length == 1) {
+      windowManager.close();
+      return;
+    }
+    setState(() {
+      _images.remove(rel);
+      if (_index >= _images.length) _index = _images.length - 1;
+      _absPath = null;
+      _missing = false;
+      _imageSize = null;
+      _needsFit = true;
+      _transform.value = Matrix4.identity();
+    });
+    _loadCurrent();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -586,8 +628,12 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                     constraints.maxHeight,
                   );
                   _applyFitOrClamp();
-                  return Stack(
-                    children: [
+                  // 右键（鼠标）/ 长按（触屏）弹出操作菜单；原始指针监听不参与手势
+                  // 竞技场，与拖动平移 / 滚轮缩放互不干扰（移动超过阈值自动取消长按）。
+                  return BubblePointerListener(
+                    onContextMenu: _showActionMenu,
+                    child: Stack(
+                      children: [
                       // 图片：InteractiveViewer(constrained:false) 仅作显示（保持图片固有尺寸、
                       // 应用控制器矩阵、并裁剪到视口）；其手势全部禁用。
                       // 手势层以 opaque 位于其上：GestureDetector 接拖动、Listener 接滚轮，
@@ -621,7 +667,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                                             fit: BoxFit.contain,
                                             errorBuilder: (_, _, _) =>
                                                 MissingImage(
-                                                    widget.images[_index]),
+                                                    _images[_index]),
                                           ),
                                         ),
                             ),
@@ -646,7 +692,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                       ),
                       _ArrowButton(
                         icon: Icons.chevron_right,
-                        enabled: _index < widget.images.length - 1,
+                        enabled: _index < _images.length - 1,
                         tooltip: '下一张',
                         onPressed: _next,
                       ),
@@ -666,7 +712,7 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(
-                                '${_index + 1}/${widget.images.length}',
+                                '${_index + 1}/${_images.length}',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 12,
@@ -696,14 +742,15 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                                   ? null
                                   : () => saveImageFile(
                                         context,
-                                        relPath: widget.images[_index],
+                                        relPath: _images[_index],
                                         absPath: _absPath!,
                                       ),
                             ),
                           ),
                         ),
                       ),
-                    ],
+                      ],
+                    ),
                   );
                 },
               ),

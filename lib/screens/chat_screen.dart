@@ -1976,8 +1976,15 @@ class _ChatScreenState extends State<ChatScreen>
                   key: const Key('composer_image_strip'),
                   images: List.of(_pendingImages),
                   size: 72,
-                  onTapImage: (_, i) =>
-                      showImageViewer(context, List.of(_pendingImages), i),
+                  onTapImage: (_, i) => showImageViewer(
+                    context,
+                    List.of(_pendingImages),
+                    i,
+                    // 查看器删除后同步移除待发送列表项，避免发出时已缺失。
+                    onDeleted: (rel) {
+                      if (mounted) setState(() => _pendingImages.remove(rel));
+                    },
+                  ),
                   onRemove: _removePendingImage,
                 ),
               ),

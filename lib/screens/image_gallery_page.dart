@@ -80,7 +80,7 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     });
   }
 
-  void _onTapTile(StorageImageInfo info, int index) {
+  Future<void> _onTapTile(StorageImageInfo info, int index) async {
     if (_selectMode) {
       setState(() {
         if (_selected.contains(info.relPath)) {
@@ -93,7 +93,19 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     }
     final paths = _relPaths;
     if (paths.isEmpty) return;
-    showImageViewer(context, paths, index);
+    await showImageViewer(
+      context,
+      paths,
+      index,
+      // 应用内查看器删除后立即移除该项；桌面独立窗口删除后返回时在下方 _load 刷新。
+      onDeleted: (rel) {
+        if (mounted) {
+          setState(() => _images?.removeWhere((i) => i.relPath == rel));
+        }
+      },
+    );
+    // 桌面独立窗口可能已删除图片：返回后重建列表（两种路径统一刷新）。
+    if (mounted) await _load();
   }
 
   /// 长按进入选择模式并选中该张（若已在选择模式则等同于点选）。
