@@ -722,33 +722,6 @@ class _DesktopImageViewerState extends State<DesktopImageViewer> {
                           ),
                         ),
                       ),
-                      // 底部「保存到本地」按钮。
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                backgroundColor: Colors.white24,
-                                foregroundColor: Colors.white,
-                                side: BorderSide.none,
-                              ),
-                              icon: const Icon(Icons.download_outlined),
-                              label: const Text('保存到本地'),
-                              onPressed: _absPath == null
-                                  ? null
-                                  : () => saveImageFile(
-                                        context,
-                                        relPath: _images[_index],
-                                        absPath: _absPath!,
-                                      ),
-                            ),
-                          ),
-                        ),
-                      ),
                       ],
                     ),
                   );

@@ -1,7 +1,9 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
@@ -122,10 +124,7 @@ class MissingImage extends StatelessWidget {
             style: TextStyle(fontSize: 10, color: scheme.outline),
           ),
           const SizedBox(height: 2),
-          Text(
-            '图片已丢失',
-            style: TextStyle(fontSize: 9, color: scheme.outline),
-          ),
+          Text('图片已丢失', style: TextStyle(fontSize: 9, color: scheme.outline)),
         ],
       ),
     );
@@ -200,8 +199,7 @@ class ImagePreviewStrip extends StatelessWidget {
           return ImageThumbnail(
             relPath: rel,
             size: size,
-            onTap:
-                onTapImage == null ? null : () => onTapImage!(rel, i),
+            onTap: onTapImage == null ? null : () => onTapImage!(rel, i),
             onRemove: onRemove == null ? null : () => onRemove!(rel),
           );
         },
@@ -223,7 +221,8 @@ Future<void> showImageViewer(
   int initialIndex, {
   void Function(String relPath)? onDeleted,
 }) async {
-  if (Platform.isWindows && await _tryOpenImageViewerWindow(images, initialIndex)) {
+  if (Platform.isWindows &&
+      await _tryOpenImageViewerWindow(images, initialIndex)) {
     return;
   }
   if (!context.mounted) return;
@@ -239,15 +238,20 @@ Future<void> showImageViewer(
 }
 
 /// 尝试打开桌面端独立图片查看器窗口；成功返回 true，失败返回 false（调用方回退到应用内查看器）。
-Future<bool> _tryOpenImageViewerWindow(List<String> images, int initialIndex) async {
+Future<bool> _tryOpenImageViewerWindow(
+  List<String> images,
+  int initialIndex,
+) async {
   // 优先复用「预热常驻」查看器窗口（省去每次重新创建 engine 的冷启动）；
   // 未就绪 / 窗口已销毁时返回 false，走下方一次性创建兜底。
   if (await ImageViewerWindowManager.open(images, initialIndex)) return true;
   try {
     await WindowController.create(
       WindowConfiguration(
-        arguments:
-            ImageWindowArgs(images: images, index: initialIndex).encode(),
+        arguments: ImageWindowArgs(
+          images: images,
+          index: initialIndex,
+        ).encode(),
         hiddenAtLaunch: true,
       ),
     );
@@ -268,9 +272,9 @@ Future<void> saveImageFile(
   final file = File(absPath);
   if (!file.existsSync()) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('图片文件已丢失，无法保存')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片文件已丢失，无法保存')));
     }
     return;
   }
@@ -284,15 +288,15 @@ Future<void> saveImageFile(
   try {
     await file.copy(outPath);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已保存到 $outPath')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已保存到 $outPath')));
     }
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败，请重试')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败，请重试')));
     }
   }
 }
@@ -454,9 +458,7 @@ Future<void> showImageViewerMenu(
 
 void _showViewerSnack(BuildContext context, String message) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(message)),
-  );
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
 }
 
 /// 移动端图片查看器「单击」决策：未放大（initial）时单击退出，否则缩回未放大。
@@ -471,16 +473,46 @@ bool shouldExitPreviewOnTap(PhotoViewScaleState state) =>
 /// 改成「未放大双击放大、放大双击一定回到未放大」的单级循环。
 PhotoViewScaleState mobileDoubleTapCycle(PhotoViewScaleState state) =>
     state == PhotoViewScaleState.initial
-        ? PhotoViewScaleState.covering
-        : PhotoViewScaleState.initial;
+    ? PhotoViewScaleState.covering
+    : PhotoViewScaleState.initial;
+
+/// 下滑关闭：松手判定距离阈值 = 屏高 × 此比例（慢速拖到底）。
+const double _kDismissCommitDistanceRatio = 0.3;
+
+/// 下滑关闭：松手瞬间向下的速度阈值（px/s，快速下甩即关闭）。
+const double _kDismissCommitVelocity = 1000;
+
+/// 下滑关闭：视觉满程（缩小 + 淡出达最大）对应的拖动距离 = 屏高 × 此比例。
+const double _kDismissVisualRangeRatio = 0.4;
+
+/// 下滑关闭：满程时内容额外缩小比例（1.0 → 1.0 - 此值）。
+const double _kDismissMaxScale = 0.12;
+
+/// 下滑关闭：满程时内容淡出的最大不透明度损失（1.0 → 1.0 - 此值）。
+const double _kDismissMaxFade = 0.6;
+
+/// 触屏「下滑关闭」松手判定（QQ / 小米相册体验）：
+/// 未放大时向下拖动，松手满足任一条件即滑出关闭，否则回弹复位：
+/// - 拖动距离 ≥ 屏高 × [_kDismissCommitDistanceRatio]（慢速拖到底）；
+/// - 松手瞬间向下速度 ≥ [_kDismissCommitVelocity]（px/s，快速下甩）。
+bool shouldDismissOnDragEnd({
+  required double dragDistance,
+  required double flingVelocity,
+  required double screenHeight,
+}) {
+  return dragDistance >= screenHeight * _kDismissCommitDistanceRatio ||
+      flingVelocity >= _kDismissCommitVelocity;
+}
 
 /// 全屏图片查看页：左右滑动切换 + 双指缩放（photo_view）。
 ///
 /// - 未放大时左右滑动 → 上一张 / 下一张；放大后可平移查看、缩回后再滑动切换；
 /// - 双指缩放可扩展至铺满全屏（覆盖画面），不再被“原比例留黑边”限制；
-/// - 顶部显示页码（如 2/5）与关闭按钮，底部提供「保存到本地」；
+/// - 顶部显示页码（如 2/5）与关闭按钮；保存/复制/删除经长按（右键）菜单；
 /// - 单击：未放大→退出查看器；放大状态→缩回未放大（QQ 手机端体验）；
-/// - 双击：未放大→放大；放大状态→缩回未放大（QQ 手机端体验）。
+/// - 双击：未放大→放大；放大状态→缩回未放大（QQ 手机端体验）；
+/// - 触屏下滑（未放大态）：向下拖动时内容随指下移/缩小/淡出，松手超过阈值
+///   （屏高 30% 或快速下甩）滑出关闭，否则回弹复位（QQ / 小米相册体验）。
 class ImageViewerPage extends StatefulWidget {
   final List<String> images;
   final int initialIndex;
@@ -499,9 +531,11 @@ class ImageViewerPage extends StatefulWidget {
   State<ImageViewerPage> createState() => _ImageViewerPageState();
 }
 
-class _ImageViewerPageState extends State<ImageViewerPage> {
-  late final PageController _pageController =
-      PageController(initialPage: widget.initialIndex);
+class _ImageViewerPageState extends State<ImageViewerPage>
+    with SingleTickerProviderStateMixin {
+  late final PageController _pageController = PageController(
+    initialPage: widget.initialIndex,
+  );
   late int _index = widget.initialIndex;
 
   // 本页持有的可变图片列表：长按/右键删除后移除当前项并更新页码/画布。
@@ -510,7 +544,37 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   // 每个页面一个缩放状态控制器，用于单击时判断「是否放大」并驱动「缩回未放大」。
   // 数量固定为初始图片总数（删除后只减少，索引始终与 _images 前缀对齐）。
   late final List<PhotoViewScaleStateController> _scaleControllers =
-      List.generate(widget.images.length, (_) => PhotoViewScaleStateController());
+      List.generate(
+        widget.images.length,
+        (_) => PhotoViewScaleStateController(),
+      );
+
+  // ---------- 触屏下滑关闭（QQ / 小米相册体验）状态 ----------
+
+  /// 当前页是否「未放大」（initial）：未放大才挂载下滑关闭识别器。
+  ///
+  /// 放大后必须摘除该识别器：photo_view 的缩放识别器自身需 36px 位移才赢得
+  /// 手势竞技场，若下滑识别器常驻，会在 18px 处抢先，导致放大态的垂直拖动平移失效。
+  bool get _dismissEnabled =>
+      _scaleControllers[_index].scaleState == PhotoViewScaleState.initial;
+
+  /// 当前按下指针是否为触屏（下滑关闭仅对触屏生效）。
+  bool _dismissPointerIsTouch = false;
+
+  /// 当前向下拖动距离（≥ 0；内容随指下移，松手后回弹或滑出关闭）。
+  double _dismissDrag = 0;
+
+  /// 是否正在拖拽中（松手 / 取消后置 false）。
+  bool _dismissDragging = false;
+
+  /// 滑出关闭动画是否进行中（期间不再识别新的下滑）。
+  bool _dismissClosing = false;
+
+  /// 回弹 / 滑出动画控制器与当前动画曲线（null = 无进行中的动画）。
+  late final AnimationController _dismissController = AnimationController(
+    vsync: this,
+  )..addListener(_onDismissAnimate);
+  Animatable<double>? _dismissAnim;
 
   // 已解析的绝对路径（与 _images 等长有序对应；null = 解析中 / 删除后待重解析）。
   // 单个解析失败（如测试环境无 path_provider）时回退相对路径，交由
@@ -522,6 +586,15 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   void initState() {
     super.initState();
     _resolvePaths();
+    // 监听每页缩放状态：未放大 ⇄ 放大切换时决定下滑识别器挂载 / 摘除。
+    for (final c in _scaleControllers) {
+      c.addIgnorableListener(_onScaleStateChanged);
+    }
+  }
+
+  /// 任一页缩放状态变化时重建：[_dismissEnabled] 据此挂载 / 摘除下滑识别器。
+  void _onScaleStateChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _resolvePaths() async {
@@ -543,16 +616,16 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
 
   @override
   void dispose() {
+    for (final c in _scaleControllers) {
+      c.removeIgnorableListener(_onScaleStateChanged);
+    }
+    _dismissController.dispose();
     _pageController.dispose();
     for (final c in _scaleControllers) {
       c.dispose();
     }
     super.dispose();
   }
-
-  /// 将图片复制到用户选择的本地路径（复用共享 [saveImageFile]）。
-  Future<void> _save(BuildContext context, String relPath, String absPath) =>
-      saveImageFile(context, relPath: relPath, absPath: absPath);
 
   /// 长按（触屏）/ 右键（鼠标）弹出当前图片的操作菜单（另存为 / 复制 / 删除）。
   ///
@@ -581,8 +654,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     }
     final removedIndex = _images.indexOf(rel);
     if (removedIndex < 0) return;
-    final nextIndex =
-        removedIndex >= _images.length - 1 ? _images.length - 2 : removedIndex;
+    final nextIndex = removedIndex >= _images.length - 1
+        ? _images.length - 2
+        : removedIndex;
     // 复位被删页的缩放状态（其控制器可能被复用给下一张图）。
     _scaleControllers[removedIndex].scaleState = PhotoViewScaleState.initial;
     setState(() {
@@ -600,126 +674,240 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     if (_absPaths == null) _resolvePaths();
   }
 
+  // ---------- 触屏下滑关闭（QQ / 小米相册体验）----------
+
+  /// 下滑开始：非触屏忽略；若回弹动画进行中则中断，从当前位置继续拖拽。
+  void _onDismissDragStart(DragStartDetails details) {
+    if (!_dismissPointerIsTouch || _dismissClosing) return;
+    _dismissController.stop();
+    _dismissAnim = null;
+    setState(() => _dismissDragging = true);
+  }
+
+  /// 下滑更新：内容随指下移（向上拖动只收不回放，距离以 0 为下限）。
+  void _onDismissDragUpdate(DragUpdateDetails details) {
+    if (!_dismissDragging) return;
+    setState(() {
+      _dismissDrag = math.max(0, _dismissDrag + details.delta.dy);
+    });
+  }
+
+  /// 下滑松手：超过阈值滑出关闭，否则回弹复位。
+  void _onDismissDragEnd(DragEndDetails details) {
+    if (!_dismissDragging) return;
+    setState(() => _dismissDragging = false);
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    if (shouldDismissOnDragEnd(
+      dragDistance: _dismissDrag,
+      flingVelocity: details.primaryVelocity ?? 0,
+      screenHeight: screenHeight,
+    )) {
+      _startDismissExit();
+    } else {
+      _animateDismiss(
+        end: 0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  /// 下滑被取消（如双指接管缩放）：回弹复位。
+  void _onDismissDragCancel() {
+    if (!_dismissDragging) return;
+    setState(() => _dismissDragging = false);
+    _animateDismiss(
+      end: 0,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// 松手超过阈值：内容继续向下滑出（缩小 + 淡出）后关闭查看器。
+  void _startDismissExit() {
+    setState(() => _dismissClosing = true);
+    _animateDismiss(
+      end: MediaQuery.sizeOf(context).height * 1.2,
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeIn,
+      onComplete: () {
+        if (mounted) Navigator.of(context).pop();
+      },
+    );
+  }
+
+  /// 把 [_dismissDrag] 从当前值动画到 [end]（回弹复位或滑出关闭）。
+  void _animateDismiss({
+    required double end,
+    required Duration duration,
+    required Curve curve,
+    VoidCallback? onComplete,
+  }) {
+    _dismissAnim = Tween(
+      begin: _dismissDrag,
+      end: end,
+    ).chain(CurveTween(curve: curve));
+    _dismissController
+      ..duration = duration
+      ..reset();
+    final future = _dismissController.forward();
+    if (onComplete != null) {
+      future.whenComplete(() {
+        if (mounted) onComplete();
+      });
+    }
+  }
+
+  /// 动画帧监听：驱动 [_dismissDrag] 更新（重建画面位移 / 缩放 / 淡出）。
+  void _onDismissAnimate() {
+    final anim = _dismissAnim;
+    if (anim == null) return;
+    setState(() => _dismissDrag = anim.transform(_dismissController.value));
+  }
+
+  /// 触屏下滑关闭手势层：仅当前页未放大且未在滑出时挂载（说明见 [_dismissEnabled]）。
+  Widget _buildDismissGesture(Widget child) {
+    if (!_dismissEnabled || _dismissClosing) return child;
+    return Listener(
+      onPointerDown: (event) =>
+          _dismissPointerIsTouch = event.kind == PointerDeviceKind.touch,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragStart: _onDismissDragStart,
+        onVerticalDragUpdate: _onDismissDragUpdate,
+        onVerticalDragEnd: _onDismissDragEnd,
+        onVerticalDragCancel: _onDismissDragCancel,
+        child: child,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final absPaths = _absPaths;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    // 视觉进度（0..1）：拖动距离 → 缩小 + 淡出程度（QQ / 小米相册式随手下移淡出）。
+    final dismissProgress = screenHeight <= 0
+        ? 0.0
+        : (_dismissDrag / (screenHeight * _kDismissVisualRangeRatio)).clamp(
+            0.0,
+            1.0,
+          );
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Stack(
-          children: [
-            // 图片画布：PhotoViewGallery（左右滑动换图 + 双指缩放；单击退出）。
-            // 长按（触屏）/ 右键（鼠标）弹出操作菜单：长按识别器持按 500ms 后
-            // 在竞技场获胜，与 photo_view 单击退出 / 双击缩放置斥，不会误触发。
-            Positioned.fill(
-              child: GestureDetector(
-                key: const Key('image_viewer_canvas'),
-                onLongPressStart: (details) =>
-                    _showActionMenu(details.globalPosition),
-                onSecondaryTapDown: (details) =>
-                    _showActionMenu(details.globalPosition),
-                child: absPaths == null
-                    ? const Center(
-                        child: Icon(
-                          Icons.image_outlined,
-                          color: Colors.white24,
-                          size: 48,
-                        ),
-                      )
-                    : PhotoViewGallery(
-                        pageController: _pageController,
-                        backgroundDecoration:
-                            const BoxDecoration(color: Colors.black),
-                        onPageChanged: (i) => setState(() => _index = i),
-                        pageOptions: [
-                          for (var i = 0; i < _images.length; i++)
-                            PhotoViewGalleryPageOptions(
-                              imageProvider: FileImage(File(absPaths[i])),
-                              errorBuilder: (context, error, stackTrace) =>
-                                  MissingImage(_images[i]),
-                              // 初始整图可见（contained）；双指放大可扩展到铺满全屏并继续放大。
-                              minScale: PhotoViewComputedScale.contained,
-                              maxScale: PhotoViewComputedScale.covered * 3,
-                              // 每页独立缩放状态：单击据此判断「放大态→缩回」还是「未放大→退出」。
-                              scaleStateController: _scaleControllers[i],
-                              // 双击：未放大→铺满放大；任意放大态→回到未放大（QQ 手机端体验）。
-                              scaleStateCycle: mobileDoubleTapCycle,
-                              // 单击：未放大→退出查看器；放大状态→缩回未放大（QQ 手机端体验）。
-                              onTapUp: (ctx, _, _) {
-                                if (shouldExitPreviewOnTap(
-                                    _scaleControllers[_index].scaleState)) {
-                                  Navigator.of(ctx).pop();
-                                } else {
-                                  _scaleControllers[_index].scaleState =
-                                      PhotoViewScaleState.initial;
-                                }
-                              },
+        child: _buildDismissGesture(
+          Opacity(
+            opacity: 1 - _kDismissMaxFade * dismissProgress,
+            child: Transform.translate(
+              offset: Offset(0, _dismissDrag),
+              child: Transform.scale(
+                scale: 1 - _kDismissMaxScale * dismissProgress,
+                child: Stack(
+                  children: [
+                    // 图片画布：PhotoViewGallery（左右滑动换图 + 双指缩放；单击退出）。
+                    // 长按（触屏）/ 右键（鼠标）弹出操作菜单：长按识别器持按 500ms 后
+                    // 在竞技场获胜，与 photo_view 单击退出 / 双击缩放置斥，不会误触发。
+                    Positioned.fill(
+                      child: GestureDetector(
+                        key: const Key('image_viewer_canvas'),
+                        onLongPressStart: (details) =>
+                            _showActionMenu(details.globalPosition),
+                        onSecondaryTapDown: (details) =>
+                            _showActionMenu(details.globalPosition),
+                        child: absPaths == null
+                            ? const Center(
+                                child: Icon(
+                                  Icons.image_outlined,
+                                  color: Colors.white24,
+                                  size: 48,
+                                ),
+                              )
+                            : PhotoViewGallery(
+                                pageController: _pageController,
+                                backgroundDecoration: const BoxDecoration(
+                                  color: Colors.black,
+                                ),
+                                onPageChanged: (i) =>
+                                    setState(() => _index = i),
+                                pageOptions: [
+                                  for (var i = 0; i < _images.length; i++)
+                                    PhotoViewGalleryPageOptions(
+                                      imageProvider: FileImage(
+                                        File(absPaths[i]),
+                                      ),
+                                      errorBuilder:
+                                          (context, error, stackTrace) =>
+                                              MissingImage(_images[i]),
+                                      // 初始整图可见（contained）；双指放大可扩展到铺满全屏并继续放大。
+                                      minScale:
+                                          PhotoViewComputedScale.contained,
+                                      maxScale:
+                                          PhotoViewComputedScale.covered * 3,
+                                      // 每页独立缩放状态：单击据此判断「放大态→缩回」还是「未放大→退出」。
+                                      scaleStateController:
+                                          _scaleControllers[i],
+                                      // 双击：未放大→铺满放大；任意放大态→回到未放大（QQ 手机端体验）。
+                                      scaleStateCycle: mobileDoubleTapCycle,
+                                      // 单击：未放大→退出查看器；放大状态→缩回未放大（QQ 手机端体验）。
+                                      onTapUp: (ctx, _, _) {
+                                        if (shouldExitPreviewOnTap(
+                                          _scaleControllers[_index].scaleState,
+                                        )) {
+                                          Navigator.of(ctx).pop();
+                                        } else {
+                                          _scaleControllers[_index].scaleState =
+                                              PhotoViewScaleState.initial;
+                                        }
+                                      },
+                                    ),
+                                ],
+                              ),
+                      ),
+                    ),
+                    // 顶部页码指示（如 2/5）。
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
                             ),
-                        ],
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '${_index + 1}/${_images.length}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-            ),
-            // 顶部页码指示（如 2/5）。
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '${_index + 1}/${_images.length}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
+                    // 右上角关闭按钮。
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.of(context).pop(),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
-            // 右上角关闭按钮。
-            Positioned(
-              top: 0,
-              right: 0,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white),
-                tooltip: '关闭',
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ),
-            // 底部「保存到本地」按钮。
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: Colors.white24,
-                      foregroundColor: Colors.white,
-                      side: BorderSide.none,
-                    ),
-                    icon: const Icon(Icons.download_outlined),
-                    label: const Text('保存到本地'),
-                    onPressed: absPaths == null
-                        ? null
-                        : () =>
-                            _save(context, _images[_index], absPaths[_index]),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
