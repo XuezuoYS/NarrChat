@@ -4,6 +4,7 @@ import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 import 'markdown_editing_controller.dart';
 import 'markdown_preview.dart';
+import 'quick_scroll_rail.dart';
 
 /// Markdown 文档树节点。
 class MarkdownNode {
@@ -40,6 +41,11 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
   /// 「编辑/保存/取消」由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动。
   final bool showToolbar;
 
+  /// 非空时，为树中每个节点（分组标题/人物卡片）注册路径锚点（见
+  /// [TocAnchorRegistry]），供快速定位滚动组件按同一路径懒解析其滚动偏移；
+  /// 默认 null = 不注册锚点。
+  final TocAnchorRegistry? tocAnchors;
+
   /// 保存 / 退出编辑时回调（持久化）。
   final ValueChanged<String>? onSave;
 
@@ -52,6 +58,7 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
     this.hintText,
     this.readOnly = false,
     this.showToolbar = true,
+    this.tocAnchors,
     this.onSave,
     this.onEditingChanged,
   });
@@ -222,9 +229,9 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   Widget _buildViewMode(BuildContext context) {
     final raw = widget.controller.text;
     final roots = _cachedBuildTree(raw);
-    final displayRoots = _pickDisplayRoots(roots);
+    final displayRoots = pickDisplayRoots(roots);
     // 人物层级 = 最深的标题层级（每个人物是一个折叠卡片）。
-    final personLevel = _maxLevel(displayRoots);
+    final personLevel = maxLevel(displayRoots);
 
     return GestureDetector(
       onDoubleTap: widget.readOnly ? null : _enterEdit,
@@ -314,69 +321,61 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     );
   }
 
-  /// 计算树中最大的标题层级（即“人物层级”）。
-  int _maxLevel(List<MarkdownNode> nodes) {
-    var max = 1;
-    void walk(MarkdownNode n) {
-      if (n.level > max) max = n.level;
-      for (final c in n.children) {
-        walk(c);
-      }
-    }
-
-    for (final n in nodes) {
-      walk(n);
-    }
-    return max;
-  }
-
   /// 递归渲染：
   /// - 层级达到“人物层级”的节点 → 可折叠的人物卡片（默认展开显示内容）；
   /// - 层级更浅的节点 → 分组标题（始终展开）+ 其子级。
   ///
   /// [path] 为卡片在树中的稳定路径（如 `root0.c1`），用于生成唯一 key，
-  /// 保证同一张卡片跨重建保持 State（展开状态与动画不丢失）。
+  /// 保证同一张卡片跨重建保持 State（展开状态与动画不丢失）；
+  /// [tocAnchors] 非空时按同样 path 注册锚点（快速定位目录懒解析偏移）。
   Widget _buildPersonNode(
     BuildContext context,
     MarkdownNode node,
     int personLevel,
     String path,
   ) {
+    Widget result;
     if (node.level >= personLevel) {
-      return _PersonCard(
+      result = _PersonCard(
         key: ValueKey('person_$path'),
         node: node,
         initiallyExpanded: _allExpanded,
       );
+    } else {
+      // 分组标题（如“女主角”），始终显示。
+      result = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _GroupHeader(heading: node.heading),
+          ..._groupParagraphs(node.contentLines).map(
+            (paragraph) => Padding(
+              padding: const EdgeInsets.only(left: 12, right: 8, bottom: 4),
+              child: MarkdownPreview(
+                data: paragraph.join('\n'),
+                base: const TextStyle(fontSize: 13, height: 1.4),
+              ),
+            ),
+          ),
+          ...node.children.asMap().entries.map(
+            (e) => Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: _buildPersonNode(
+                context,
+                e.value,
+                personLevel,
+                '$path.c${e.key}',
+              ),
+            ),
+          ),
+        ],
+      );
     }
-    // 分组标题（如“女主角”），始终显示。
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _GroupHeader(heading: node.heading),
-        ..._groupParagraphs(node.contentLines).map(
-          (paragraph) => Padding(
-            padding: const EdgeInsets.only(left: 12, right: 8, bottom: 4),
-            child: MarkdownPreview(
-              data: paragraph.join('\n'),
-              base: const TextStyle(fontSize: 13, height: 1.4),
-            ),
-          ),
-        ),
-        ...node.children.asMap().entries.map(
-          (e) => Padding(
-            padding: const EdgeInsets.only(left: 4),
-            child: _buildPersonNode(
-              context,
-              e.value,
-              personLevel,
-              '$path.c${e.key}',
-            ),
-          ),
-        ),
-      ],
-    );
+    final anchors = widget.tocAnchors;
+    if (anchors != null) {
+      result = KeyedSubtree(key: anchors.keyFor(path), child: result);
+    }
+    return result;
   }
 
   // ---------------------------------------------------------------------------
@@ -390,18 +389,20 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
   String? _parsedRaw;
   List<MarkdownNode>? _parsedRoots;
 
-  /// 按文本缓存 [_buildTree] 的结果。
+  /// 按文本缓存 [parseTree] 的结果。
   List<MarkdownNode> _cachedBuildTree(String raw) {
     if (_parsedRaw == raw) {
       return _parsedRoots ?? const [];
     }
     _parsedRaw = raw;
-    _parsedRoots = _buildTree(raw);
+    _parsedRoots = parseTree(raw);
     return _parsedRoots!;
   }
 
   /// 解析原始文本为标题树；标题前的杂散内容被忽略。
-  List<MarkdownNode> _buildTree(String raw) {
+  ///
+  /// 视图模式与侧边栏快速定位目录共用同一解析来源（禁止各自实现）。
+  static List<MarkdownNode> parseTree(String raw) {
     final roots = <MarkdownNode>[];
     final stack = <MarkdownNode>[];
 
@@ -427,13 +428,13 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     return roots;
   }
 
-  /// 选择用于折叠展示的根级节点。
+  /// 选择用于折叠展示的根级节点（供视图模式与目录共用）。
   ///
   /// 规则：
   /// - 若文本最外层只有一个一级标题（如 `# 角色状态`）且其下还有更深层级，
   ///   则视其为包装层，将其子级（如 `## 女主角`）作为展示根级；
   /// - 否则使用最小层级作为展示根级。
-  List<MarkdownNode> _pickDisplayRoots(List<MarkdownNode> roots) {
+  static List<MarkdownNode> pickDisplayRoots(List<MarkdownNode> roots) {
     if (roots.length != 1) return roots;
     final only = roots.first;
     if (only.level == 1 && _hasDeeper(only)) {
@@ -442,7 +443,23 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     return roots;
   }
 
-  bool _hasDeeper(MarkdownNode node) {
+  /// 计算树中最大的标题层级（即“人物层级”）。
+  static int maxLevel(List<MarkdownNode> nodes) {
+    var max = 1;
+    void walk(MarkdownNode n) {
+      if (n.level > max) max = n.level;
+      for (final c in n.children) {
+        walk(c);
+      }
+    }
+
+    for (final n in nodes) {
+      walk(n);
+    }
+    return max;
+  }
+
+  static bool _hasDeeper(MarkdownNode node) {
     if (node.children.isNotEmpty) return true;
     for (final c in node.children) {
       if (_hasDeeper(c)) return true;

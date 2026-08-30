@@ -14,7 +14,12 @@ import 'package:flutter/material.dart';
 /// 滚动条策略：**使用 Flutter 原生滚动条**（由 MaterialScrollBehavior 为每个
 /// Scrollable 自动添加），仅通过 [ScrollbarThemeData] 统一外观为「细、圆角、
 /// 仅滚动时显示」，避免常显拇指在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
-/// 不再使用任何自定义/显式滚动条。
+/// 不使用自定义/显式滚动条。
+///
+/// 唯一例外：对话页右侧栏（SidebarPanel）用 QuickScrollRail 快速定位导轨
+/// （WPS 式边缘定位 + 目录浮层）承担滚动定位职责，滚动视图局部通过
+/// `ScrollConfiguration.copyWith(scrollbars: false)` 关闭原生滚动条；
+/// 其它位置的原生滚动条不受影响。
 class NarrChatTheme {
   NarrChatTheme._();
 

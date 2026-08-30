@@ -7,6 +7,7 @@ import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
 import 'memory_summary_editor.dart';
 import 'plain_text_field_editor.dart';
+import 'quick_scroll_rail.dart';
 
 /// 侧边栏面板。
 ///
@@ -49,6 +50,10 @@ class SidebarPanel extends StatefulWidget {
 }
 
 class _SidebarPanelState extends State<SidebarPanel> {
+  /// 快速定位滚动导轨的锚点注册器（路径 → 同一实例的 GlobalKey）：
+  /// 区块与角色状态内部树节点共用；生命周期随本 State（切换轮次重建）。
+  final TocAnchorRegistry _tocAnchors = TocAnchorRegistry();
+
   late final TextEditingController _worldState =
       TextEditingController(text: widget.round?.worldState ?? '');
   late final TextEditingController _characterState =
@@ -57,6 +62,9 @@ class _SidebarPanelState extends State<SidebarPanel> {
       TextEditingController(text: widget.round?.memorySummary ?? '');
   late final TextEditingController _currentTime =
       TextEditingController(text: widget.round?.currentTime ?? '');
+
+  /// 侧栏内容滚动控制器（快速定位导轨共用）。
+  final ScrollController _scrollController = ScrollController();
 
   /// 各子模块的折叠状态（key = 字段名；默认展开）。
   final Map<String, bool> _collapsed = {};
@@ -91,6 +99,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
     _characterState.dispose();
     _memorySummary.dispose();
     _currentTime.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -158,79 +167,90 @@ class _SidebarPanelState extends State<SidebarPanel> {
           Expanded(
             child: round == null
                 ? _buildEmpty(theme)
-                // 原生滚动条（主题已统一为常显细圆角拇指），内容长度/滚动自动跟随。
+                // 快速定位滚动导轨（替代本面板的原生滚动条）：滚动时显示
+                // 自绘拇指，按住拖动出现「从左向右的渐变目录浮层」，最低
+                // 目录级别为角色名（角色状态内的 `## 角色名` 卡片）。
                 // 每个大子模块用 _buildSection 包裹（SliverMainAxisGroup 分组）：
                 // 组内标题栏吸顶，但会被钳制在本组范围，滚动时前一个标题栏
                 // 随组滚出视口、不叠层，一次只有一个标题栏固定在顶部。
-                : CustomScrollView(
-                    slivers: [
-                      _buildSection(
-                        key: RoundField.currentTime,
-                        label: '当前时间',
-                        onEdit: () =>
-                            _enterEditModule(RoundField.currentTime, _currentTimeKey),
-                        onSave: () => _saveModule(_currentTimeKey),
-                        onCancel: () => _cancelModule(_currentTimeKey),
-                        body: PlainTextFieldEditor(
-                          key: _currentTimeKey,
-                          controller: _currentTime,
-                          hintText: '当前时间',
-                          onSave: (v) => _saveFieldNow(RoundField.currentTime, v),
-                          onEditingChanged: (e) =>
-                              _onEditingChanged(RoundField.currentTime, e),
+                : QuickScrollRail(
+                    controller: _scrollController,
+                    panelColor: history
+                        ? context.narrColors.historyBackground
+                        : context.narrColors.surface,
+                    entries: _buildTocEntries(),
+                    scrollable: CustomScrollView(
+                      controller: _scrollController,
+                      slivers: [
+                        _buildSection(
+                          key: RoundField.currentTime,
+                          label: '当前时间',
+                          onEdit: () =>
+                              _enterEditModule(RoundField.currentTime, _currentTimeKey),
+                          onSave: () => _saveModule(_currentTimeKey),
+                          onCancel: () => _cancelModule(_currentTimeKey),
+                          body: PlainTextFieldEditor(
+                            key: _currentTimeKey,
+                            controller: _currentTime,
+                            hintText: '当前时间',
+                            onSave: (v) => _saveFieldNow(RoundField.currentTime, v),
+                            onEditingChanged: (e) =>
+                                _onEditingChanged(RoundField.currentTime, e),
+                          ),
                         ),
-                      ),
-                      _buildSection(
-                        key: RoundField.worldState,
-                        label: '世界状态',
-                        onEdit: () => _enterEditModule(RoundField.worldState, _worldStateKey),
-                        onSave: () => _saveModule(_worldStateKey),
-                        onCancel: () => _cancelModule(_worldStateKey),
-                        body: MarkdownField(
-                          key: _worldStateKey,
-                          controller: _worldState,
-                          hintText: '世界状态',
-                          showToolbar: false,
-                          onSave: (v) => _saveFieldNow(RoundField.worldState, v),
-                          onEditingChanged: (e) =>
-                              _onEditingChanged(RoundField.worldState, e),
+                        _buildSection(
+                          key: RoundField.worldState,
+                          label: '世界状态',
+                          onEdit: () => _enterEditModule(RoundField.worldState, _worldStateKey),
+                          onSave: () => _saveModule(_worldStateKey),
+                          onCancel: () => _cancelModule(_worldStateKey),
+                          body: MarkdownField(
+                            key: _worldStateKey,
+                            controller: _worldState,
+                            hintText: '世界状态',
+                            showToolbar: false,
+                            onSave: (v) => _saveFieldNow(RoundField.worldState, v),
+                            onEditingChanged: (e) =>
+                                _onEditingChanged(RoundField.worldState, e),
+                          ),
                         ),
-                      ),
-                      _buildSection(
-                        key: RoundField.characterState,
-                        label: '角色状态',
-                        onEdit: () => _enterEditModule(RoundField.characterState, _characterStateKey),
-                        onSave: () => _saveModule(_characterStateKey),
-                        onCancel: () => _cancelModule(_characterStateKey),
-                        body: MarkdownCollapsibleEditor(
-                          key: _characterStateKey,
-                          controller: _characterState,
-                          hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
-                          showToolbar: false,
-                          onSave: (v) => _saveFieldNow(RoundField.characterState, v),
-                          onEditingChanged: (e) =>
-                              _onEditingChanged(RoundField.characterState, e),
+                        _buildSection(
+                          key: RoundField.characterState,
+                          label: '角色状态',
+                          onEdit: () => _enterEditModule(RoundField.characterState, _characterStateKey),
+                          onSave: () => _saveModule(_characterStateKey),
+                          onCancel: () => _cancelModule(_characterStateKey),
+                          body: MarkdownCollapsibleEditor(
+                            key: _characterStateKey,
+                            controller: _characterState,
+                            hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
+                            showToolbar: false,
+                            tocAnchors: _tocAnchors,
+                            onSave: (v) => _saveFieldNow(RoundField.characterState, v),
+                            onEditingChanged: (e) =>
+                                _onEditingChanged(RoundField.characterState, e),
+                          ),
                         ),
-                      ),
-                      _buildSection(
-                        key: RoundField.memorySummary,
-                        label: '记忆总结',
-                        subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
-                        onEdit: () => _enterEditModule(RoundField.memorySummary, _memorySummaryKey),
-                        onSave: () => _saveModule(_memorySummaryKey),
-                        onCancel: () => _cancelModule(_memorySummaryKey),
-                        body: MemorySummaryEditor(
-                          key: _memorySummaryKey,
-                          controller: _memorySummary,
-                          hintText: '记忆总结',
-                          showToolbar: false,
-                          onSave: (v) => _saveFieldNow(RoundField.memorySummary, v),
-                          onEditingChanged: (e) =>
-                              _onEditingChanged(RoundField.memorySummary, e),
+                        _buildSection(
+                          key: RoundField.memorySummary,
+                          label: '记忆总结',
+                          subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
+                          onEdit: () => _enterEditModule(RoundField.memorySummary, _memorySummaryKey),
+                          onSave: () => _saveModule(_memorySummaryKey),
+                          onCancel: () => _cancelModule(_memorySummaryKey),
+                          body: MemorySummaryEditor(
+                            key: _memorySummaryKey,
+                            controller: _memorySummary,
+                            hintText: '记忆总结',
+                            showToolbar: false,
+                            onSave: (v) => _saveFieldNow(RoundField.memorySummary, v),
+                            onEditingChanged: (e) =>
+                                _onEditingChanged(RoundField.memorySummary, e),
+                          ),
                         ),
-                      ),
-                      const SliverToBoxAdapter(child: SizedBox(height: 12)),
-                    ],
+                        const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                      ],
+                    ),
                   ),
           ),
         ],
@@ -304,6 +324,65 @@ class _SidebarPanelState extends State<SidebarPanel> {
     );
   }
 
+  /// 快速定位滚动导轨的目录条目（随 build 派生，天然跟随折叠/编辑态）。
+  ///
+  /// 层级：区块（当前时间/世界状态/角色状态/记忆总结）→ 角色状态内的
+  /// Markdown 树（`# 类别` 分组标题 → `## 角色名` 人物卡片，即最低级别）。
+  List<QuickScrollEntry> _buildTocEntries() {
+    final entries = <QuickScrollEntry>[
+      for (final (field, label) in const [
+        (RoundField.currentTime, '当前时间'),
+        (RoundField.worldState, '世界状态'),
+        (RoundField.characterState, '角色状态'),
+        (RoundField.memorySummary, '记忆总结'),
+      ])
+        QuickScrollEntry(
+          id: 'section:$field',
+          label: label,
+          offsetResolver: _sectionResolver(field),
+        ),
+    ];
+    // 角色状态折叠或编辑中 → 内部树节点不渲染，目录同步移除其子条目。
+    final charCollapsed = _collapsed[RoundField.characterState] ?? false;
+    final charEditing = _editing[RoundField.characterState] ?? false;
+    if (!charCollapsed && !charEditing) {
+      entries.addAll(_buildCharacterTocEntries());
+    }
+    return entries;
+  }
+
+  /// 区块锚点（零高度 Box）的「对齐视口顶」偏移解析。
+  double? Function() _sectionResolver(String field) => () =>
+      QuickScrollRail.revealOffsetOf(_tocAnchors.contextOf('section:$field'));
+
+  /// 角色状态内部目录条目：镜像 [MarkdownCollapsibleEditor] 视图模式的渲染树，
+  /// path 约定（`root{i}` / `$path.c{j}`）与锚点注册完全一致。
+  List<QuickScrollEntry> _buildCharacterTocEntries() {
+    final roots = MarkdownCollapsibleEditorState.parseTree(_characterState.text);
+    if (roots.isEmpty) return const [];
+    final displayRoots = MarkdownCollapsibleEditorState.pickDisplayRoots(roots);
+    final out = <QuickScrollEntry>[];
+    void walk(List<MarkdownNode> nodes, String prefixPath) {
+      for (var i = 0; i < nodes.length; i++) {
+        final node = nodes[i];
+        final path = prefixPath.isEmpty ? 'root$i' : '$prefixPath.c$i';
+        out.add(
+          QuickScrollEntry(
+            id: 'char:$path',
+            label: node.heading,
+            level: node.level,
+            offsetResolver: () =>
+                QuickScrollRail.revealOffsetOf(_tocAnchors.contextOf(path)),
+          ),
+        );
+        walk(node.children, path);
+      }
+    }
+
+    walk(displayRoots, '');
+    return out;
+  }
+
   /// 构建一个「可折叠 + 吸顶标题栏」的子模块。
   ///
   /// 每个子模块用 [SliverMainAxisGroup] 分组：组内的吸顶标题栏会被钳制在
@@ -324,6 +403,16 @@ class _SidebarPanelState extends State<SidebarPanel> {
     final editing = _editing[key] ?? false;
     return SliverMainAxisGroup(
       slivers: [
+        // 快速定位导轨的区块锚点（零高度）：目录条目按此解析「对齐视口顶」
+        // 的滚动偏移；跳转到区块头与自然滚动位置一致（标题栏随后吸顶）。
+        SliverToBoxAdapter(
+          child: SizedBox(
+            // 零尺寸锚点（Box 而非 Sliver：revealOffsetOf 需要 RenderBox）。
+            key: _tocAnchors.keyFor('section:$key'),
+            width: 0,
+            height: 0,
+          ),
+        ),
         SliverPersistentHeader(
           pinned: true,
           delegate: _SidebarSectionHeaderDelegate(
