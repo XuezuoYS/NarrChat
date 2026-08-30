@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
@@ -91,5 +92,54 @@ void main() {
 
     expect(ok, isFalse);
     expect(cloud.triggers, 1, reason: '用户中断后（失败条目）同样触发自动同步');
+  });
+
+  test('侧边栏字段保存（updateRoundField）→ 触发一次自动同步', () async {
+    final (rp, cloud) = await build();
+    final roundId = rp.rounds.single.id!;
+    expect(cloud.triggers, 0);
+
+    final ok = await rp.updateRoundField(
+      roundId,
+      RoundField.worldState,
+      '新的世界状态',
+    );
+
+    expect(ok, isTrue);
+    expect(rp.rounds.single.worldState, '新的世界状态');
+    expect(cloud.triggers, 1, reason: '侧边栏保存后应触发一次自动同步');
+    expect(cloud.lastKind, SyncKind.both, reason: '与生成结束触发种类一致');
+  });
+
+  test('AI 正文保存（updateNarrative）→ 触发一次自动同步', () async {
+    final (rp, cloud) = await build();
+    final roundId = rp.rounds.single.id!;
+    expect(cloud.triggers, 0);
+
+    await rp.updateNarrative(roundId, '修改后的正文');
+
+    expect(rp.rounds.single.aiNarrative, '修改后的正文');
+    expect(cloud.triggers, 1, reason: '编辑 AI 正文保存后应触发一次自动同步');
+  });
+
+  test('用户输入保存（updateUserInput）→ 触发一次自动同步', () async {
+    final (rp, cloud) = await build();
+    final roundId = rp.rounds.single.id!;
+    expect(cloud.triggers, 0);
+
+    await rp.updateUserInput(roundId, '修改后的输入');
+
+    expect(rp.rounds.single.userInput, '修改后的输入');
+    expect(cloud.triggers, 1, reason: '编辑用户输入保存后应触发一次自动同步');
+  });
+
+  test('非法字段保存被拒 → 不触发同步', () async {
+    final (rp, cloud) = await build();
+    final roundId = rp.rounds.single.id!;
+
+    final ok = await rp.updateRoundField(roundId, 'not_a_field', 'x');
+
+    expect(ok, isFalse);
+    expect(cloud.triggers, 0, reason: '未落库的编辑不应触发同步');
   });
 }

@@ -39,11 +39,18 @@ class RoundDao {
     return count;
   }
 
-  /// 仅更新指定字段（用于侧边栏“保存快照”）。
+  /// 仅更新指定字段（用于侧边栏「保存快照」、编辑 AI 正文 / 用户输入），
+  /// 同时刷新本轮 `updated_at`（epoch 毫秒）并触碰书籍 `rounds_updated_at`，
+  /// 使编辑后的轮次带有准确的更新时间并可被云同步识别为「本地较新」。
   Future<int> updateRoundFields(int roundId, Map<String, Object?> fields) async {
     final db = await _helper.database;
     final round = await getRoundById(roundId);
-    final count = await db.update('rounds', fields, where: 'id = ?', whereArgs: [roundId]);
+    final count = await db.update(
+      'rounds',
+      {...fields, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'id = ?',
+      whereArgs: [roundId],
+    );
     if (round != null) {
       await DatabaseHelper.touchBook(db, round.bookUuid, rounds: true);
     }

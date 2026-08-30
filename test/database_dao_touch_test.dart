@@ -110,6 +110,23 @@ void main() {
     expect(await roundDao.getRoundsByBook(bookUuid), isEmpty);
   });
 
+  test('updateRoundFields 刷新本轮 updated_at（编辑后记录此轮时间）', () async {
+    final bookDao = BookDao();
+    final roundDao = RoundDao();
+    final bookUuid = await bookDao.insertBook(const Book(title: '书A'));
+    final roundId = await roundDao.insertRound(
+        Round(bookUuid: bookUuid, roundIndex: 1, userInput: '你好'));
+    expect(await roundUpdatedAt(roundId), 0, reason: '新建轮次尚无更新时间');
+
+    final before = DateTime.now().millisecondsSinceEpoch;
+    await roundDao.updateRoundFields(roundId, {'user_input': '改过的输入'});
+
+    final after = await roundUpdatedAt(roundId);
+    expect(after, greaterThanOrEqualTo(before), reason: '保存编辑应刷新本轮 updated_at');
+    // 书籍轮次时间戳仍被触碰（云同步可识别「本地较新」）。
+    expect(await roundsOf(bookUuid), greaterThan(0));
+  });
+
   test('setFailedAttempt 触碰轮次时间戳（失败条目随轮次部件同步）', () async {
     final bookDao = BookDao();
     final bookUuid = await bookDao.insertBook(const Book(title: '书A'));
@@ -186,3 +203,15 @@ Future<int> settingsOf(String bookUuid) async =>
 
 Future<int> roundsOf(String bookUuid) async =>
     ((await bookRow(bookUuid))['rounds_updated_at'] as int?) ?? 0;
+
+Future<int> roundUpdatedAt(int roundId) async {
+  final db = await DatabaseHelper.instance.database;
+  final rows = await db.query(
+    'rounds',
+    columns: ['updated_at'],
+    where: 'id = ?',
+    whereArgs: [roundId],
+    limit: 1,
+  );
+  return ((rows.first['updated_at'] as int?) ?? 0);
+}

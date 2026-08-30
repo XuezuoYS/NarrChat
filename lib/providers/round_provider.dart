@@ -1031,12 +1031,16 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 编辑 AI 正文（长按/右键 → 编辑正文）。
+  ///
+  /// 保存成功后刷新本轮 `updated_at`（见 [RoundDao.updateRoundFields]）
+  /// 并触发一次自动云同步，保证编辑结果可被推送。
   Future<void> updateNarrative(int roundId, String narrative) async {
     try {
       await _dao.updateRoundFields(roundId, {'ai_narrative': narrative});
       if (_bookUuid.isNotEmpty) {
         await loadRounds(_bookUuid);
       }
+      _cloudSyncProvider?.triggerSync();
     } catch (e) {
       _error = e.toString();
       notifyListeners();
@@ -1044,21 +1048,26 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 编辑用户输入（长按/右键 → 编辑输入）。
+  ///
+  /// 保存成功后刷新本轮 `updated_at` 并触发一次自动云同步。
   Future<void> updateUserInput(int roundId, String input) async {
     try {
       await _dao.updateRoundFields(roundId, {'user_input': input});
       if (_bookUuid.isNotEmpty) {
         await loadRounds(_bookUuid);
       }
+      _cloudSyncProvider?.triggerSync();
     } catch (e) {
       _error = e.toString();
       notifyListeners();
     }
   }
 
-  /// 侧边栏实时保存：将单个字段（数据库列名）写回并重新加载。
+  /// 侧边栏显式保存：将单个字段（数据库列名）写回并重新加载。
   ///
   /// 仅允许白名单内的字段，防止误写；返回是否保存成功。
+  /// 保存成功后刷新本轮 `updated_at` 并触发一次自动云同步
+  /// （写库失败 / 被拒时不同步，避免推送未落库的编辑）。
   Future<bool> updateRoundField(int roundId, String field, String value) async {
     const allowed = {
       RoundField.worldState,
@@ -1074,6 +1083,7 @@ class RoundProvider extends ChangeNotifier {
       if (_bookUuid.isNotEmpty) {
         await loadRounds(_bookUuid);
       }
+      _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
