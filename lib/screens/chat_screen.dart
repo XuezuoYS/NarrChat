@@ -2312,7 +2312,7 @@ class _ChatScreenState extends State<ChatScreen>
       isHistoryView: sidebarProvider.isHistoryView && viewedRound != null,
       onBackToCurrent: () => context.read<SidebarProvider>().showCurrent(),
       onClose: onClose,
-      onAutoSaveField: (round, field, value) => context
+      onSaveField: (round, field, value) => context
           .read<RoundProvider>()
           .updateRoundField(round.id!, field, value),
     );

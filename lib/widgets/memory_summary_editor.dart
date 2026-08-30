@@ -51,13 +51,14 @@ List<MemoryEntry> parseMemoryEntries(String text) {
 
 /// 「记忆总结」专用编辑组件。
 ///
-/// 与 [MarkdownField] 接口一致（外部传入 [controller]、防抖自动保存回调
-/// [onChanged]、点击「完成」立即保存 [onSave]），但视图模式按「轮数 / 日期 /
-/// 概括内容」绑定为一条的条目卡片渲染（而非通用 Markdown 预览）：
+/// 与 [MarkdownField] 接口一致（外部传入 [controller]、保存/退出编辑触发
+/// [onSave]），但视图模式按「轮数 / 日期 / 概括内容」绑定为一条的条目卡片渲染
+/// （而非通用 Markdown 预览）：
 ///
 /// - 每条记忆 = 一个卡片：左侧「第N轮」徽标，下方日期 + 概括内容；
 /// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据）；
-/// - 点击标题栏「编辑」或双击进入原始文本编辑模式。
+/// - 点击标题栏「编辑」或双击进入原始文本编辑模式；
+/// - 不自动保存：仅保存/退出编辑触发 [onSave]，取消编辑丢弃修改。
 class MemorySummaryEditor extends StatefulWidget {
   final TextEditingController controller;
   final String? hintText;
@@ -66,11 +67,11 @@ class MemorySummaryEditor extends StatefulWidget {
   /// 是否显示内部工具栏（含「编辑/完成」按钮）。
   final bool showToolbar;
 
-  /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
-  final ValueChanged<String>? onChanged;
-
-  /// 点击「完成」时回调（立即保存，不经过防抖）。
+  /// 保存 / 退出编辑时回调（持久化）。
   final ValueChanged<String>? onSave;
+
+  /// 进入 / 退出编辑模式时回调（供外部标题栏切换【保存】/【取消】按钮）。
+  final ValueChanged<bool>? onEditingChanged;
 
   const MemorySummaryEditor({
     super.key,
@@ -78,8 +79,8 @@ class MemorySummaryEditor extends StatefulWidget {
     this.hintText,
     this.readOnly = false,
     this.showToolbar = true,
-    this.onChanged,
     this.onSave,
+    this.onEditingChanged,
   });
 
   @override
@@ -96,7 +97,6 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     super.initState();
     _editController = MarkdownEditingController(text: widget.controller.text);
     widget.controller.addListener(_syncFromExternal);
-    _editController.addListener(_onEditChanged);
   }
 
   void _syncFromExternal() {
@@ -105,32 +105,25 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     }
   }
 
-  void _onEditChanged() {
-    if (_editMode) {
-      widget.onChanged?.call(_editController.text);
-    }
-  }
-
   @override
   void dispose() {
     widget.controller.removeListener(_syncFromExternal);
-    _editController.removeListener(_onEditChanged);
     _editController.dispose();
     super.dispose();
   }
 
   void _enterEdit() {
     if (widget.readOnly) return;
-    // 先同步文本（此时 _editMode 仍为 false，不会触发多余的 onChanged），
-    // 再进入编辑模式，避免进入编辑时触发一次无意义的防抖自动保存。
+    // 先同步文本（此时 _editMode 仍为 false，编辑控制器仅跟随外部控制器），
+    // 再进入编辑模式，保证编辑框打开即为当前已保存内容。
     _editController.text = widget.controller.text;
     setState(() {
       _editMode = true;
     });
+    widget.onEditingChanged?.call(true);
   }
 
   void _exitEdit({required bool save}) {
-    // 先退出编辑模式，再同步文本：避免回写/还原时触发 onChanged 造成多余的自动保存。
     _editMode = false;
     if (save) {
       widget.controller.text = _editController.text;
@@ -138,6 +131,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     } else {
       _editController.text = widget.controller.text;
     }
+    widget.onEditingChanged?.call(false);
     setState(() {});
   }
 
@@ -150,6 +144,9 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
 
   @override
   void save() => _exitEdit(save: true);
+
+  @override
+  void cancel() => _exitEdit(save: false);
 
   @override
   Widget build(BuildContext context) {

@@ -37,14 +37,14 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
 
   /// 是否显示视图模式工具栏中的说明文字与「编辑」按钮。
   /// 为 false 时仅保留「一键展开/全部折叠」控件，
-  /// 「编辑/保存」由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动。
+  /// 「编辑/保存/取消」由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动。
   final bool showToolbar;
 
-  /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
-  final ValueChanged<String>? onChanged;
-
-  /// 点击「完成」时回调（立即保存，不经过防抖）。
+  /// 保存 / 退出编辑时回调（持久化）。
   final ValueChanged<String>? onSave;
+
+  /// 进入 / 退出编辑模式时回调（供外部标题栏切换【保存】/【取消】按钮）。
+  final ValueChanged<bool>? onEditingChanged;
 
   const MarkdownCollapsibleEditor({
     super.key,
@@ -52,8 +52,8 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
     this.hintText,
     this.readOnly = false,
     this.showToolbar = true,
-    this.onChanged,
     this.onSave,
+    this.onEditingChanged,
   });
 
   @override
@@ -75,7 +75,6 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     _editController = MarkdownEditingController(text: widget.controller.text);
     // 外部（父级）修改 controller 时同步到编辑框（仅非编辑模式下）。
     widget.controller.addListener(_syncFromExternal);
-    _editController.addListener(_onEditChanged);
   }
 
   void _syncFromExternal() {
@@ -84,32 +83,25 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     }
   }
 
-  void _onEditChanged() {
-    if (_editMode) {
-      widget.onChanged?.call(_editController.text);
-    }
-  }
-
   @override
   void dispose() {
     widget.controller.removeListener(_syncFromExternal);
-    _editController.removeListener(_onEditChanged);
     _editController.dispose();
     super.dispose();
   }
 
   void _enterEdit() {
     if (widget.readOnly) return;
-    // 先同步文本（此时 _editMode 仍为 false，不会触发多余的 onChanged），
-    // 再进入编辑模式，避免进入编辑时触发一次无意义的防抖自动保存。
+    // 先同步文本（此时 _editMode 仍为 false，编辑控制器仅跟随外部控制器），
+    // 再进入编辑模式，保证编辑框打开即为当前已保存内容。
     _editController.text = widget.controller.text;
     setState(() {
       _editMode = true;
     });
+    widget.onEditingChanged?.call(true);
   }
 
   void _exitEdit({required bool save}) {
-    // 先退出编辑模式，再同步文本：避免回写/还原时触发 onChanged 造成多余的自动保存。
     _editMode = false;
     if (save) {
       widget.controller.text = _editController.text;
@@ -117,6 +109,7 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
     } else {
       _editController.text = widget.controller.text;
     }
+    widget.onEditingChanged?.call(false);
     setState(() {});
   }
 
@@ -138,6 +131,9 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
 
   @override
   void save() => _exitEdit(save: true);
+
+  @override
+  void cancel() => _exitEdit(save: false);
 
   /// 是否处于「一键展开 / 全部折叠」中的展开态。
   bool get allExpanded => _allExpanded;
@@ -162,36 +158,39 @@ class MarkdownCollapsibleEditorState extends State<MarkdownCollapsibleEditor>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.edit_note,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    '原始文本编辑',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.outline,
+          // 内部工具栏（含「取消/完成」）仅在有工具栏时显示；
+          // showToolbar 为 false 时由外部（侧边栏标题栏）驱动保存/取消。
+          if (widget.showToolbar)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.edit_note,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      '原始文本编辑',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
                     ),
                   ),
-                ),
-                TextButton(
-                  onPressed: () => _exitEdit(save: false),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () => _exitEdit(save: true),
-                  child: const Text('完成'),
-                ),
-              ],
+                  TextButton(
+                    onPressed: () => _exitEdit(save: false),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: () => _exitEdit(save: true),
+                    child: const Text('完成'),
+                  ),
+                ],
+              ),
             ),
-          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             child: TextField(

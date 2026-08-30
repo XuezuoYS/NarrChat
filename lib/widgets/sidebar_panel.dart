@@ -1,15 +1,12 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../theme/app_theme.dart';
-import '../utils/formats.dart';
-import '../utils/focus_utils.dart';
 import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
 import 'memory_summary_editor.dart';
+import 'plain_text_field_editor.dart';
 
 /// 侧边栏面板。
 ///
@@ -21,17 +18,18 @@ import 'memory_summary_editor.dart';
 ///   （`recommended_action` 不在侧边栏编辑，展示于对话区 AI 气泡正文下方。）
 /// - 可折叠子模块：每个大区块（当前时间/世界状态/角色状态/记忆总结）都有吸顶标题栏，
 ///   滚动到下方时标题栏固定在视口顶部；点击标题栏可折叠/展开该区块内容。
-/// - 实时保存：每个区块编辑时，内容变化后会经过短暂防抖自动写回数据库
-///   （通过 [onAutoSaveField]），无需手动点击即可持久化；
-///   底部显示自动保存状态提示条。
+/// - 手动保存：编辑时**不自动写库**；每个子模块通过标题栏【编辑】进入编辑、
+///   【保存】（或编辑模式内「完成」）退出编辑并调用 [onSaveField] 持久化，
+///   【取消】放弃本次修改（还原为已保存内容）。
+///   保存结果通过 ScaffoldMessenger 的 SnackBar（Flutter 默认通知渠道）提示。
 ///   历史轮次的修改绝不自动影响后续轮次，仅作为快照存档。
 ///
 /// 父级通过 `ValueKey(round.id)` 切换本组件状态，切换轮次时编辑器内容自动重置。
 class SidebarPanel extends StatefulWidget {
   final Round? round;
   final bool isHistoryView;
-  /// 自动保存回调；返回是否保存成功（成功才更新「已自动保存于」状态）。
-  final Future<bool> Function(Round round, String field, String value) onAutoSaveField;
+  /// 显式保存回调；返回是否保存成功（成功提示「已保存」，失败提示「保存失败」）。
+  final Future<bool> Function(Round round, String field, String value) onSaveField;
   final VoidCallback onBackToCurrent;
 
   /// 顶栏“收起”按钮回调（为空则不显示该按钮）。
@@ -41,7 +39,7 @@ class SidebarPanel extends StatefulWidget {
     super.key,
     required this.round,
     required this.isHistoryView,
-    required this.onAutoSaveField,
+    required this.onSaveField,
     required this.onBackToCurrent,
     this.onClose,
   });
@@ -63,26 +61,23 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 各子模块的折叠状态（key = 字段名；默认展开）。
   final Map<String, bool> _collapsed = {};
 
-  /// 各编辑器的 GlobalKey，供吸顶标题栏的【编辑】/【保存】按钮驱动（见 [EditableFieldState]）。
+  /// 各子模块的编辑状态（key = 字段名；标题栏据此切换【保存】/【取消】按钮）。
+  final Map<String, bool> _editing = {};
+
+  /// 各编辑器的 GlobalKey，供吸顶标题栏的【编辑】/【保存】/【取消】按钮驱动
+  /// （见 [EditableFieldState]）。
   final GlobalKey _worldStateKey = GlobalKey();
   final GlobalKey _characterStateKey = GlobalKey();
   final GlobalKey _memorySummaryKey = GlobalKey();
-
-  // —— 实时自动保存（防抖） ——
-  static const Duration _debounce = Duration(milliseconds: 700);
-  final Map<String, Timer> _autoSaveTimers = {};
-  DateTime? _lastAutoSaveAt;
+  final GlobalKey _currentTimeKey = GlobalKey();
 
   @override
   void didUpdateWidget(covariant SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 保险起见：若轮次 id 变化（正常情况下因 ValueKey 不会走到这里）则重置内容，
-    // 并取消所有待触发的防抖保存，避免把旧轮次的值写回旧轮次。
+    // 并清空编辑/折叠状态，避免把旧轮次的值写回旧轮次。
     if (oldWidget.round?.id != widget.round?.id) {
-      for (final t in _autoSaveTimers.values) {
-        t.cancel();
-      }
-      _autoSaveTimers.clear();
+      _editing.clear();
       _worldState.text = widget.round?.worldState ?? '';
       _characterState.text = widget.round?.characterState ?? '';
       _memorySummary.text = widget.round?.memorySummary ?? '';
@@ -92,10 +87,6 @@ class _SidebarPanelState extends State<SidebarPanel> {
 
   @override
   void dispose() {
-    for (final t in _autoSaveTimers.values) {
-      t.cancel();
-    }
-    _autoSaveTimers.clear();
     _worldState.dispose();
     _characterState.dispose();
     _memorySummary.dispose();
@@ -103,33 +94,26 @@ class _SidebarPanelState extends State<SidebarPanel> {
     super.dispose();
   }
 
-  /// 编辑内容变化时调用：对单字段做防抖后自动保存。
-  void _scheduleAutoSave(String field, String value) {
-    final round = widget.round;
-    if (round == null) return;
-    _autoSaveTimers[field]?.cancel();
-    _autoSaveTimers[field] = Timer(_debounce, () {
-      _autoSaveTimers.remove(field);
-      widget.onAutoSaveField(round, field, value).then((ok) {
-        // 仅保存成功时更新「已自动保存于」时间，失败不误导用户。
-        if (mounted && ok) {
-          setState(() => _lastAutoSaveAt = DateTime.now());
-        }
-      });
-    });
+  /// 记录子模块编辑状态（供标题栏显示【保存】/【取消】）。
+  void _onEditingChanged(String field, bool editing) {
+    if (_editing[field] == editing) return;
+    setState(() => _editing[field] = editing);
   }
 
-  /// 点击「完成」时调用：取消该字段待触发的防抖，立即保存。
-  void _saveFieldNow(String field, String value) {
+  /// 保存并写回数据库；保存结果通过 SnackBar（Flutter 默认通知渠道）提示。
+  Future<void> _saveFieldNow(String field, String value) async {
     final round = widget.round;
     if (round == null) return;
-    _autoSaveTimers[field]?.cancel();
-    _autoSaveTimers.remove(field);
-    widget.onAutoSaveField(round, field, value).then((ok) {
-      if (mounted && ok) {
-        setState(() => _lastAutoSaveAt = DateTime.now());
-      }
-    });
+    final ok = await widget.onSaveField(round, field, value);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(ok ? '已保存' : '保存失败'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
   }
 
   /// 标题栏【编辑】：若模块已折叠则先展开，再让对应编辑器进入编辑模式。
@@ -143,6 +127,11 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 标题栏【保存】：让对应编辑器立即保存（退出编辑模式并触发 onSave）。
   void _saveModule(GlobalKey editorKey) {
     (editorKey.currentState as EditableFieldState?)?.save();
+  }
+
+  /// 标题栏【取消】：让对应编辑器放弃本次修改（退出编辑模式，不触发 onSave）。
+  void _cancelModule(GlobalKey editorKey) {
+    (editorKey.currentState as EditableFieldState?)?.cancel();
   }
 
   @override
@@ -178,16 +167,17 @@ class _SidebarPanelState extends State<SidebarPanel> {
                       _buildSection(
                         key: RoundField.currentTime,
                         label: '当前时间',
-                        body: TextField(
+                        onEdit: () =>
+                            _enterEditModule(RoundField.currentTime, _currentTimeKey),
+                        onSave: () => _saveModule(_currentTimeKey),
+                        onCancel: () => _cancelModule(_currentTimeKey),
+                        body: PlainTextFieldEditor(
+                          key: _currentTimeKey,
                           controller: _currentTime,
-                          onTapOutside: unfocusOnTapOutside,
-                          style: const TextStyle(fontSize: 14),
-                          decoration: const InputDecoration(
-                            hintText: '当前时间',
-                            isDense: true,
-                          ),
-                          onChanged: (v) =>
-                              _scheduleAutoSave(RoundField.currentTime, v),
+                          hintText: '当前时间',
+                          onSave: (v) => _saveFieldNow(RoundField.currentTime, v),
+                          onEditingChanged: (e) =>
+                              _onEditingChanged(RoundField.currentTime, e),
                         ),
                       ),
                       _buildSection(
@@ -195,13 +185,15 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         label: '世界状态',
                         onEdit: () => _enterEditModule(RoundField.worldState, _worldStateKey),
                         onSave: () => _saveModule(_worldStateKey),
+                        onCancel: () => _cancelModule(_worldStateKey),
                         body: MarkdownField(
                           key: _worldStateKey,
                           controller: _worldState,
                           hintText: '世界状态',
                           showToolbar: false,
-                          onChanged: (v) => _scheduleAutoSave(RoundField.worldState, v),
                           onSave: (v) => _saveFieldNow(RoundField.worldState, v),
+                          onEditingChanged: (e) =>
+                              _onEditingChanged(RoundField.worldState, e),
                         ),
                       ),
                       _buildSection(
@@ -209,14 +201,15 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         label: '角色状态',
                         onEdit: () => _enterEditModule(RoundField.characterState, _characterStateKey),
                         onSave: () => _saveModule(_characterStateKey),
+                        onCancel: () => _cancelModule(_characterStateKey),
                         body: MarkdownCollapsibleEditor(
                           key: _characterStateKey,
                           controller: _characterState,
                           hintText: '如：\n# 主角\n## 陆尘\n- 姓名：…',
                           showToolbar: false,
-                          onChanged: (v) =>
-                              _scheduleAutoSave(RoundField.characterState, v),
                           onSave: (v) => _saveFieldNow(RoundField.characterState, v),
+                          onEditingChanged: (e) =>
+                              _onEditingChanged(RoundField.characterState, e),
                         ),
                       ),
                       _buildSection(
@@ -225,57 +218,20 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
                         onEdit: () => _enterEditModule(RoundField.memorySummary, _memorySummaryKey),
                         onSave: () => _saveModule(_memorySummaryKey),
+                        onCancel: () => _cancelModule(_memorySummaryKey),
                         body: MemorySummaryEditor(
                           key: _memorySummaryKey,
                           controller: _memorySummary,
                           hintText: '记忆总结',
                           showToolbar: false,
-                          onChanged: (v) =>
-                              _scheduleAutoSave(RoundField.memorySummary, v),
                           onSave: (v) => _saveFieldNow(RoundField.memorySummary, v),
+                          onEditingChanged: (e) =>
+                              _onEditingChanged(RoundField.memorySummary, e),
                         ),
                       ),
                       const SliverToBoxAdapter(child: SizedBox(height: 12)),
                     ],
                   ),
-          ),
-          _buildAutoSaveStatusBar(theme),
-        ],
-      ),
-    );
-  }
-
-  /// 底部状态条：显示自动保存状态提示（无保存记录时显示操作提示）。
-  Widget _buildAutoSaveStatusBar(ThemeData theme) {
-    final lastSaved = _lastAutoSaveAt;
-    final hasSaved = lastSaved != null;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            hasSaved ? Icons.cloud_done_outlined : Icons.edit_outlined,
-            size: 13,
-            color: hasSaved
-                ? theme.colorScheme.primary
-                : theme.colorScheme.outline,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            hasSaved
-                ? '已自动保存于 ${Formats.formatTimeOfDay(lastSaved)}'
-                : '编辑各区块后自动保存',
-            style: TextStyle(
-              fontSize: 11,
-              color: hasSaved
-                  ? theme.colorScheme.primary
-                  : theme.colorScheme.outline,
-            ),
           ),
         ],
       ),
@@ -353,7 +309,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 每个子模块用 [SliverMainAxisGroup] 分组：组内的吸顶标题栏会被钳制在
   /// 本组范围内，滚动到下一个模块时，前一个标题栏随本组滚出视口（不会
   /// 叠层堆积），一次只有当前模块的标题栏固定在顶部。
-  /// [onEdit]/[onSave] 提供给标题栏右侧的【编辑】/【保存】按钮，作用于当前模块。
+  /// [onEdit]/[onSave]/[onCancel] 提供给标题栏右侧的【编辑】/【保存】/【取消】按钮，
+  /// 作用于当前模块；未编辑时仅显示【编辑】，编辑中显示【保存】/【取消】。
   Widget _buildSection({
     required String key,
     required String label,
@@ -361,8 +318,10 @@ class _SidebarPanelState extends State<SidebarPanel> {
     String? subtitle,
     VoidCallback? onEdit,
     VoidCallback? onSave,
+    VoidCallback? onCancel,
   }) {
     final collapsed = _collapsed[key] ?? false;
+    final editing = _editing[key] ?? false;
     return SliverMainAxisGroup(
       slivers: [
         SliverPersistentHeader(
@@ -371,12 +330,14 @@ class _SidebarPanelState extends State<SidebarPanel> {
             label: label,
             subtitle: subtitle,
             collapsed: collapsed,
+            editing: editing,
             backgroundColor: widget.isHistoryView
                 ? context.narrColors.historyBackground
                 : context.narrColors.surface,
             onToggle: () => setState(() => _collapsed[key] = !collapsed),
             onEdit: onEdit,
             onSave: onSave,
+            onCancel: onCancel,
           ),
         ),
         if (!collapsed)
@@ -395,29 +356,44 @@ class _SidebarPanelState extends State<SidebarPanel> {
 ///
 /// - 固定高度，滚动时吸顶（pinned: true），内容从标题栏下方滚过；
 /// - 整个标题栏可点击：切换该子模块的折叠/展开，箭头随状态旋转；
-/// - 右侧提供当前模块的【编辑】/【保存】按钮（[onEdit]/[onSave] 非空时显示，
-///   折叠时隐藏【保存】）；
+/// - 右侧提供当前模块的【编辑】/【保存】/【取消】按钮
+///   （[onEdit]/[onSave]/[onCancel] 非空时显示；未编辑时仅显示【编辑】，
+///   编辑中显示【保存】/【取消】，折叠时隐藏【保存】/【取消】）；
 /// - 吸顶时显示底部分割线与轻微阴影，与下方内容区分。
 class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
   final String label;
   final String? subtitle;
   final bool collapsed;
+  final bool editing;
   final Color backgroundColor;
   final VoidCallback onToggle;
   final VoidCallback? onEdit;
   final VoidCallback? onSave;
+  final VoidCallback? onCancel;
 
   _SidebarSectionHeaderDelegate({
     required this.label,
     required this.collapsed,
+    required this.editing,
     required this.backgroundColor,
     required this.onToggle,
     this.subtitle,
     this.onEdit,
     this.onSave,
+    this.onCancel,
   });
 
   static const double _height = 42;
+
+  /// 标题栏紧凑操作按钮的统一样式（【编辑】/【保存】/【取消】共用）。
+  ///
+  /// 三个按钮的几何尺寸完全一致（仅「保存」额外保留 FilledButton 的填充底纹），
+  /// 避免出现「保存底纹比取消悬停底纹小」的视觉不一致。
+  static final ButtonStyle _compactActionStyle = TextButton.styleFrom(
+    visualDensity: VisualDensity.compact,
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+  );
 
   @override
   double get minExtent => _height;
@@ -515,27 +491,30 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
                     color: theme.colorScheme.outline,
                   ),
                 ),
-              // 当前模块的【编辑】/【保存】按钮（折叠时隐藏【保存】）
-              if (onEdit != null)
+              // 当前模块的【编辑】/【保存】/【取消】按钮：
+              // 未编辑时仅显示【编辑】；编辑中显示【取消】/【保存】（折叠时隐藏）。
+              // 三者均为同款紧凑 TextButton，尺寸与悬停底纹一致。
+              if (onEdit != null && !editing)
                 TextButton(
                   onPressed: onEdit,
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    textStyle: const TextStyle(fontSize: 12),
-                  ),
+                  style: _compactActionStyle,
                   child: const Text('编辑'),
                 ),
-              if (onSave != null && !collapsed)
-                TextButton(
-                  onPressed: onSave,
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    textStyle: const TextStyle(fontSize: 12),
+              if (editing && !collapsed) ...[
+                if (onCancel != null)
+                  TextButton(
+                    onPressed: onCancel,
+                    style: _compactActionStyle,
+                    child: const Text('取消'),
                   ),
-                  child: const Text('保存'),
-                ),
+                // 主操作「保存」：与「编辑/取消」同尺寸，但带填充底纹以便区分。
+                if (onSave != null)
+                  FilledButton(
+                    onPressed: onSave,
+                    style: _compactActionStyle,
+                    child: const Text('保存'),
+                  ),
+              ],
             ],
           ),
         ),
@@ -548,9 +527,11 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
     return oldDelegate.label != label ||
         oldDelegate.subtitle != subtitle ||
         oldDelegate.collapsed != collapsed ||
+        oldDelegate.editing != editing ||
         oldDelegate.backgroundColor != backgroundColor ||
         oldDelegate.onToggle != onToggle ||
         oldDelegate.onEdit != onEdit ||
-        oldDelegate.onSave != onSave;
+        oldDelegate.onSave != onSave ||
+        oldDelegate.onCancel != onCancel;
   }
 }

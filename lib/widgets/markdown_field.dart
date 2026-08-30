@@ -12,7 +12,8 @@ import 'markdown_preview.dart';
 /// - 编辑模式使用内部独立的 [MarkdownEditingController]（编辑时同步支持语法高亮），
 ///   进入/退出编辑时与外部 [controller] 双向同步；父级保存时读取 `controller.text`。
 /// - [showToolbar] 为 false 时隐藏内部工具栏（含「编辑/完成」），
-///   由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动编辑与保存。
+///   由外部（如侧边栏模块标题栏）通过 [EditableFieldState] 驱动编辑/保存/取消。
+/// - 不自动保存：仅 [onSave]（保存/退出编辑）会持久化，取消编辑丢弃修改。
 class MarkdownField extends StatefulWidget {
   final TextEditingController controller;
   final String? hintText;
@@ -21,11 +22,11 @@ class MarkdownField extends StatefulWidget {
   /// 是否显示内部工具栏（含「编辑/完成」按钮）。
   final bool showToolbar;
 
-  /// 编辑模式下文本变化时实时回调（用于侧边栏自动保存）。
-  final ValueChanged<String>? onChanged;
-
-  /// 点击「完成」时回调（立即保存，不经过防抖）。
+  /// 保存 / 退出编辑时回调（持久化）。
   final ValueChanged<String>? onSave;
+
+  /// 进入 / 退出编辑模式时回调（供外部标题栏切换【保存】/【取消】按钮）。
+  final ValueChanged<bool>? onEditingChanged;
 
   const MarkdownField({
     super.key,
@@ -33,8 +34,8 @@ class MarkdownField extends StatefulWidget {
     this.hintText,
     this.readOnly = false,
     this.showToolbar = true,
-    this.onChanged,
     this.onSave,
+    this.onEditingChanged,
   });
 
   @override
@@ -50,7 +51,6 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
     super.initState();
     _editController = MarkdownEditingController(text: widget.controller.text);
     widget.controller.addListener(_syncFromExternal);
-    _editController.addListener(_onEditChanged);
   }
 
   void _syncFromExternal() {
@@ -59,32 +59,25 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
     }
   }
 
-  void _onEditChanged() {
-    if (_editMode) {
-      widget.onChanged?.call(_editController.text);
-    }
-  }
-
   @override
   void dispose() {
     widget.controller.removeListener(_syncFromExternal);
-    _editController.removeListener(_onEditChanged);
     _editController.dispose();
     super.dispose();
   }
 
   void _enterEdit() {
     if (widget.readOnly) return;
-    // 先同步文本（此时 _editMode 仍为 false，不会触发多余的 onChanged），
-    // 再进入编辑模式，避免进入编辑时触发一次无意义的防抖自动保存。
+    // 先同步文本（此时 _editMode 仍为 false，编辑控制器仅跟随外部控制器），
+    // 再进入编辑模式，保证编辑框打开即为当前已保存内容。
     _editController.text = widget.controller.text;
     setState(() {
       _editMode = true;
     });
+    widget.onEditingChanged?.call(true);
   }
 
   void _exitEdit({required bool save}) {
-    // 先退出编辑模式，再同步文本：避免回写/还原时触发 onChanged 造成多余的自动保存。
     _editMode = false;
     if (save) {
       widget.controller.text = _editController.text;
@@ -92,6 +85,7 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
     } else {
       _editController.text = widget.controller.text;
     }
+    widget.onEditingChanged?.call(false);
     setState(() {});
   }
 
@@ -104,6 +98,9 @@ class MarkdownFieldState extends State<MarkdownField> implements EditableFieldSt
 
   @override
   void save() => _exitEdit(save: true);
+
+  @override
+  void cancel() => _exitEdit(save: false);
 
   @override
   Widget build(BuildContext context) {

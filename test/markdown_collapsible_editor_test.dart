@@ -130,6 +130,48 @@ void main() {
     expect(find.text('全部折叠'), findsOneWidget);
   });
 
+  testWidgets('showToolbar=false：编辑模式无内置「取消/完成」，取消丢弃修改', (tester) async {
+    final controller = TextEditingController(text: '## 女主角\n### 苏清月\n- 心情：平静');
+    addTearDown(controller.dispose);
+    String? saved;
+    final editingLog = <bool>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: NarrChatTheme.light,
+        home: Scaffold(
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.all(12),
+            child: MarkdownCollapsibleEditor(
+              controller: controller,
+              showToolbar: false,
+              onSave: (v) => saved = v,
+              onEditingChanged: editingLog.add,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final state = tester.state<MarkdownCollapsibleEditorState>(
+      find.byType(MarkdownCollapsibleEditor),
+    );
+    state.enterEdit();
+    await tester.pump();
+    // 无工具栏时编辑框内不出现内置「取消/完成」（由外部标题栏驱动）。
+    expect(find.text('取消'), findsNothing);
+    expect(find.text('完成'), findsNothing);
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.enterText(
+      find.byType(TextField),
+      '## 女主角\n### 苏清月\n- 心情：愤怒',
+    );
+    state.cancel();
+    await tester.pumpAndSettle();
+    expect(saved, isNull);
+    expect(controller.text, '## 女主角\n### 苏清月\n- 心情：平静');
+    expect(editingLog, [true, false]);
+  });
+
   testWidgets('全部折叠时滚动位置平滑跟随，不瞬移', (tester) async {
     final scrollController = ScrollController();
     final editorController = TextEditingController(text: _peopleText(12));
