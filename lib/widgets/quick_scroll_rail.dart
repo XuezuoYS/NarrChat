@@ -39,7 +39,7 @@ class QuickScrollEntry {
   /// 目录标题（单行，超出限宽省略号）。
   final String label;
 
-  /// 层级：用于标题左侧缩进（每级 [QuickScrollRail.levelIndent] px）。
+  /// 层级（保留字段便于接入方表达结构；当前列表样式统一，不按层级缩进）。
   final int level;
 
   /// 该条目对齐视口顶时的滚动偏移；锚点不存在时返回 null。
@@ -62,9 +62,11 @@ class QuickScrollEntry {
 /// - 滚动内容时淡入显示圆形阴影拇指（自带上下三角箭头图案），空闲
 ///   [QuickScrollRail.idleDelay] 后淡出；桌面端鼠标悬停右缘时保持显示；
 /// - 按住导轨任意位置拖动 → 右缘向左展开「[panelColor] 纯色 → 透明」的水平
-///   渐变浮层，目录标题沿轨道按文档位置堆叠、随拖动整体移动，**当前标题
-///   垂直对齐拇指中心**；上下到达边缘的标题渐变淡出；
-/// - 仅拖动过程中连续滚动（jumpTo 跟手）；松手后目录浮层立即消失；
+///   渐变浮层（右滑入 + 淡入；松手反向收起动画），目录标题为一张固定行高
+///   的列表：列表随拖动位置连续滑动、**当前条目（对齐拇指）的强调按拖动
+///   位置在相邻条目间交叉渐变**（无固定时长动画），上下到达边缘的标题
+///   渐变淡出；
+/// - 拖动过程中连续滚动（jumpTo 跟手）；
 /// - 内容未溢出（maxScrollExtent <= 0）时整体不渲染；
 /// - 内部自动以 [ScrollConfiguration.copyWith] 禁用目标滚动视图的原生
 ///   滚动条（本导轨承担滚动定位职责），其它位置的滚动条不受影响。
@@ -110,13 +112,16 @@ class QuickScrollRail extends StatefulWidget {
   static const double thumbMinHeight = 64;
 
   /// 目录行高。
-  static const double labelRowHeight = 22;
+  static const double labelRowHeight = 30;
 
-  /// 目录层级缩进（每级）。
-  static const double levelIndent = 12;
+  /// 目录文字基础字号（视图正文 12px 的 1.6 倍）。
+  static const double labelFontSize = 19.2;
+
+  /// 当前条目叠加字号（基础 + 此值；随拖动位置在相邻条目间连续渐变）。
+  static const double labelFontSizeBoost = 2.4;
 
   /// 标题上下边缘淡出高度。
-  static const double edgeFadeHeight = 24;
+  static const double edgeFadeHeight = 30;
 
   /// 空闲淡出延时。
   static const Duration idleDelay = Duration(milliseconds: 700);
@@ -124,8 +129,8 @@ class QuickScrollRail extends StatefulWidget {
   /// 拇指显隐动画时长。
   static const Duration fadeDuration = Duration(milliseconds: 120);
 
-  /// 目录浮层淡入时长（隐藏为立即消失，见行为约定）。
-  static const Duration overlayInDuration = Duration(milliseconds: 120);
+  /// 目录浮层展开动画时长（右滑入 + 淡入复合；收起为反向动画）。
+  static const Duration overlayAnimDuration = Duration(milliseconds: 180);
 
   /// 根据锚点 [BuildContext] 求「对齐到视口顶」的滚动偏移；不可用时返回 null。
   ///
@@ -151,11 +156,15 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     value: 0,
   );
 
-  /// 目录浮层淡入控制器（隐藏为立即置 0，见行为约定）。
-  late final AnimationController _overlayFade = AnimationController(
+  /// 目录浮层动画控制器（0=收起，1=展开；展开右滑入+淡入，收起反向）。
+  late final AnimationController _overlayAnim = AnimationController(
     vsync: this,
-    duration: QuickScrollRail.overlayInDuration,
+    duration: QuickScrollRail.overlayAnimDuration,
     value: 0,
+  );
+  late final CurvedAnimation _overlayCurve = CurvedAnimation(
+    parent: _overlayAnim,
+    curve: Curves.easeOutCubic,
   );
   Timer? _idleTimer;
 
@@ -181,7 +190,7 @@ class _QuickScrollRailState extends State<QuickScrollRail>
   void dispose() {
     _idleTimer?.cancel();
     _fade.dispose();
-    _overlayFade.dispose();
+    _overlayAnim.dispose();
     super.dispose();
   }
 
@@ -271,7 +280,7 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     _idleTimer?.cancel();
     setState(() => _dragging = true);
     _fade.forward();
-    _overlayFade.forward();
+    _overlayAnim.forward();
     if (applyPosition) _applyDrag();
   }
 
@@ -295,8 +304,8 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     if (!_dragging) return;
     _pointerId = -1;
     _downKind = null;
-    // 目录浮层立即消失（无淡出）；拇指走空闲淡出。
-    _overlayFade.value = 0;
+    // 目录浮层收起：反向播放展开动画（右滑出 + 淡出），播完后从树中移除。
+    _overlayAnim.reverse();
     setState(() {
       _dragging = false;
       _dragPosition = null;
@@ -338,10 +347,15 @@ class _QuickScrollRailState extends State<QuickScrollRail>
 
   /// 单帧的目录行布局（供浮层与轨道点共用）。
   ///
-  /// WPS 式「目录列表」：全部节点按固定行高排成一张列表，**当前条目行
-  /// 恒对齐拇指中心**，其余行以 ± 行高在其上下排开；列表随当前条目整体
-  /// 平移（拖动时与拇指联动），溢出屏幕的行由上下边缘渐变淡出。
-  /// 不按文档比例散布（条目多与少都同样是一整列，无密集模式兜底）。
+  /// WPS 式「目录列表」：全部节点按固定行高排成一张列表，行位置与当前
+  /// 强调都**随拖动位置连续过渡**（非离散跳变）：
+  /// - 列表滑动：以「连续条目位」[iCont]（相邻锚点间距内按滚动偏移线性
+  ///   插值）为基准，行 y = 拇指中心 + (i − iCont) × 行高 → 拖动时整列
+  ///   平滑移动；
+  /// - 当前强调交叉渐变：每行权重 w = 1 − |i − iCont|（夹取 0..1），
+  ///   相邻两条目切换时强调按位置渐进过渡（参考 WPS，「当前」无固定时长
+  ///   动画、完全由拖动位置驱动）；
+  /// - 溢出屏幕的行由上下边缘渐变淡出。
   List<_RowLayout> _computeRows({
     required List<(QuickScrollEntry, double)> resolved,
     required double trackH,
@@ -353,10 +367,23 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     // 锚点偏移先钳制到可滚动范围：文档末尾锚点无法「对齐视口顶」滚动
     // （reveal 偏移可超过 maxExtent），按 maxExtent 折叠后与拇指几何一致。
     double clampO(double o) => math.min(o, maxExtent);
-    // 当前条目：最后一个「钳制后对齐偏移 <= 视口偏移」的条目（视口顶语义）。
+    final offsets = [for (final r in resolved) clampO(r.$2)];
+    final n = resolved.length;
+    // 当前条目（离散索引）：最后一个「钳制后对齐偏移 <= 视口偏移」的条目。
     var currentIdx = 0;
-    for (var i = 0; i < resolved.length; i++) {
-      if (clampO(resolved[i].$2) <= pixels + 4) currentIdx = i;
+    for (var i = 0; i < n; i++) {
+      if (offsets[i] <= pixels + 4) currentIdx = i;
+    }
+    // 连续条目位：在 [currentIdx, currentIdx+1] 段内按偏移间距插值。
+    double iCont;
+    if (currentIdx >= n - 1) {
+      iCont = n - 1;
+    } else {
+      final gap = offsets[currentIdx + 1] - offsets[currentIdx];
+      iCont = gap > 0
+          ? currentIdx +
+              ((pixels - offsets[currentIdx]) / gap).clamp(0.0, 1.0)
+          : currentIdx.toDouble();
     }
     final thumbCenter = thumbH / 2 +
         (trackH - thumbH > 0 && maxExtent > 0
@@ -364,11 +391,12 @@ class _QuickScrollRailState extends State<QuickScrollRail>
             : 0.0);
     final rowH = QuickScrollRail.labelRowHeight;
     return [
-      for (var i = 0; i < resolved.length; i++)
+      for (var i = 0; i < n; i++)
         _RowLayout(
           entry: resolved[i].$1,
           offset: resolved[i].$2,
-          y: thumbCenter + (i - currentIdx) * rowH,
+          y: thumbCenter + (i - iCont) * rowH,
+          weight: (1 - (i - iCont).abs()).clamp(0.0, 1.0),
           isCurrent: i == currentIdx,
         ),
     ];
@@ -393,7 +421,7 @@ class _QuickScrollRailState extends State<QuickScrollRail>
           Positioned.fill(
             child: AnimatedBuilder(
               animation: Listenable.merge(
-                [widget.controller, _fade, _overlayFade],
+                [widget.controller, _fade, _overlayAnim],
               ),
               builder: (context, _) => LayoutBuilder(
                 builder: (context, constraints) {
@@ -440,14 +468,21 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        // 目录浮层：右缘向左的水平渐变 + 沿轨道的标题堆叠（仅拖动时存在；
-        // 松手立即移除，不常驻树中——避免给宿主页面带来无谓的文本节点）。
-        if (_dragging || _overlayFade.value > 0)
+        // 目录浮层：右缘向左的水平渐变 + 沿轨道的标题堆叠。展开 = 右滑入
+        // + 淡入（[overlayAnimDuration]），收起 = 反向播放后从树中移除。
+        if (_dragging || _overlayAnim.value > 0)
           Positioned.fill(
             child: IgnorePointer(
-              child: FadeTransition(
+              child: AnimatedBuilder(
                 key: const Key('quick_scroll_rail_overlay'),
-                opacity: _overlayFade,
+                animation: _overlayCurve,
+                builder: (context, child) {
+                  final t = _overlayCurve.value;
+                  return Transform.translate(
+                    offset: Offset(24 * (1 - t), 0),
+                    child: Opacity(opacity: t, child: child),
+                  );
+                },
                 child: _buildOverlay(
                   context,
                   hostW: hostW,
@@ -595,13 +630,14 @@ class _QuickScrollRailState extends State<QuickScrollRail>
 
   Widget _buildLabelRow(BuildContext context, _RowLayout row, double rowLeft) {
     final scheme = Theme.of(context).colorScheme;
+    // 「当前」强调随拖动位置连续渐变：w=1 为该行恰好位于拇指，w 随
+    // 位置在相邻条目间交叉过渡（无固定时长动画）。
+    final w = row.weight;
     final labelColor = row.isCurrent
         ? Theme.of(context).colorScheme.onSurface
         : Theme.of(context).colorScheme.onSurfaceVariant;
-    final opacity = row.isCurrent ? 1.0 : 0.75;
-    final rowRight = QuickScrollRail.hitWidth / 2 +
-        6 +
-        row.entry.level * QuickScrollRail.levelIndent;
+    final opacity = 0.45 + 0.55 * w;
+    final rowRight = QuickScrollRail.hitWidth / 2 + 6;
 
     return Positioned(
       top: row.y - QuickScrollRail.labelRowHeight / 2,
@@ -617,21 +653,24 @@ class _QuickScrollRailState extends State<QuickScrollRail>
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                // 当前条目略放大加粗（对齐图 2「当前标题醒目、贴近拇指」）。
-                fontSize: row.isCurrent ? 13.5 : 12,
-                fontWeight: row.isCurrent ? FontWeight.w700 : FontWeight.w400,
+                // 字号统一放大（视图 12px × 1.6），当前条目在此基础上
+                // 随位置渐进放大；不区分层级缩进。
+                fontSize:
+                    QuickScrollRail.labelFontSize +
+                    QuickScrollRail.labelFontSizeBoost * w,
+                fontWeight: FontWeight.w600,
                 color: labelColor.withValues(alpha: opacity),
               ),
             ),
           ),
-          // 连接刻度线（连接标题与轨道点）。
+          // 连接刻度线（连接标题与轨道点），随强调渐变亮度。
           Padding(
             padding: const EdgeInsets.only(left: 6, right: 2),
             child: Container(
               width: 12,
               height: 2,
               color: scheme.outlineVariant.withValues(
-                alpha: row.isCurrent ? 0.9 : 0.5,
+                alpha: 0.45 + 0.5 * w,
               ),
             ),
           ),
@@ -647,12 +686,16 @@ class _RowLayout {
     required this.entry,
     required this.offset,
     required this.y,
+    required this.weight,
     required this.isCurrent,
   });
 
   final QuickScrollEntry entry;
   final double offset;
   final double y;
+
+  /// 「当前」强调权重（0..1）：1 = 行位于拇指，随拖动位置连续渐变。
+  final double weight;
   final bool isCurrent;
 }
 

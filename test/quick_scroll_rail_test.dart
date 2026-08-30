@@ -157,21 +157,39 @@ void main() {
 
     await gesture.moveTo(stripTopLeft + Offset(stripSize.width / 2, thumbH / 2 + (stripSize.height - thumbH) * 0.5));
     await tester.pump();
+    // 推进动画时钟：展开动画（180ms）完成，浮层全量可见。
+    await tester.pump(const Duration(milliseconds: 200));
     expect(_offsetOf(tester), closeTo(maxExtent * 0.5, 1));
 
-    // 当前标题（E4，offset 1600 ≤ 1700）加粗放大，行中心与拇指中心重合
-    // （WPS 式列表：当前行恒对齐拇指）。
+    // 当前标题（E4，offset 1600 ≤ 1700）行中心贴近拇指中心；强调随拖动
+    // 位置连续变化：iCont = 4.25 → E4 权重 0.75 → 字号 = 19.2 + 2.4*0.75。
     final currentLabel = find.text('E4');
     expect(currentLabel, findsOneWidget);
-    expect(tester.widget<Text>(currentLabel).style?.fontWeight, FontWeight.w700);
+    expect(
+      tester.widget<Text>(currentLabel).style?.fontSize,
+      closeTo(QuickScrollRail.labelFontSize +
+          QuickScrollRail.labelFontSizeBoost * 0.75, 0.1),
+    );
     final rowCenterY = tester.getCenter(currentLabel).dy;
     final thumbCenterY =
         stripTopLeft.dy + thumbH / 2 + (stripSize.height - thumbH) * 0.5;
-    expect(rowCenterY, closeTo(thumbCenterY, 1));
+    expect(
+      rowCenterY,
+      closeTo(thumbCenterY, QuickScrollRail.labelRowHeight / 2 + 1),
+    );
 
     await gesture.up();
     await tester.pump();
-    // 松手后目录浮层立即消失（无淡出过渡，直接从树中移除）。
+    // 松手：收起动画播放中（右滑出+淡出），浮层仍在树中。
+    expect(overlayFinder(), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 50));
+    final collapsing = tester.widget<Opacity>(
+      find
+          .descendant(of: overlayFinder(), matching: find.byType(Opacity))
+          .first,
+    );
+    expect(collapsing.opacity, lessThan(1.0));
+    await tester.pump(const Duration(milliseconds: 300));
     expect(overlayFinder(), findsNothing);
   });
 
@@ -189,9 +207,13 @@ void main() {
     await gesture.moveTo(topLeft + Offset(size.width / 2, size.height - 1));
     await tester.pump();
     expect(_offsetOf(tester), closeTo(maxExtent, 1));
-    // 最后一个条目当前态（加粗放大）。
+    // 最后一个条目当前态（位置驱动强调：恰好位于拇指 → 满载字号）。
     final last = tester.widget<Text>(find.text('E5'));
-    expect(last.style?.fontWeight, FontWeight.w700);
+    expect(
+      last.style?.fontSize,
+      closeTo(QuickScrollRail.labelFontSize +
+          QuickScrollRail.labelFontSizeBoost, 0.1),
+    );
     await gesture.up();
   });
 
@@ -259,11 +281,11 @@ void main() {
       kind: PointerDeviceKind.mouse,
     );
     await tester.pump();
-    // 顶部位置：当前 = E0，行从拇指中心向下 ± 行高排开；
+    // 顶部位置：当前 = E0，行从拇指中心向下以行高（30）排开；
     // 超出可见带（trackH + rowH）的行不在树中（供上下边缘渐变淡出）。
-    // E25 @ y=45+25*22=595（≤ 622 可见）；E30 @ 705（> 622 不可见）。
-    expect(find.text('E25'), findsOneWidget);
-    expect(find.text('E30'), findsNothing);
+    // E19 @ y=45+19*30=615（≤ 652 可见）；E21 @ y=675（> 652 不可见）。
+    expect(find.text('E19'), findsOneWidget);
+    expect(find.text('E21'), findsNothing);
     await gesture.up();
     await tester.pump();
   });
@@ -304,9 +326,13 @@ void main() {
     );
     await gesture.moveTo(topLeft + Offset(size.width / 2, 300));
     await tester.pump();
-    // E0 被跳过：条目按 [0, 400] 参与，当前条目 = E2（400）。
+    // E0 被跳过：条目按 [0, 400] 参与，当前条目 = E2（400，满载字号）。
     final current = tester.widget<Text>(find.text('E2'));
-    expect(current.style?.fontWeight, FontWeight.w700);
+    expect(
+      current.style?.fontSize,
+      closeTo(QuickScrollRail.labelFontSize +
+          QuickScrollRail.labelFontSizeBoost, 0.1),
+    );
     await gesture.up();
   });
 }

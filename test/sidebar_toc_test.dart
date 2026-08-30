@@ -166,10 +166,18 @@ void main() {
       body: (gesture) async {
         expect(controller.offset, closeTo(maxExtent, 1));
         final current = tester.widget<Text>(_inOverlay('记忆总结'));
-        expect(current.style?.fontWeight, FontWeight.w700);
+        expect(
+          current.style?.fontSize,
+          closeTo(
+            QuickScrollRail.labelFontSize +
+                QuickScrollRail.labelFontSizeBoost,
+            0.1,
+          ),
+        );
       },
     );
-    // 松手：目录浮层立即移除。
+    // 松手：目录浮层收起动画结束后从树中移除。
+    await tester.pump(const Duration(milliseconds: 300));
     expect(_overlay(), findsNothing);
   });
 
