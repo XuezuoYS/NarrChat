@@ -111,8 +111,8 @@ class QuickScrollRail extends StatefulWidget {
   /// 拇指最小高度。
   static const double thumbMinHeight = 64;
 
-  /// 目录行高。
-  static const double labelRowHeight = 30;
+  /// 目录行高（含行间距，保证大字号的视觉舒适）。
+  static const double labelRowHeight = 36;
 
   /// 目录文字基础字号（视图正文 12px 的 1.6 倍）。
   static const double labelFontSize = 19.2;

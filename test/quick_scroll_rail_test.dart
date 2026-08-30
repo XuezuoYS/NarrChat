@@ -281,11 +281,11 @@ void main() {
       kind: PointerDeviceKind.mouse,
     );
     await tester.pump();
-    // 顶部位置：当前 = E0，行从拇指中心向下以行高（30）排开；
+    // 顶部位置：当前 = E0，行从拇指中心向下以行高（36）排开；
     // 超出可见带（trackH + rowH）的行不在树中（供上下边缘渐变淡出）。
-    // E19 @ y=45+19*30=615（≤ 652 可见）；E21 @ y=675（> 652 不可见）。
-    expect(find.text('E19'), findsOneWidget);
-    expect(find.text('E21'), findsNothing);
+    // E16 @ y=45+16*36=621（≤ 658 可见）；E19 @ y=729（> 658 不可见）。
+    expect(find.text('E16'), findsOneWidget);
+    expect(find.text('E19'), findsNothing);
     await gesture.up();
     await tester.pump();
   });
