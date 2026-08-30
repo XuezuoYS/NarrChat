@@ -26,6 +26,8 @@ import 'services/storage_service.dart';
 import 'services/sync/image_revival.dart';
 import 'services/sync/image_deletion.dart';
 import 'services/system_fonts_service.dart';
+import 'services/update_check_flow.dart';
+import 'services/update_check_service.dart';
 import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
@@ -86,8 +88,11 @@ Future<void> main() async {
     ..loadUserMods();
   // 生成完成系统通知：生成任务成功完成且用户不在该书 chat 页时弹出系统通知，
   // 点击通知进入对应书 chat 页；进入该书 chat 页则自动删除通知。
+  // 通知后端提为局部实例，与「检查更新失败」通知共用同一已初始化插件。
+  final notificationBackend = FlutterLocalNotificationBackend();
   final notificationService = GenerationNotificationService(
     bookProvider: bookProvider,
+    backend: notificationBackend,
   );
   await notificationService.init();
   // 通知设置状态：主页检测「未开启系统通知」提示（回到前台自动刷新）。
@@ -135,6 +140,14 @@ Future<void> main() async {
       unawaited(ImageViewerWindowManager.warm());
     }
     unawaited(notificationService.handleLaunchNotificationIfAny());
+    // 启动自动检查更新（GitHub Releases）：开关 / 24h 节流 / 跳过版本策略在
+    // UpdateCheckFlow 内；失败走系统通知，异常已被内部兜底，不影响启动。
+    unawaited(
+      UpdateCheckFlow.real(
+        service: UpdateCheckService(),
+        backend: notificationBackend,
+      ).runAtStartup(notificationService.navigatorKey),
+    );
   });
 }
 

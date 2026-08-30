@@ -31,6 +31,16 @@ class LocalConfigService {
   /// 串行化所有文件操作的异步互斥链。
   static Future<void> _queue = Future<void>.value();
 
+  /// 测试专用：重置互斥队列。
+  ///
+  /// testWidgets 的 fake zone 在用例结束时会拆解，残留的队列链（在用例内
+  /// 发起的文件操作尚未完成时）可能永远无法完成；测试的 setUp 中调用以
+  /// 隔离用例间状态（与 [testRootOverride] 同级的显式测试设施）。
+  @visibleForTesting
+  static void resetForTest() {
+    _queue = Future<void>.value();
+  }
+
   /// 配置文件路径（local_config 目录不存在时自动创建）。
   static Future<File> file() async {
     final dir = testRootOverride != null
