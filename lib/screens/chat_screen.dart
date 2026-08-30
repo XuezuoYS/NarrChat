@@ -17,6 +17,7 @@ import '../providers/book_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
+import '../providers/ui_settings_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../services/clipboard_paste_service.dart';
 import '../services/html_search_service.dart';
@@ -39,6 +40,7 @@ import '../widgets/markdown_preview.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
+import '../widgets/sidebar_resize_divider.dart';
 import '../widgets/text_field_context_menu.dart';
 import 'book_settings_screen.dart';
 import 'settings_screen.dart';
@@ -46,8 +48,9 @@ import 'settings_screen.dart';
 /// 宽屏（桌面端）断点：宽度 ≥ 此值时使用左右双栏布局。
 const double _kWideBreakpoint = 900;
 
-/// 右侧栏固定宽度。
-const double _kSidebarWidth = 380;
+/// 宽屏右侧栏最大宽度占窗口宽度的比例（拖动夹取上限）；
+/// 窗口很窄时（比例上限低于默认宽度）以默认宽度为下限兜底。
+const double _kSidebarMaxWidthRatio = 0.4;
 
 /// 消息与输入框的最大内容宽度。
 const double _kContentMaxWidth = 760;
@@ -191,10 +194,19 @@ class _ChatScreenState extends State<ChatScreen>
   final GlobalKey _floorJumpTargetKey = GlobalKey();
   int? _floorJumpTargetIndex;
 
-  /// 缓存失效依据：轮次来源（引用+长度）或窗口宽度变化时清空实测数据。
+  /// 缓存失效依据：轮次来源（引用+长度）或聊天区宽度变化时清空实测数据。
+  ///
+  /// 注意用「聊天区实际宽度」而非窗口宽度：拖拽调整右侧栏时窗口宽度不变，
+  /// 但消息行高会随列宽变化，旧的实测高度应失效（供楼层跳转估算）。
   List<Round> _lastRoundsSource = const [];
   int _lastRoundsCount = 0;
-  double _lastLayoutWidth = 0;
+  double _lastChatLayoutWidth = 0;
+
+  /// 宽屏右侧栏拖拽中的实时宽度（null = 未拖拽）。
+  ///
+  /// 拖动期间只对本页 setState（不触发全局 UI 设置通知），
+  /// 松手时经 [UiSettingsProvider.setChatSidebarWidth] 一次落库。
+  double? _dragSidebarWidth;
 
   /// 宽屏右侧栏开合动画控制器（0=收起，1=展开；初始 0，首帧后滑入入场）。
   late final AnimationController _sidebarController;
@@ -1311,6 +1323,54 @@ class _ChatScreenState extends State<ChatScreen>
     return size.width >= _kWideBreakpoint;
   }
 
+  /// 宽屏右侧栏有效宽度：夹取于 [kChatSidebarDefaultWidth]（默认 = 最小）与
+  /// `max(默认, 窗口宽 × [_kSidebarMaxWidthRatio])` 之间。
+  ///
+  /// 窄窗口（比例上限低于默认值）时下限优先，保证侧栏不为 0、聊天区仍可用。
+  double _effectiveSidebarWidth(double windowWidth, double stored) {
+    final ratioWidth = windowWidth * _kSidebarMaxWidthRatio;
+    final upper = ratioWidth > kChatSidebarDefaultWidth
+        ? ratioWidth
+        : kChatSidebarDefaultWidth;
+    return stored < kChatSidebarDefaultWidth
+        ? kChatSidebarDefaultWidth
+        : (stored > upper ? upper : stored);
+  }
+
+  /// 拖动中每帧回调：以当前有效宽度为基准累加位移并夹取，仅本页 setState。
+  void _onSidebarDragUpdate(double deltaDx) {
+    if (!mounted) return;
+    final windowWidth = MediaQuery.sizeOf(context).width;
+    final current = _dragSidebarWidth ??
+        context.read<UiSettingsProvider>().chatSidebarWidth;
+    setState(() {
+      _dragSidebarWidth = _effectiveSidebarWidth(
+        windowWidth,
+        current - deltaDx,
+      );
+    });
+  }
+
+  /// 松手 / 手势取消：清空拖拽态，并把最终宽度一次写入本地配置
+  /// （拖动期间不落库，避免逐帧写磁盘）。
+  void _onSidebarDragEnd() {
+    if (!mounted) return;
+    final width = _dragSidebarWidth;
+    _dragSidebarWidth = null;
+    if (width != null) {
+      context.read<UiSettingsProvider>().setChatSidebarWidth(width);
+    }
+  }
+
+  /// 双击分隔线：恢复默认宽度（默认即最小）。
+  void _onSidebarResetWidth() {
+    if (!mounted) return;
+    _dragSidebarWidth = null;
+    context
+        .read<UiSettingsProvider>()
+        .setChatSidebarWidth(kChatSidebarDefaultWidth);
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -1327,7 +1387,20 @@ class _ChatScreenState extends State<ChatScreen>
         body: LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= _kWideBreakpoint;
-            final chat = _buildChatArea(context);
+            // 宽屏槽位宽度（收起/展开都占位，聊天区永不因开合重排）；
+            // 窄屏槽位为 0，抽屉按屏宽 0.88 占比（不读自定义宽度）。
+            final slotWidth = wide
+                ? _effectiveSidebarWidth(
+                    constraints.maxWidth,
+                    _dragSidebarWidth ??
+                        context.watch<UiSettingsProvider>().chatSidebarWidth,
+                  )
+                : 0.0;
+            // 聊天区实际宽度：楼层跳转实测高度缓存的失效依据。
+            final chatWidth = constraints.maxWidth.isFinite
+                ? constraints.maxWidth - slotWidth
+                : MediaQuery.sizeOf(context).width;
+            final chat = _buildChatArea(context, chatWidth);
             final sidebar = _buildSidebar(
               context,
               onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
@@ -1349,7 +1422,7 @@ class _ChatScreenState extends State<ChatScreen>
               ],
             );
             return wide
-                ? _buildWideLayout(context, chatWithBanner, sidebar)
+                ? _buildWideLayout(context, chatWithBanner, sidebar, slotWidth)
                 : _buildMobileLayout(context, chatWithBanner, sidebar);
           },
         ),
@@ -1420,9 +1493,14 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 宽屏布局：聊天区 + 右侧栏固定槽位（带开合动画）。
-  Widget _buildWideLayout(BuildContext context, Widget chat, Widget sidebar) {
-    // 关键设计：聊天区宽度固定（W-380）永不重排 → 滚动条不乱飞、动画不卡顿；
+  /// 宽屏布局：聊天区 + 右侧栏固定槽位（带开合动画），槽位宽度可拖拽调整。
+  Widget _buildWideLayout(
+    BuildContext context,
+    Widget chat,
+    Widget sidebar,
+    double slotWidth,
+  ) {
+    // 关键设计：聊天区宽度固定（W-槽位宽）永不重排 → 滚动条不乱飞、动画不卡顿；
     // 右侧栏独占固定槽位，用 SlideTransition 从右缘滑入/滑出（不覆盖、不空白）。
     // 用 AnimatedBuilder 逐帧驱动，使「打开侧栏」按钮随动画进度正确显隐。
     return AnimatedBuilder(
@@ -1436,7 +1514,7 @@ class _ChatScreenState extends State<ChatScreen>
             Expanded(child: chat),
             // 右侧栏固定槽位。
             SizedBox(
-              width: _kSidebarWidth,
+              width: slotWidth,
               child: Stack(
                 children: [
                   // 收起时：居中显示「打开侧栏」按钮。
@@ -1454,6 +1532,18 @@ class _ChatScreenState extends State<ChatScreen>
                       child: Material(elevation: 12, child: sidebar),
                     ),
                   ),
+                  // 展开时：左缘拖拽手柄（盖在侧栏之上，拖动改宽 / 双击复位）。
+                  if (open)
+                    Positioned(
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      child: SidebarResizeDivider(
+                        onDragUpdate: _onSidebarDragUpdate,
+                        onDragEnd: _onSidebarDragEnd,
+                        onReset: _onSidebarResetWidth,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1542,7 +1632,9 @@ class _ChatScreenState extends State<ChatScreen>
   // ---------------------------------------------------------------------------
   // 对话区
   // ---------------------------------------------------------------------------
-  Widget _buildChatArea(BuildContext context) {
+  /// [chatWidth]：聊天区实际宽度（宽屏 = 窗口宽 - 侧栏槽位宽；窄屏 = 全宽）。
+  /// 楼层跳转实测数据据此失效（拖拽改侧栏宽时聊天区行高会变化）。
+  Widget _buildChatArea(BuildContext context, double chatWidth) {
     final roundProvider = context.watch<RoundProvider>();
     final bookProvider = context.watch<BookProvider>();
     // 首帧建造时当前书可能尚未就绪（异步加载）：书就绪并触发重建后，
@@ -1551,15 +1643,15 @@ class _ChatScreenState extends State<ChatScreen>
     final rounds = roundProvider.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
-    // 楼层跳转：轮次来源（引用+长度）或窗口宽度变化时清空实测数据缓存。
+    // 楼层跳转：轮次来源（引用+长度）或聊天区宽度变化时清空实测数据缓存。
     if (!identical(rounds, _lastRoundsSource) ||
         rounds.length != _lastRoundsCount ||
-        (MediaQuery.sizeOf(context).width - _lastLayoutWidth).abs() > 0.5) {
+        (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
       _itemHeights.clear();
       _itemOffsets.clear();
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
-      _lastLayoutWidth = MediaQuery.sizeOf(context).width;
+      _lastChatLayoutWidth = chatWidth;
     }
     final isSending = roundProvider.isSending;
     final isStreaming = roundProvider.isStreaming;

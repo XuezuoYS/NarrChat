@@ -9,6 +9,7 @@ import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
+import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
@@ -262,6 +263,7 @@ void main() {
         MultiProvider(
           providers: [
             ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
             ChangeNotifierProvider(create: (_) => bookProvider),
             ChangeNotifierProvider(create: (_) => worldBookProvider),
             ChangeNotifierProvider(create: (_) => roundProvider),
@@ -428,6 +430,7 @@ void main() {
         MultiProvider(
           providers: [
             ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
             ChangeNotifierProvider(create: (_) => bookProvider),
             ChangeNotifierProvider(create: (_) => worldBookProvider),
             ChangeNotifierProvider(create: (_) => roundProvider),

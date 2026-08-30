@@ -8,6 +8,7 @@ import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
+import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
@@ -52,6 +53,7 @@ Future<RoundProvider> pumpChatScreen(
   FakeRoundDao? roundDao,
   FakeWorldBookDao? worldBookDao,
   AiSettingsProvider? settings,
+  UiSettingsProvider? uiSettings,
   ImageImportService? imageImport,
   ClipboardPasteService? clipboardPaste,
   void Function(String bookUuid, String bookTitle)? onGenerationCompleted,
@@ -95,6 +97,10 @@ Future<RoundProvider> pumpChatScreen(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => settings ?? AiSettingsProvider()),
+        // 宽屏侧栏宽度等 UI 设置（默认构造，不 load：避免触碰真实配置文件）。
+        ChangeNotifierProvider(
+          create: (_) => uiSettings ?? UiSettingsProvider(),
+        ),
         ChangeNotifierProvider(
           create: (_) => BookProvider(dao: bookDao0)..loadBooks(),
         ),
@@ -151,6 +157,8 @@ Future<BookProvider> pumpHomeScreen(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
         ChangeNotifierProvider(create: (_) => bookProvider),
+        // 首页可进入书籍对话页（对话页布局读取 UI 设置）。
+        ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
         // 云同步（SyncStatusChip 需读取其 syncState）。
         ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
         ChangeNotifierProvider(
@@ -217,6 +225,8 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+        // 通知跳转会把 ChatScreen 推上路由栈（其布局读取 UI 设置）。
+        ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
         ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
