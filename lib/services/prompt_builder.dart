@@ -1,6 +1,7 @@
 import '../models/book.dart';
 import '../models/mod.dart';
 import '../models/round.dart';
+import 'ai_response_parser.dart';
 
 /// Prompt 组装结果。
 class PromptBundle {
@@ -17,7 +18,10 @@ class PromptBundle {
 /// - 绝对服从 + 二级标题纪律：仅允许 6 个 `##` 区块、顺序固定，其余位置禁止 `##`。
 /// - 状态快照规则：完整复制上一轮角色/世界状态，仅修改变动项。
 /// - 书籍名称、书籍类别、书籍设定、文笔要求（内置去 AI 味）、文笔参考（用户补充，**仅存在于 system**）、
-///   角色层级、世界书条目、状态快照、记忆总结。
+///   角色层级、世界书条目、已启用 Mod 的系统提示词与 WorldBook。
+/// - 上一轮状态快照（角色/世界状态、记忆总结、上轮时间）**不再注入 system**：
+///   经 `messages` 中最后一条 assistant 消息（最后一轮的反解析「原生返回」，
+///   见 [buildHistoryMessages]）原生传给模型。
 ///
 /// 【User Prompt】
 /// ```
@@ -63,7 +67,6 @@ class PromptBuilder {
     return PromptBundle(
       systemPrompt: _buildSystem(
         book: book,
-        lastRound: lastRound,
         worldBookEntries: worldBookEntries,
         mods: mods,
       ),
@@ -77,8 +80,14 @@ class PromptBuilder {
   }
 
   /// 将历史轮次组装为 OpenAI 兼容的 `messages` 数组片段：
-  /// 每轮一条 `user`（用户输入）+ 一条 `assistant`（AI 剧情正文），按时间顺序排列。
+  /// 每轮一条 `user`（用户输入）+ 一条 `assistant`，按时间顺序排列。
   /// 调用方应将其插入 `system` 消息之后、当前轮 `user` 消息之前。
+  ///
+  /// - **最后一轮**（最新一轮）的 assistant 为完整反解析的「原生返回」格式
+  ///   （6 个 `##` 区块，见 [AiResponseParser.serialize]）：上一轮的角色状态 /
+  ///   世界状态 / 记忆总结 / 当前时间经此原生传入，取代原先注入 system 的状态快照；
+  /// - **更早的历史轮次**仅置入剧情正文（aiNarrative），控制上下文篇幅；
+  /// - 整轮六字段全空时保留「（无正文）」占位（避免发送空 assistant 消息）。
   ///
   /// [imagePartsFor] 非空时，若某轮用户消息存在图片（该回调返回图片 parts），
   /// 其 `content` 变为「文本 + 图片数组」（OpenAI 兼容 vision 格式）；否则为纯文本。
@@ -87,7 +96,8 @@ class PromptBuilder {
     List<Map<String, dynamic>> Function(Round round)? imagePartsFor,
   }) {
     final result = <Map<String, dynamic>>[];
-    for (final r in rounds) {
+    for (var i = 0; i < rounds.length; i++) {
+      final r = rounds[i];
       if (r.userInput.trim().isNotEmpty) {
         final imageParts = imagePartsFor?.call(r) ?? const [];
         result.add({
@@ -97,10 +107,28 @@ class PromptBuilder {
       }
       result.add({
         'role': 'assistant',
-        'content': r.aiNarrative.isEmpty ? '（无正文）' : r.aiNarrative,
+        'content': _assistantContent(r, isLatest: i == rounds.length - 1),
       });
     }
     return result;
+  }
+
+  /// 单轮 assistant 消息正文：仅最新一轮做完整反解析（6 区块齐全），
+  /// 其余轮次仅正文；六字段全空保留「（无正文）」占位。
+  /// 见 [buildHistoryMessages]。
+  static String _assistantContent(Round r, {required bool isLatest}) {
+    if (!isLatest) {
+      return r.aiNarrative.isEmpty ? '（无正文）' : r.aiNarrative;
+    }
+    final parsed = ParsedAiResponse(
+      aiNarrative: r.aiNarrative,
+      worldState: r.worldState,
+      characterState: r.characterState,
+      memorySummary: r.memorySummary,
+      currentTime: r.currentTime,
+      recommendedAction: r.recommendedAction,
+    );
+    return parsed.isEmpty ? '（无正文）' : AiResponseParser.serialize(parsed);
   }
 
   /// 组装单条用户消息的 `content`：无图片为纯文本字符串，有图片为
@@ -118,7 +146,6 @@ class PromptBuilder {
 
   String _buildSystem({
     required Book book,
-    required Round? lastRound,
     required String worldBookEntries,
     required ModsBundle? mods,
   }) {
@@ -178,27 +205,13 @@ class PromptBuilder {
       buf.writeln(mods.worldBooks.trim());
     }
     buf.writeln();
-    if (lastRound != null) {
-      final n = lastRound.roundIndex;
-      buf.writeln('第 $n 轮状态快照（必须被完整复制到输出的 ## 角色状态 和 ## 世界状态 中，仅修改变动项）：');
-      buf.writeln('上轮时间（## 当前时间 必须沿用其格式，仅按剧情推进更新时间内容）：${lastRound.currentTime.isEmpty ? '（空）' : lastRound.currentTime}');
-      buf.writeln('【角色状态】');
-      buf.writeln(lastRound.characterState.isEmpty ? '（空）' : lastRound.characterState);
-      buf.writeln('【世界状态】');
-      buf.writeln(lastRound.worldState.isEmpty ? '（空）' : lastRound.worldState);
-      buf.writeln('第 $n 轮记忆总结：${lastRound.memorySummary.isEmpty ? '（空）' : lastRound.memorySummary}');
-    } else {
-      buf.writeln('第 0 轮状态快照：（无，本轮为初始轮次，请依据书籍设定直接创作）');
-      buf.writeln('第 0 轮记忆总结：（无）');
-    }
-    buf.writeln();
     buf.writeln('【记忆总结格式】## 记忆总结 区块必须严格遵循以下格式（这是历史记录的核心结构，优先级最高）：');
     buf.writeln('1. 每条记忆独占一行，格式为：`- 第N轮｜日期：该轮当前时间｜概括内容`；「轮数」「日期」「概括内容」三者必须绑定在一条内，严禁拆行、严禁分块、严禁只写其中一项。');
     buf.writeln('2. 从第 1 轮到本轮，每一轮都必须保留一条记忆条目，条目按轮数从小到大顺序排列、不得缺轮。');
     buf.writeln('3. 每条条目的「日期」必须使用该轮 ## 当前时间 的内容（剧情内时间，如「第三天 午时」），不得使用真实日期。');
     buf.writeln('4. 「概括内容」用一句话概括该轮发生的核心事件与关键进展；若该轮无重要事件则写「无重要事件」。');
     buf.writeln('5. 轮次增多时可压缩、精简旧条目的措辞以控制篇幅，但不得删除任何轮次条目、不得调换顺序、不得将多条合并为一条。');
-    buf.writeln('6. 上方「第 n 轮记忆总结」为已确认的历史记忆，必须完整继承并在此基础上追加本轮条目，不得凭空改写、丢失或重排。');
+    buf.writeln('6. 上一轮 AI 返回（最后一条 assistant 消息）中的「## 记忆总结」为已确认的历史记忆，必须完整继承并在此基础上追加本轮条目，不得凭空改写、丢失或重排。');
     buf.writeln();
     buf.writeln(endPrompt);
     return buf.toString();

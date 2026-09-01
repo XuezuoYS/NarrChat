@@ -100,19 +100,21 @@ void main() {
       expect(system, contains('青云宗是北域第一大派。'));
     });
 
-    test('系统提示词包含上一轮状态快照与记忆总结', () {
+    test('系统提示词不再注入上一轮状态快照与记忆总结（改经最后一轮 AI 返回传入）', () {
       final system = buildBundle().systemPrompt;
-      expect(system, contains('第 1 轮状态快照'));
-      expect(system, contains('## 女主角\n### 苏清月\n- 心情：平静'));
-      expect(system, contains('- 地点：青云宗\n- 天气：晴'));
-      expect(system, contains('主角初入宗门。'));
+      expect(system, isNot(contains('第 1 轮状态快照')));
+      expect(system, isNot(contains('上轮时间（')));
+      expect(system, isNot(contains('## 女主角')));
+      expect(system, isNot(contains('- 地点：青云宗')));
+      expect(system, isNot(contains('主角初入宗门。')));
+      // 【状态快照规则】作为输出规则仍保留（仅数据来源迁移至最后一轮 AI 返回）。
+      expect(system, contains('【状态快照规则】'));
     });
 
-    test('系统提示词包含上轮时间并要求沿用其格式', () {
+    test('系统提示词不再包含上轮时间快照（仅保留 user 中的【上轮时间】）', () {
       final system = buildBundle().systemPrompt;
-      expect(system, contains('上轮时间'));
-      expect(system, contains('第三天 午时'));
-      expect(system, contains('## 当前时间 必须沿用其格式'));
+      expect(system, isNot(contains('上轮时间')));
+      expect(system, isNot(contains('必须沿用其格式')));
     });
 
     test('用户提示词包含完整结构（格式/记忆格式/前置/文笔/输入/后置/服从结尾）', () {
@@ -228,7 +230,14 @@ void main() {
       expect(user, contains('依据书籍背景设定自行确定'));
     });
 
-    test('历史轮次按 API 要求组装为 user/assistant 交替 messages', () {
+    test('记忆总结格式规则 6 引用上一轮 AI 返回中的记忆总结（不再指向上方快照）', () {
+      final system = buildBundle().systemPrompt;
+      expect(system, contains('上一轮 AI 返回'));
+      expect(system, contains('最后一条 assistant 消息'));
+      expect(system, contains('为已确认的历史记忆'));
+    });
+
+    test('历史轮次按 API 要求组装为 user/assistant 交替 messages（最后一轮反解析，其余仅正文）', () {
       final history = PromptBuilder.buildHistoryMessages(const [
         lastRound,
         Round(
@@ -237,13 +246,44 @@ void main() {
           roundIndex: 2,
           userInput: '我拔出长剑。',
           aiNarrative: '剑光如虹。',
+          worldState: '- 地点：演武场',
+          characterState: '疲惫。',
+          memorySummary: '- 第1轮｜日期：第三天 午时｜初入宗门',
+          currentTime: '第三天 申时',
+          recommendedAction: '收剑回鞘。',
         ),
       ]);
       expect(history, hasLength(4));
       expect(history[0], {'role': 'user', 'content': '我踏入青云宗。'});
+      // 更早的历史轮次仅置入正文。
       expect(history[1], {'role': 'assistant', 'content': '山门巍峨，云雾缭绕。'});
       expect(history[2], {'role': 'user', 'content': '我拔出长剑。'});
-      expect(history[3], {'role': 'assistant', 'content': '剑光如虹。'});
+      // 最后一轮反解析为完整 6 区块原生格式。
+      expect(history[3], {
+        'role': 'assistant',
+        'content': '## 剧情演绎\n剑光如虹。\n\n'
+            '## 推荐行动\n收剑回鞘。\n\n'
+            '## 当前时间\n第三天 申时\n\n'
+            '## 世界状态\n- 地点：演武场\n\n'
+            '## 角色状态\n疲惫。\n\n'
+            '## 记忆总结\n- 第1轮｜日期：第三天 午时｜初入宗门',
+      });
+    });
+
+    test('最后一轮仅正文时仍反解析为 6 区块齐全形态', () {
+      final history = PromptBuilder.buildHistoryMessages(const [
+        Round(bookUuid: 'b1', roundIndex: 1, aiNarrative: '剑光如虹。'),
+      ]);
+      expect(history.single['content'],
+          '## 剧情演绎\n剑光如虹。\n\n## 推荐行动\n\n## 当前时间\n\n'
+          '## 世界状态\n\n## 角色状态\n\n## 记忆总结');
+    });
+
+    test('最后一轮六字段全空时保留「（无正文）」占位', () {
+      final history = PromptBuilder.buildHistoryMessages(const [
+        Round(bookUuid: 'b1', roundIndex: 1, userInput: '输入'),
+      ]);
+      expect(history.last['content'], '（无正文）');
     });
 
     test('历史轮次为空输入时跳过 user 消息并保留 assistant 占位', () {
