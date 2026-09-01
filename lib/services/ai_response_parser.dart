@@ -47,6 +47,9 @@ class ParsedAiResponse {
 /// 剧情演绎缺失时的正文兜底（应对 AI 幻觉放弃输出 `## 剧情演绎`）：
 /// 1. 存在 `正文` 标题区块时，将其内容视为正文（优先级次之）；
 /// 2. 否则若响应开头存在「无标题直接开始生成」的内容，将其视为正文。
+///
+/// 反解析（[serialize]）：与 [parse] 互逆，将 [ParsedAiResponse] 还原为
+/// 「原生返回」格式的 Markdown 文本（6 个 `##` 区块齐全）。
 class AiResponseParser {
   AiResponseParser._();
 
@@ -72,6 +75,13 @@ class AiResponseParser {
     '推荐行动': 'recommendedAction',
     // 「正文」为内部兜底区块：仅在剧情演绎缺失时用作正文（见 [parse]）。
     '正文': _bodyField,
+  };
+
+  /// 字段 → 区块标题（反解析用），由 [_sectionToField] 派生，保持单一映射来源；
+  /// 内部兜底区块（[_bodyField]）不属于 [ParsedAiResponse]，不参与反解析。
+  static final Map<String, String> _fieldToSection = {
+    for (final e in _sectionToField.entries)
+      if (e.value != _bodyField) e.value: e.key,
   };
 
   static ParsedAiResponse parse(String raw) {
@@ -128,6 +138,36 @@ class AiResponseParser {
       currentTime: fieldValue('currentTime'),
       recommendedAction: fieldValue('recommendedAction'),
     );
+  }
+
+  /// 反解析：将 [ParsedAiResponse] 还原为「原生返回」格式的 Markdown 文本。
+  ///
+  /// 区块顺序为 AI 被要求的输出顺序（与 PromptBuilder.sectionOrder 一致）：
+  /// 剧情演绎 → 推荐行动 → 当前时间 → 世界状态 → 角色状态 → 记忆总结。
+  /// 空字段也输出对应的空 `## 标题` 区块，保持 6 区块齐全形态；
+  /// 字段值原样写入（[parse] 的产物字段均已 trim），因此
+  /// `parse(serialize(x))` 可还原出相同的 [ParsedAiResponse]（round-trip）。
+  static String serialize(ParsedAiResponse parsed) {
+    final blocks = <(String, String)>[
+      ('aiNarrative', parsed.aiNarrative),
+      ('recommendedAction', parsed.recommendedAction),
+      ('currentTime', parsed.currentTime),
+      ('worldState', parsed.worldState),
+      ('characterState', parsed.characterState),
+      ('memorySummary', parsed.memorySummary),
+    ];
+    final buf = StringBuffer();
+    for (var i = 0; i < blocks.length; i++) {
+      if (i > 0) {
+        buf.write('\n\n');
+      }
+      final (field, value) = blocks[i];
+      buf.write('## ${_fieldToSection[field]!}');
+      if (value.isNotEmpty) {
+        buf.write('\n$value');
+      }
+    }
+    return buf.toString();
   }
 
   /// 尝试把一行解析为 Markdown 标题，返回标题文本；非标题行返回 null。

@@ -1,6 +1,17 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/services/ai_response_parser.dart';
+import 'package:narrchat/services/prompt_builder.dart';
+
+/// 完整 6 字段的解析结果（供 serialize 多组用例复用）。
+const _fullParsed = ParsedAiResponse(
+  aiNarrative: '主角踏入山门。',
+  worldState: '晴天。',
+  characterState: '疲惫。',
+  memorySummary: '- 第1轮｜日期：第三天 午时｜已入山门',
+  currentTime: '第三天 午时',
+  recommendedAction: '继续前进。',
+);
 
 void main() {
   group('AiResponseParser 正常解析', () {
@@ -167,6 +178,75 @@ void main() {
 ''';
       final result = AiResponseParser.parse(raw);
       expect(result.aiNarrative, '剧情演绎内容。');
+    });
+  });
+
+  group('AiResponseParser serialize 反解析', () {
+    test('完整 6 字段反解析为原生 6 标题格式（顺序与 PromptBuilder 一致）', () {
+      expect(
+        AiResponseParser.serialize(_fullParsed),
+        '## 剧情演绎\n主角踏入山门。\n\n'
+        '## 推荐行动\n继续前进。\n\n'
+        '## 当前时间\n第三天 午时\n\n'
+        '## 世界状态\n晴天。\n\n'
+        '## 角色状态\n疲惫。\n\n'
+        '## 记忆总结\n- 第1轮｜日期：第三天 午时｜已入山门',
+      );
+    });
+
+    test('反解析区块顺序与 PromptBuilder.sectionOrder 一致', () {
+      final raw = AiResponseParser.serialize(_fullParsed);
+      final headings = RegExp(r'^## (.+)$', multiLine: true)
+          .allMatches(raw)
+          .map((m) => m.group(1)!)
+          .toList();
+      expect(headings, PromptBuilder.sectionOrder);
+    });
+
+    test('空字段输出对应的空 `## 标题` 区块，6 区块齐全', () {
+      const parsed = ParsedAiResponse(aiNarrative: '只有正文。');
+      expect(
+        AiResponseParser.serialize(parsed),
+        '## 剧情演绎\n只有正文。\n\n'
+        '## 推荐行动\n\n'
+        '## 当前时间\n\n'
+        '## 世界状态\n\n'
+        '## 角色状态\n\n'
+        '## 记忆总结',
+      );
+    });
+
+    test('空 ParsedAiResponse 反解析为 6 个空标题区块，可再解析为空结果', () {
+      final raw = AiResponseParser.serialize(const ParsedAiResponse());
+      expect(
+        raw,
+        '## 剧情演绎\n\n## 推荐行动\n\n## 当前时间\n\n'
+        '## 世界状态\n\n## 角色状态\n\n## 记忆总结',
+      );
+      expect(AiResponseParser.parse(raw).isEmpty, isTrue);
+    });
+
+    test('完整字段 round-trip：反解析后再解析得到相同字段', () {
+      final reparsed =
+          AiResponseParser.parse(AiResponseParser.serialize(_fullParsed));
+      expect(reparsed.aiNarrative, _fullParsed.aiNarrative);
+      expect(reparsed.worldState, _fullParsed.worldState);
+      expect(reparsed.characterState, _fullParsed.characterState);
+      expect(reparsed.memorySummary, _fullParsed.memorySummary);
+      expect(reparsed.currentTime, _fullParsed.currentTime);
+      expect(reparsed.recommendedAction, _fullParsed.recommendedAction);
+    });
+
+    test('角色状态含二级标题（角色名）时 round-trip 原样保留', () {
+      const parsed = ParsedAiResponse(
+        aiNarrative: '正文。',
+        characterState: '# 主角\n## 张三\n- 体力：100',
+      );
+      final reparsed =
+          AiResponseParser.parse(AiResponseParser.serialize(parsed));
+      expect(reparsed.aiNarrative, '正文。');
+      expect(reparsed.characterState, '# 主角\n## 张三\n- 体力：100');
+      expect(reparsed.recommendedAction, isEmpty);
     });
   });
 }
