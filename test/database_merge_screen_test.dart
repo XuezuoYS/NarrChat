@@ -372,6 +372,18 @@ void main() {
     expect(find.text('M'), findsOneWidget);
     expect(find.text('导入'), findsOneWidget);
     expect(find.text('重命名'), findsOneWidget);
+    // 三选项顺序与「本地在左、导入在右」的页面约定一致（本地 | 重命名 | 导入）。
+    final seg = tester.widget<SegmentedButton<ModMergeDecision>>(
+      find.byType(SegmentedButton<ModMergeDecision>),
+    );
+    expect(
+      seg.segments.map((s) => s.value).toList(),
+      const [
+        ModMergeDecision.keepLocal,
+        ModMergeDecision.rename,
+        ModMergeDecision.import,
+      ],
+    );
     // 冲突 Mod 并排展示「导入的备份」与「本地」两侧，各有预览按钮。
     expect(find.text('导入的备份'), findsOneWidget);
     expect(find.text('本地'), findsNWidgets(2)); // 侧卡标签 + 「本地」决策段

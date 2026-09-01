@@ -768,16 +768,16 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
         SegmentedButton<ModMergeDecision>(
           segments: const [
             ButtonSegment(
-              value: ModMergeDecision.import,
-              label: Text('导入'),
+              value: ModMergeDecision.keepLocal,
+              label: Text('本地'),
             ),
             ButtonSegment(
               value: ModMergeDecision.rename,
               label: Text('重命名'),
             ),
             ButtonSegment(
-              value: ModMergeDecision.keepLocal,
-              label: Text('本地'),
+              value: ModMergeDecision.import,
+              label: Text('导入'),
             ),
           ],
           selected: {decision},
@@ -786,7 +786,7 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
         ),
         const SizedBox(height: 4),
         Text(
-          '「导入」覆盖本地同名 Mod；「重命名」另存为「${entry.name} - 导入」；「本地」保留本地。',
+          '「本地」保留本地；「重命名」另存为「${entry.name} - 导入」；「导入」覆盖本地同名 Mod。',
           style: TextStyle(fontSize: 11, color: colors.textSecondary),
         ),
       ],
