@@ -127,16 +127,23 @@ String collapseRawImages(String text, List<RawImageData> images) {
 ///
 /// [exchanges] 为时间线数据（请求体 → AI返回 交错）；
 /// [failedError] 非空时在顶部展示失败原因，且无返回的交换显示「请求失败」。
+/// [previewRequestOnly] 为真时进入「预览请求体」模式：标题改为「预览请求体」，
+/// 且只展示请求体块（不渲染 AI 返回区），图片折叠 / 检索等能力照常复用。
 ///
 /// 命名为 [showRawDataDialog] 以避开 Flutter 内置的 `showRawDialog`。
 void showRawDataDialog(
   BuildContext context, {
   required List<RawExchange> exchanges,
   String? failedError,
+  bool previewRequestOnly = false,
 }) {
   showDialog<void>(
     context: context,
-    builder: (_) => RawDialog(exchanges: exchanges, failedError: failedError),
+    builder: (_) => RawDialog(
+      exchanges: exchanges,
+      failedError: failedError,
+      previewRequestOnly: previewRequestOnly,
+    ),
   );
 }
 
@@ -233,14 +240,24 @@ const double _kScrollTopPadding = 40;
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
-///   （开启时把 `\n` 等转义序列展开为真实换行，便于阅读）。
+///   （开启时把 `\n` 等转义序列展开为真实换行，便于阅读）；
+/// - [previewRequestOnly] 为真时进入「预览请求体」模式：只展示请求体块，
+///   不渲染【AI返回】区（标题相应改为「预览请求体」）。
 class RawDialog extends StatefulWidget {
   final List<RawExchange> exchanges;
 
   /// 失败条目的错误信息（展示于顶部；无返回的交换显示「请求失败」）。
   final String? failedError;
 
-  const RawDialog({super.key, required this.exchanges, this.failedError});
+  /// 预览请求体模式（仅展示请求体块，隐藏 AI 返回区）。
+  final bool previewRequestOnly;
+
+  const RawDialog({
+    super.key,
+    required this.exchanges,
+    this.failedError,
+    this.previewRequestOnly = false,
+  });
 
   @override
   State<RawDialog> createState() => _RawDialogState();
@@ -476,7 +493,7 @@ class _RawDialogState extends State<RawDialog> {
               child: Row(
                 children: [
                   Text(
-                    'RAW',
+                    widget.previewRequestOnly ? '预览请求体' : 'RAW',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -661,8 +678,22 @@ class _RawDialogState extends State<RawDialog> {
       // 请求体展开且含图片时，追加「图像 N 个」二级扩展菜单展示 base64。
       if (requestImages.isNotEmpty && _expandedBlocks.contains(requestBlockIndex))
         _ImageListBlock(images: requestImages),
-      const SizedBox(height: 10),
-      // AI 返回：分组标签 + 三个可折叠块。
+    ];
+    // 预览请求体模式：只展示请求体块，不渲染 AI 返回区。
+    if (widget.previewRequestOnly) {
+      return (
+        widget: Column(
+          key: Key('raw_exchange_$index'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: children,
+        ),
+        nextBlockIndex: blockIndex,
+      );
+    }
+    children.add(const SizedBox(height: 10));
+    // AI 返回：分组标签 + 三个可折叠块。
+    children.add(
       Text(
         '【AI返回 ${index + 1}】',
         style: TextStyle(
@@ -671,8 +702,8 @@ class _RawDialogState extends State<RawDialog> {
           color: scheme.primary,
         ),
       ),
-      const SizedBox(height: 2),
-    ];
+    );
+    children.add(const SizedBox(height: 2));
     blockIndex++;
     if (_hasReturn(ex)) {
       final parts = <(String, String)>[

@@ -14,6 +14,7 @@ import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../services/agent/agent_runner.dart';
 import '../services/agent/fetch_page_tool.dart';
+import '../services/agent/narr_agent_tool.dart';
 import '../services/agent/web_search_tool.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
@@ -322,6 +323,148 @@ class RoundProvider extends ChangeNotifier {
     await loadRounds(_bookUuid);
   }
 
+  /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
+  ///
+  /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
+  /// - 联网搜索开启：返回 Agent 首帧（system 追加【联网搜索】指令 + 工具 schema）；
+  /// - 联网搜索关闭：返回直发请求体（无工具）。
+  ///
+  /// 无任何副作用（不落库 / 不发网络 / 不改生成状态）。
+  Future<String> previewRequestBody({
+    required String userInput,
+    Book? book,
+    List<String>? userImages,
+  }) async {
+    final b = book;
+    if (b == null || b.uuid.isEmpty) {
+      throw StateError('尚未选择书籍');
+    }
+    final req = await _assembleRoundRequest(
+      book: b,
+      userInput: userInput,
+      userImages: userImages,
+    );
+    final Map<String, dynamic> firstBody;
+    if (req.useSearch) {
+      final runner = AgentRunner(
+        buildBody: _makeBodyBuilder(_aiSettingsProvider, req.useStream),
+        // 预览只构建首帧，不发起任何 AI 调用（call 永不被触发）。
+        call: (_, _, _, _, _) => throw UnsupportedError('预览不发起 AI 调用'),
+        // 仅用于读取工具 schema（name/description/parameters），绝不执行 run。
+        tools: _makeAgentTools(null),
+      );
+      firstBody = runner.previewFirstBody([
+        {
+          'role': 'system',
+          'content': '${req.systemPrompt}\n\n$_searchInstruction',
+        },
+        ...req.historyMessages,
+        {'role': 'user', 'content': req.userContent},
+      ]);
+    } else {
+      firstBody = req.directBody;
+    }
+    return const JsonEncoder.withIndent('  ').convert(firstBody);
+  }
+
+  /// 组装本轮「将要发出」的请求要素（纯组装，无副作用）：
+  /// worldBook / Mod / 提示词 / 历史消息与图片 / 发送参数与请求体。
+  ///
+  /// 供 [sendRound] 与「预览请求体」共用：不读写任何生成状态、不落库、不发网络。
+  Future<_RoundRequest> _assembleRoundRequest({
+    required Book book,
+    required String userInput,
+    List<String>? userImages,
+  }) async {
+    final settings = _aiSettingsProvider;
+    final lastRound = latestRound;
+    final recentRounds = _takeRecent(book.historyRounds);
+    final worldBookEntries = _worldBookScanner.scan(
+      userInput: userInput,
+      historyRounds: recentRounds,
+      entries: _worldBookProvider?.activeEntries ?? const [],
+    );
+    // 本书启用的 Mod：实时解析并置入前置词/后置词/系统提示词/世界书
+    //（Mod 世界书条目与书籍世界书一致：关键词命中才注入，留空则恒定生效）。
+    final modsBundle = _modProvider == null
+        ? null
+        : await _modProvider.resolveModsBundle(
+            bookUuid: book.uuid,
+            userInput: userInput,
+            historyRounds: recentRounds,
+          );
+    final prompts = _promptBuilder.build(
+      book: book,
+      lastRound: lastRound,
+      userInput: userInput,
+      worldBookEntries: worldBookEntries,
+      mods: modsBundle,
+    );
+
+    // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
+    // 而非拼入本次 Prompt 文本。
+    final supportsVision = settings?.supportsVision ?? false;
+    // 预读取本轮及历史用户消息所需图片为 base64 data URL（仅识图模型）。
+    final imageDataUrls = supportsVision
+        ? await _collectImageDataUrls(recentRounds, userImages)
+        : const <String, String>{};
+    final historyMessages = PromptBuilder.buildHistoryMessages(
+      recentRounds,
+      imagePartsFor: supportsVision
+          ? (r) => _imagePartsFor(r, imageDataUrls)
+          : null,
+    );
+    final userContent = supportsVision
+        ? _userContentWithImages(
+            prompts.userPrompt,
+            userImages,
+            imageDataUrls,
+          )
+        : prompts.userPrompt;
+
+    // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
+    // 无设置注入时按预设能力回退（仅测试/降级路径）。
+    final useSearch = settings == null
+        ? AiPlatforms.defaultSupportsSearch
+        : (settings.supportsSearch && settings.lastSearch);
+    final useStream = settings?.streaming ?? true;
+    final model = (settings?.model.trim().isNotEmpty ?? false)
+        ? settings!.model
+        : AiPlatforms.defaultModelId;
+    // 按当前预设（规则构建器 / 自定义模板）动态组合请求体：
+    // 不同模式（思考 / 联网搜索 / 流式）下发送的参数由预设规则决定。
+    final values = AiRequestValues(
+      model: model,
+      messages: [
+        {'role': 'system', 'content': prompts.systemPrompt},
+        ...historyMessages,
+        {'role': 'user', 'content': userContent},
+      ],
+      temperature: settings?.temperature ?? 1.0,
+      thinking: settings?.thinking ?? AiPlatforms.defaultThinking,
+      reasoningEffort:
+          settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
+      maxTokens: settings?.maxTokens,
+      stream: useStream,
+      tools: null,
+    );
+    final requestBody = settings == null
+        ? AiRequestBodyBuilder.buildPresetBody(
+            rules: AiPlatforms.defaultRules,
+            values: values,
+          )
+        : settings.buildRequestBody(values);
+    return _RoundRequest(
+      systemPrompt: prompts.systemPrompt,
+      historyMessages: historyMessages,
+      userContent: userContent,
+      model: model,
+      useStream: useStream,
+      useSearch: useSearch,
+      directBody: requestBody,
+    );
+  }
+
   /// 发送新一轮：
   /// 0. 清空本书「失败条目」（成功则保持为空，失败则重新写入）；
   /// 1. 组装 System/User Prompt；
@@ -373,97 +516,26 @@ class RoundProvider extends ChangeNotifier {
     try {
       // 开始新请求：清空本书「失败条目」（失败则稍后重新写入）。
       await _setFailedAttempt(b.uuid, const FailedAttempt());
-      final lastRound = latestRound;
-      final recentRounds = _takeRecent(b.historyRounds);
-      final worldBookEntries = _worldBookScanner.scan(
-        userInput: userInput,
-        historyRounds: recentRounds,
-        entries: _worldBookProvider?.activeEntries ?? const [],
-      );
-      // 本书启用的 Mod：实时解析并置入前置词/后置词/系统提示词/世界书
-      //（Mod 世界书条目与书籍世界书一致：关键词命中才注入，留空则恒定生效）。
-      final modsBundle = _modProvider == null
-          ? null
-          : await _modProvider.resolveModsBundle(
-              bookUuid: b.uuid,
-              userInput: userInput,
-              historyRounds: recentRounds,
-            );
-      final prompts = _promptBuilder.build(
+      // 组装本轮请求要素（worldBook / Mod / 提示词 / 历史消息与图片 / 参数与请求体）：
+      // 与「预览请求体」共用同一逻辑，保证预览与实发完全一致。
+      final req = await _assembleRoundRequest(
         book: b,
-        lastRound: lastRound,
         userInput: userInput,
-        worldBookEntries: worldBookEntries,
-        mods: modsBundle,
+        userImages: userImages,
       );
-
-      // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
-      // 而非拼入本次 Prompt 文本。
-      final supportsVision = settings?.supportsVision ?? false;
-      // 预读取本轮及历史用户消息所需图片为 base64 data URL（仅识图模型）。
-      final imageDataUrls = supportsVision
-          ? await _collectImageDataUrls(recentRounds, userImages)
-          : const <String, String>{};
-      final historyMessages = PromptBuilder.buildHistoryMessages(
-        recentRounds,
-        imagePartsFor: supportsVision
-            ? (r) => _imagePartsFor(r, imageDataUrls)
-            : null,
-      );
-      final userContent = supportsVision
-          ? _userContentWithImages(
-              prompts.userPrompt,
-              userImages,
-              imageDataUrls,
-            )
-          : prompts.userPrompt;
-
-      final useStream = settings?.streaming ?? true;
-      // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
-      // 无设置注入时按预设能力回退（仅测试/降级路径）。
-      final useSearch = settings == null
-          ? AiPlatforms.defaultSupportsSearch
-          : (settings.supportsSearch && settings.lastSearch);
-      if (useStream) {
+      if (req.useStream) {
         gen.isStreaming = true;
         gen.streamingContent = '';
         notifyListeners();
       }
 
-      // 按当前预设（规则构建器 / 自定义模板）动态组合请求体：
-      // 不同模式（思考 / 联网搜索 / 流式）下发送的参数由预设规则决定。
-      final values = AiRequestValues(
-        model: (settings?.model.trim().isNotEmpty ?? false)
-            ? settings!.model
-            : AiPlatforms.defaultModelId,
-        messages: [
-          {'role': 'system', 'content': prompts.systemPrompt},
-          ...historyMessages,
-          {'role': 'user', 'content': userContent},
-        ],
-        temperature: settings?.temperature ?? 1.0,
-        thinking:
-            settings?.thinking ?? AiPlatforms.defaultThinking,
-        reasoningEffort:
-            settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
-        maxTokens: settings?.maxTokens,
-        stream: useStream,
-        tools: null,
-      );
-      final requestBody = settings == null
-          ? AiRequestBodyBuilder.buildPresetBody(
-              rules: AiPlatforms.defaultRules,
-              values: values,
-            )
-          : settings.buildRequestBody(values);
-
-      final onChunk = _buildStreamingOnChunk(useStream, gen, genToken);
+      final onChunk = _buildStreamingOnChunk(req.useStream, gen, genToken);
       // 取消闭包：用户显式中断，或本轮令牌已过期（新一轮已发起）都视为取消，
       // 使上一轮残留流自行中止，绝不继续向本轮注入内容。
       bool isCancelled() => gen.cancelRequested || genToken != gen.token;
       // 本轮开启联网搜索 → Agent 工具循环（首轮带工具，搜索后生成）；
       // 否则走单轮直发路径。
-      final result = useSearch
+      final result = req.useSearch
           ? await _callWithRetry(
               () => _runAgent(
                 settings: settings,
@@ -473,12 +545,12 @@ class RoundProvider extends ChangeNotifier {
                 initialMessages: [
                   {
                     'role': 'system',
-                    'content': '${prompts.systemPrompt}\n\n$_searchInstruction',
+                    'content': '${req.systemPrompt}\n\n$_searchInstruction',
                   },
-                  ...historyMessages,
-                  {'role': 'user', 'content': userContent},
+                  ...req.historyMessages,
+                  {'role': 'user', 'content': req.userContent},
                 ],
-                useStream: useStream,
+                useStream: req.useStream,
                 onChunk: onChunk,
                 gen: gen,
                 isCancelled: isCancelled,
@@ -489,11 +561,11 @@ class RoundProvider extends ChangeNotifier {
           : await _callWithRetry(
               () => _chatCapturing(
                 gen: gen,
-                requestBody: requestBody,
+                requestBody: req.directBody,
                 apiBaseUrl:
                     settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
                 apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-                stream: useStream,
+                stream: req.useStream,
                 onChunk: onChunk,
                 isCancelled: isCancelled,
               ),
@@ -523,7 +595,7 @@ class RoundProvider extends ChangeNotifier {
 
       final newRound = Round(
         bookUuid: b.uuid,
-        roundIndex: (lastRound?.roundIndex ?? 0) + 1,
+        roundIndex: (latestRound?.roundIndex ?? 0) + 1,
         userInput: userInput,
         aiNarrative: parsed.aiNarrative,
         worldState: parsed.worldState,
@@ -534,7 +606,7 @@ class RoundProvider extends ChangeNotifier {
         tokensIn: result.promptTokens,
         tokensOut: result.completionTokens,
         // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
-        modelName: values.model,
+        modelName: req.model,
         // 用户消息附带的图片（相对路径），随轮次落库，供气泡展示与历史回放。
         userImages: userImages ?? const [],
         createdAt: DateTime.now(),
@@ -757,6 +829,65 @@ class RoundProvider extends ChangeNotifier {
     ];
   }
 
+  /// 按当前 AI 设置动态构建 Agent 请求体（规则构建器 / 自定义模板）。
+  ///
+  /// 供 `_runAgent` 与「预览请求体」共用：同一构建器保证 Agent 首帧请求
+  /// 与预览完全一致。
+  Map<String, dynamic> Function(
+    List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+  ) _makeBodyBuilder(AiSettingsProvider? settings, bool useStream) {
+    return (messages, tools) {
+      final values = AiRequestValues(
+        model: (settings?.model.trim().isNotEmpty ?? false)
+            ? settings!.model
+            : AiPlatforms.defaultModelId,
+        messages: messages,
+        temperature: settings?.temperature ?? 1.0,
+        thinking: settings?.thinking ?? AiPlatforms.defaultThinking,
+        reasoningEffort:
+            settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
+        maxTokens: settings?.maxTokens,
+        stream: useStream,
+        tools: tools,
+      );
+      return settings == null
+          ? AiRequestBodyBuilder.buildPresetBody(
+              rules: AiPlatforms.defaultRules,
+              values: values,
+            )
+          : settings.buildRequestBody(values);
+    };
+  }
+
+  /// 默认 Agent 工具列表（搜索 + 抓取）。
+  ///
+  /// [gen] 为 null 时仅用于「预览请求体」读取工具 schema：全部过程回调置空
+  ///（工具只读 name/description/parameters，绝不执行 run，无副作用）。
+  /// 测试 / 调用方可注入工具（非 null 时 Agent 运行优先使用）。
+  List<NarrAgentTool> _makeAgentTools(_BookGenState? gen) {
+    return [
+      _webSearchTool ??
+          WebSearchTool(
+            search: _searchService,
+            onResults: gen == null
+                ? null
+                : (r) => _handleSearchResults(r, gen),
+            onFail: gen == null ? null : () => _handleSearchFail(gen),
+          ),
+      _fetchPageTool ??
+          FetchPageTool(
+            search: _searchService,
+            onDone: gen == null ? null : () => _handleFetchDone(gen),
+            onFail: gen == null ? null : () => _handleFetchFail(gen),
+            onRefused: gen == null
+                ? null
+                : () => _handleFetchFail(gen, refused: true),
+            onHop: gen == null ? null : (h) => _handleFetchHop(h, gen),
+          ),
+    ];
+  }
+
   Future<AiCallResult> _runAgent({
     required AiSettingsProvider? settings,
     required String apiBaseUrl,
@@ -768,28 +899,8 @@ class RoundProvider extends ChangeNotifier {
     required bool Function() isCancelled,
   }) async {
     final runner = AgentRunner(
-      buildBody: (messages, tools) {
-        final values = AiRequestValues(
-          model: (settings?.model.trim().isNotEmpty ?? false)
-              ? settings!.model
-              : AiPlatforms.defaultModelId,
-          messages: messages,
-          temperature: settings?.temperature ?? 1.0,
-          thinking:
-              settings?.thinking ?? AiPlatforms.defaultThinking,
-          reasoningEffort:
-              settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
-          maxTokens: settings?.maxTokens,
-          stream: useStream,
-          tools: tools,
-        );
-        return settings == null
-            ? AiRequestBodyBuilder.buildPresetBody(
-                rules: AiPlatforms.defaultRules,
-                values: values,
-              )
-            : settings.buildRequestBody(values);
-      },
+      // 与「预览请求体」共用同一构建器：规则构建器 / 自定义模板一致。
+      buildBody: _makeBodyBuilder(settings, useStream),
       call: (requestBody, stream, onChunk, onRequestBody, isCancelled) =>
           _chatCapturing(
             gen: gen,
@@ -802,22 +913,7 @@ class RoundProvider extends ChangeNotifier {
           ),
       // 每个 Agent 运行使用绑定到本书生成状态的工具实例：多本书并发生成时，
       // 搜索 / 抓取过程事件（UI 展示）互不串书；测试注入的工具优先。
-      tools: [
-        _webSearchTool ??
-            WebSearchTool(
-              search: _searchService,
-              onResults: (r) => _handleSearchResults(r, gen),
-              onFail: () => _handleSearchFail(gen),
-            ),
-        _fetchPageTool ??
-            FetchPageTool(
-              search: _searchService,
-              onDone: () => _handleFetchDone(gen),
-              onFail: () => _handleFetchFail(gen),
-              onRefused: () => _handleFetchFail(gen, refused: true),
-              onHop: (h) => _handleFetchHop(h, gen),
-            ),
-      ],
+      tools: _makeAgentTools(gen),
     );
 
     return runner.run(
@@ -1101,4 +1197,40 @@ class RoundProvider extends ChangeNotifier {
     }
     return chatRounds;
   }
+}
+
+/// 一轮请求的组装结果（供 `sendRound` 与「预览请求体」共用）。
+///
+/// 全部字段在组装时确定，不携带任何运行时生成状态。
+class _RoundRequest {
+  /// 组装后的系统提示词（最终文本）。
+  final String systemPrompt;
+
+  /// 历史 messages（user/assistant 交替；识图模型下已含图片 parts）。
+  final List<Map<String, dynamic>> historyMessages;
+
+  /// 当前用户消息 content：纯文本字符串或 vision parts 数组。
+  final Object userContent;
+
+  /// 实际使用的模型名（{{model}} 解析值，随轮次持久化）。
+  final String model;
+
+  /// 是否流式输出。
+  final bool useStream;
+
+  /// 是否启用联网搜索（Agent 工具循环）。
+  final bool useSearch;
+
+  /// 直发（非搜索）路径的请求体。
+  final Map<String, dynamic> directBody;
+
+  const _RoundRequest({
+    required this.systemPrompt,
+    required this.historyMessages,
+    required this.userContent,
+    required this.model,
+    required this.useStream,
+    required this.useSearch,
+    required this.directBody,
+  });
 }

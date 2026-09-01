@@ -181,6 +181,13 @@ class AgentRunner {
     }
   }
 
+  /// 预览用：返回首轮实际会发出的请求体（当前 messages + 工具 schema）。
+  ///
+  /// 与 `run` 首帧走完全相同的 `buildBody(messages, _toolSchemas)`，
+  /// 只构建、不发起任何调用，无副作用。
+  Map<String, dynamic> previewFirstBody(List<Map<String, dynamic>> messages) =>
+      buildBody(messages, _toolSchemas);
+
   /// OpenAI 兼容的 tools 数组。
   List<Map<String, dynamic>> get _toolSchemas => [
     for (final t in tools)

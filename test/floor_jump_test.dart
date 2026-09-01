@@ -56,6 +56,11 @@ void main() {
   Finder floorButton() => find.byIcon(Icons.layers_outlined);
   Finder floorBar() => find.byType(FloorJumpBar);
 
+  /// 主输入框（按 hint 定位，与 chat_composer_test 一致）。
+  Finder composerField() => find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '输入你的行动或对话…',
+      );
+
   /// 用慢速手势把对话列表滚动到底部（无惯性甩动，便于确定性断言）。
   Future<void> scrollChatToBottom(WidgetTester tester) async {
     final start = tester.getCenter(find.byType(ListView));
@@ -133,6 +138,40 @@ void main() {
     final sidebarX = tester.getCenter(find.byTooltip('打开右侧边栏')).dx;
     expect(floorX, lessThan(scrollX));
     expect(scrollX, lessThan(sidebarX));
+  });
+
+  testWidgets('预览请求体按钮位于楼层跳转左侧', (tester) async {
+    await pumpChat(tester);
+
+    final previewX = tester.getCenter(find.byTooltip('预览请求体')).dx;
+    final floorX = tester.getCenter(floorButton()).dx;
+    final scrollX = tester.getCenter(find.byTooltip('滚动到底部')).dx;
+    expect(previewX, lessThan(floorX), reason: '预览按钮应在楼层跳转左侧');
+    expect(floorX, lessThan(scrollX),
+        reason: '楼层跳转应在滚动到底部左侧（原顺序不变）');
+  });
+
+  testWidgets('仅有第零轮时：预览按钮常驻，楼层跳转隐藏', (tester) async {
+    await pumpChat(tester, rounds: 0);
+
+    expect(find.byTooltip('预览请求体'), findsOneWidget);
+    expect(find.byTooltip('楼层跳转'), findsNothing);
+  });
+
+  testWidgets('点击预览按钮：弹出「预览请求体」对话框（无发送副作用）', (tester) async {
+    final provider = await pumpChat(tester, rounds: 0);
+    await tester.enterText(composerField(), '继续剧情');
+
+    await tester.tap(find.byTooltip('预览请求体'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('预览请求体'), findsOneWidget);
+    expect(find.text('【请求体 1】'), findsOneWidget);
+    expect(find.text('【AI返回 1】'), findsNothing);
+
+    // 仅预览、未发送：轮次应仍只有「第零轮」。
+    expect(provider.rounds, hasLength(1));
+    expect(provider.rounds.single.roundIndex, 0);
   });
 
   testWidgets('点击按钮在其上方弹出悬浮条，中间数字为当前（底部=最后一轮）轮次', (tester) async {

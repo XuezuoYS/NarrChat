@@ -11,6 +11,7 @@ import '../config/chat_route.dart';
 import '../models/agent_event.dart';
 import '../models/ai_platform.dart';
 import '../models/book.dart';
+import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
@@ -122,6 +123,9 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 是否正在导入图片（展示进度条 UI）。
   bool _isImportingImages = false;
+
+  /// 是否正在构建「预览请求体」（期间禁用预览按钮，防重复触发）。
+  bool _isPreviewing = false;
 
   /// 导入进度（已处理 / 总数），用于进度条。
   int _importDone = 0;
@@ -1073,6 +1077,45 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  /// 预览「此刻若发送将实际发出」的请求体 JSON（不发送、无副作用）。
+  ///
+  /// 按当前输入框文本与待发送附件构造，与 RAW 对话框共用以「仅请求体」模式
+  /// 展示（图片 data URL 折叠为占位符，避免大文本崩溃）。
+  Future<void> _previewRequestBody() async {
+    if (_isPreviewing) return;
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('尚未选择书籍')),
+      );
+      return;
+    }
+    final input = _inputController.text.trim();
+    final images = List<String>.from(_pendingImages);
+    final rp = context.read<RoundProvider>();
+    setState(() => _isPreviewing = true);
+    try {
+      final jsonText = await rp.previewRequestBody(
+        userInput: input,
+        book: book,
+        userImages: images,
+      );
+      if (!mounted) return;
+      showRawDataDialog(
+        context,
+        exchanges: [RawExchange(requestBody: jsonText)],
+        previewRequestOnly: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('预览失败：$e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isPreviewing = false);
+    }
+  }
+
   void _onViewSidebar(Round round) {
     final rounds = context.read<RoundProvider>().rounds;
     final latest = rounds.isEmpty ? null : rounds.last;
@@ -2008,13 +2051,23 @@ class _ChatScreenState extends State<ChatScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部、楼层跳转）。
-              // 真悬浮：直接浮于消息区之上，不被底色面板框住。
+              // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部、
+              // 楼层跳转、预览请求体）。真悬浮：直接浮于消息区之上，不被底色面板框住。
               // 楼层跳转悬浮条渲染在对话区 Stack 中（见 _buildChatArea），
-              // 不参与本行布局——三个按钮的结构与位置始终不受影响。
+              // 不参与本行布局——四个按钮的结构与位置始终不受影响。
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 预览请求体：构建「此刻若发送将发出的请求」JSON（不发送）；
+                  // 生成期间输入框与附件已被清空，预览失去意义，故停用。
+                  _ComposerSquareButton(
+                    icon: Icons.data_object,
+                    tooltip: '预览请求体',
+                    onPressed: (isSending || _isPreviewing)
+                        ? null
+                        : _previewRequestBody,
+                  ),
+                  const SizedBox(width: 8),
                   if (chatRoundsNow.isNotEmpty) ...[
                     _ComposerSquareButton(
                       key: _floorJumpButtonKey,

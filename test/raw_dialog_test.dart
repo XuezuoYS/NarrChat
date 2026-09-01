@@ -23,6 +23,15 @@ class _SearchDisabledSettings extends AiSettingsProvider {
   bool get lastSearch => false;
 }
 
+/// 强制开启联网搜索的 AI 设置（走 Agent 工具循环；不触碰本地配置文件）。
+class _SearchEnabledSettings extends AiSettingsProvider {
+  @override
+  bool get lastSearch => true;
+
+  @override
+  bool get supportsSearch => true;
+}
+
 /// 按调用次数依次返回脚本结果的 AI。
 class _ScriptAiService extends AiService {
   final List<AiCallResult> script;
@@ -401,6 +410,95 @@ void main() {
     });
   });
 
+  group('RoundProvider 预览请求体', () {
+    test('直发路径：预览 JSON 与实发首帧逐字一致', () async {
+      final dao = FakeRoundDao();
+      final bookDao = FakeBookDao();
+      final ai = _ScriptAiService([
+        AiCallResult(
+          content: _fullContent,
+          reasoningContent: '',
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      ]);
+      final provider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        aiSettingsProvider: _SearchDisabledSettings(),
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds('b1');
+
+      // 预览在发送前基于同一状态构建（0 个聊天轮次）；sendRound 随后以
+      // 相同输入发出，RAW 捕获的首帧请求体应与预览完全一致。
+      final preview = await provider.previewRequestBody(
+        userInput: '你好',
+        book: book,
+      );
+      expect(await provider.sendRound(userInput: '你好', book: book), isTrue);
+
+      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+      final actual = provider.rawExchangesFor(round.id!)!.single.requestBody;
+      expect(actual, preview);
+
+      // 结构校验：system 在首、user 在末且包含输入。
+      final req = jsonDecode(preview) as Map<String, dynamic>;
+      final messages = req['messages'] as List;
+      expect((messages.first as Map)['role'], 'system');
+      expect((messages.last as Map)['role'], 'user');
+      expect((messages.last as Map)['content'], contains('你好'));
+    });
+
+    test('联网搜索开启：预览含工具 schema 与【联网搜索】指令', () async {
+      final provider = RoundProvider(
+        dao: FakeRoundDao(),
+        bookDao: FakeBookDao(),
+        aiService: _ScriptAiService([
+          AiCallResult(content: _fullContent, promptTokens: 1, completionTokens: 1),
+        ]),
+        aiSettingsProvider: _SearchEnabledSettings(),
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds('b1');
+
+      final preview = await provider.previewRequestBody(
+        userInput: '查一下青云宗',
+        book: book,
+      );
+      final req = jsonDecode(preview) as Map<String, dynamic>;
+      final messages = req['messages'] as List;
+      // system 追加【联网搜索】指令，末条 user 包含输入。
+      expect((messages.first as Map)['content'], contains('【联网搜索】'));
+      expect((messages.last as Map)['content'], contains('查一下青云宗'));
+      // 与 Agent 实发首帧一致：注入 web_search / fetch_page 工具。
+      final tools = (req['tools'] as List).cast<Map<String, dynamic>>();
+      expect(tools, hasLength(2));
+      expect(
+        tools.map((t) => (t['function'] as Map)['name']),
+        containsAll(['web_search', 'fetch_page']),
+      );
+    });
+
+    test('未选择书籍：抛出 StateError', () async {
+      final provider = RoundProvider(
+        dao: FakeRoundDao(),
+        bookDao: FakeBookDao(),
+        aiService: _ScriptAiService([
+          AiCallResult(content: _fullContent, promptTokens: 1, completionTokens: 1),
+        ]),
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds('b1');
+
+      await expectLater(
+        provider.previewRequestBody(userInput: '你好', book: null),
+        throwsStateError,
+      );
+    });
+  });
+
   group('RawDialog 组件', () {
     testWidgets('展示请求 JSON 与三块（缺失显示无）', (tester) async {
       final exchanges = [
@@ -639,6 +737,66 @@ void main() {
       // 截断预览：出现「共 N 字符」，而不是完整 base64。
       expect(find.textContaining('共 '), findsOneWidget);
       expect(find.byIcon(Icons.copy), findsOneWidget);
+    });
+
+    testWidgets('预览请求体模式：标题变更且仅展示请求体块', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: '{"model":"deepseek-v4-pro"}',
+          thinking: '不该出现的思考',
+          search: '',
+          content: '不该出现的正文',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RawDialog(exchanges: exchanges, previewRequestOnly: true),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('预览请求体'), findsOneWidget);
+      expect(find.text('RAW'), findsNothing);
+      expect(find.text('【请求体 1】'), findsOneWidget);
+      expect(find.text('【AI返回 1】'), findsNothing);
+      expect(find.text('思考块'), findsNothing);
+      expect(find.text('请求已中断，无 AI 返回'), findsNothing);
+      expect(find.text('请求失败，无 AI 返回'), findsNothing);
+    });
+
+    testWidgets('预览请求体含图片：base64 折叠为占位，二级菜单可展开', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody:
+              '{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RawDialog(exchanges: exchanges, previewRequestOnly: true),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('【请求体 1】'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsOneWidget);
+      expect(find.text('图像 1 个（base64 已折叠）'), findsOneWidget);
+      // 展示折叠占位符而非完整 base64。
+      final text = tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .textSpan!
+          .toPlainText();
+      expect(text, contains('「图像 1 · png · base64 已折叠」'));
+      expect(text, isNot(contains('AA==')));
+
+      await tester.tap(find.text('图像 1 个（base64 已折叠）'));
+      await tester.pumpAndSettle();
+      expect(find.text('图 1 · png · 1 B'), findsOneWidget);
     });
   });
 }
