@@ -8,10 +8,10 @@ enum AgentActivityType {
   /// 新一轮 LLM 调用开始（新一轮思考应新建思考块）。
   turn,
 
-  /// 正在执行搜索工具（web_search）。
+  /// 正在执行搜索工具（narrchat_webSearch）。
   searching,
 
-  /// 正在执行打开网页工具（fetch_page）。
+  /// 正在执行打开网页工具（narrchat_webFetchPage）。
   fetching,
 }
 
@@ -142,7 +142,7 @@ class AgentRunner {
           continue;
         }
         // 活动主体：搜索为关键词、打开网页为链接。
-        final subject = tc.name == 'fetch_page'
+        final subject = tc.name == 'narrchat_webFetchPage'
             ? (tc.arguments['url'] as String? ?? '')
             : (tc.arguments['query'] as String? ?? '');
         onActivity?.call(
@@ -174,7 +174,7 @@ class AgentRunner {
   /// 工具名 → 活动类型（决定 UI 展示为搜索框还是打开页面框）。
   static AgentActivityType _activityTypeFor(String toolName) {
     switch (toolName) {
-      case 'fetch_page':
+      case 'narrchat_webFetchPage':
         return AgentActivityType.fetching;
       default:
         return AgentActivityType.searching;

@@ -17,7 +17,7 @@ class _FakeTool implements NarrAgentTool {
   final AgentToolResult result;
   final String toolName;
 
-  _FakeTool({required this.result, this.toolName = 'web_search'});
+  _FakeTool({required this.result, this.toolName = 'narrchat_webSearch'});
 
   @override
   String get name => toolName;
@@ -42,7 +42,7 @@ class _FakeTool implements NarrAgentTool {
 }
 
 AiToolCall _toolCall(Map<String, dynamic> args) =>
-    AiToolCall(id: 'call_1', name: 'web_search', arguments: args);
+    AiToolCall(id: 'call_1', name: 'narrchat_webSearch', arguments: args);
 
 /// 构造带 UTF-8 头部的 HTML 响应（供 mock 搜索 / 抓取）。
 http.Response htmlResponse(String body) => http.Response.bytes(
@@ -322,7 +322,7 @@ void main() {
       expect(result.content, contains('链接：https://www.qingcloud.com/'));
       // 结果末尾附加强制打开页面的指令。
       expect(result.content, contains('【接下来必须执行】'));
-      expect(result.content, contains('fetch_page'));
+      expect(result.content, contains('narrchat_webFetchPage'));
       expect(seen, isNotNull);
       expect(seen!.length, 2);
     });
@@ -394,9 +394,9 @@ void main() {
       expect(result.content, contains('搜索关键词为空'));
     });
 
-    test('fetch_page 工具触发 fetching 活动（subject=url）', () async {
+    test('narrchat_webFetchPage 工具触发 fetching 活动（subject=url）', () async {
       final tool = _FakeTool(
-        toolName: 'fetch_page',
+        toolName: 'narrchat_webFetchPage',
         result: const AgentToolResult(success: true, content: '页面正文'),
       );
       final activities = <AgentActivity>[];
@@ -411,7 +411,7 @@ void main() {
               toolCalls: [
                 AiToolCall(
                   id: 'call_1',
-                  name: 'fetch_page',
+                  name: 'narrchat_webFetchPage',
                   arguments: {'url': 'https://example.com/qingyun'},
                 ),
               ],
@@ -496,7 +496,7 @@ void main() {
       expect(result.refused, isTrue);
       expect(result.content, contains('403'));
       // 拒绝访问时提示换用其它结果页面。
-      expect(result.content, contains('请改用 fetch_page'));
+      expect(result.content, contains('请改用 narrchat_webFetchPage'));
       expect(refused, isTrue);
     });
 

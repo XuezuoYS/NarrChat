@@ -10,7 +10,7 @@ enum AgentEventType {
   /// 一次联网搜索。
   search,
 
-  /// 一次打开网页（fetch_page）。
+  /// 一次打开网页（narrchat_webFetchPage）。
   fetch,
 }
 

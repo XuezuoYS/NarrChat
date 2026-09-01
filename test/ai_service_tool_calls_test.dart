@@ -28,7 +28,7 @@ void main() {
             "id": "call_1",
             "type": "function",
             "function": {
-              "name": "web_search",
+              "name": "narrchat_webSearch",
               "arguments": "{\\"query\\": \\"青云宗\\"}"
             }
           }
@@ -50,7 +50,7 @@ void main() {
 
       expect(result.toolCalls, hasLength(1));
       expect(result.toolCalls.first.id, 'call_1');
-      expect(result.toolCalls.first.name, 'web_search');
+      expect(result.toolCalls.first.name, 'narrchat_webSearch');
       expect(result.toolCalls.first.arguments['query'], '青云宗');
       expect(result.promptTokens, 5);
       expect(result.completionTokens, 2);
@@ -81,7 +81,7 @@ void main() {
       final ai = AiService(
         client: MockClient((request) async {
           final lines = [
-            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"narrchat_webSearch","arguments":""}}]}}]}',
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"query\\":"}}]}}]}',
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"青云宗\\"}"}}]}}]}',
             'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
@@ -106,7 +106,7 @@ void main() {
 
       expect(result.toolCalls, hasLength(1));
       expect(result.toolCalls.first.id, 'call_1');
-      expect(result.toolCalls.first.name, 'web_search');
+      expect(result.toolCalls.first.name, 'narrchat_webSearch');
       expect(result.toolCalls.first.arguments['query'], '青云宗');
       expect(result.promptTokens, 3);
       expect(result.completionTokens, 1);

@@ -156,7 +156,7 @@ void main() {
 
     test('tools 非空时注入 tools', () {
       const tools = [
-        {'type': 'function', 'function': {'name': 'web_search'}},
+        {'type': 'function', 'function': {'name': 'narrchat_webSearch'}},
       ];
       final body = AiRequestBodyBuilder.buildPresetBody(
         rules: ApiType.openAiCompatible.requestRules,

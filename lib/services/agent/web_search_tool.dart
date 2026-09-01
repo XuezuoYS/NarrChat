@@ -22,14 +22,14 @@ class WebSearchTool implements NarrAgentTool {
   final void Function()? _onFail;
 
   @override
-  String get name => 'web_search';
+  String get name => 'narrchat_webSearch';
 
   @override
   String get description =>
       '联网搜索获取最新或真实世界信息（如地名、历史、设定、专有名词等），'
       '返回最多 20 条结果的标题、链接与摘要。'
       '本工具启用后，涉及真实世界信息时应主动使用，不必等用户逐条点名；'
-      '调用后必须紧接着用 fetch_page 打开最相关的 1~3 个结果页面阅读正文'
+      '调用后必须紧接着用 narrchat_webFetchPage 打开最相关的 1~3 个结果页面阅读正文'
       '以获取准确细节，仅凭摘要不足以支撑创作。';
 
   @override
@@ -69,7 +69,7 @@ class WebSearchTool implements NarrAgentTool {
         if (r.snippet.isNotEmpty) sb.writeln('   摘要：${r.snippet}');
       }
       sb.writeln();
-      sb.writeln('【接下来必须执行】请立即用 fetch_page 打开以上结果中最相关的'
+      sb.writeln('【接下来必须执行】请立即用 narrchat_webFetchPage 打开以上结果中最相关的'
           ' 1~3 个链接（优先百科/资料类页面）阅读完整正文，获取准确细节后'
           '再继续创作；不得在未打开任何页面的情况下直接结束搜索环节。');
       return AgentToolResult(success: true, content: sb.toString());

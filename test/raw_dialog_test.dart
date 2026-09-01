@@ -250,7 +250,7 @@ void main() {
           toolCalls: [
             const AiToolCall(
               id: 'call_1',
-              name: 'web_search',
+              name: 'narrchat_webSearch',
               arguments: {'query': '青云宗'},
             ),
           ],
@@ -285,7 +285,7 @@ void main() {
       expect(exchanges, hasLength(2));
       // 第 1 对：思考 + 搜索块（tool_calls JSON），无正文。
       expect(exchanges[0].thinking, '思考1');
-      expect(exchanges[0].search, contains('web_search'));
+      expect(exchanges[0].search, contains('narrchat_webSearch'));
       expect(exchanges[0].search, contains('青云宗'));
       expect(exchanges[0].content, isEmpty);
       // 第 2 对：正文块，无搜索。
@@ -303,7 +303,7 @@ void main() {
           toolCalls: [
             const AiToolCall(
               id: 'call_1',
-              name: 'web_search',
+              name: 'narrchat_webSearch',
               arguments: {'query': '青云宗'},
             ),
           ],
@@ -316,7 +316,7 @@ void main() {
           toolCalls: [
             const AiToolCall(
               id: 'call_2',
-              name: 'fetch_page',
+              name: 'narrchat_webFetchPage',
               arguments: {'url': 'https://example.com/qingyun'},
             ),
           ],
@@ -378,12 +378,12 @@ void main() {
       expect(searchDone, isTrue, reason: '应有完成的搜索事件');
       expect(fetchDone, isTrue, reason: '应有完成的打开页面事件');
 
-      // RAW 捕获 3 对交换，第 2 对搜索块含 fetch_page 调用。
+      // RAW 捕获 3 对交换，第 2 对搜索块含 narrchat_webFetchPage 调用。
       final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
       final exchanges = provider.rawExchangesFor(round.id!)!;
       expect(ai.calls, 3);
       expect(exchanges, hasLength(3));
-      expect(exchanges[1].search, contains('fetch_page'));
+      expect(exchanges[1].search, contains('narrchat_webFetchPage'));
       expect(exchanges[1].search, contains('https://example.com/qingyun'));
     });
 
@@ -472,12 +472,12 @@ void main() {
       // system 追加【联网搜索】指令，末条 user 包含输入。
       expect((messages.first as Map)['content'], contains('【联网搜索】'));
       expect((messages.last as Map)['content'], contains('查一下青云宗'));
-      // 与 Agent 实发首帧一致：注入 web_search / fetch_page 工具。
+      // 与 Agent 实发首帧一致：注入 narrchat_webSearch / narrchat_webFetchPage 工具。
       final tools = (req['tools'] as List).cast<Map<String, dynamic>>();
       expect(tools, hasLength(2));
       expect(
         tools.map((t) => (t['function'] as Map)['name']),
-        containsAll(['web_search', 'fetch_page']),
+        containsAll(['narrchat_webSearch', 'narrchat_webFetchPage']),
       );
     });
 
