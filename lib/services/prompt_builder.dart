@@ -179,12 +179,14 @@ class PromptBuilder {
     buf.writeln('书籍名称：${book.title.isEmpty ? '（未设置）' : book.title}');
     buf.writeln('书籍类别：${book.category.isEmpty ? '（未设置）' : book.category}');
     buf.writeln('书籍设定：${book.baseSetting.isEmpty ? '（未设置）' : book.baseSetting}');
+    buf.writeln();
     buf.writeln('文笔要求：');
     if (book.writingRequirements.trim().isNotEmpty) {
       buf.writeln('本书文笔要求：');
       buf.writeln(book.writingRequirements);
     }
     buf.writeln('文笔参考（风格范例，仅此处提供）：${book.writingStyle.isEmpty ? '（未设置）' : book.writingStyle}');
+    buf.writeln();
     buf.writeln('角色层级排序规则：${book.roleHierarchy.isEmpty ? '（未设置）' : book.roleHierarchy}');
     buf.writeln('角色类别描述格式（## 角色状态 必须按此组织每个角色的属性项）：');
     if (book.roleCategories.isEmpty) {
