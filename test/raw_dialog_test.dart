@@ -641,7 +641,7 @@ void main() {
       expect(find.byType(SelectableText), findsNWidgets(2));
     });
 
-    testWidgets('转译换行符：开启后 \n 字面量展开为真实换行', (tester) async {
+    testWidgets('转译换行符：默认开启，\n 字面量展开为真实换行；关闭后恢复字面量', (tester) async {
       final exchanges = [
         RawExchange(
           requestBody: r'{"a": "x\ny"}',
@@ -665,18 +665,18 @@ void main() {
               ?.toPlainText() ??
           '';
 
-      // 转译前：请求 JSON 中 \n 为字面量（反斜杠 + n），无真实换行。
-      final before = plainOf(0);
-      expect(before, contains(r'\n'));
-      expect(before.contains('\n'), isFalse);
+      // 默认开启转译：\n 展开为真实换行（无字面量反斜杠 + n）。
+      final opened = plainOf(0);
+      expect(opened.contains(r'\n'), isFalse);
+      expect(opened, contains('\n'));
 
-      // 开启转译换行符：\n 展开为真实换行。
+      // 关闭转译换行符：恢复 \n 字面量，无真实换行。
       await tester.tap(find.byType(Switch));
       await tester.pumpAndSettle();
 
-      final after = plainOf(0);
-      expect(after.contains(r'\n'), isFalse);
-      expect(after, contains('\n'));
+      final closed = plainOf(0);
+      expect(closed, contains(r'\n'));
+      expect(closed.contains('\n'), isFalse);
     });
 
     testWidgets('请求体含图片：折叠长 base64 并显示二级「图像 N 个」', (tester) async {

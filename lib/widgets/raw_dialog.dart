@@ -241,7 +241,7 @@ const double _kScrollTopPadding = 40;
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
-///   （开启时把 `\n` 等转义序列展开为真实换行，便于阅读）；
+///   （默认开启，把 `\n` 等转义序列展开为真实换行，便于阅读）；
 /// - [previewRequestOnly] 为真时进入「预览请求体」模式：只展示请求体块，
 ///   不渲染【AI返回】区（标题相应改为「预览请求体」）。
 class RawDialog extends StatefulWidget {
@@ -266,7 +266,9 @@ class RawDialog extends StatefulWidget {
 
 class _RawDialogState extends State<RawDialog> {
   String _query = '';
-  bool _escapeNewlines = false;
+
+  /// 「转译换行符」开关：默认开启（RAW / 预览请求体以可读性优先）。
+  bool _escapeNewlines = true;
   final TextEditingController _searchController = TextEditingController();
 
   /// 全局匹配列表（按文档顺序跨块）。
