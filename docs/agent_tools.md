@@ -24,7 +24,7 @@
 - 参数：`query`（string，必填，关键词尽量简洁具体）
 - 行为：返回最多 20 条结果的标题、链接与摘要；结果为空或失败时返回 `success: false` 并回传错误信息。
 - 约束：`description` 与工具结果中明确要求——调用后必须紧接着用 `narrchat_webFetchPage` 打开最相关的 1~3 个结果页面阅读正文，禁止只依赖摘要。
-- 注入时机：Chat 模式仅当用户开启「联网搜索」时注入；AGENT 模式同（状态工具恒定注入）。
+- 注入时机：Chat 模式仅当用户开启「联网搜索」时注入；AGENT 模式（实验性开关开启时）同（状态工具恒定注入）。
 
 ### `narrchat_webFetchPage`（`FetchPageTool`）
 
@@ -35,7 +35,7 @@
 - 拒绝语义：HTTP 4xx/5xx 返回 `refused: true`（黄色 ✕，不计入连续失败），错误信息提示换用其它结果页面；网络/超时等其它失败走 `success: false`。
 - 定位：它是 `narrchat_webSearch` 的**配套下游**——"搜索 → 打开页面 → 提炼细节 → 创作"是既定流程，模型不允许跳过打开页面环节。
 
-### 状态工具（`state/state_tools.dart`，仅 AGENT 模式注入）
+### 状态工具（`state/state_tools.dart`，仅 AGENT 模式注入——实验性开关，默认关闭）
 
 三个 `narrchat_*` 状态工具全部作用于本轮「工作副本」（`AgentStateWorkingCopy`）：
 `narrchat_readState` 纯只读（模型自取快照），另外两个以**锚定式编辑**

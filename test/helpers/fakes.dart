@@ -14,6 +14,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
@@ -57,14 +58,24 @@ class FakeImageRevivalService implements ImageRevivalService {
 
 /// Chat 协议（OpenAI Chat API 兼容）的 AI 设置替身。
 ///
-/// 默认平台协议已切换为 Response API（AGENT 模式）；需要走传统 Chat
-/// 直发 / 搜索路径的用例继承本类，避免触碰响应式（responses）路径。
+/// 默认平台协议为 Response API（/responses 线路）；需要走 Chat 线路
+/// （直发 / 搜索 / AGENT 在 Chat 通道运行）的用例继承本类，
+/// 避免触碰响应式（responses）路径。
 class ChatCompatibleSettings extends AiSettingsProvider {
   @override
   AiPlatform get selectedPlatform => AiPlatforms.defaultPlatform.copyWith(
         apiType: ApiType.openAiCompatible,
         baseUrl: 'https://api.deepseek.com',
       );
+}
+
+/// 开启 Agent 模式的实验性设置替身（构造注入初值，不触碰真实配置文件）。
+///
+/// Agent 模式与平台协议**正交**：与 [ChatCompatibleSettings] /
+/// 默认 Response 平台组合分别覆盖「Agent × Chat 线路」与
+/// 「Agent × Responses 线路」两条路径。
+class AgentModeSettings extends ExperimentalSettingsProvider {
+  AgentModeSettings() : super(initialAgentModeEnabled: true);
 }
 
 /// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。

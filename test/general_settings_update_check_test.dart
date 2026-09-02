@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/screens/settings_screen.dart';
 import 'package:narrchat/services/local_config_service.dart';
@@ -49,12 +50,15 @@ void main() {
     return ChangeNotifierProvider(
       create: (_) => AiSettingsProvider(),
       child: ChangeNotifierProvider(
-        create: (_) => CloudSyncProvider(),
+        create: (_) => ExperimentalSettingsProvider(),
         child: ChangeNotifierProvider(
-          create: (_) => UiSettingsProvider(),
-          child: MaterialApp(
-            theme: NarrChatTheme.light,
-            home: const SettingsScreen(),
+          create: (_) => CloudSyncProvider(),
+          child: ChangeNotifierProvider(
+            create: (_) => UiSettingsProvider(),
+            child: MaterialApp(
+              theme: NarrChatTheme.light,
+              home: const SettingsScreen(),
+            ),
           ),
         ),
       ),

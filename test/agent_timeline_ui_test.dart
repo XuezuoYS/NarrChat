@@ -149,9 +149,11 @@ void main() {
       bookDao: bookDao,
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（默认平台协议 = Response 线路）。
+      experimentalSettings: AgentModeSettings(),
     );
 
-    // 默认平台协议 = Response API 兼容 → AGENT 徽标出现在模式摘要。
+    // AGENT 实验性开关开启 → 徽标出现在模式摘要（与协议正交）。
     expect(find.textContaining('AGENT'), findsWidgets);
 
     final future = provider.sendRound(userInput: '测试', book: book);
@@ -284,6 +286,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
     );
 
     final future = provider.sendRound(userInput: '测试', book: book);
@@ -395,6 +399,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
     );
 
     final future = provider.sendRound(userInput: '搜索两人资料', book: book);
@@ -500,6 +506,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
       webSearchTool: _StubWebSearchTool(),
     );
 
@@ -534,6 +542,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
     );
 
     final future = provider.sendRound(userInput: '测试', book: book);

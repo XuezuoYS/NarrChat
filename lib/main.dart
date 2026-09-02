@@ -11,6 +11,7 @@ import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
 import 'providers/book_provider.dart';
 import 'providers/cloud_sync_provider.dart';
+import 'providers/experimental_settings_provider.dart';
 import 'providers/mod_provider.dart';
 import 'providers/notification_settings_provider.dart';
 import 'providers/round_provider.dart';
@@ -58,6 +59,8 @@ Future<void> main() async {
   // 创建 AI 设置 Provider：API Key 从安全存储（系统密钥库）读取，
   // 其余设置从本地 JSON 配置文件（local_config/app_settings.json）读取。
   final aiSettingsProvider = AiSettingsProvider()..load();
+  // 实验性功能设置（含「Agent 模式」开关，默认关闭；独立于平台协议）。
+  final experimentalSettingsProvider = ExperimentalSettingsProvider()..load();
   // UI 设置：加载本地配置；随后台扫描系统字体，
   // 若已配置自定义全局字体则启动时加载，保证界面字体一致。
   final uiSettingsProvider = UiSettingsProvider();
@@ -101,6 +104,7 @@ Future<void> main() async {
   )..attach();
   final roundProvider = RoundProvider(
     aiSettingsProvider: aiSettingsProvider,
+    experimentalSettings: experimentalSettingsProvider,
     worldBookProvider: worldBookProvider,
     modProvider: modProvider,
     cloudSyncProvider: cloudSyncProvider,
@@ -119,6 +123,7 @@ Future<void> main() async {
   runApp(
     NarrChatApp(
       aiSettingsProvider: aiSettingsProvider,
+      experimentalSettingsProvider: experimentalSettingsProvider,
       uiSettingsProvider: uiSettingsProvider,
       cloudSyncProvider: cloudSyncProvider,
       bookProvider: bookProvider,
@@ -175,6 +180,7 @@ Future<bool> _runAsImageViewerWindowIfNeeded() async {
 
 class NarrChatApp extends StatelessWidget {
   final AiSettingsProvider aiSettingsProvider;
+  final ExperimentalSettingsProvider experimentalSettingsProvider;
   final UiSettingsProvider uiSettingsProvider;
   final CloudSyncProvider cloudSyncProvider;
   final BookProvider bookProvider;
@@ -188,6 +194,7 @@ class NarrChatApp extends StatelessWidget {
   const NarrChatApp({
     super.key,
     required this.aiSettingsProvider,
+    required this.experimentalSettingsProvider,
     required this.uiSettingsProvider,
     required this.cloudSyncProvider,
     required this.bookProvider,
@@ -204,6 +211,7 @@ class NarrChatApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: aiSettingsProvider),
+        ChangeNotifierProvider.value(value: experimentalSettingsProvider),
         ChangeNotifierProvider.value(value: uiSettingsProvider),
         ChangeNotifierProvider.value(value: cloudSyncProvider),
         ChangeNotifierProvider.value(value: bookProvider),

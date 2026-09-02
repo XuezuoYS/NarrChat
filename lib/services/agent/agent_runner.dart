@@ -20,6 +20,9 @@ class AgentRunner {
     required this.call,
     this.tools = const [],
     this.maxIterations = 30,
+    /// 线路协议定制的工具 schema 列表（如 Responses 顶层形态）；为 null 时
+    /// 按 OpenAI Chat 兼容的嵌套形态（`function.function`）由 [tools] 生成。
+    this.toolSchemas,
   });
 
   /// 根据当前 messages / tools 构建请求体（由调用方按预设规则实现）。
@@ -39,6 +42,9 @@ class AgentRunner {
 
   final List<NarrAgentTool> tools;
   final int maxIterations;
+
+  /// 定制的工具 schema（协议形状由调用方决定；null = Chat 嵌套形态）。
+  final List<Map<String, dynamic>>? toolSchemas;
 
   /// 运行 Agent 循环，返回聚合后的最终结果。
   Future<AiCallResult> run({
@@ -183,18 +189,21 @@ class AgentRunner {
   Map<String, dynamic> previewFirstBody(List<Map<String, dynamic>> messages) =>
       buildBody(messages, _toolSchemas);
 
-  /// OpenAI 兼容的 tools 数组。
-  List<Map<String, dynamic>> get _toolSchemas => [
-    for (final t in tools)
-      {
-        'type': 'function',
-        'function': {
-          'name': t.name,
-          'description': t.description,
-          'parameters': t.parameters,
+  /// 工具 schema 数组（调用方定制优先；缺省 Chat 嵌套形态）。
+  List<Map<String, dynamic>> get _toolSchemas {
+    if (toolSchemas != null) return toolSchemas!;
+    return [
+      for (final t in tools)
+        {
+          'type': 'function',
+          'function': {
+            'name': t.name,
+            'description': t.description,
+            'parameters': t.parameters,
+          },
         },
-      },
-  ];
+    ];
+  }
 
   NarrAgentTool? _byName(String name) {
     for (final t in tools) {

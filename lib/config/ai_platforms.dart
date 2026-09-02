@@ -39,9 +39,9 @@ class AiPlatforms {
 
   /// 默认平台（DeepSeek 开放平台）。
   ///
-  /// 默认使用「OpenAI Response API 兼容」协议：启用该协议即自动进入
-  /// AGENT 模式（行级状态工具）。需要传统 Chat 对话的用户可新增
-  /// 「OpenAI Chat API 兼容」平台的平台。
+  /// 默认使用「OpenAI Response API 兼容」协议——协议只决定请求体 / 线路
+  /// 格式；AGENT 模式（两阶段生成 + 自定义工具）由「设置 → 通用设置 →
+  /// 实验性功能」的独立开关控制（默认关闭），与协议选择正交。
   static AiPlatform buildDefaultPlatform() {
     return AiPlatform(
       id: defaultPlatformId,

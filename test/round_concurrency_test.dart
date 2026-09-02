@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
@@ -263,6 +264,9 @@ void main() {
         MultiProvider(
           providers: [
             ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(
+              create: (_) => ExperimentalSettingsProvider(),
+            ),
             ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
             ChangeNotifierProvider(create: (_) => bookProvider),
             ChangeNotifierProvider(create: (_) => worldBookProvider),
@@ -430,6 +434,9 @@ void main() {
         MultiProvider(
           providers: [
             ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(
+              create: (_) => ExperimentalSettingsProvider(),
+            ),
             ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
             ChangeNotifierProvider(create: (_) => bookProvider),
             ChangeNotifierProvider(create: (_) => worldBookProvider),

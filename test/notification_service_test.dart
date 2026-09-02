@@ -5,6 +5,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
@@ -140,6 +141,9 @@ void main() {
         providers: [
           ChangeNotifierProvider<AiSettingsProvider>(
             create: (_) => AiSettingsProvider(),
+          ),
+          ChangeNotifierProvider<ExperimentalSettingsProvider>(
+            create: (_) => ExperimentalSettingsProvider(),
           ),
           ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
           ChangeNotifierProvider<WorldBookProvider>(

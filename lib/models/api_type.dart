@@ -67,11 +67,11 @@ class ApiType {
   final bool supportsThinking;
   final bool supportsSearch;
 
-  // ---- AGENT 相关的协议能力位 ----
-  /// 是否支持 `tool_choice`（`auto` / `required` / `none`）。
+  // ---- 协议能力位（与 AGENT 模式开关正交：只描述协议本身的可用性） ----
+  /// 协议是否支持 `tool_choice`（`auto` / `required` / `none`）。
   ///
-  /// AGENT 状态轮靠它强制调用工具；不支持的服务端会在运行中自动降级为
-  /// 「只发工具 + 提示词强制」，不消耗整轮预算。
+  /// 作为**能力初值**：AGENT 状态轮靠它强制调用工具；不支持的服务端会在
+  /// 运行中自动降级为「只发工具 + 提示词强制」，不消耗整轮预算。
   final bool supportsToolChoice;
   // ---- 请求体动态组合规则 ----
   final RequestParamRules requestRules;
@@ -98,17 +98,24 @@ class ApiType {
   ///
   /// DeepSeek 官方请求体动态组合规则（OpenAI 兼容）：
   /// - 始终注入：model / messages / stream / thinking（官方默认开启，必须显式声明）
-  ///   与 max_tokens（留空时移除该键）；
+  ///   与 max_tokens（留空时移除该键）；tool_choice（值为 null 时移除该键，
+  ///   仅 AGENT 模式在两阶段帧中携带）；
   /// - 思考模式：追加 reasoning_effort，不发送 temperature；
   /// - 非思考模式：追加 temperature，不发送 reasoning_effort；
   /// - 流式：追加 stream_options.include_usage 以统计 Token；
   /// - 联网搜索：追加 tools。
+  ///
+  /// 协议只决定请求体 / 线路格式（Chat Completions 通道）；AGENT 模式
+  /// （两阶段生成与自定义工具）由「设置 → 通用设置 → 实验性功能」中独立的
+  /// 「Agent 模式」开关控制（默认关闭），与协议选择正交——本协议同样支持
+  /// 在其上运行 AGENT 两阶段（帧以 tool_calls / tool 消息形态传输）。
   static const ApiType openAiCompatible = ApiType(
     id: openAiCompatibleId,
     displayName: 'OpenAI Chat API 兼容',
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
+    supportsToolChoice: true,
     requestRules: RequestParamRules([
       ParamRule(ParamCondition.always, {
         'model': '{{model}}',
@@ -116,6 +123,7 @@ class ApiType {
         'stream': '{{stream}}',
         'thinking': {'type': '{{thinking_type}}'},
         'max_tokens': '{{max_tokens}}',
+        'tool_choice': '{{tool_choice}}',
       }),
       ParamRule(ParamCondition.thinking, {
         'reasoning_effort': '{{reasoning_effort}}',
@@ -138,7 +146,7 @@ class ApiType {
   /// OpenAI 兼容 API 类型 id。
   static const String openAiCompatibleId = 'openai-compatible';
 
-  /// OpenAI Response API 兼容（AGENT 模式协议）。
+  /// OpenAI Response API 兼容（Responses 线路协议）。
   ///
   /// 按官方兼容实现组织请求体（以 DeepSeek Responses API 兼容性明细为准）：
   /// - 始终注入：model / instructions / input / stream / max_output_tokens
@@ -148,9 +156,11 @@ class ApiType {
   /// - 非思考模式：temperature + **reasoning.effort = "none"**——DeepSeek 思考
   ///   模式**默认开启**（默认 high），Responses 格式以 `reasoning.effort` 控制，
   ///   `none` 表示关闭；省略该字段等于思考开启（修复「关闭思考后仍在思考」）；
-  /// - 联网搜索：tools（function 类型，与 Chat 协议一致）。
+  /// - 联网搜索：tools（function 类型，顶层 name 形态）。
   ///
-  /// 启用该协议的平台自动进入 AGENT 模式（行级状态工具 + 工作副本合并）。
+  /// 协议只决定请求体 / 线路格式（POST /responses），**不自动启用 AGENT 模式**；
+  /// AGENT 模式（两阶段生成 + 自定义工具 + 状态工作副本）由「设置 → 通用设置 →
+  /// 实验性功能」中独立的「Agent 模式」开关控制（默认关闭），与协议选择正交。
   static const ApiType openAiResponses = ApiType(
     id: openAiResponsesId,
     displayName: 'OpenAI Response API 兼容',
@@ -190,7 +200,7 @@ class ApiType {
   /// OpenAI Response API 兼容类型 id。
   static const String openAiResponsesId = 'openai-responses';
 
-  /// 是否 Response API 协议（AGENT 模式）。
+  /// 是否 Response API 线路（协议格式；与 AGENT 模式开关正交）。
   bool get isResponses => id == openAiResponses.id;
 
   /// 按 [id] 查找；未知 id 回退 [openAiCompatible]。

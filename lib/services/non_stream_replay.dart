@@ -25,9 +25,10 @@ class NonStreamReplayer {
   /// [result.reasoningContent] →（[emitToolPreviews] 时）各工具调用预览 →
   /// [result.content] → done。
   ///
-  /// [emitToolPreviews] 仅在 AGENT 模式（Responses 协议）下开启——其工具
-  /// 事件由流式预览 / 开始 / 完成统一承载；Chat 搜索循环的工具事件由活动
-  /// 回调创建（非流式下仍实时发生），开启会造成「联网搜索框 + Tool 框」双框。
+  /// [emitToolPreviews] 仅在 AGENT 模式（Responses 线路）下开启——其工具
+  /// 事件由流式预览 / 开始 / 完成统一承载；Chat 线路（含 Chat 协议的
+  /// AGENT / 搜索循环）的工具事件由活动回调创建（非流式下仍实时发生），
+  /// 开启会造成「联网搜索框 + Tool 框」双框。
   ///
   /// [isStopped] 为 true 时立即终止回放（用户取消 / 生成令牌过期），
   /// 不再发出剩余内容（调用方随后按取消语义收尾）。

@@ -59,6 +59,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -137,6 +139,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     // 预置上一轮（第 1 轮：世界状态基座）。
@@ -213,6 +217,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(happySse()))),
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -249,6 +255,7 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(happySse()))),
       aiSettingsProvider: settings,
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -298,6 +305,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -343,6 +352,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -395,6 +406,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -440,6 +453,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -490,6 +505,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -531,6 +548,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -571,6 +590,8 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
+      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');

@@ -5,6 +5,7 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -44,6 +45,7 @@ const String kHarnessBookUuid = 'book-1';
 /// - [ai]：AI 服务替身（默认 [ToggleAiService]）；
 /// - [bookDao] / [roundDao] / [worldBookDao]：数据层替身（默认新建）；
 /// - [settings]：AI 设置（默认新建）；
+/// - [experimentalSettings]：实验性功能设置（Agent 模式开关；默认关闭）；
 /// - [webSearchTool]：注入的搜索工具替身（AGENT / Chat 工具循环共用）；
 /// - [onGenerationCompleted]：生成完成回调（通知服务接线用）；
 /// - [retryDelay]：网络类失败自动重试间隔（测试可注入零时长）；
@@ -60,6 +62,7 @@ Future<RoundProvider> pumpChatScreen(
   FakeWorldBookDao? worldBookDao,
   AiSettingsProvider? settings,
   AiSettingsProvider? aiSettingsProvider,
+  ExperimentalSettingsProvider? experimentalSettings,
   UiSettingsProvider? uiSettings,
   ImageImportService? imageImport,
   ClipboardPasteService? clipboardPaste,
@@ -99,6 +102,7 @@ Future<RoundProvider> pumpChatScreen(
     aiService: ai ?? ToggleAiService(),
     bookDao: bookDao0,
     aiSettingsProvider: aiSettingsProvider,
+    experimentalSettings: experimentalSettings,
     webSearchTool: webSearchTool,
     retryDelay: retryDelay,
     searchService: searchService,
@@ -111,6 +115,10 @@ Future<RoundProvider> pumpChatScreen(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => settings ?? AiSettingsProvider()),
+        // 实验性功能设置（Agent 模式开关，默认关闭；默认构造不 load）。
+        ChangeNotifierProvider(
+          create: (_) => experimentalSettings ?? ExperimentalSettingsProvider(),
+        ),
         // 宽屏侧栏宽度等 UI 设置（默认构造，不 load：避免触碰真实配置文件）。
         ChangeNotifierProvider(
           create: (_) => uiSettings ?? UiSettingsProvider(),
@@ -170,6 +178,9 @@ Future<BookProvider> pumpHomeScreen(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+        ChangeNotifierProvider(
+          create: (_) => ExperimentalSettingsProvider(),
+        ),
         ChangeNotifierProvider(create: (_) => bookProvider),
         // 首页可进入书籍对话页（对话页布局读取 UI 设置）。
         ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
@@ -239,6 +250,9 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+        ChangeNotifierProvider(
+          create: (_) => ExperimentalSettingsProvider(),
+        ),
         // 通知跳转会把 ChatScreen 推上路由栈（其布局读取 UI 设置）。
         ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
         ChangeNotifierProvider<BookProvider>.value(value: bookProvider),

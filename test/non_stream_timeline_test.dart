@@ -108,6 +108,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
       nonStreamReplayer: const NonStreamReplayer(
         tickInterval: Duration(milliseconds: 20),
         charsPerTick: 4,
@@ -293,6 +295,8 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
+      // AGENT 模式由实验性开关驱动（与平台协议正交）。
+      experimentalSettings: AgentModeSettings(),
       nonStreamReplayer: const NonStreamReplayer(
         tickInterval: Duration(milliseconds: 20),
         charsPerTick: 2,

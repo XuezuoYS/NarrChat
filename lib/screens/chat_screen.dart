@@ -16,6 +16,7 @@ import '../models/round.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
 import '../providers/cloud_sync_provider.dart';
+import '../providers/experimental_settings_provider.dart';
 import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/ui_settings_provider.dart';
@@ -2193,6 +2194,8 @@ class _ChatScreenState extends State<ChatScreen>
     bool isSending,
   ) {
     final aiSettings = context.watch<AiSettingsProvider>();
+    // AGENT 徽标由实验性开关驱动（与平台协议正交）。
+    final agentMode = context.watch<ExperimentalSettingsProvider>().agentModeEnabled;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -2315,7 +2318,7 @@ class _ChatScreenState extends State<ChatScreen>
                           supportsStreaming: aiSettings.supportsStreaming,
                           supportsSearch: aiSettings.supportsSearch,
                           supportsVision: aiSettings.supportsVision,
-                          agentMode: aiSettings.selectedPlatform.apiType.isResponses,
+                          agentMode: agentMode,
                           thinking: aiSettings.thinking,
                           streaming: aiSettings.streaming,
                           search: aiSettings.lastSearch,
@@ -2550,7 +2553,7 @@ class _ChatModeDropdown extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    '由「OpenAI Response API 兼容」协议自动启用，状态经行级工具维护',
+                    '实验性功能：设置 → 通用设置 → 实验性功能 中开启；状态经行级工具维护，兼容性不保证',
                     style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
                   ),
                 ),
