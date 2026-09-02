@@ -39,6 +39,30 @@ void main() {
       expect(entries.single.content, '遇到苏清月｜结伴同行');
     });
 
+    test('兼容时间部分省略标签（无「时间：」前缀）', () {
+      const text = '- 第1轮｜第一天 清晨｜主角初入宗门。\n'
+          '- 第2轮｜第三天 午时｜主角获胜。';
+      final entries = parseMemoryEntries(text);
+      expect(entries, hasLength(2));
+      expect(entries[0].round, 1);
+      expect(entries[0].date, '第一天 清晨');
+      expect(entries[0].content, '主角初入宗门。');
+      expect(entries[1].round, 2);
+      expect(entries[1].date, '第三天 午时');
+      expect(entries[1].content, '主角获胜。');
+    });
+
+    test('兼容「时间：」标签与省略标签混用', () {
+      const text = '- 第1轮｜时间：第一天 清晨｜主角初入宗门。\n'
+          '- 第2轮｜第三天 午时｜主角获胜。';
+      final entries = parseMemoryEntries(text);
+      expect(entries, hasLength(2));
+      expect(entries[0].round, 1);
+      expect(entries[0].date, '第一天 清晨');
+      expect(entries[1].round, 2);
+      expect(entries[1].date, '第三天 午时');
+    });
+
     test('无法解析的行被忽略（返回空列表）', () {
       expect(parseMemoryEntries('主角初入宗门。'), isEmpty);
       expect(parseMemoryEntries(''), isEmpty);
@@ -51,6 +75,21 @@ void main() {
       final controller = TextEditingController(
         text: '- 第1轮｜日期：第一天 清晨｜主角初入宗门。\n'
             '- 第2轮｜日期：第三天 午时｜主角获胜。',
+      );
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+      expect(find.text('第1轮'), findsOneWidget);
+      expect(find.text('第2轮'), findsOneWidget);
+      expect(find.text('第一天 清晨'), findsOneWidget);
+      expect(find.text('第三天 午时'), findsOneWidget);
+      expect(find.text('主角初入宗门。'), findsOneWidget);
+      expect(find.text('主角获胜。'), findsOneWidget);
+      controller.dispose();
+    });
+
+    testWidgets('视图模式兼容无「时间：」前缀的条目', (tester) async {
+      final controller = TextEditingController(
+        text: '- 第1轮｜第一天 清晨｜主角初入宗门。\n'
+            '- 第2轮｜第三天 午时｜主角获胜。',
       );
       await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
       expect(find.text('第1轮'), findsOneWidget);
