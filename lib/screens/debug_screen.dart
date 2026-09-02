@@ -9,8 +9,9 @@ import 'database_inspect_screen.dart';
 
 /// 「调试」页面：隐藏的调试选项菜单（由设置→关于页连点版本号进入）。
 ///
-/// 目前提供两个入口：查看当前数据库结构、内容和表；触发「发现新版本」
-/// 提示框（调试用，即使版本相同或更旧也触发）。后续调试功能可在此追加选项。
+/// 目前提供三个入口：查看当前数据库版本；查看当前数据库结构、内容和表；
+/// 触发「发现新版本」提示框（调试用，即使版本相同或更旧也触发）。
+/// 后续调试功能可在此追加选项。
 class DebugScreen extends StatelessWidget {
   /// [databaseService] 供测试注入；缺省使用真实 sqlite 实现。
   const DebugScreen({super.key, this.databaseService, this.updateService});
@@ -35,6 +36,37 @@ class DebugScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 展示当前数据库版本：代码期望的 schema 版本 + 库文件实际 `user_version`；
+  /// 读取失败（库被占用 / 损坏等）时以 SnackBar 提示。
+  Future<void> _showDatabaseVersion(BuildContext context) async {
+    final service = databaseService ?? SqliteDebugDatabaseService();
+    try {
+      final version = await service.readVersion();
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('数据库版本'),
+          content: Text(
+            '应用代码 schema 版本：${version.expectedVersion}\n'
+            '数据库文件版本（user_version）：${version.actualVersion}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('读取数据库版本失败：$e')),
+      );
+    }
   }
 
   /// 触发「发现新版本」提示框（调试用）：不管开关与版本比较，绕过 24h 节流，
@@ -76,6 +108,12 @@ class DebugScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _DebugOptionCard(
+            icon: Icons.info_outline,
+            label: '查看当前数据库版本',
+            onTap: () => _showDatabaseVersion(context),
+          ),
+          const SizedBox(height: 12),
           _DebugOptionCard(
             icon: Icons.storage_outlined,
             label: '查看当前数据库结构、内容和表',

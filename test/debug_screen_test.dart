@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/screens/debug_screen.dart';
+import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 
@@ -16,14 +17,20 @@ const GitHubRelease _release = GitHubRelease(
 
 const String _probeItemLabel = '触发检查到更新的提示框（即使版本相同或更旧也触发）';
 
+const String _versionItemLabel = '查看当前数据库版本';
+
 Future<void> _pumpDebugScreen(
   WidgetTester tester,
-  FakeUpdateCheckService service,
-) async {
+  FakeUpdateCheckService service, {
+  FakeDebugDatabaseService? dbService,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
       theme: NarrChatTheme.light,
-      home: DebugScreen(updateService: service),
+      home: DebugScreen(
+        updateService: service,
+        databaseService: dbService ?? FakeDebugDatabaseService(),
+      ),
     ),
   );
 }
@@ -31,6 +38,14 @@ Future<void> _pumpDebugScreen(
 /// 点击「触发检查到更新的提示框」入口。
 Future<void> _tapProbeItem(WidgetTester tester) async {
   final target = find.text(_probeItemLabel);
+  expect(target, findsOneWidget);
+  await tester.tap(target);
+  await tester.pumpAndSettle();
+}
+
+/// 点击「查看当前数据库版本」入口。
+Future<void> _tapVersionItem(WidgetTester tester) async {
+  final target = find.text(_versionItemLabel);
   expect(target, findsOneWidget);
   await tester.tap(target);
   await tester.pumpAndSettle();
@@ -74,5 +89,34 @@ void main() {
     expect(service.forceShowValues, [true]);
     expect(find.text('发现新版本'), findsNothing);
     expect(find.text('未获取到 GitHub 发布信息'), findsOneWidget);
+  });
+
+  testWidgets('查看数据库版本：对话框展示代码版本与文件版本', (tester) async {
+    final service = FakeUpdateCheckService([const NoRelease()]);
+    final dbService = FakeDebugDatabaseService(
+      version: const DebugDbVersion(expectedVersion: 16, actualVersion: 14),
+    );
+    await _pumpDebugScreen(tester, service, dbService: dbService);
+
+    await _tapVersionItem(tester);
+
+    expect(find.text('数据库版本'), findsOneWidget);
+    expect(find.textContaining('应用代码 schema 版本：16'), findsOneWidget);
+    expect(find.textContaining('数据库文件版本（user_version）：14'), findsOneWidget);
+  });
+
+  testWidgets('读取数据库版本失败：SnackBar 提示，不弹对话框', (tester) async {
+    final service = FakeUpdateCheckService([const NoRelease()]);
+    final dbService = FakeDebugDatabaseService()
+      ..versionError = StateError('数据库已被占用');
+    await _pumpDebugScreen(tester, service, dbService: dbService);
+
+    await _tapVersionItem(tester);
+
+    expect(find.text('数据库版本'), findsNothing);
+    expect(
+      find.text('读取数据库版本失败：Bad state: 数据库已被占用'),
+      findsOneWidget,
+    );
   });
 }

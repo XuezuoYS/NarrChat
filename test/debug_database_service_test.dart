@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/database/database_helper.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -79,6 +80,22 @@ void main() {
     expect(second.page, 1);
     // 第二页第一行应为第 21 条记录。
     expect(second.rows.first['title'], '书21');
+    await db.close();
+  });
+
+  test('readVersion 返回代码期望版本与库文件实际 user_version', () async {
+    final dir = Directory.systemTemp.createTempSync('debug_db_service_test_');
+    _tempDirs.add(dir);
+    // 以旧版本号打开全新库：user_version 落为 3，模拟文件版本未到最新。
+    final db = await databaseFactoryFfi.openDatabase(
+      p.join(dir.path, 'narrchat.db'),
+      options: OpenDatabaseOptions(version: 3, onCreate: (db, version) async {}),
+    );
+
+    final service = SqliteDebugDatabaseService(dbOpener: () async => db);
+    final version = await service.readVersion();
+    expect(version.expectedVersion, DatabaseHelper.currentDbVersion);
+    expect(version.actualVersion, 3);
     await db.close();
   });
 }

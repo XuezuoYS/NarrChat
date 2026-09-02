@@ -65,8 +65,23 @@ class DebugTablePage {
   });
 }
 
+/// 数据库版本信息（调试查看用）。
+class DebugDbVersion {
+  /// 应用代码期望的 schema 版本（[DatabaseHelper.currentDbVersion]）。
+  final int expectedVersion;
+
+  /// 数据库文件实际的 `user_version`（迁移后 / 迁移失败 / 版本回退时可与
+  /// [expectedVersion] 不一致，即本调试页要暴露的差异）。
+  final int actualVersion;
+
+  const DebugDbVersion({required this.expectedVersion, required this.actualVersion});
+}
+
 /// 调试数据库访问抽象（可注入替身，避免测试触碰真实库）。
 abstract class DebugDatabaseService {
+  /// 当前数据库版本（代码期望 schema 版本 + 库文件实际 version）。
+  Future<DebugDbVersion> readVersion();
+
   /// 列出全部业务表（排除 `sqlite_*` 系统表）及各自总行数。
   Future<List<DebugTableSummary>> listTables();
 
@@ -84,6 +99,16 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
       : _dbOpener = dbOpener ?? (() => DatabaseHelper.instance.database);
 
   final Future<Database> Function() _dbOpener;
+
+  @override
+  Future<DebugDbVersion> readVersion() async {
+    final db = await _dbOpener();
+    final actual = await db.getVersion();
+    return DebugDbVersion(
+      expectedVersion: DatabaseHelper.currentDbVersion,
+      actualVersion: actual,
+    );
+  }
 
   @override
   Future<List<DebugTableSummary>> listTables() async {

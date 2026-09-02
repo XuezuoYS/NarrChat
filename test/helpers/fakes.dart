@@ -579,17 +579,34 @@ class FakeImageDeletionService implements ImageDeletionService {
 /// 内存版 [DebugDatabaseService]：按 [pageBuilder] 生成每页数据，
 /// 记录最近一次调用的页参数，供「数据库结构」页测试校验翻页。
 class FakeDebugDatabaseService implements DebugDatabaseService {
-  FakeDebugDatabaseService({this.tables = const [], this.pageBuilder});
+  FakeDebugDatabaseService({
+    this.tables = const [],
+    this.pageBuilder,
+    this.version = const DebugDbVersion(expectedVersion: 16, actualVersion: 16),
+  });
 
   final List<DebugTableSummary> tables;
 
   /// 按 `(name, page, pageSize)` 生成一页数据；为 null 时返回空页。
   final DebugTablePage Function(String name, int page, int pageSize)? pageBuilder;
 
+  /// readVersion 的返回值（默认代码版本与文件版本一致）。
+  DebugDbVersion version;
+
+  /// 非 null：readVersion 抛出该异常（模拟读取失败）。
+  Object? versionError;
+
   int loadCount = 0;
   String? lastName;
   int? lastPage;
   int? lastPageSize;
+
+  @override
+  Future<DebugDbVersion> readVersion() async {
+    final err = versionError;
+    if (err != null) throw err;
+    return version;
+  }
 
   @override
   Future<List<DebugTableSummary>> listTables() async => tables;
