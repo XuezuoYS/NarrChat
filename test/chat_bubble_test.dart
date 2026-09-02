@@ -3,9 +3,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/brand_logo.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
+
+/// 足够长的正文：在 320px 宽的正文列上必然换行（用于「填满可用宽度」断言）。
+/// 重复次数兼顾默认 600 高的测试视口（12 次 ≈ 13 行，不会垂直溢出）。
+final String longText = '这是一段用于验证窄屏气泡填满可用宽度的长剧情正文。' * 12;
 
 void main() {
+  /// 以 [width] 可用宽度 pump 单个 [ChatBubble]（外层包 [SizedBox] 模拟窄/宽屏）。
+  Widget buildInWidth({required double width, required ChatBubble bubble}) {
+    return MaterialApp(
+      theme: NarrChatTheme.light,
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(width: width, child: bubble),
+        ),
+      ),
+    );
+  }
   Widget buildBubble({required VoidCallback onMenu}) {
     return MaterialApp(
       theme: NarrChatTheme.light,
@@ -106,5 +123,95 @@ void main() {
       ),
     );
     expect(find.text('图片已丢失'), findsNothing);
+  });
+
+  test('chatBubbleMaxWidth：窄屏填满可用宽度，宽屏受阅读列宽上限约束', () {
+    expect(chatBubbleMaxWidth(320), 320);
+    expect(chatBubbleMaxWidth(360), 360);
+    expect(chatBubbleMaxWidth(800), kChatBubbleMaxWidth);
+    expect(chatBubbleMaxWidth(double.infinity), kChatBubbleMaxWidth);
+    expect(chatBubbleMaxWidth(0), 0);
+  });
+
+  testWidgets('窄屏 AI 气泡：头像在正文上方，正文左右对齐填满内容列', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: ChatBubble(isUser: false, text: longText),
+      ),
+    );
+    await tester.pump();
+
+    // 头像移至正文上方并**左对齐**（30×30 原始尺寸，不被 stretch 拉宽）；
+    // 正文块左右对齐 = 内容列全宽 360。
+    // 注：窄屏分支内部也有一个 SizedBox(width: available)，与外壳同宽同位置，
+    // ancestor 匹配到多个时取 .first（两者矩形一致，均可作为内容列基准）。
+    expect(find.byType(BrandLogo), findsOneWidget);
+    final boxRect = tester.getRect(
+      find
+          .ancestor(
+            of: find.byType(MarkdownPreview),
+            matching: find.byType(SizedBox),
+          )
+          .first,
+    );
+    final logoRect = tester.getRect(find.byType(BrandLogo));
+    final textRect = tester.getRect(find.byType(MarkdownPreview));
+    expect(textRect.width, 360);
+    expect(logoRect.bottom, lessThanOrEqualTo(textRect.top));
+    expect(logoRect.width, 30);
+    expect(logoRect.left, closeTo(boxRect.left, 0.01));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('窄屏 AI 气泡：短消息正文块同样左右对齐（满宽列，与主流一致）', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: ChatBubble(isUser: false, text: '短消息'),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.getSize(find.byType(MarkdownPreview)).width, 360);
+  });
+
+  testWidgets('宽屏 AI 气泡：头像内嵌正文左侧，正文受 680 阅读列宽上限约束', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 800,
+        bubble: ChatBubble(isUser: false, text: longText),
+      ),
+    );
+    await tester.pump();
+
+    // 680（上限）− 头像 40 = 640；头像仍内嵌正文左上（同一行）。
+    final logoRect = tester.getRect(find.byType(BrandLogo));
+    final textRect = tester.getRect(find.byType(MarkdownPreview));
+    expect(textRect.width, 640);
+    expect(logoRect.right, lessThanOrEqualTo(textRect.left));
+  });
+
+  testWidgets('窄屏用户气泡：右侧对齐，左侧留出 10% 空白表达「靠右」', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: ChatBubble(isUser: true, text: longText),
+      ),
+    );
+    await tester.pump();
+
+    // 气泡块宽 = 内容列 90%（324）：块左缘距内容列左缘 36；正文再含水平
+    // 内边距（14 × 2）= 296 宽，正文左缘距内容列左缘 50（用相对位置断言，
+    // 避免受 800 测试视口 Center 居中的绝对坐标影响）。
+    final boxRect = tester.getRect(
+      find.ancestor(
+        of: find.byType(MarkdownPreview),
+        matching: find.byType(SizedBox),
+      ),
+    );
+    final textRect = tester.getRect(find.byType(MarkdownPreview));
+    expect(textRect.width, 296);
+    expect(textRect.left - boxRect.left, 50);
   });
 }

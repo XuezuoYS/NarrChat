@@ -40,6 +40,7 @@ import '../widgets/image_preview.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
 import '../widgets/raw_dialog.dart';
+import '../widgets/responsive_builder.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/sidebar_panel.dart';
 import '../widgets/sidebar_resize_divider.dart';
@@ -3786,63 +3787,93 @@ class _StreamingBubble extends StatefulWidget {
 class _StreamingBubbleState extends State<_StreamingBubble> {
   @override
   Widget build(BuildContext context) {
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.8;
     final content = widget.content;
     final events = widget.agentEvents;
     final retry = widget.retryStatus;
     final warnings = widget.agentWarnings;
     final hasContent = content.isNotEmpty;
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: maxWidth.clamp(240, 680)),
-        child: Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final available = constraints.maxWidth;
+        final narrow = isNarrowWidth(available);
+        // 正文列（时间线块 + 警告 + 生成提示），三种布局共用。
+        final body = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const BrandLogo(size: 30),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Agent 时间线：思考 / 搜索 / 打开页 / 状态工具**严格按
-                  // AI 返回顺序**交错；正文是「块外」特殊块，插入到
-                  // [contentBoundaryIndex] 处（此前的块在上、之后的块在下）。
-                  ..._buildOrderedBlocks(context, events, content, retry),
-                  // AGENT 模式钳制警告：修复 2 次后仍失败、已跳过应用的修改项。
-                  if (warnings.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    _AgentWarningsBox(warnings: warnings),
-                  ],
-                  // 生成中：气泡最底部持续显示转圈图标。
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        hasContent ? '正在生成…' : 'AI 正在创作…',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: context.narrColors.textSecondary,
-                        ),
-                      ),
-                    ],
+            // Agent 时间线：思考 / 搜索 / 打开页 / 状态工具**严格按
+            // AI 返回顺序**交错；正文是「块外」特殊块，插入到
+            // [contentBoundaryIndex] 处（此前的块在上、之后的块在下）。
+            ..._buildOrderedBlocks(context, events, content, retry),
+            // AGENT 模式钳制警告：修复 2 次后仍失败、已跳过应用的修改项。
+            if (warnings.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _AgentWarningsBox(warnings: warnings),
+            ],
+            // 生成中：气泡最底部持续显示转圈图标。
+            const SizedBox(height: 8),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  hasContent ? '正在生成…' : 'AI 正在创作…',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: context.narrColors.textSecondary,
                   ),
+                ),
+              ],
+            ),
+          ],
+        );
+
+        // 与 ChatBubble 一致：窄屏头像移至正文上方并左对齐（Align 避免被
+        // stretch 拉宽后居中）、正文左右对齐；宽屏头像内嵌、正文受阅读列宽上限约束。
+        if (narrow) {
+          return Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox(
+              width: available,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: BrandLogo(size: 30),
+                  ),
+                  const SizedBox(height: 8),
+                  body,
                 ],
               ),
             ),
-          ],
-        ),
-      ),
+          );
+        }
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: chatBubbleMaxWidth(available),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const BrandLogo(size: 30),
+                const SizedBox(width: 10),
+                Flexible(child: body),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
