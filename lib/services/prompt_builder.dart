@@ -83,17 +83,24 @@ class PromptBuilder {
   /// 每轮一条 `user`（用户输入）+ 一条 `assistant`，按时间顺序排列。
   /// 调用方应将其插入 `system` 消息之后、当前轮 `user` 消息之前。
   ///
-  /// - **最后一轮**（最新一轮）的 assistant 为完整反解析的「原生返回」格式
-  ///   （6 个 `##` 区块，见 [AiResponseParser.serialize]）：上一轮的角色状态 /
+  /// - **Chat**：最后一轮（最新一轮）的 assistant 为完整反解析的「原生返回」
+  ///   格式（6 个 `##` 区块，见 [AiResponseParser.serialize]）：上一轮的角色状态 /
   ///   世界状态 / 记忆总结 / 当前时间经此原生传入，取代原先注入 system 的状态快照；
-  /// - **更早的历史轮次**仅置入剧情正文（aiNarrative），控制上下文篇幅；
+  ///   更早的历史轮次仅置入剧情正文（aiNarrative），控制上下文篇幅；
   /// - 整轮六字段全空时保留「（无正文）」占位（避免发送空 assistant 消息）。
   ///
   /// [imagePartsFor] 非空时，若某轮用户消息存在图片（该回调返回图片 parts），
   /// 其 `content` 变为「文本 + 图片数组」（OpenAI 兼容 vision 格式）；否则为纯文本。
+  ///
+  /// [storyOnly]（AGENT 模式）：每条 assistant 消息只携带 `## 剧情演绎` 与
+  /// `## 推荐行动` 两个小节——**所有**历史轮同一形状（模型只模仿一种输出）。
+  /// 状态四字段改由 `narrchat_readState` 工具结果提供：AGENT 模式下模型
+  /// 在每个阶段**主动调用**它获取最新状态（不做预置注入，防止把工具结果
+  /// 的 md 块误当成自己的输出格式）。
   static List<Map<String, dynamic>> buildHistoryMessages(
     List<Round> rounds, {
     List<Map<String, dynamic>> Function(Round round)? imagePartsFor,
+    bool storyOnly = false,
   }) {
     final result = <Map<String, dynamic>>[];
     for (var i = 0; i < rounds.length; i++) {
@@ -107,16 +114,31 @@ class PromptBuilder {
       }
       result.add({
         'role': 'assistant',
-        'content': _assistantContent(r, isLatest: i == rounds.length - 1),
+        'content': _assistantContent(r,
+            isLatest: i == rounds.length - 1, storyOnly: storyOnly),
       });
     }
     return result;
   }
 
-  /// 单轮 assistant 消息正文：仅最新一轮做完整反解析（6 区块齐全），
-  /// 其余轮次仅正文；六字段全空保留「（无正文）」占位。
-  /// 见 [buildHistoryMessages]。
-  static String _assistantContent(Round r, {required bool isLatest}) {
+  /// 单轮 assistant 消息正文：AGENT（[storyOnly]）给正文三个小节
+  /// （剧情 / 行动 / 时间）；Chat 仅最新一轮做完整反解析（6 区块齐全），
+  /// 其余轮次仅正文；全空保留「（无正文）」占位。见 [buildHistoryMessages]。
+  static String _assistantContent(
+    Round r, {
+    required bool isLatest,
+    bool storyOnly = false,
+  }) {
+    if (storyOnly) {
+      final story = r.aiNarrative.trim();
+      final action = r.recommendedAction.trim();
+      if (story.isEmpty && action.isEmpty) return '（无正文）';
+      return AiResponseParser.serializeAgentBody(ParsedAiResponse(
+        aiNarrative: r.aiNarrative,
+        recommendedAction: r.recommendedAction,
+        currentTime: r.currentTime,
+      ));
+    }
     if (!isLatest) {
       return r.aiNarrative.isEmpty ? '（无正文）' : r.aiNarrative;
     }

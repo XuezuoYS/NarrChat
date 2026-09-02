@@ -25,6 +25,12 @@ class AiStreamChunk {
   final String? toolName;
   final String? toolArgsDelta;
 
+  /// AGENT 正文块**重置**信号（帧级正文分类由 `AgentRoundRunner` 独占）：
+  /// 该块为 true 时，其后到达的 [contentDelta] 是「覆盖式」的新正文起点，
+  /// 界面应清空已展示的正文块重新累积（模型在更早的帧里写到一半去调了工具，
+  /// 本帧重写完整正文 → 最后一帧胜出）。
+  final bool narrativeReset;
+
   const AiStreamChunk({
     this.contentDelta = '',
     this.reasoningDelta = '',
@@ -32,22 +38,35 @@ class AiStreamChunk {
     this.toolCallId,
     this.toolName,
     this.toolArgsDelta,
+    this.narrativeReset = false,
   });
 }
 
 /// AI 请求的工具调用（模型决定调用某个工具）。
 class AiToolCall {
-  /// 调用 id（回填 tool 消息时使用）。
+  /// **调用 id**（回填 tool 消息 / Responses `function_call_output.call_id`
+  /// 与重放 `function_call` 条目时使用）。
+  ///
+  /// Responses 协议中 `function_call` item 的 `id`（条目 id，`fc_…`）与
+  /// `call_id`（`call_…`）是**两个不同的值**，回填必须用 `call_id`；
+  /// 故解析时一律优先 `call_id`（Chat 协议的 `tool_calls[].id` 即调用 id）。
   final String id;
   final String name;
 
   /// 工具参数（已解析为 JSON 对象）。
   final Map<String, dynamic> arguments;
 
+  /// 参数 JSON **无法解析**（多为 `max_output_tokens` 截断所致）。
+  ///
+  /// 与「模型确实传了空参数」区分开：截断时 [arguments] 为空 Map，
+  /// 若不标记会被当成一次合法的空参数调用（表现为「模型没改状态」）。
+  final bool argumentsUnparsable;
+
   const AiToolCall({
     required this.id,
     required this.name,
     required this.arguments,
+    this.argumentsUnparsable = false,
   });
 }
 
@@ -67,6 +86,14 @@ class AiCallResult {
   /// Chat 协议与不支持有状态续接时为空）。
   final String responseId;
 
+  /// 响应被服务端**截断**（Responses `status: incomplete`）：[content] /
+  /// [toolCalls] 是截断前的部分结果。**不抛异常**——上层按语义决定如何补救
+  /// （AGENT 状态轮拆小工具调用重试并按需上调输出上限；正文轮按已有部分采纳）。
+  final bool incomplete;
+
+  /// 截断原因（`incomplete_details.reason`，原样保留以便定位；未知 = 'unknown'）。
+  final String incompleteReason;
+
   const AiCallResult({
     required this.content,
     this.reasoningContent = '',
@@ -74,6 +101,8 @@ class AiCallResult {
     required this.promptTokens,
     required this.completionTokens,
     this.responseId = '',
+    this.incomplete = false,
+    this.incompleteReason = '',
   });
 }
 
@@ -607,6 +636,7 @@ class AiService {
         }
       }
       final usage = data['usage'] as Map<String, dynamic>?;
+      final truncated = (data['status'] as String?) == 'incomplete';
       return AiCallResult(
         content: contentSb.toString(),
         reasoningContent: reasoningSb.toString(),
@@ -614,6 +644,8 @@ class AiService {
         promptTokens: _usageCount(usage ?? const {}, 'input_tokens'),
         completionTokens: _usageCount(usage ?? const {}, 'output_tokens'),
         responseId: (data['id'] as String?) ?? '',
+        incomplete: truncated,
+        incompleteReason: truncated ? _incompleteReasonOf(data) : '',
       );
     } on FormatException {
       throw AiException('API 响应解析失败：$rawBody');
@@ -662,6 +694,8 @@ class AiService {
     int promptTokens = 0;
     int completionTokens = 0;
     String responseId = '';
+    var incomplete = false;
+    var incompleteReason = '';
     final doneSignal = Completer<void>();
     doneSignal.future.ignore();
 
@@ -727,13 +761,15 @@ class AiService {
                     () => _ToolCallAccumulator()..name = (item?['name'] as String? ?? ''),
                   );
                   if (acc.id.isEmpty) {
-                    acc.id = (item?['id'] as String?) ?? '';
+                    acc.id = (item?['call_id'] as String?) ??
+                        (item?['id'] as String?) ??
+                        '';
                   }
                   if (!toolOrder.contains(itemId)) toolOrder.add(itemId);
                   // 流式预览：工具卡片即时出现（与思考块同语义）。
                   onChunk?.call(
                     AiStreamChunk(
-                      toolCallId: itemId,
+                      toolCallId: _callIdOf(toolAcc, itemId),
                       toolName: (item?['name'] as String?) ?? '',
                     ),
                   );
@@ -747,13 +783,15 @@ class AiService {
                 }
                 onChunk?.call(
                   AiStreamChunk(
-                    toolCallId: itemId,
+                    toolCallId: _callIdOf(toolAcc, itemId),
                     toolName: null,
                     toolArgsDelta: json['delta'] as String?,
                   ),
                 );
                 break;
               case 'response.output_item.done':
+                _absorbFunctionCallDone(toolAcc, toolOrder, json['item']);
+                break;
               case 'response.function_call_arguments.done':
               case 'response.output_text.done':
               case 'response.reasoning_summary_text.done':
@@ -771,11 +809,27 @@ class AiService {
                 if (!doneSignal.isCompleted) doneSignal.complete();
                 break;
               case 'response.failed':
-              case 'response.incomplete':
-                final err = json['response']?['error'] ?? json['error'];
                 doneSignal.completeError(
-                  AiException('API 请求中断：$err'),
+                  AiException('API 请求中断：${_responsesErrorText(json)}'),
                 );
+                break;
+              case 'response.incomplete':
+                // 输出触顶（`incomplete_details.reason` 多为 max_output_tokens）：
+                // 已收到的正文 / 工具参数是**部分结果**，保留并标记后正常收尾，
+                // 交给上层按语义补救。旧实现把它连同 failed 一起抛异常，且
+                // incomplete 事件里没有 error 字段 → 报错文案恒为「API 请求中断：null」，
+                // 还会连带赔掉整轮已生成的正文。
+                incomplete = true;
+                incompleteReason = _responsesIncompleteReason(json);
+                final bad = json['response'] as Map<String, dynamic>?;
+                if (bad != null) {
+                  responseId = (bad['id'] as String?) ?? responseId;
+                }
+                _mergeResponsesUsage(json, (p, c) {
+                  promptTokens = p;
+                  completionTokens = c;
+                });
+                if (!doneSignal.isCompleted) doneSignal.complete();
                 break;
               default:
                 // 未知事件（response.created / in_progress / 各 done 事件等）忽略。
@@ -826,7 +880,43 @@ class AiService {
       promptTokens: promptTokens,
       completionTokens: completionTokens,
       responseId: responseId,
+      incomplete: incomplete,
+      incompleteReason: incompleteReason,
     );
+  }
+
+  /// 流式事件 → 截断原因（响应对象嵌在 `json['response']` 里）。
+  static String _responsesIncompleteReason(Map<String, dynamic> json) {
+    final resp = json['response'];
+    return _incompleteReasonOf(resp is Map<String, dynamic> ? resp : json);
+  }
+
+  /// `response.error` / 顶层 `error` → 可读文本（**绝不为 "null"**）。
+  static String _responsesErrorText(Map<String, dynamic> json) {
+    final err =
+        (json['response'] as Map<String, dynamic>?)?['error'] ?? json['error'];
+    if (err is Map) {
+      final msg = err['message'] ?? err['code'] ?? err['type'];
+      if (msg is String && msg.trim().isNotEmpty) return msg.trim();
+      return err.toString();
+    }
+    if (err is String && err.trim().isNotEmpty) return err.trim();
+    return '服务端未给出原因';
+  }
+
+  /// `incomplete_details.reason`（缺失 / 形态不同 → 'unknown'）。
+  ///
+  /// [response] = 响应对象本体：流式事件里的 `json['response']`，
+  /// 非流式的响应体本身。
+  static String _incompleteReasonOf(Map<String, dynamic> response) {
+    final details = response['incomplete_details'] ?? response['error'];
+    if (details is Map) {
+      final r = details['reason'] ?? details['code'];
+      if (r is String && r.trim().isNotEmpty) return r.trim();
+    }
+    if (details is String && details.trim().isNotEmpty) return details.trim();
+    final status = response['status'];
+    return status is String && status.isNotEmpty ? status : 'unknown';
   }
 
   /// 从事件中合并 usage（`response.completed` 的 `response.usage` 或顶层 `usage`）。
@@ -865,17 +955,27 @@ class AiService {
   }
 
   /// 非流式 `function_call` item → [AiToolCall]。
+  ///
+  /// id 一律优先 `call_id`（见 [AiToolCall.id] 说明）。
   static AiToolCall _parseFunctionCallItem(Map<String, dynamic> item) {
-    final id = (item['id'] as String?) ?? (item['call_id'] as String?) ?? '';
+    final id = (item['call_id'] as String?) ?? (item['id'] as String?) ?? '';
     final name = (item['name'] as String?) ?? '';
     var arguments = const <String, dynamic>{};
+    var unparsable = false;
     final rawArgs = item['arguments'];
     if (rawArgs is String) {
-      arguments = _parseToolArguments(rawArgs);
+      final (parsed, bad) = _parseToolArgumentsChecked(rawArgs);
+      arguments = parsed;
+      unparsable = bad;
     } else if (rawArgs is Map) {
       arguments = Map<String, dynamic>.from(rawArgs);
     }
-    return AiToolCall(id: id, name: name, arguments: arguments);
+    return AiToolCall(
+      id: id,
+      name: name,
+      arguments: arguments,
+      argumentsUnparsable: unparsable,
+    );
   }
 
   /// 流式累积器（[toolOrder] 中为 item_id）→ 最终 [AiToolCall]。
@@ -884,17 +984,86 @@ class AiService {
     Map<String, _ToolCallAccumulator> acc,
   ) {
     final a = acc[itemId]!;
+    final (arguments, unparsable) =
+        _parseToolArgumentsChecked(a.arguments.toString());
     return AiToolCall(
       id: a.id.isEmpty ? itemId : a.id,
       name: a.name,
-      arguments: _parseToolArguments(a.arguments.toString()),
+      arguments: arguments,
+      argumentsUnparsable: unparsable,
     );
   }
 
   static int _usageCount(Map<String, dynamic> usage, String key) =>
       (usage[key] as num?)?.toInt() ?? 0;
 
-  /// 解析工具参数 JSON 字符串；非法时回退空 Map。
+  /// 累积器 Map（key = Responses 的 item id）→ 调用 id（回填用）。
+  ///
+  /// 流式预览与执行结果必须按**同一个** id 匹配（否则同一工具调用会出现
+  /// 两个事件框），故统一以 `call_id` 优先的累积值为准。
+  static String _callIdOf(
+    Map<String, _ToolCallAccumulator> acc,
+    String itemId,
+  ) {
+    final a = acc[itemId];
+    if (a == null || a.id.isEmpty) return itemId;
+    return a.id;
+  }
+
+  /// `response.output_item.done`：部分实现只在 done 中给出完整
+  /// `call_id` / `arguments`（增量事件缺失或分块丢失），此时以 done 补齐。
+  static void _absorbFunctionCallDone(
+    Map<String, _ToolCallAccumulator> toolAcc,
+    List<String> toolOrder,
+    Object? rawItem,
+  ) {
+    if (rawItem is! Map) return;
+    final item = Map<String, dynamic>.from(rawItem);
+    if (item['type'] != 'function_call') return;
+    final itemId =
+        (item['id'] as String?) ?? (item['item_id'] as String? ?? '');
+    if (itemId.isEmpty) return;
+    final a = toolAcc.putIfAbsent(itemId, () => _ToolCallAccumulator());
+    final name = item['name'] as String?;
+    if (name != null && name.isNotEmpty) a.name = name;
+    final callId = item['call_id'] as String?;
+    if (callId != null && callId.isNotEmpty) a.id = callId;
+    if (a.arguments.isEmpty) {
+      final args = item['arguments'];
+      if (args is String && args.isNotEmpty) a.arguments.write(args);
+    }
+    if (!toolOrder.contains(itemId)) toolOrder.add(itemId);
+  }
+
+  /// 解析工具参数 JSON，并**区分「解析失败」与「合法空参数」**。
+  ///
+  /// 工具参数是 JSON 文本，`max_output_tokens` 截断会让它无法闭合；若不显式
+  /// 标记，一次被截断的调用会被当成合法的空参数调用（表现为「模型没改状态」，
+  /// 实际是输出预算不够），AGENT 状态轮就会静默丢改动。
+  static (Map<String, dynamic>, bool) _parseToolArgumentsChecked(String raw) {
+    if (raw.trim().isEmpty) return (const <String, dynamic>{}, false);
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map<String, dynamic>
+          ? (decoded, false)
+          : (const <String, dynamic>{}, true);
+    } catch (_) {
+      try {
+        final escaped = raw
+            .replaceAll('\r\n', r'\n')
+            .replaceAll('\n', r'\n')
+            .replaceAll('\r', '');
+        final decoded = jsonDecode(escaped);
+        return decoded is Map<String, dynamic>
+            ? (decoded, false)
+            : (const <String, dynamic>{}, true);
+      } catch (_) {
+        return (const <String, dynamic>{}, true);
+      }
+    }
+  }
+
+  /// 解析工具参数 JSON 字符串；非法时回退空 Map（不标记失败，供 Chat 路径使用）。
   ///
   /// 兼容两种转义形态：规范形态（`\\n` 双重转义，外层解码后仍为转义序列）
   /// 直接解析；个别服务商以单层转义输出（参数文本内是真实换行）时，

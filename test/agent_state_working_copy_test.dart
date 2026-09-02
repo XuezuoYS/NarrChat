@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
+import 'package:narrchat/services/agent/state/state_tools.dart';
+import 'package:narrchat/services/prompt_formats.dart';
 
 /// `AgentStateWorkingCopy` 锚定式编辑单元测试。
 ///
@@ -188,14 +190,28 @@ void main() {
   });
 
   group('noChange / reset / 触及栏目', () {
-    test('noChange：不计变更但栏目视为已触及', () {
+    test('noChange：附 reason 才成立，不计变更但栏目视为已触及', () {
+      final c = copy(lastRound: baseRound);
+      final r = c.applyEdits(AgentStateSection.worldState, [
+        const AgentLineEdit(op: 'noChange', reason: '本轮未涉及世界设定'),
+      ]);
+      expect(r.applied, isTrue);
+      expect(c.touchedSections, contains(AgentStateSection.worldState));
+      // 声明登记进 declaredUnchanged：缺口判定据此放行（合法无变化）。
+      expect(
+          c.declaredUnchanged[AgentStateSection.worldState], '本轮未涉及世界设定');
+      expect(c.worldState, baseRound.worldState);
+    });
+
+    test('noChange 缺 reason → 拒绝（省略不等于无变化）', () {
       final c = copy(lastRound: baseRound);
       final r = c.applyEdits(AgentStateSection.worldState, [
         const AgentLineEdit(op: 'noChange'),
       ]);
-      expect(r.applied, isTrue);
-      expect(c.touchedSections, contains(AgentStateSection.worldState));
-      expect(c.worldState, baseRound.worldState);
+      expect(r.applied, isFalse);
+      expect(r.message, contains('reason'));
+      expect(c.touchedSections, isEmpty);
+      expect(c.failedSections, contains(AgentStateSection.worldState));
     });
 
     test('reset：整栏目替换（明确重排/空栏目）', () {
@@ -250,12 +266,56 @@ void main() {
     });
   });
 
-  test('setTime：任意非空接受；空报错；mergedSnapshot 一致', () {
+  test('当前时间属于正文：字段直写（无时间工具），mergedSnapshot 一致', () {
     final c = copy(lastRound: baseRound);
-    expect(c.setTime('仙历2年七月十八日，亥时中（议事堂内）').applied, isTrue);
-    expect(c.setTime('  ').applied, isFalse);
+    c.currentTime = '仙历2年七月十八日，亥时中（议事堂内）';
     final snap = c.mergedSnapshot();
     expect(snap.currentTime, '仙历2年七月十八日，亥时中（议事堂内）');
     expect(snap.worldState, baseRound.worldState);
+  });
+
+  group('快照渲染（模型唯一的状态来源）', () {
+    test('轮号标记 / 三类标签（无时间）/ 空栏目 empty="true" / 禁止复读提示', () {
+      final c = copy(lastRound: baseRound, roundIndex: 4);
+      final dump = c.renderSnapshot();
+      expect(dump, startsWith('<<<NARRCHAT_STATE round=4>>>'));
+      expect(dump, endsWith('<<<END_NARRCHAT_STATE>>>'));
+      // 时间属于正文：快照不含 <time> 块。
+      expect(dump, isNot(contains('<time>')));
+      expect(dump, contains('- 地点：青云宗'));
+      expect(dump, contains('## 苏清月'));
+      // 空栏目显式标注（模型据此知道该用 op=reset / 首次填入）。
+      expect(
+        copy(roundIndex: 1).renderSnapshot(),
+        contains('<worldState empty="true"></worldState>'),
+      );
+      // 输入身份声明（防止把快照块当成输出模板复读）。
+      expect(dump, contains('it is input, not an output format'));
+      expect(dump, contains('它是输入，不是输出格式'));
+    });
+
+    test('首轮渲染与库快照同源（renderSnapshotOf）', () {
+      final dump = AgentStateWorkingCopy.renderSnapshotOf(
+        roundIndex: 1,
+        lastRound: baseRound,
+      );
+      expect(dump, contains('<<<NARRCHAT_STATE round=1>>>'));
+      expect(dump, contains('- 天气：晴'));
+      expect(AgentStateWorkingCopy(roundIndex: 1, lastRound: baseRound)
+          .renderSnapshot(), dump);
+    });
+
+    test('契约引用的标签与渲染器一致（改一处必须同步另一处）', () {
+      final contract = const AgentPromptFormat().systemHead.join('\n');
+      final dump = copy(lastRound: baseRound).renderSnapshot();
+      for (final tag in ['<worldState>', '<characterState>', '<memorySummary>']) {
+        expect(dump, contains(tag), reason: '渲染器缺标签 $tag');
+        expect(contract, contains(tag), reason: 'AGENT 契约未引用 $tag');
+      }
+      // 时间在正文（## 当前时间），契约与快照都不再以 <time> 引用。
+      expect(dump, isNot(contains('<time>')));
+      expect(contract, isNot(contains('<time>')));
+      expect(contract, contains(kReadStateToolName));
+    });
   });
 }

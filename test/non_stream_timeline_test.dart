@@ -155,10 +155,10 @@ void main() {
     expect(find.textContaining('Tool · narrchat_editSection'), findsWidgets);
     expect(provider.streamingContent, isEmpty, reason: '正文轮尚未返回');
 
-    // 第 2 帧：正文 + 补齐剩余状态工具（完整性通过，无修复轮）。
+    // 第 2 帧：正文 + 当前时间 + 补齐剩余状态工具（完整性通过，无修复轮）。
     gates[1].complete(
       const AiCallResult(
-        content: '## 剧情演绎\n非流式正文\n\n## 推荐行动\n行动',
+        content: '## 剧情演绎\n非流式正文\n\n## 推荐行动\n行动\n\n## 当前时间\n第一天 午时',
         reasoningContent: '根据世界状态写正文。',
         toolCalls: [
           AiToolCall(
@@ -180,14 +180,9 @@ void main() {
             arguments: {
               'section': 'characterState',
               'edits': [
-                {'op': 'noChange'},
+                {'op': 'noChange', 'reason': '主角状态本轮无变化'},
               ],
             },
-          ),
-          AiToolCall(
-            id: 'fc_4',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第一天 午时'},
           ),
         ],
         promptTokens: 2,
@@ -315,8 +310,13 @@ void main() {
         toolCalls: const [
           AiToolCall(
             id: 'fc_1',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第一天 午时'},
+            name: 'narrchat_editSection',
+            arguments: {
+              'section': 'worldState',
+              'edits': [
+                {'op': 'noChange', 'reason': '本轮未涉及世界设定'},
+              ],
+            },
           ),
         ],
         promptTokens: 1,

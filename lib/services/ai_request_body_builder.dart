@@ -29,6 +29,13 @@ class AiRequestValues {
   /// 系统指令（Response API 协议的 `instructions` 字段；null 表示移除该键）。
   final String? instructions;
 
+  /// 工具选择策略（`tool_choice`：`auto` / `required` / `none`；null = 不发送）。
+  ///
+  /// 仅 AGENT 模式使用：正文轮 `auto`，状态轮 `required`（强制调用工具，
+  /// 杜绝「只写正文不改状态」）。两阶段的 `instructions` / `tools` 必须
+  /// **完全一致**（工具取超集），否则请求前缀变化会让服务商的上下文缓存失效。
+  final String? toolChoice;
+
   const AiRequestValues({
     required this.model,
     required this.messages,
@@ -39,6 +46,7 @@ class AiRequestValues {
     required this.stream,
     this.tools,
     this.instructions,
+    this.toolChoice,
   });
 }
 
@@ -63,6 +71,7 @@ class AiRequestBodyBuilder {
   static const String placeholderMaxTokens = '{{max_tokens}}';
   static const String placeholderTools = '{{tools}}';
   static const String placeholderInstructions = '{{instructions}}';
+  static const String placeholderToolChoice = '{{tool_choice}}';
 
   /// 值为 null 时移除顶层键的哨兵（如未设置最大 Tokens / 本轮无工具）。
   static const Object _omit = Object();
@@ -129,6 +138,8 @@ class AiRequestBodyBuilder {
           return v.tools ?? _omit;
         case placeholderInstructions:
           return v.instructions ?? _omit;
+        case placeholderToolChoice:
+          return v.toolChoice ?? _omit;
         default:
           return value;
       }

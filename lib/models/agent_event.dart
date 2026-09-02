@@ -13,7 +13,7 @@ enum AgentEventType {
   /// 一次打开网页（narrchat_webFetchPage）。
   fetch,
 
-  /// 一次状态工具调用（narrchat_setLine / narrchat_advanceTime 等）。
+  /// 一次状态工具调用（narrchat_readState / narrchat_editSection 等）。
   tool,
 }
 

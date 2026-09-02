@@ -147,15 +147,34 @@ class AiResponseParser {
   /// 空字段也输出对应的空 `## 标题` 区块，保持 6 区块齐全形态；
   /// 字段值原样写入（[parse] 的产物字段均已 trim），因此
   /// `parse(serialize(x))` 可还原出相同的 [ParsedAiResponse]（round-trip）。
-  static String serialize(ParsedAiResponse parsed) {
-    final blocks = <(String, String)>[
-      ('aiNarrative', parsed.aiNarrative),
-      ('recommendedAction', parsed.recommendedAction),
-      ('currentTime', parsed.currentTime),
-      ('worldState', parsed.worldState),
-      ('characterState', parsed.characterState),
-      ('memorySummary', parsed.memorySummary),
-    ];
+  static String serialize(ParsedAiResponse parsed) => _serializeBlocks([
+        ('aiNarrative', parsed.aiNarrative),
+        ('recommendedAction', parsed.recommendedAction),
+        ('currentTime', parsed.currentTime),
+        ('worldState', parsed.worldState),
+        ('characterState', parsed.characterState),
+        ('memorySummary', parsed.memorySummary),
+      ]);
+
+  /// AGENT 模式正文序列化：三个小节（`## 剧情演绎` → `## 推荐行动` →
+  /// `## 当前时间`，顺序与正文输出契约一致）。
+  ///
+  /// 世界/角色/记忆三栏在 AGENT 模式下由工具维护，**绝不出现在 assistant
+  /// 历史里**：历史中的 assistant 消息是模型的模仿对象，一旦那里出现
+  /// `## 世界状态`，模型就会照抄 Chat 模式 6 区块输出（旧版 AGENT 不稳定的
+  /// 根因之一）。状态改由 `narrchat_readState` 的**工具结果**形态提供
+  /// （模型主动调用获取，工具结果不会被模仿成输出格式）。时间属于正文，
+  /// 故随正文一起序列化。
+  static String serializeAgentBody(ParsedAiResponse parsed) =>
+      _serializeBlocks([
+        ('aiNarrative', parsed.aiNarrative),
+        ('recommendedAction', parsed.recommendedAction),
+        ('currentTime', parsed.currentTime),
+      ]);
+
+  /// [serialize] / [serializeStoryOnly] 的共同实现：按给定字段顺序输出
+  /// `## 标题` 区块（空字段仍输出空标题，保持形态稳定）。
+  static String _serializeBlocks(List<(String, String)> blocks) {
     final buf = StringBuffer();
     for (var i = 0; i < blocks.length; i++) {
       if (i > 0) {

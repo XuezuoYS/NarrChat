@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/book.dart';
@@ -65,10 +66,12 @@ class _GatedStreamResponsesService extends AiService {
   final _ScriptedFrame frame2;
   int calls = 0;
 
-  /// 缺省帧 1：正文 + 记忆 noChange（必然校验失败 → 修复轮）。
+  /// 缺省帧 1：正文 + 时间 + 记忆 noChange（必然校验失败 → 状态轮）。
   static const _ScriptedFrame _defaultFrame1 = (
     chunks: [
-      AiStreamChunk(contentDelta: '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动'),
+      AiStreamChunk(
+          contentDelta:
+              '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动\n\n## 当前时间\n第二天 申时'),
       AiStreamChunk(toolCallId: 'fc_1', toolName: 'narrchat_editSection'),
       AiStreamChunk(
         toolCallId: 'fc_1',
@@ -76,7 +79,7 @@ class _GatedStreamResponsesService extends AiService {
       ),
     ],
     result: AiCallResult(
-      content: '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动',
+      content: '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动\n\n## 当前时间\n第二天 申时',
       toolCalls: [
         AiToolCall(
           id: 'fc_1',
@@ -187,10 +190,11 @@ void main() {
     // 正文未开始时：工具结果框按「返回顺序」显示在正文上方（工具先到）。
     expect(find.textContaining('Tool · narrchat_editSection'), findsWidgets);
 
-    // 第 2 帧：产出正文 + 补齐剩余状态工具，本轮完整结束。
+    // 第 2 帧：产出正文 + 当前时间 + 补齐剩余状态工具，本轮完整结束。
     gates[1].complete(
       const AiCallResult(
-        content: '## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。',
+        content:
+            '## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。\n\n## 当前时间\n第二天 午时',
         toolCalls: [
           AiToolCall(
             id: 'fc_2',
@@ -215,11 +219,6 @@ void main() {
               ],
             },
           ),
-          AiToolCall(
-            id: 'fc_4',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第二天 午时'},
-          ),
         ],
         promptTokens: 2,
         completionTokens: 2,
@@ -230,7 +229,7 @@ void main() {
     await waitSendDone(tester, provider);
   });
 
-  testWidgets('修复轮重复输出的正文增量被丢弃：正文块始终只有首帧正文', (tester) async {
+  testWidgets('状态轮复读的正文增量被丢弃：正文块始终只有正文轮帧正文', (tester) async {
     final frame2 = (
       chunks: const [
         AiStreamChunk(contentDelta: '## 剧情演绎\n重复正文（修复轮复读）\n\n## 推荐行动\n行动'),
@@ -270,11 +269,6 @@ void main() {
                 {'op': 'noChange'},
               ],
             },
-          ),
-          AiToolCall(
-            id: 'fc_5',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第二天 申时'},
           ),
         ],
         promptTokens: 2,
@@ -354,19 +348,16 @@ void main() {
         responseId: 'r1',
       ),
     );
-    // 帧 2：标题帧（真正的正文）+ 剩余状态工具（完整性补齐）。
+    // 帧 2：标题帧（真正的正文 + 当前时间）+ 剩余状态工具（完整性补齐）。
     final frame2 = (
       chunks: const [
-        AiStreamChunk(contentDelta: '## 剧情演绎\n真正的正文\n\n## 推荐行动\nx'),
+        AiStreamChunk(
+            contentDelta:
+                '## 剧情演绎\n真正的正文\n\n## 推荐行动\nx\n\n## 当前时间\n第一天 深夜'),
       ],
       result: const AiCallResult(
-        content: '## 剧情演绎\n真正的正文\n\n## 推荐行动\nx',
+        content: '## 剧情演绎\n真正的正文\n\n## 推荐行动\nx\n\n## 当前时间\n第一天 深夜',
         toolCalls: [
-          AiToolCall(
-            id: 'fc_2',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第一天 深夜'},
-          ),
           AiToolCall(
             id: 'fc_3',
             name: 'narrchat_editSection',
@@ -496,11 +487,6 @@ void main() {
               ],
             },
           ),
-          AiToolCall(
-            id: 'fc_5',
-            name: 'narrchat_advanceTime',
-            arguments: {'time': '第一天 午时'},
-          ),
         ],
         promptTokens: 2,
         completionTokens: 2,
@@ -532,5 +518,66 @@ void main() {
     ai.frame2Gate.complete();
     await future;
     await waitSendDone(tester, provider);
+  });
+
+  testWidgets('轮次常驻黄框：结束后警告仍挂在正文轮上，可手动关闭', (tester) async {
+    // 1 正文帧 + 4 状态帧（状态帧全部只回文本 → 空手帧不再止损，
+    // 直到帧数上限后缺项转常驻警告）。
+    final gates = [
+      for (var i = 0; i < 5; i++) Completer<AiCallResult>(),
+    ];
+    final ai = _ScriptResponsesService(gates);
+    final settings = AiSettingsProvider();
+    final provider = await pumpChatScreen(
+      tester,
+      ai: ai,
+      bookDao: FakeBookDao(books: [book]),
+      settings: settings,
+      aiSettingsProvider: settings,
+    );
+
+    final future = provider.sendRound(userInput: '测试', book: book);
+    for (var i = 0; i < 60 && ai.calls < 1; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    // 帧 1：只写正文，一个状态工具都不调 → 交给状态轮。
+    gates[0].complete(
+      const AiCallResult(
+        content: '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动',
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'r1',
+      ),
+    );
+    for (var i = 0; i < 60 && ai.calls < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(ai.calls, 2, reason: '状态轮请求应已发出');
+    // 状态帧：全部只回文本不调工具 → 空手帧继续修复到上限，缺项转常驻警告。
+    for (var i = 1; i < gates.length; i++) {
+      gates[i].complete(
+        const AiCallResult(
+          content: '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动',
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'r2',
+        ),
+      );
+    }
+    await future;
+    await waitSendDone(tester, provider);
+
+    final idx = provider.rounds.last.roundIndex;
+    expect(provider.roundWarningsFor(idx), isNotEmpty);
+    // 生成已结束（顶部流式提示框随之消失），警告改挂在正文轮上。
+    //（时间属正文，缺项只含世界/角色/记忆三栏——警告列表里没有时间项。）
+    expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
+    expect(find.textContaining('记忆总结本轮未更新'), findsOneWidget);
+    expect(provider.roundWarningsFor(idx), isNot(contains('当前时间')));
+
+    await tester.tap(find.byKey(const ValueKey('dismiss_round_warning')));
+    await tester.pump();
+    expect(provider.roundWarningsFor(idx), isEmpty);
+    expect(find.textContaining('世界状态本轮未更新'), findsNothing);
   });
 }

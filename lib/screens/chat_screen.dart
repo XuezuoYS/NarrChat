@@ -206,6 +206,9 @@ class _ChatScreenState extends State<ChatScreen>
   int _lastRoundsCount = 0;
   double _lastChatLayoutWidth = 0;
 
+  /// 已见过的「常驻警告变更计数」（警告框增删会改变条目高度，需重测）。
+  int _lastWarningsVersion = 0;
+
   /// 宽屏右侧栏拖拽中的实时宽度（null = 未拖拽）。
   ///
   /// 拖动期间只对本页 setState（不触发全局 UI 设置通知），
@@ -1686,14 +1689,18 @@ class _ChatScreenState extends State<ChatScreen>
     final rounds = roundProvider.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
-    // 楼层跳转：轮次来源（引用+长度）或聊天区宽度变化时清空实测数据缓存。
+    // 楼层跳转：轮次来源（引用+长度）、常驻警告变化或聊天区宽度变化时
+    // 清空实测数据缓存（警告框出现 / 关闭会改变条目高度）。
+    final warningsVersion = roundProvider.roundWarningsVersion;
     if (!identical(rounds, _lastRoundsSource) ||
         rounds.length != _lastRoundsCount ||
+        warningsVersion != _lastWarningsVersion ||
         (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
       _itemHeights.clear();
       _itemOffsets.clear();
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
+      _lastWarningsVersion = warningsVersion;
       _lastChatLayoutWidth = chatWidth;
     }
     final isSending = roundProvider.isSending;
@@ -1752,16 +1759,35 @@ class _ChatScreenState extends State<ChatScreen>
           final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
           // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
           if (showFailure && index == chatRounds.length * 2) {
+            // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 空正文轮：
+            // 说明状态改动已作废，与红色错误框语义不同）。
+            final pendingIndex = roundProvider.nextRoundIndex;
+            final notes = roundProvider.roundWarningsFor(pendingIndex);
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: FailedAttemptBubble(
-                attempt: failureAttempt,
-                onRetry: _retryFailure,
-                onEditAndRetry: _editAndRetryFailure,
-                onClear: _clearFailure,
-                onViewRaw: roundProvider.failedRawExchanges != null
-                    ? _showFailedRawDialog
-                    : null,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FailedAttemptBubble(
+                    attempt: failureAttempt,
+                    onRetry: _retryFailure,
+                    onEditAndRetry: _editAndRetryFailure,
+                    onClear: _clearFailure,
+                    onViewRaw: roundProvider.failedRawExchanges != null
+                        ? _showFailedRawDialog
+                        : null,
+                  ),
+                  if (notes.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _AgentWarningsBox(
+                      warnings: notes,
+                      title: '本轮未正常完成（不影响已生成的轮次）',
+                      onDismiss: () =>
+                          roundProvider.dismissRoundWarnings(pendingIndex),
+                    ),
+                  ],
+                ],
               ),
             );
           } else if (showPendingUser && index == virtualBase) {
@@ -1800,6 +1826,8 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               );
             } else {
+              // 本轮常驻警告（仅内存，可手动关闭）：AGENT 状态未完整落地。
+              final warnings = roundProvider.roundWarningsFor(round.roundIndex);
               item = Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: ChatBubble(
@@ -1811,14 +1839,30 @@ class _ChatScreenState extends State<ChatScreen>
                   recommendedAction: round.recommendedAction,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
-                  footer: AiBubbleActions(
-                    round: round,
-                    onViewSidebar: () => _onViewSidebar(round),
-                    onDelete: () => _handleDelete(round),
-                    onRefresh: () => _handleReAsk(round),
-                    onViewRaw: roundProvider.rawExchangesFor(round.id!) != null
-                        ? () => _showRawDialog(round)
-                        : null,
+                  footer: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (warnings.isNotEmpty) ...[
+                        _AgentWarningsBox(
+                          warnings: warnings,
+                          onDismiss: () => roundProvider.dismissRoundWarnings(
+                            round.roundIndex,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      AiBubbleActions(
+                        round: round,
+                        onViewSidebar: () => _onViewSidebar(round),
+                        onDelete: () => _handleDelete(round),
+                        onRefresh: () => _handleReAsk(round),
+                        onViewRaw:
+                            roundProvider.rawExchangesFor(round.id!) != null
+                            ? () => _showRawDialog(round)
+                            : null,
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -3433,11 +3477,23 @@ class _ToolEventBoxState extends State<_ToolEventBox> {
       );
 }
 
-/// AGENT 模式钳制警告框：修复 2 次后仍未通过校验、被跳过应用的修改项。
+/// 警告框（黄，Warning 级）：两种用法同一形态——
+/// - 生成中：流式气泡顶部实时提示本轮已跳过的状态修改（[onDismiss] 为空）；
+/// - 结束后：挂在对应轮次上的**常驻**提示（仅内存、不入库不云同步，可手动关闭）。
 class _AgentWarningsBox extends StatelessWidget {
   final List<String> warnings;
 
-  const _AgentWarningsBox({required this.warnings});
+  /// 标题（缺省 = 状态修改被跳过）。
+  final String title;
+
+  /// 非空则右上角显示关闭按钮（常驻提示用）。
+  final VoidCallback? onDismiss;
+
+  const _AgentWarningsBox({
+    required this.warnings,
+    this.title = '部分状态修改未通过校验，已跳过（不影响剧情正文）',
+    this.onDismiss,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -3455,13 +3511,33 @@ class _AgentWarningsBox extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '部分状态修改未通过校验，已跳过（不影响剧情正文）',
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-              color: context.narrColors.warning,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: context.narrColors.warning,
+                  ),
+                ),
+              ),
+              if (onDismiss != null)
+                IconButton(
+                  key: const ValueKey('dismiss_round_warning'),
+                  icon: const Icon(Icons.close, size: 15),
+                  color: context.narrColors.warning,
+                  tooltip: '关闭提示',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 22,
+                    minHeight: 22,
+                  ),
+                  onPressed: onDismiss,
+                ),
+            ],
           ),
           for (final w in warnings)
             Padding(

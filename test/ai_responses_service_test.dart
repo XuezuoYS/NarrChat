@@ -214,4 +214,84 @@ void main() {
       expect(result.toolCalls[2].arguments['content'], contains('第2轮'));
     });
   });
+
+  group('responses 截断（incomplete）与失败（failed）', () {
+    test('流式触顶：保留截断前的正文与工具参数并标记 incomplete', () async {
+      final ai = AiService(
+        client: MockClient((request) async => sseResponse([
+          'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n写到一半"}',
+          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
+          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"worldState\\""}',
+          'data: {"type":"response.incomplete","response":{"id":"r9","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":5,"output_tokens":4096}}}',
+          '',
+        ])),
+      );
+
+      final result = await ai.responses(
+        apiBaseUrl: 'https://api.deepseek.com',
+        apiKey: 'key',
+        requestBody: const {'model': 'm', 'input': []},
+        stream: true,
+      );
+
+      // 关键：不抛异常——上层按语义补救（旧行为 = 整轮失败）。
+      expect(result.incomplete, isTrue);
+      expect(result.incompleteReason, 'max_output_tokens');
+      expect(result.content, contains('写到一半'));
+      expect(result.toolCalls, hasLength(1));
+      // 参数 JSON 未闭合 → 标记为无法解析（不得当成合法空参数调用）。
+      expect(result.toolCalls.single.argumentsUnparsable, isTrue);
+      expect(result.completionTokens, 4096);
+      expect(result.responseId, 'r9');
+    });
+
+    test('非流式 status=incomplete → 同样标记并保留部分结果', () async {
+      final ai = AiService(
+        client: MockClient((request) async => jsonResponse('''
+{
+  "id": "resp_9",
+  "status": "incomplete",
+  "incomplete_details": {"reason": "max_output_tokens"},
+  "output": [{"type": "message", "content": [{"type": "output_text", "text": "半截正文"}]}],
+  "usage": {"input_tokens": 3, "output_tokens": 8}
+}
+''')),
+      );
+
+      final result = await ai.responses(
+        apiBaseUrl: 'https://api.deepseek.com',
+        apiKey: 'key',
+        requestBody: const {'model': 'm', 'input': []},
+      );
+
+      expect(result.incomplete, isTrue);
+      expect(result.incompleteReason, 'max_output_tokens');
+      expect(result.content, '半截正文');
+    });
+
+    test('failed 事件缺 error 字段：文案仍可读，绝不出现 "null"', () async {
+      final ai = AiService(
+        client: MockClient((request) async => sseResponse([
+          'data: {"type":"response.failed","response":{"id":"r1"}}',
+          '',
+        ])),
+      );
+
+      await expectLater(
+        ai.responses(
+          apiBaseUrl: 'https://api.deepseek.com',
+          apiKey: 'key',
+          requestBody: const {'model': 'm', 'input': []},
+          stream: true,
+        ),
+        throwsA(
+          isA<AiException>().having(
+            (e) => e.message,
+            'message',
+            contains('服务端未给出原因'),
+          ),
+        ),
+      );
+    });
+  });
 }

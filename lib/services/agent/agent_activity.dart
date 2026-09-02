@@ -12,7 +12,7 @@ enum AgentActivityType {
   /// 正在执行打开网页工具（narrchat_webFetchPage）。
   fetching,
 
-  /// 正在执行状态工具（narrchat_setLine / narrchat_advanceTime 等）。
+  /// 正在执行状态工具（narrchat_readState / narrchat_editSection 等）。
   tooling,
 }
 

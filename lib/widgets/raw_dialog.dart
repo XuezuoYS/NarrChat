@@ -237,7 +237,7 @@ const double _kScrollTopPadding = 40;
 ///
 /// - 请求 / 返回按时间线交错展示：【请求体】→【AI返回】→…；
 /// - AI 返回分三块：思考块 / 工具调用块（原始 tool_calls JSON，含
-///   `narrchat_webSearch` / `narrchat_setLine` 等全部工具）/ 正文块，
+///   `narrchat_webSearch` / `narrchat_editSection` 等全部工具）/ 正文块，
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
