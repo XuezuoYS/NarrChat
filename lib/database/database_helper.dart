@@ -58,8 +58,7 @@ class DatabaseHelper {
     );
   }
 
-  /// 当前数据库 schema 版本（供迁移测试断言目标版本）。
-  @visibleForTesting
+  /// 当前数据库 schema 版本（迁移测试断言目标版本、调试页展示代码期望版本）。
   static int get currentDbVersion => _dbVersion;
 
   /// 数据库版本迁移入口（幂等）。
