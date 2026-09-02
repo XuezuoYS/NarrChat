@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import '../models/api_type.dart';
 
 /// 请求体构建所需的动态值（由调用方按当前设置与每轮选项组装）。
@@ -28,6 +26,9 @@ class AiRequestValues {
   /// 工具列表（联网搜索等）；null 表示本轮不注入工具。
   final List<Map<String, dynamic>>? tools;
 
+  /// 系统指令（Response API 协议的 `instructions` 字段；null 表示移除该键）。
+  final String? instructions;
+
   const AiRequestValues({
     required this.model,
     required this.messages,
@@ -37,6 +38,7 @@ class AiRequestValues {
     required this.maxTokens,
     required this.stream,
     this.tools,
+    this.instructions,
   });
 }
 
@@ -44,12 +46,13 @@ class AiRequestValues {
 ///
 /// 两种构建路径：
 /// - [buildPresetBody]：按模型预设的 [RequestParamRules] 动态组合（模块化、可扩展）；
-/// - [buildCustomBody]：按用户自定义 JSON 模板替换占位符后直发（自定义模型）。
+/// - 预设规则不满足的高阶定制需求由各协议专有构建器负责（如 Response API 的
+///   AGENT 请求体），不再提供「自定义 JSON 模板」直发路径。
 class AiRequestBodyBuilder {
   AiRequestBodyBuilder._();
 
   // ---------------------------------------------------------------------------
-  // 占位符（可在预设规则与自定义模板中使用）
+  // 占位符（可在预设规则中使用）
   // ---------------------------------------------------------------------------
   static const String placeholderModel = '{{model}}';
   static const String placeholderMessages = '{{messages}}';
@@ -59,32 +62,7 @@ class AiRequestBodyBuilder {
   static const String placeholderReasoningEffort = '{{reasoning_effort}}';
   static const String placeholderMaxTokens = '{{max_tokens}}';
   static const String placeholderTools = '{{tools}}';
-
-  static const List<String> allPlaceholders = [
-    placeholderModel,
-    placeholderMessages,
-    placeholderStream,
-    placeholderTemperature,
-    placeholderThinkingType,
-    placeholderReasoningEffort,
-    placeholderMaxTokens,
-    placeholderTools,
-  ];
-
-  /// 默认自定义请求体模板（OpenAI 兼容格式）。
-  ///
-  /// 占位符代表 JSON 编码后的值（无需额外引号）：
-  /// `{{model}}` / `{{messages}}` / `{{stream}}` / `{{temperature}}` /
-  /// `{{thinking_type}}` / `{{reasoning_effort}}` / `{{max_tokens}}` / `{{tools}}`。
-  static const String defaultCustomRequestBody = '''
-{
-  "model": {{model}},
-  "messages": {{messages}},
-  "stream": {{stream}},
-  "temperature": {{temperature}},
-  "max_tokens": {{max_tokens}}
-}
-''';
+  static const String placeholderInstructions = '{{instructions}}';
 
   /// 值为 null 时移除顶层键的哨兵（如未设置最大 Tokens / 本轮无工具）。
   static const Object _omit = Object();
@@ -149,6 +127,8 @@ class AiRequestBodyBuilder {
           return v.maxTokens ?? _omit;
         case placeholderTools:
           return v.tools ?? _omit;
+        case placeholderInstructions:
+          return v.instructions ?? _omit;
         default:
           return value;
       }
@@ -160,68 +140,5 @@ class AiRequestBodyBuilder {
       return value.map((e) => _resolveValue(e, v)).toList();
     }
     return value;
-  }
-
-  // ---------------------------------------------------------------------------
-  // 自定义模板路径
-  // ---------------------------------------------------------------------------
-
-  /// 替换自定义请求体 JSON 模板中的占位符并解析为请求体 Map。
-  ///
-  /// - 模板必须是合法 JSON（占位符替换后校验）；
-  /// - `{{max_tokens}}` 未设置时替换为 `null`（多数 OpenAI 兼容服务端忽略 null）；
-  /// - `{{tools}}` 未开启时替换为 `[]`。
-  ///
-  /// 抛出 [FormatException]（消息为中文友好提示）当模板非法。
-  static Map<String, dynamic> buildCustomBody({
-    required String template,
-    required AiRequestValues values,
-  }) {
-    final replaced = _substitute(template, values);
-    try {
-      final decoded = jsonDecode(replaced);
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('自定义请求体顶层必须是 JSON 对象');
-      }
-      return decoded;
-    } on FormatException {
-      rethrow;
-    } catch (_) {
-      throw const FormatException('自定义请求体不是合法 JSON，请检查语法与占位符');
-    }
-  }
-
-  /// 校验自定义请求体模板（用合法 JSON 占位值替换后解析），非法时抛 [FormatException]。
-  static void validateCustomTemplate(String template) {
-    final sanity = template
-        .replaceAll(placeholderModel, '"m"')
-        .replaceAll(placeholderMessages, '[]')
-        .replaceAll(placeholderStream, 'false')
-        .replaceAll(placeholderTemperature, '0')
-        .replaceAll(placeholderThinkingType, '"enabled"')
-        .replaceAll(placeholderReasoningEffort, '"high"')
-        .replaceAll(placeholderMaxTokens, '0')
-        .replaceAll(placeholderTools, '[]');
-    try {
-      jsonDecode(sanity);
-    } on FormatException {
-      throw const FormatException('自定义请求体不是合法 JSON，请检查语法与占位符');
-    }
-  }
-
-  static String _substitute(String template, AiRequestValues values) {
-    String json(Object? v) => jsonEncode(v);
-    return template
-        .replaceAll(placeholderModel, json(values.model))
-        .replaceAll(placeholderMessages, json(values.messages))
-        .replaceAll(placeholderStream, values.stream ? 'true' : 'false')
-        .replaceAll(placeholderTemperature, json(values.temperature))
-        .replaceAll(
-          placeholderThinkingType,
-          json(values.thinking ? 'enabled' : 'disabled'),
-        )
-        .replaceAll(placeholderReasoningEffort, json(values.reasoningEffort))
-        .replaceAll(placeholderMaxTokens, values.maxTokens?.toString() ?? 'null')
-        .replaceAll(placeholderTools, json(values.tools ?? const []));
   }
 }

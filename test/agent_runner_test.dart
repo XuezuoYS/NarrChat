@@ -23,6 +23,12 @@ class _FakeTool implements NarrAgentTool {
   String get name => toolName;
 
   @override
+  AgentActivityType get activityType => switch (toolName) {
+        'narrchat_webFetchPage' => AgentActivityType.fetching,
+        _ => AgentActivityType.searching,
+      };
+
+  @override
   String get description => '测试工具';
 
   @override

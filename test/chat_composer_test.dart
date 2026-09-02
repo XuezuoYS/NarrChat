@@ -14,8 +14,8 @@ import 'helpers/fakes.dart';
 /// 搜索 BETA 标黄的警告色（取自浅色主题，与 UI 实现一致）。
 final Color _kWarningYellow = NarrChatColors.light.warning;
 
-/// 全部选项关闭的设置（用于「无」摘要用例）。
-class _AllDisabledSettings extends AiSettingsProvider {
+/// 全部选项关闭的设置（用于「无」摘要用例，Chat 协议无 AGENT 徽标）。
+class _AllDisabledSettings extends ChatCompatibleSettings {
   @override
   bool get thinking => false;
   @override

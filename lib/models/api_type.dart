@@ -87,7 +87,7 @@ class ApiType {
     this.maxTokensNote,
   });
 
-  /// OpenAI 兼容 API（也是当前唯一支持的接入类型）。
+  /// OpenAI 兼容 API（Chat Completions 协议）。
   ///
   /// DeepSeek 官方请求体动态组合规则（OpenAI 兼容）：
   /// - 始终注入：model / messages / stream / thinking（官方默认开启，必须显式声明）
@@ -98,7 +98,7 @@ class ApiType {
   /// - 联网搜索：追加 tools。
   static const ApiType openAiCompatible = ApiType(
     id: openAiCompatibleId,
-    displayName: 'OpenAI 兼容 API',
+    displayName: 'OpenAI Chat API 兼容',
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
@@ -131,12 +131,62 @@ class ApiType {
   /// OpenAI 兼容 API 类型 id。
   static const String openAiCompatibleId = 'openai-compatible';
 
+  /// OpenAI Response API 兼容（AGENT 模式协议）。
+  ///
+  /// 按官方兼容实现组织请求体（以 DeepSeek Responses API 兼容性明细为准）：
+  /// - 始终注入：model / instructions / input / stream / max_output_tokens
+  ///   （instructions 为空时移除该键；input 取 messages 数组，responses 的
+  ///   message item 与 chat 消息结构兼容，含 image 的 user 消息由适配层转换）；
+  /// - 思考模式：reasoning.effort（low/high/max），不发送 temperature；
+  /// - 非思考模式：temperature + **reasoning.effort = "none"**——DeepSeek 思考
+  ///   模式**默认开启**（默认 high），Responses 格式以 `reasoning.effort` 控制，
+  ///   `none` 表示关闭；省略该字段等于思考开启（修复「关闭思考后仍在思考」）；
+  /// - 联网搜索：tools（function 类型，与 Chat 协议一致）。
+  ///
+  /// 启用该协议的平台自动进入 AGENT 模式（行级状态工具 + 工作副本合并）。
+  static const ApiType openAiResponses = ApiType(
+    id: openAiResponsesId,
+    displayName: 'OpenAI Response API 兼容',
+    supportsStreaming: true,
+    supportsThinking: true,
+    supportsSearch: true,
+    requestRules: RequestParamRules([
+      ParamRule(ParamCondition.always, {
+        'model': '{{model}}',
+        'instructions': '{{instructions}}',
+        'input': '{{messages}}',
+        'stream': '{{stream}}',
+        'max_output_tokens': '{{max_tokens}}',
+      }),
+      ParamRule(ParamCondition.thinking, {
+        'reasoning': {'effort': '{{reasoning_effort}}'},
+      }),
+      ParamRule(ParamCondition.notThinking, {
+        'temperature': '{{temperature}}',
+        'reasoning': {'effort': 'none'},
+      }),
+      ParamRule(ParamCondition.search, {
+        'tools': '{{tools}}',
+      }),
+    ]),
+    temperatureNote: '思考模式下不发送该参数',
+    reasoningEffortNote: '非思考模式下强制 effort=none（关闭思考）',
+    maxTokensNote: '留空由服务端自动决定',
+  );
+
+  /// OpenAI Response API 兼容类型 id。
+  static const String openAiResponsesId = 'openai-responses';
+
+  /// 是否 Response API 协议（AGENT 模式）。
+  bool get isResponses => id == openAiResponses.id;
+
   /// 按 [id] 查找；未知 id 回退 [openAiCompatible]。
   static ApiType byId(String id) {
+    if (id == openAiResponses.id) return openAiResponses;
     if (id == openAiCompatible.id) return openAiCompatible;
     return openAiCompatible;
   }
 
-  /// 当前支持的 API 类型列表（按展示顺序）。
-  static List<ApiType> get all => [openAiCompatible];
+  /// 当前支持的 API 类型列表（按展示顺序；默认平台协议在前）。
+  static List<ApiType> get all => [openAiResponses, openAiCompatible];
 }

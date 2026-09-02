@@ -127,19 +127,43 @@ void main() {
   });
 
   group('SettingsFormState 平台/模型编辑', () {
-    test('addPlatform：生成自定义平台，API 类型固定为 OpenAI 兼容', () {
+    test('addPlatform：生成自定义平台，API 类型按传入协议（默认 Response 兼容）', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
       final before = form.platforms.length;
 
-      form.addPlatform(name: '我的网关', baseUrl: 'https://gw.example.com');
+      form.addPlatform(
+        name: '我的网关',
+        baseUrl: 'https://gw.example.com',
+        apiTypeId: ApiType.openAiResponsesId,
+      );
 
       expect(form.platforms.length, before + 1);
       final p = form.platforms.last;
       expect(p.displayName, '我的网关');
       expect(p.baseUrl, 'https://gw.example.com');
-      expect(p.apiType.id, ApiType.openAiCompatible.id);
+      expect(p.apiType.id, ApiType.openAiResponses.id);
       expect(p.models, isEmpty);
+    });
+
+    test('setPlatformApiType：切换默认平台接入协议（Response ↔ Chat）', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+
+      expect(
+        form.platforms.first.apiType.id,
+        ApiType.openAiResponses.id,
+      );
+      form.setPlatformApiType(
+        AiPlatforms.defaultPlatformId,
+        ApiType.openAiCompatibleId,
+      );
+      expect(form.platforms.first.apiType.id, ApiType.openAiCompatible.id);
+      form.setPlatformApiType(
+        AiPlatforms.defaultPlatformId,
+        ApiType.openAiResponsesId,
+      );
+      expect(form.platforms.first.apiType.id, ApiType.openAiResponses.id);
     });
 
     test('removePlatform：内置默认平台与最后一个平台不可删', () {
@@ -152,7 +176,11 @@ void main() {
       expect(form.platforms.length, 1);
 
       // 再添加自定义平台；删除内置默认平台仍应无效果（isBuiltin + id 双保险）。
-      form.addPlatform(name: 'p2', baseUrl: 'x');
+      form.addPlatform(
+        name: 'p2',
+        baseUrl: 'x',
+        apiTypeId: ApiType.openAiCompatibleId,
+      );
       form.removePlatform(defaultId);
       expect(form.platforms.length, 2);
       expect(form.platforms.any((p) => p.id == defaultId), isTrue);
@@ -165,7 +193,11 @@ void main() {
     test('addModel / removeModel：维护至少一个模型（自定义平台）', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
-      form.addPlatform(name: 'gw', baseUrl: 'x');
+      form.addPlatform(
+        name: 'gw',
+        baseUrl: 'x',
+        apiTypeId: ApiType.openAiCompatibleId,
+      );
       final platformId = form.platforms.last.id;
       final before = form.platforms.last.models.length;
 

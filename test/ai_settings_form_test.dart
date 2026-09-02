@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -67,7 +68,7 @@ void main() {
     expect(find.text('内置'), findsOneWidget);
     // 展开后可看到连接设置与模型列表。
     expect(find.text('API 类型'), findsOneWidget);
-    expect(find.text('OpenAI 兼容 API'), findsWidgets);
+    expect(find.text('OpenAI Response API 兼容'), findsWidgets);
     expect(find.text('模型'), findsOneWidget);
     expect(
       find.textContaining('deepseek-v4-pro', findRichText: true),
@@ -87,7 +88,7 @@ void main() {
     expect(find.text('删除此平台'), findsNothing);
   });
 
-  testWidgets('添加自定义平台：仅 OpenAI 兼容；展开后可添加模型、可删除平台', (tester) async {
+  testWidgets('添加自定义平台：API 类型可二选一（默认 Response 兼容）', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
@@ -101,8 +102,23 @@ void main() {
 
     final dialog = find.byType(AlertDialog);
     expect(dialog, findsOneWidget);
-    // 对话框内的 API 类型下拉只出现一个选项。
-    expect(find.descendant(of: dialog, matching: find.text('OpenAI 兼容 API')), findsOneWidget);
+    // 对话框内的 API 类型下拉默认选中 Response 兼容（两项协议可切换）。
+    expect(
+      find.descendant(of: dialog, matching: find.text('OpenAI Response API 兼容')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.descendant(
+        of: dialog,
+        matching: find.byWidgetPredicate((w) => w is DropdownButton),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('OpenAI Chat API 兼容'), findsWidgets);
+    expect(find.text('OpenAI Response API 兼容'), findsWidgets);
+    // 收起下拉（点回当前选中项），继续填写平台信息。
+    await tester.tap(find.text('OpenAI Response API 兼容').last);
+    await tester.pumpAndSettle();
 
     await tester.enterText(
       find.descendant(
@@ -211,7 +227,11 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
-    form.addPlatform(name: 'gw', baseUrl: 'x');
+    form.addPlatform(
+      name: 'gw',
+      baseUrl: 'x',
+      apiTypeId: ApiType.openAiCompatibleId,
+    );
     form.addModel(form.platforms.last.id, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
 
     await tester.pumpWidget(_buildApp(form));

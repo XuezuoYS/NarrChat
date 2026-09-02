@@ -12,10 +12,13 @@ import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
+import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
+import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/services/non_stream_replay.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
@@ -41,8 +44,11 @@ const String kHarnessBookUuid = 'book-1';
 /// - [ai]：AI 服务替身（默认 [ToggleAiService]）；
 /// - [bookDao] / [roundDao] / [worldBookDao]：数据层替身（默认新建）；
 /// - [settings]：AI 设置（默认新建）；
+/// - [webSearchTool]：注入的搜索工具替身（AGENT / Chat 工具循环共用）；
 /// - [onGenerationCompleted]：生成完成回调（通知服务接线用）；
 /// - [retryDelay]：网络类失败自动重试间隔（测试可注入零时长）；
+/// - [searchService]：Agent 默认搜索工具共用的搜索服务替身（默认新建）；
+/// - [nonStreamReplayer]：非流式展示回放器（测试可注入零间隔加速）；
 /// - [seedRounds]：预置的对话轮次（roundIndex 1..n，正文足够长便于滚动断言）；
 /// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；楼层跳转等需要
 ///   “单轮高于视口”的场景可加大）。
@@ -53,11 +59,15 @@ Future<RoundProvider> pumpChatScreen(
   FakeRoundDao? roundDao,
   FakeWorldBookDao? worldBookDao,
   AiSettingsProvider? settings,
+  AiSettingsProvider? aiSettingsProvider,
   UiSettingsProvider? uiSettings,
   ImageImportService? imageImport,
   ClipboardPasteService? clipboardPaste,
+  WebSearchTool? webSearchTool,
   void Function(String bookUuid, String bookTitle)? onGenerationCompleted,
   Duration retryDelay = const Duration(milliseconds: 800),
+  HtmlSearchService? searchService,
+  NonStreamReplayer? nonStreamReplayer,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
   Size size = const Size(1400, 900),
@@ -88,7 +98,11 @@ Future<RoundProvider> pumpChatScreen(
     dao: dao,
     aiService: ai ?? ToggleAiService(),
     bookDao: bookDao0,
+    aiSettingsProvider: aiSettingsProvider,
+    webSearchTool: webSearchTool,
     retryDelay: retryDelay,
+    searchService: searchService,
+    nonStreamReplayer: nonStreamReplayer,
     onGenerationCompleted: onGenerationCompleted,
   );
   await roundProvider.loadRounds(kHarnessBookUuid);

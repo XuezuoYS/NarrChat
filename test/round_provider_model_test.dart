@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 
 import 'helpers/fakes.dart';
@@ -17,7 +16,7 @@ void main() {
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
       // 默认预设（DeepSeek V4 Pro，模型 ID deepseek-v4-pro）。
-      aiSettingsProvider: AiSettingsProvider(),
+      aiSettingsProvider: ChatCompatibleSettings(),
     );
 
     final ok = await provider.sendRound(userInput: '你好', book: book);
@@ -47,7 +46,7 @@ void main() {
       dao: dao,
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
-      aiSettingsProvider: AiSettingsProvider(),
+      aiSettingsProvider: ChatCompatibleSettings(),
     );
 
     final images = ['img/aaa.png', 'img/bbb.jpg'];
@@ -68,7 +67,7 @@ void main() {
       dao: dao,
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
-      aiSettingsProvider: AiSettingsProvider(),
+      aiSettingsProvider: ChatCompatibleSettings(),
     );
     await provider.loadRounds(book.uuid);
     await provider.sendRound(

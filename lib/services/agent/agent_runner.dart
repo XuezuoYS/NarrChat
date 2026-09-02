@@ -1,34 +1,10 @@
 import 'dart:convert';
 
+import 'agent_activity.dart';
 import '../ai_service.dart';
 import 'narr_agent_tool.dart';
 
-/// Agent 活动类型。
-enum AgentActivityType {
-  /// 新一轮 LLM 调用开始（新一轮思考应新建思考块）。
-  turn,
-
-  /// 正在执行搜索工具（narrchat_webSearch）。
-  searching,
-
-  /// 正在执行打开网页工具（narrchat_webFetchPage）。
-  fetching,
-}
-
-/// Agent 活动事件（回调给 UI 展示搜索 / 打开页面等过程）。
-class AgentActivity {
-  final AgentActivityType type;
-
-  /// 活动主体：搜索关键词或打开的链接。
-  final String query;
-  final int iteration;
-
-  const AgentActivity({
-    required this.type,
-    required this.query,
-    required this.iteration,
-  });
-}
+export 'agent_activity.dart';
 
 /// Agent 工具循环（research-then-generate）。
 ///
@@ -46,7 +22,7 @@ class AgentRunner {
     this.maxIterations = 30,
   });
 
-  /// 根据当前 messages / tools 构建请求体（由调用方按预设规则或自定义模板实现）。
+  /// 根据当前 messages / tools 构建请求体（由调用方按预设规则实现）。
   final Map<String, dynamic> Function(
     List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
@@ -141,13 +117,16 @@ class AgentRunner {
           });
           continue;
         }
-        // 活动主体：搜索为关键词、打开网页为链接。
+        // 活动主体：搜索为关键词、打开网页为链接、状态工具为工具名+参数摘要。
         final subject = tc.name == 'narrchat_webFetchPage'
             ? (tc.arguments['url'] as String? ?? '')
-            : (tc.arguments['query'] as String? ?? '');
+            : (tc.name.startsWith('narrchat_') &&
+                    tc.name != 'narrchat_webSearch'
+                ? '${tc.name} ${_shortArgs(tc.arguments)}'
+                : (tc.arguments['query'] as String? ?? ''));
         onActivity?.call(
           AgentActivity(
-            type: _activityTypeFor(tc.name),
+            type: tool?.activityType ?? _activityTypeFor(tc.name),
             query: subject,
             iteration: i,
           ),
@@ -171,14 +150,30 @@ class AgentRunner {
     throw const AiException('Agent 工具调用超出最大迭代次数');
   }
 
-  /// 工具名 → 活动类型（决定 UI 展示为搜索框还是打开页面框）。
+  /// 工具名 → 活动类型兜底（未声明 [NarrAgentTool.activityType] 的旧工具）。
   static AgentActivityType _activityTypeFor(String toolName) {
     switch (toolName) {
       case 'narrchat_webFetchPage':
         return AgentActivityType.fetching;
+      case 'narrchat_webSearch':
+        return AgentActivityType.searching;
       default:
         return AgentActivityType.searching;
     }
+  }
+
+  /// 工具参数短摘要（含中文引号未转义的多值截断，供 UI 提示）。
+  static String _shortArgs(Map<String, dynamic> args) {
+    if (args.isEmpty) return '';
+    return args.entries
+        .take(3)
+        .map((e) => '${e.key}=${_shortValue(e.value)}')
+        .join('；');
+  }
+
+  static String _shortValue(Object? v) {
+    final s = v is String ? v : v.toString();
+    return s.length <= 24 ? s : '${s.substring(0, 24)}…';
   }
 
   /// 预览用：返回首轮实际会发出的请求体（当前 messages + 工具 schema）。

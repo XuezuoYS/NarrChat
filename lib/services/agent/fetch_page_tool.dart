@@ -1,4 +1,5 @@
 import '../html_search_service.dart';
+import 'agent_activity.dart';
 import 'narr_agent_tool.dart';
 
 /// 打开网页工具：从搜索结果中选定页面，抓取正文回传模型深入阅读。
@@ -44,6 +45,9 @@ class FetchPageTool implements NarrAgentTool {
 
   /// 抓取正文截取长度。
   final int _maxChars;
+
+  @override
+  AgentActivityType get activityType => AgentActivityType.fetching;
 
   @override
   String get name => 'narrchat_webFetchPage';

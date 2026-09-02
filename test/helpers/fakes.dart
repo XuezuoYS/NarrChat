@@ -1,15 +1,19 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
 import 'package:narrchat/database/world_book_dao.dart';
+import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/world_book_entry.dart';
+import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
@@ -49,6 +53,18 @@ class FakeImageRevivalService implements ImageRevivalService {
     revived.add(path);
     return result;
   }
+}
+
+/// Chat 协议（OpenAI Chat API 兼容）的 AI 设置替身。
+///
+/// 默认平台协议已切换为 Response API（AGENT 模式）；需要走传统 Chat
+/// 直发 / 搜索路径的用例继承本类，避免触碰响应式（responses）路径。
+class ChatCompatibleSettings extends AiSettingsProvider {
+  @override
+  AiPlatform get selectedPlatform => AiPlatforms.defaultPlatform.copyWith(
+        apiType: ApiType.openAiCompatible,
+        baseUrl: 'https://api.deepseek.com',
+      );
 }
 
 /// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。

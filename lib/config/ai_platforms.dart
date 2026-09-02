@@ -38,11 +38,15 @@ class AiPlatforms {
   );
 
   /// 默认平台（DeepSeek 开放平台）。
+  ///
+  /// 默认使用「OpenAI Response API 兼容」协议：启用该协议即自动进入
+  /// AGENT 模式（行级状态工具）。需要传统 Chat 对话的用户可新增
+  /// 「OpenAI Chat API 兼容」平台的平台。
   static AiPlatform buildDefaultPlatform() {
     return AiPlatform(
       id: defaultPlatformId,
       displayName: '默认（DeepSeek 开放平台）',
-      apiType: ApiType.openAiCompatible,
+      apiType: ApiType.openAiResponses,
       baseUrl: AppConfig.defaultApiBaseUrlEffective,
       isBuiltin: true,
       models: const [deepseekV4Pro, deepseekV4Flash, deepseekV4FlashVisionExp],
@@ -55,8 +59,9 @@ class AiPlatforms {
   /// 默认选中的模型 id（与旧版默认预设一致）。
   static String get defaultModelId => deepseekV4Pro.id;
 
-  /// 回退使用的请求体规则（OpenAI 兼容）。
-  static RequestParamRules get defaultRules => ApiType.openAiCompatible.requestRules;
+  /// 回退使用的请求体规则（默认平台协议 = Response API 兼容）。
+  static RequestParamRules get defaultRules =>
+      ApiType.openAiResponses.requestRules;
 
   /// 回退使用的参考模型（用于无设置注入的测试 / 降级路径）。
   static AiModel get defaultModel => deepseekV4Pro;

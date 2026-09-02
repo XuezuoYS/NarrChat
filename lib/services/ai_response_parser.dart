@@ -178,6 +178,25 @@ class AiResponseParser {
     return match.group(2)!.trim();
   }
 
+  /// 返回首个「正文类标题」（`## 剧情演绎` / `## 正文`，含 `##剧情演绎`、
+  /// `#`/`###` 等容错形态）在原文本中的**行起点偏移**；未找到返回 null。
+  ///
+  /// 用于 AGENT 帧级正文分类：标题帧才算「正文已产出」，无标题的说明性文字
+  ///（如「我先搜索一下…」）只是开场白，不作为正文、也不阻塞后续真正正文。
+  static int? storyHeadingStart(String raw) {
+    if (raw.trim().isEmpty) return null;
+    var lineStart = 0;
+    for (final line in raw.split('\n')) {
+      final heading = _tryParseHeading(line);
+      if (heading != null) {
+        final field = _matchSection(heading);
+        if (field == 'aiNarrative' || field == _bodyField) return lineStart;
+      }
+      lineStart += line.length + 1;
+    }
+    return null;
+  }
+
   /// 将标题文本与已知区块名匹配（忽略所有空白，提高容错性）。
   static String? _matchSection(String heading) {
     final normalized = heading.replaceAll(RegExp(r'\s+'), '');

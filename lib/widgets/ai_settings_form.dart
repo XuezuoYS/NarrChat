@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import '../models/ai_platform.dart';
 import '../models/api_type.dart';
-import '../services/ai_request_body_builder.dart';
 import '../utils/focus_utils.dart';
 import 'app_menu.dart';
 import 'settings_form_state.dart';
@@ -51,7 +50,11 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
       builder: (_) => const _AddPlatformDialog(),
     );
     if (result == null || !mounted) return;
-    _form.addPlatform(name: result.name, baseUrl: result.baseUrl);
+    _form.addPlatform(
+      name: result.name,
+      baseUrl: result.baseUrl,
+      apiTypeId: result.apiTypeId,
+    );
     // 把对话框里输入的 API Key 写入新平台（列表末尾）的控制器。
     _form.apiKeyCtrlFor(_form.platforms.last.id).text = result.apiKey;
   }
@@ -413,7 +416,11 @@ class _PlatformSettings extends StatelessWidget {
             for (final t in ApiType.all)
               DropdownMenuItem(value: t.id, child: Text(t.displayName)),
           ],
-          onChanged: (_) {},
+          onChanged: (v) {
+            if (v != null && v != platform.apiType.id) {
+              form.setPlatformApiType(platform.id, v);
+            }
+          },
         ),
         const SizedBox(height: 12),
         TextField(
@@ -489,7 +496,6 @@ class _ModelExpandableItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasTemplate = (model.requestTemplate ?? '').trim().isNotEmpty;
     // 内置默认平台的模型不可删；自定义平台模型删到仅剩一个时也不可删。
     final canDelete = !platform.isBuiltin && platform.models.length > 1;
     return ExpandableCard(
@@ -508,9 +514,7 @@ class _ModelExpandableItem extends StatelessWidget {
                     ),
                   ),
                   TextSpan(
-                    text: hasTemplate
-                        ? '  ${model.id} · 自定义请求体'
-                        : '  ${model.id}',
+                    text: '  ${model.id}',
                     style: TextStyle(
                       fontSize: 11,
                       color: Theme.of(
@@ -602,7 +606,6 @@ class _ModelSettingsEditor extends StatefulWidget {
 class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
   late final TextEditingController _shortLabelCtrl;
   late final TextEditingController _maxTokensCtrl;
-  late final TextEditingController _requestTemplateCtrl;
 
   @override
   void initState() {
@@ -611,16 +614,12 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     _maxTokensCtrl = TextEditingController(
       text: widget.model.maxTokens?.toString() ?? '',
     );
-    _requestTemplateCtrl = TextEditingController(
-      text: widget.model.requestTemplate ?? '',
-    );
   }
 
   @override
   void dispose() {
     _shortLabelCtrl.dispose();
     _maxTokensCtrl.dispose();
-    _requestTemplateCtrl.dispose();
     super.dispose();
   }
 
@@ -797,68 +796,6 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
               ),
           ],
         ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '自定义请求体（可选，OpenAI 兼容 JSON）',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-            ),
-            TextButton(
-              onPressed: () {
-                _requestTemplateCtrl.text =
-                    AiRequestBodyBuilder.defaultCustomRequestBody;
-                _update(
-                  (m) => m.copyWith(
-                    requestTemplate:
-                        AiRequestBodyBuilder.defaultCustomRequestBody,
-                  ),
-                );
-              },
-              child: const Text('插入默认模板'),
-            ),
-          ],
-        ),
-        TextField(
-          controller: _requestTemplateCtrl,
-          onTapOutside: unfocusOnTapOutside,
-          onChanged: (v) => _update((m) => m.copyWith(requestTemplate: v)),
-          minLines: 8,
-          maxLines: 16,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 12,
-            height: 1.5,
-          ),
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            isDense: true,
-            alignLabelWithHint: true,
-            hintText: '留空使用平台默认规则；非空按此模板直发',
-          ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 12,
-          runSpacing: 4,
-          children: [
-            for (final p in AiRequestBodyBuilder.allPlaceholders)
-              Text(
-                p,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontFamily: 'monospace',
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
-          ],
-        ),
       ],
     );
   }
@@ -868,16 +805,18 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
 class _AddedPlatform {
   final String name;
   final String baseUrl;
+  final String apiTypeId;
   final String apiKey;
 
   const _AddedPlatform({
     required this.name,
     required this.baseUrl,
+    required this.apiTypeId,
     required this.apiKey,
   });
 }
 
-/// 新增自定义平台对话框：平台名 + Base URL + API 类型（仅 OpenAI 兼容一项）+ API Key。
+/// 新增自定义平台对话框：平台名 + Base URL + API 类型（Response / Chat 兼容）+ API Key。
 class _AddPlatformDialog extends StatefulWidget {
   const _AddPlatformDialog();
 
@@ -889,7 +828,7 @@ class _AddPlatformDialogState extends State<_AddPlatformDialog> {
   final _nameCtrl = TextEditingController();
   final _baseUrlCtrl = TextEditingController();
   final _apiKeyCtrl = TextEditingController();
-  String _apiType = ApiType.openAiCompatibleId;
+  String _apiType = ApiType.openAiResponsesId;
 
   @override
   void dispose() {
@@ -904,7 +843,12 @@ class _AddPlatformDialogState extends State<_AddPlatformDialog> {
     final baseUrl = _baseUrlCtrl.text.trim();
     if (name.isEmpty || baseUrl.isEmpty) return;
     Navigator.of(context).pop(
-      _AddedPlatform(name: name, baseUrl: baseUrl, apiKey: _apiKeyCtrl.text),
+      _AddedPlatform(
+        name: name,
+        baseUrl: baseUrl,
+        apiTypeId: _apiType,
+        apiKey: _apiKeyCtrl.text,
+      ),
     );
   }
 

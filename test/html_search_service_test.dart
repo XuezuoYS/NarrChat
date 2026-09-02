@@ -429,6 +429,28 @@ var __article__ = {"doc":{"type":"doc","content":[
       ]);
     });
 
+    test('回退目标仍失败：跳转链以失败终止点收尾（含目标 URL 与状态码）', () async {
+      final hops = <FetchHop>[];
+      final service = HtmlSearchService(
+        client: MockClient(
+          (request) async => http.Response('forbidden', 403),
+        ),
+      );
+
+      await expectLater(
+        service.fetchPageText(
+          'https://baike.baidu.com/item/x',
+          onHop: hops.add,
+        ),
+        throwsA(isA<HttpStatusException>()),
+      );
+      // 跳转链：应用重定向（无状态码）→ 最终失败（WAP 目标 + 403，failed=true）。
+      expect(hops.map((h) => '${h.url}|${h.statusCode}|${h.failed}').toList(), [
+        'https://baike.baidu.com/item/x|null|false',
+        'https://wapbaike.baidu.com/item/x|403|true',
+      ]);
+    });
+
     test('手动跟随多级 3xx 重定向并回调每跳', () async {
       final hops = <FetchHop>[];
       final service = HtmlSearchService(

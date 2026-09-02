@@ -19,8 +19,9 @@ import '../services/local_config_service.dart';
 ///
 /// 配置结构（camelCase）：
 /// - `platforms`：平台数组，每个平台含 `id` / `displayName` / `apiTypeId` /
-///   `baseUrl` / `isBuiltin` / `models`（模型含 `id` / `shortLabel` /
-///   `temperature` / `reasoningEffort` / `maxTokens` / `requestTemplate`）；
+///   `baseUrl` / `isBuiltin` / `supportsResponseChaining` / `models`
+///   （模型含 `id` / `shortLabel` / `temperature` / `reasoningEffort` /
+///   `maxTokens` 与能力开关）；
 /// - `selectedPlatformId` / `selectedModelId`：当前选中的平台与模型；
 /// - `lastThinking` / `lastStreaming` / `lastSearch`：Chat 页每轮选项记忆。
 class AiSettingsProvider extends ChangeNotifier {
@@ -51,7 +52,6 @@ class AiSettingsProvider extends ChangeNotifier {
   static const String _keySelectedPreset = 'selectedPreset';
   static const String _keyPresetParams = 'presetParams';
   static const String _keyCustomModelName = 'customModelName';
-  static const String _keyCustomRequestBody = 'customRequestBody';
 
   // ---- 旧版（v1.2.x 及更早）配置键，用于迁移 ----
   static const String _oldKeyModel = 'model';
@@ -227,6 +227,9 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 防御配置文件中 `isBuiltin` 字段丢失/被篡改为 false（旧结构迁移、手改
   /// 配置文件等）导致「默认配置可被删除」，以及此前「默认模型可被删除」的
   /// 问题：默认平台的预置模型若缺失则自动补回。
+  ///
+  /// 默认平台的接入协议**由用户设置页自主决定**（出厂为 Response API 兼容，
+  /// 可切换 Chat 兼容），此处不做强制覆盖。
   static List<AiPlatform> _normalizePlatforms(List<AiPlatform> platforms) {
     var list = platforms.map((p) {
       if (p.id == AiPlatforms.defaultPlatformId) {
@@ -341,7 +344,7 @@ class AiSettingsProvider extends ChangeNotifier {
   /// - `baseUrl` → 默认平台接口地址；
   /// - `presetParams`（按预设 id 记忆）应用到默认平台的同名模型；
   /// - 旧自定义模型（`customModelName` + `customRequestBody`）→ 默认平台追加一个
-  ///   模型，`requestTemplate` 取旧模板（等于默认模板时可留空）。
+  ///   模型（自定义请求体模板功能已移除，仅保留模型名与参数）。
   @visibleForTesting
   static AiPlatformsConfig migrateFromV2(Map<String, dynamic> cfg) {
     final presetId = (cfg[_keySelectedPreset] as String?) ?? '';
@@ -350,7 +353,6 @@ class AiSettingsProvider extends ChangeNotifier {
     final presetParams =
         (cfg[_keyPresetParams] as Map<String, dynamic>?) ?? const {};
     final customName = (cfg[_keyCustomModelName] as String?)?.trim() ?? '';
-    final customBody = (cfg[_keyCustomRequestBody] as String?) ?? '';
     final isCustom = presetId == '__custom__';
 
     final base = AiPlatforms.defaultPlatform.copyWith(baseUrl: baseUrl);
@@ -366,7 +368,6 @@ class AiSettingsProvider extends ChangeNotifier {
           id: customName,
           temperature: 1.0,
           reasoningEffort: AppConfig.defaultReasoningEffort,
-          requestTemplate: customBody.trim().isEmpty ? null : customBody,
         ),
       );
       selectedModelId = customName;
@@ -570,16 +571,8 @@ class AiSettingsProvider extends ChangeNotifier {
   // 请求体构建
   // ---------------------------------------------------------------------------
 
-  /// 按当前模型构建请求体：模型带自定义模板则走模板直发，否则按平台接入协议规则。
+  /// 按当前模型构建请求体（由所属平台接入协议规则组合）。
   Map<String, dynamic> buildRequestBody(AiRequestValues values) {
-    final model = selectedModel;
-    final template = model.requestTemplate;
-    if (template != null && template.trim().isNotEmpty) {
-      return AiRequestBodyBuilder.buildCustomBody(
-        template: template,
-        values: values,
-      );
-    }
     return AiRequestBodyBuilder.buildPresetBody(
       rules: selectedPlatform.apiType.requestRules,
       values: values,

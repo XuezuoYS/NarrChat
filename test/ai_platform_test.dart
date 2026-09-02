@@ -12,6 +12,7 @@ AiRequestValues _values({
   int? maxTokens = 4096,
   bool stream = true,
   List<Map<String, dynamic>>? tools,
+  String? instructions,
 }) {
   return AiRequestValues(
     model: 'deepseek-v4-pro',
@@ -25,6 +26,7 @@ AiRequestValues _values({
     maxTokens: maxTokens,
     stream: stream,
     tools: tools,
+    instructions: instructions,
   );
 }
 
@@ -39,7 +41,18 @@ void main() {
       expect(apiType.temperatureNote, isNotEmpty);
       expect(apiType.reasoningEffortNote, isNotEmpty);
       expect(ApiType.byId('不存在').id, ApiType.openAiCompatible.id);
-      expect(ApiType.all, hasLength(1));
+    });
+
+    test('openAiResponses：AGENT 协议注册、byId 命中、all 两项', () {
+      final apiType = ApiType.openAiResponses;
+      expect(apiType.id, 'openai-responses');
+      expect(apiType.isResponses, isTrue);
+      expect(ApiType.openAiCompatible.isResponses, isFalse);
+      expect(apiType.supportsStreaming, isTrue);
+      expect(apiType.supportsThinking, isTrue);
+      expect(apiType.supportsSearch, isTrue);
+      expect(ApiType.byId('openai-responses').id, 'openai-responses');
+      expect(ApiType.all.map((t) => t.id), ['openai-responses', 'openai-compatible']);
     });
   });
 
@@ -58,7 +71,6 @@ void main() {
         temperature: 0.7,
         reasoningEffort: 'low',
         maxTokens: 2048,
-        requestTemplate: '{"model": {{model}}}',
         supportsStreaming: false,
         supportsThinking: true,
         supportsSearch: false,
@@ -70,7 +82,6 @@ void main() {
       expect(parsed.temperature, 0.7);
       expect(parsed.reasoningEffort, 'low');
       expect(parsed.maxTokens, 2048);
-      expect(parsed.requestTemplate, '{"model": {{model}}}');
       expect(parsed.supportsStreaming, isFalse);
       expect(parsed.supportsThinking, isTrue);
       expect(parsed.supportsSearch, isFalse);
@@ -101,10 +112,11 @@ void main() {
   });
 
   group('AiPlatform', () {
-    test('默认平台：预置 Pro / Flash / Vision Exp，默认模型能力全开', () {
+    test('默认平台：预置 Pro / Flash / Vision Exp，协议为 Response API 兼容', () {
       final platform = AiPlatforms.defaultPlatform;
       expect(platform.isBuiltin, isTrue);
-      expect(platform.apiType.id, ApiType.openAiCompatible.id);
+      expect(platform.apiType.id, ApiType.openAiResponses.id);
+      expect(platform.supportsResponseChaining, isFalse);
       expect(
         platform.models.map((m) => m.id),
         ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
@@ -117,6 +129,18 @@ void main() {
       expect(platform.modelById('deepseek-v4-flash-vision-exp')!.supportsVision, isTrue);
       expect(platform.modelById('deepseek-v4-pro')!.supportsVision, isFalse);
       expect(platform.modelById('deepseek-v4-flash')!.supportsVision, isFalse);
+    });
+
+    test('supportsResponseChaining：toJson/fromJson 往返，旧配置缺失默认 false', () {
+      final platform = AiPlatforms.defaultPlatform.copyWith(
+        supportsResponseChaining: true,
+      );
+      final parsed = AiPlatform.fromJson(platform.toJson());
+      expect(parsed.supportsResponseChaining, isTrue);
+      final legacy = AiPlatform.fromJson(
+        AiPlatforms.defaultPlatform.toJson()..remove('supportsResponseChaining'),
+      );
+      expect(legacy.supportsResponseChaining, isFalse);
     });
   });
 
@@ -175,53 +199,56 @@ void main() {
     });
   });
 
-  group('AiRequestBodyBuilder.buildCustomBody', () {
-    test('默认模板替换后为合法请求体', () {
-      final body = AiRequestBodyBuilder.buildCustomBody(
-        template: AiRequestBodyBuilder.defaultCustomRequestBody,
-        values: _values(temperature: 0.7, maxTokens: 2048),
+  group('AiRequestBodyBuilder.openAiResponses 规则', () {
+    test('思考模式：instructions/input/reasoning.effort，无 temperature', () {
+      final body = AiRequestBodyBuilder.buildPresetBody(
+        rules: ApiType.openAiResponses.requestRules,
+        values: _values(
+          thinking: true,
+          reasoningEffort: 'high',
+          maxTokens: 4096,
+          instructions: 'AGENT 指令',
+        ),
       );
       expect(body['model'], 'deepseek-v4-pro');
-      expect((body['messages'] as List).length, 2);
+      expect(body['instructions'], 'AGENT 指令');
+      expect(body['input'], _values().messages);
       expect(body['stream'], isTrue);
-      expect(body['temperature'], 0.7);
-      expect(body['max_tokens'], 2048);
+      expect((body['reasoning'] as Map)['effort'], 'high');
+      expect(body['temperature'], isNull);
+      expect(body['max_output_tokens'], 4096);
+      expect(body.containsKey('tools'), isFalse);
     });
 
-    test('max_tokens 为空替换为 null', () {
-      final body = AiRequestBodyBuilder.buildCustomBody(
-        template: AiRequestBodyBuilder.defaultCustomRequestBody,
+    test('非思考模式：注入 temperature + reasoning.effort=none（显式关闭思考）', () {
+      final body = AiRequestBodyBuilder.buildPresetBody(
+        rules: ApiType.openAiResponses.requestRules,
+        values: _values(thinking: false, temperature: 0.7),
+      );
+      expect(body['temperature'], 0.7);
+      // DeepSeek 思考模式默认开启：省略 reasoning 等于思考开启，
+      // 必须显式 effort=none 才能关闭。
+      expect((body['reasoning'] as Map)['effort'], 'none');
+    });
+
+    test('instructions 为空时移除该键；max_output_tokens 为空时移除', () {
+      final body = AiRequestBodyBuilder.buildPresetBody(
+        rules: ApiType.openAiResponses.requestRules,
         values: _values(maxTokens: null),
       );
-      expect(body['max_tokens'], isNull);
+      expect(body.containsKey('instructions'), isFalse);
+      expect(body.containsKey('max_output_tokens'), isFalse);
     });
 
-    test('非法模板抛 FormatException', () {
-      expect(
-        () => AiRequestBodyBuilder.buildCustomBody(
-          template: '{ 非法',
-          values: _values(),
-        ),
-        throwsFormatException,
+    test('tools 非空时注入 tools', () {
+      const tools = [
+        {'type': 'function', 'function': {'name': 'narrchat_setLine'}},
+      ];
+      final body = AiRequestBodyBuilder.buildPresetBody(
+        rules: ApiType.openAiResponses.requestRules,
+        values: _values(tools: tools),
       );
-    });
-  });
-
-  group('AiRequestBodyBuilder.validateCustomTemplate', () {
-    test('合法模板通过', () {
-      expect(
-        () => AiRequestBodyBuilder.validateCustomTemplate(
-          AiRequestBodyBuilder.defaultCustomRequestBody,
-        ),
-        returnsNormally,
-      );
-    });
-
-    test('非法模板抛 FormatException', () {
-      expect(
-        () => AiRequestBodyBuilder.validateCustomTemplate('{"model": '),
-        throwsFormatException,
-      );
+      expect(body['tools'], tools);
     });
   });
 }

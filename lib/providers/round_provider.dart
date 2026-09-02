@@ -12,16 +12,21 @@ import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../services/agent/agent_round_runner.dart';
 import '../services/agent/agent_runner.dart';
 import '../services/agent/fetch_page_tool.dart';
 import '../services/agent/narr_agent_tool.dart';
+import '../services/agent/state/agent_state_working_copy.dart';
+import '../services/agent/state/state_tools.dart';
 import '../services/agent/web_search_tool.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_store.dart';
+import '../services/non_stream_replay.dart';
 import '../services/prompt_builder.dart';
+import '../services/prompt_formats.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
 import 'cloud_sync_provider.dart';
@@ -47,9 +52,39 @@ class _BookGenState {
   bool cancelRequested = false;
   String streamingContent = '';
 
+  /// 是否处于「块时间线」展示模式：流式传输，或非流式 + 多轮
+  /// （AGENT / 联网搜索）时的非流式回放——两者都渲染思考 / 工具 / 正文块。
+  bool showTimeline = false;
+
   /// Agent 过程时间线：思考 / 搜索事件按真实顺序交错排列
   ///（思考1 → 搜索1 → 思考2 → 搜索2 …）。
   final List<AgentEvent> agentEvents = [];
+
+  /// 正文起点边界：`contentBoundaryIndex` = 首个正文增量到达时的事件数
+  ///（-1 = 正文尚未开始）。正文是「块外」的特殊块：渲染时插入到该下标，
+  /// 此前的块在其上方、之后的块在其下方（严格按 AI 返回顺序）。
+  int contentBoundaryIndex = -1;
+
+  /// 本轮正文采纳标记：首个**标题帧**（内容含 `## 剧情演绎` 标题）在帧结束
+  /// 后置位；「无标题 + 无工具」帧兜底采纳（防格式不合规时丢失故事）。
+  ///
+  /// 与 `AgentRoundRunner` 的正文采纳策略同步：无标题 + 带工具调用的帧
+  /// = 搜索开场白（如「我先搜索一下…」），**不作为正文、不阻塞后续版正文**；
+  /// 采纳后（修复 / 补充帧）复读的正文增量被丢弃（不上屏、不拼接）。
+  bool narrativeTaken = false;
+
+  /// 当前帧原始正文缓冲（帧级分类：标题帧 / 搜索开场白；每次 turn 重置）。
+  String frameContent = '';
+
+  /// 当前帧是否已出现 `## 剧情演绎` 标题（出现后正文才开始上屏）。
+  bool narrativePublished = false;
+
+  /// 当前帧是否携带工具调用（无标题 + 有工具 = 搜索开场白，不采纳不阻塞）。
+  bool frameHadTools = false;
+
+  /// 工具流式预览：call_id → 事件下标；call_id → 已累积的原始参数文本。
+  final Map<String, int> toolEventIdxByCallId = {};
+  final Map<String, String> toolArgsRawByCallId = {};
 
   /// 下一段思考增量到达时是否新建思考事件（agent 每轮开始时置位）。
   bool newReasoningBlockPending = true;
@@ -62,6 +97,9 @@ class _BookGenState {
 
   /// 失败条目的 RAW 时间线（最近一次失败 / 中断尝试）。
   List<RawExchange>? failedRawExchanges;
+
+  /// AGENT 模式的状态钳制警告（修复 2 次后仍失败、已跳过应用的修改项）。
+  final List<String> agentWarnings = [];
 
   /// 生成期间展示的用户输入（结束 / 中断后清除）。
   String pendingUserInput = '';
@@ -110,6 +148,8 @@ class RoundProvider extends ChangeNotifier {
     FetchPageTool? fetchPageTool,
     /// 默认搜索工具共用的搜索服务（测试可注入 mock）。
     HtmlSearchService? searchService,
+    /// 非流式响应的展示回放器（测试可注入零间隔 / 大粒度以加速）。
+    NonStreamReplayer? nonStreamReplayer,
     /// 网络类失败重试间隔（测试可注入零时长）。
     Duration retryDelay = const Duration(milliseconds: 800),
   })  : _dao = dao ?? RoundDao(),
@@ -129,6 +169,7 @@ class RoundProvider extends ChangeNotifier {
         _retryDelay = retryDelay {
     // 共享搜索服务实例（默认 Agent 工具按书复用，避免重复创建 http client）。
     _searchService = searchService ?? HtmlSearchService();
+    _nonStreamReplayer = nonStreamReplayer ?? const NonStreamReplayer();
     // 测试 / 调用方可注入工具（非 null 时 Agent 运行优先使用）。
     _webSearchTool = webSearchTool;
     _fetchPageTool = fetchPageTool;
@@ -145,6 +186,9 @@ class RoundProvider extends ChangeNotifier {
   final CloudSyncProvider? _cloudSyncProvider;
   /// 共享搜索服务（默认 Agent 工具按书复用同一实例，避免重复创建 http client）。
   late final HtmlSearchService _searchService;
+
+  /// 非流式响应的展示回放器（驱动与流式相同的块时间线展示）。
+  late final NonStreamReplayer _nonStreamReplayer;
 
   /// 测试 / 调用方可注入的工具（非 null 时 Agent 运行优先使用）。
   WebSearchTool? _webSearchTool;
@@ -193,9 +237,20 @@ class RoundProvider extends ChangeNotifier {
   bool get isStreaming => _curGen?.isStreaming ?? false;
   String get streamingContent => _curGen?.streamingContent ?? '';
 
+  /// 当前是否处于「块时间线」展示模式（流式传输或非流式回放）——
+  /// 决定生成中气泡渲染时间线（思考 / 工具 / 正文块）还是等待转圈提示。
+  bool get showTimeline => _curGen?.showTimeline ?? false;
+
   /// Agent 过程时间线（思考 / 搜索交错，供流式气泡渲染）。
   List<AgentEvent> get agentEvents =>
       _curGen == null ? const [] : List.unmodifiable(_curGen!.agentEvents);
+
+  /// 正文起点边界（-1 = 正文尚未开始；正文块插入事件序列的该下标处）。
+  int get contentBoundaryIndex => _curGen?.contentBoundaryIndex ?? -1;
+
+  /// AGENT 模式状态钳制警告（修复 2 次后仍跳过应用的修改项）。
+  List<String> get agentWarnings =>
+      _curGen == null ? const [] : List.unmodifiable(_curGen!.agentWarnings);
 
   /// 当前自动重试进度（灰字「错误重连……（x/3）」）；null = 无重试。
   (int, int)? get retryStatus => _curGen?.retryStatus;
@@ -345,7 +400,10 @@ class RoundProvider extends ChangeNotifier {
       userImages: userImages,
     );
     final Map<String, dynamic> firstBody;
-    if (req.useSearch) {
+    if (req.agent) {
+      // AGENT 模式：预览响应式首帧。
+      firstBody = req.directBody;
+    } else if (req.useSearch) {
       final runner = AgentRunner(
         buildBody: _makeBodyBuilder(_aiSettingsProvider, req.useStream),
         // 预览只构建首帧，不发起任何 AI 调用（call 永不被触发）。
@@ -393,12 +451,18 @@ class RoundProvider extends ChangeNotifier {
             userInput: userInput,
             historyRounds: recentRounds,
           );
+    // AGENT 模式：平台协议为 Response API 兼容（默认平台）且注入了设置时启用；
+    // 无设置注入（仅测试/降级路径）保持 Chat 语义。
+    final agentMode = settings != null && settings.selectedPlatform.apiType.isResponses;
+    // 按模式组装本轮提示词：Chat / AGENT 共享同一构建流程，仅格式要求不同
+    //（AGENT 模式下 systemPrompt 即 Response API 的 instructions 字段）。
     final prompts = _promptBuilder.build(
       book: book,
       lastRound: lastRound,
       userInput: userInput,
       worldBookEntries: worldBookEntries,
       mods: modsBundle,
+      mode: agentMode ? PromptMode.agent : PromptMode.chat,
     );
 
     // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
@@ -414,13 +478,14 @@ class RoundProvider extends ChangeNotifier {
           ? (r) => _imagePartsFor(r, imageDataUrls)
           : null,
     );
+    final userText = prompts.userPrompt;
     final userContent = supportsVision
         ? _userContentWithImages(
-            prompts.userPrompt,
+            userText,
             userImages,
             imageDataUrls,
           )
-        : prompts.userPrompt;
+        : userText;
 
     // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
     // 无设置注入时按预设能力回退（仅测试/降级路径）。
@@ -431,7 +496,85 @@ class RoundProvider extends ChangeNotifier {
     final model = (settings?.model.trim().isNotEmpty ?? false)
         ? settings!.model
         : AiPlatforms.defaultModelId;
-    // 按当前预设（规则构建器 / 自定义模板）动态组合请求体：
+    final thinking = settings?.thinking ?? AiPlatforms.defaultThinking;
+    final reasoningEffort =
+        settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort;
+    final temperature = settings?.temperature ?? 1.0;
+    final maxTokens = settings?.maxTokens;
+
+    // AGENT 模式：内部组装（instructions + responses input items + 工具 schema）。
+    if (agentMode) {
+      final instructions = useSearch
+          ? '${prompts.systemPrompt}\n\n$_searchInstruction'
+          : prompts.systemPrompt;
+      // AI 看到的 input = 历史消息 + 当前用户消息（vision 图片转换为 input_image 内容块）。
+      final inputItems = _responsesInputItems([
+        ...historyMessages,
+        {'role': 'user', 'content': userContent},
+      ]);
+      // 工具 schema（无副作用：状态工具基于一次性工作副本，仅读取 schema）。
+      final schemaTools = [
+        ...buildStateTools(
+          AgentStateWorkingCopy(
+            roundIndex: (lastRound?.roundIndex ?? 0) + 1,
+            lastRound: lastRound,
+            categoryNames: [for (final c in book.roleCategories) c.name],
+          ),
+        ),
+        if (useSearch) ..._makeAgentTools(null),
+      ];
+      final agentValues = AiRequestValues(
+        model: model,
+        messages: inputItems,
+        temperature: temperature,
+        thinking: thinking,
+        reasoningEffort: reasoningEffort,
+        maxTokens: maxTokens,
+        stream: useStream,
+        // Responses API 工具形态（与 Chat 的嵌套 function 不同）：
+        // name / description / parameters 在工具顶层。
+        tools: [
+          for (final t in schemaTools)
+            {
+              'type': 'function',
+              'name': t.name,
+              'description': t.description,
+              'parameters': t.parameters,
+            },
+        ],
+        instructions: instructions,
+      );
+      final firstBody = settings.buildRequestBody(agentValues);
+      return _RoundRequest(
+        systemPrompt: prompts.systemPrompt,
+        historyMessages: historyMessages,
+        userContent: userContent,
+        model: model,
+        useStream: useStream,
+        useSearch: useSearch,
+        directBody: firstBody,
+        agent: true,
+        agentInstructions: instructions,
+        agentInputItems: inputItems,
+        agentToolsSchemas: List.of(agentValues.tools!),
+        agentParamBase: {
+          'model': model,
+          'stream': useStream,
+          if (thinking)
+            'reasoning': {'effort': reasoningEffort},
+          if (!thinking) 'temperature': temperature,
+          // DeepSeek 思考模式默认开启（默认 high）；Responses 格式以
+          // reasoning.effort 控制，显式 `none` 才能关闭思考——
+          // 省略该字段 = 思考开启（修复「关闭思考后仍在思考」）。
+          if (!thinking) 'reasoning': const {'effort': 'none'},
+          if (maxTokens != null && maxTokens > 0) 'max_output_tokens': maxTokens,
+        },
+        agentChaining:
+            settings.selectedPlatform.supportsResponseChaining,
+      );
+    }
+
+    // Chat 模式：按当前预设（规则构建器）动态组合请求体：
     // 不同模式（思考 / 联网搜索 / 流式）下发送的参数由预设规则决定。
     final values = AiRequestValues(
       model: model,
@@ -440,11 +583,10 @@ class RoundProvider extends ChangeNotifier {
         ...historyMessages,
         {'role': 'user', 'content': userContent},
       ],
-      temperature: settings?.temperature ?? 1.0,
-      thinking: settings?.thinking ?? AiPlatforms.defaultThinking,
-      reasoningEffort:
-          settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort,
-      maxTokens: settings?.maxTokens,
+      temperature: temperature,
+      thinking: thinking,
+      reasoningEffort: reasoningEffort,
+      maxTokens: maxTokens,
       stream: useStream,
       tools: null,
     );
@@ -504,9 +646,15 @@ class RoundProvider extends ChangeNotifier {
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
     gen.pendingUserInput = userInput;
-    // 重置 Agent 过程时间线、重试状态与 RAW 时间线。
+    // 重置 Agent 过程时间线、重试状态、状态钳制警告与 RAW 时间线。
     gen.agentEvents.clear();
+    gen.contentBoundaryIndex = -1;
+    gen.agentWarnings.clear();
     gen.newReasoningBlockPending = true;
+    gen.narrativeTaken = false;
+    gen.narrativePublished = false;
+    gen.frameHadTools = false;
+    gen.frameContent = '';
     gen.retryStatus = null;
     gen.rawExchanges.clear();
     gen.failedRawExchanges = null;
@@ -523,19 +671,47 @@ class RoundProvider extends ChangeNotifier {
         userInput: userInput,
         userImages: userImages,
       );
+      // 非流式 + 多轮（AGENT / 联网搜索）：启用「展示回放」——一次性响应
+      // 切成合成流式块，按 AI 轮次展示每个块（思考 / 工具过程 → 结果 / 正文）。
+      final displayReplay = !req.useStream && (req.agent || req.useSearch);
+      gen.showTimeline = req.useStream || displayReplay;
+      gen.streamingContent = '';
       if (req.useStream) {
         gen.isStreaming = true;
-        gen.streamingContent = '';
-        notifyListeners();
       }
+      notifyListeners();
 
-      final onChunk = _buildStreamingOnChunk(req.useStream, gen, genToken);
+      final onChunk = _buildStreamingOnChunk(
+        gen,
+        genToken,
+        agentGate: req.agent,
+        enabled: req.useStream || displayReplay,
+      );
       // 取消闭包：用户显式中断，或本轮令牌已过期（新一轮已发起）都视为取消，
       // 使上一轮残留流自行中止，绝不继续向本轮注入内容。
       bool isCancelled() => gen.cancelRequested || genToken != gen.token;
-      // 本轮开启联网搜索 → Agent 工具循环（首轮带工具，搜索后生成）；
-      // 否则走单轮直发路径。
-      final result = req.useSearch
+      // AGENT 模式（Response API 协议）→ Agent 单轮执行器；否则 Chat 通道
+      //（联网搜索开 → Agent 工具循环；关 → 单轮直发）。
+      final agentOutcome = req.agent
+          ? await _callWithRetry(
+              () => _runAgentRound(
+                req: req,
+                settings: settings,
+                book: b,
+                gen: gen,
+                apiBaseUrl:
+                    settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
+                apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+                onChunk: onChunk,
+                isCancelled: isCancelled,
+              ),
+              gen: gen,
+              genToken: genToken,
+            )
+          : null;
+      final result = req.agent
+          ? agentOutcome!.result
+          : req.useSearch
           ? await _callWithRetry(
               () => _runAgent(
                 settings: settings,
@@ -575,6 +751,7 @@ class RoundProvider extends ChangeNotifier {
       // 用户主动中断：丢弃部分内容，以「已截断」失败条目保留用户输入。
       if (gen.cancelRequested) {
         gen.isStreaming = false;
+        gen.showTimeline = false;
         gen.streamingContent = '';
         gen.agentEvents.clear();
         gen.failedRawExchanges = List.of(gen.rawExchanges);
@@ -588,20 +765,50 @@ class RoundProvider extends ChangeNotifier {
         return false;
       }
       gen.isStreaming = false;
+      gen.showTimeline = false;
       gen.streamingContent = '';
       gen.agentEvents.clear();
 
       final parsed = AiResponseParser.parse(result.content);
+      // AGENT 模式快照：优先工作副本合并结果；若模型整轮**未使用任何状态
+      // 工具**（仅输出正文 / 状态文本），以解析到的状态区块降级兜底
+      //（按区块非空回填，缺省仍复制上一轮），避免文本中出现的时间/状态丢失。
+      // 状态区块可能出现在任意帧（含修复/补充帧），故从 fullContent 解析；
+      // 正文则严格取「采纳帧」（parsed），不受搜索开场白/修复帧影响。
+      final agentSnapshot = agentOutcome?.snapshot;
+      final parsedFull = agentOutcome == null
+          ? const ParsedAiResponse()
+          : AiResponseParser.parse(agentOutcome.fullContent);
+      final effectiveSnapshot = agentOutcome == null
+          ? null
+          : agentOutcome.outcomes.isEmpty
+              ? RoundSnapshot(
+                  worldState: parsedFull.worldState.trim().isEmpty
+                      ? agentSnapshot!.worldState
+                      : parsedFull.worldState,
+                  characterState: parsedFull.characterState.trim().isEmpty
+                      ? agentSnapshot!.characterState
+                      : parsedFull.characterState,
+                  memorySummary: parsedFull.memorySummary.trim().isEmpty
+                      ? agentSnapshot!.memorySummary
+                      : parsedFull.memorySummary,
+                  currentTime: parsedFull.currentTime.trim().isEmpty
+                      ? agentSnapshot!.currentTime
+                      : parsedFull.currentTime,
+                )
+              : agentSnapshot;
 
       final newRound = Round(
         bookUuid: b.uuid,
         roundIndex: (latestRound?.roundIndex ?? 0) + 1,
         userInput: userInput,
         aiNarrative: parsed.aiNarrative,
-        worldState: parsed.worldState,
-        characterState: parsed.characterState,
-        memorySummary: parsed.memorySummary,
-        currentTime: parsed.currentTime,
+        worldState: effectiveSnapshot?.worldState ?? parsed.worldState,
+        characterState:
+            effectiveSnapshot?.characterState ?? parsed.characterState,
+        memorySummary:
+            effectiveSnapshot?.memorySummary ?? parsed.memorySummary,
+        currentTime: effectiveSnapshot?.currentTime ?? parsed.currentTime,
         recommendedAction: parsed.recommendedAction,
         tokensIn: result.promptTokens,
         tokensOut: result.completionTokens,
@@ -627,6 +834,7 @@ class RoundProvider extends ChangeNotifier {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，
       // 以「已截断」失败条目保留用户输入。
       gen.isStreaming = false;
+      gen.showTimeline = false;
       gen.streamingContent = '';
       gen.agentEvents.clear();
       _error = null;
@@ -642,6 +850,7 @@ class RoundProvider extends ChangeNotifier {
     } catch (e) {
       // 请求失败：以「生成失败 + 原因」失败条目保留用户输入（不再弹消息提示）。
       gen.isStreaming = false;
+      gen.showTimeline = false;
       gen.streamingContent = '';
       gen.agentEvents.clear();
       gen.failedRawExchanges = List.of(gen.rawExchanges);
@@ -698,9 +907,19 @@ class RoundProvider extends ChangeNotifier {
       onChunk: onChunk,
       isCancelled: isCancelled,
     );
+    // 非流式 + 展示回放（onChunk 仅在流式或回放模式非空）：把一次性响应
+    // 切成合成块驱动块时间线。工具预览由活动回调创建（Chat 搜索循环），
+    // 此处不开启，避免「联网搜索框 + Tool 框」双框。
+    if (!stream && onChunk != null) {
+      await _nonStreamReplayer.replay(
+        result,
+        emit: onChunk,
+        isStopped: isCancelled,
+      );
+    }
     exchange
       ..thinking = result.reasoningContent
-      ..search = _formatToolCalls(result.toolCalls)
+      ..toolCalls = _formatToolCalls(result.toolCalls)
       ..content = result.content;
     return result;
   }
@@ -720,8 +939,8 @@ class RoundProvider extends ChangeNotifier {
   ///   「错误重连……（x/3）」，重置流式内容与 Agent 时间线后自动重试，
   ///   最多 [_maxAiRetries] 次；
   /// - API 业务类失败（[AiExceptionKind.api]）与用户中断：不重试，直接抛出。
-  Future<AiCallResult> _callWithRetry(
-    Future<AiCallResult> Function() action, {
+  Future<T> _callWithRetry<T>(
+    Future<T> Function() action, {
     required _BookGenState gen,
     required int genToken,
   }) async {
@@ -741,7 +960,13 @@ class RoundProvider extends ChangeNotifier {
         // 重置流式内容与 Agent 时间线，展示重试提示并稍候重试。
         gen.streamingContent = '';
         gen.agentEvents.clear();
+        gen.contentBoundaryIndex = -1;
+        gen.agentWarnings.clear();
         gen.newReasoningBlockPending = true;
+        gen.narrativeTaken = false;
+        gen.narrativePublished = false;
+        gen.frameHadTools = false;
+        gen.frameContent = '';
         gen.rawExchanges.clear();
         gen.retryStatus = (attempt + 1, _maxAiRetries);
         notifyListeners();
@@ -925,24 +1150,400 @@ class RoundProvider extends ChangeNotifier {
     );
   }
 
+  /// AGENT 单轮执行（Response API 协议 + 锚定式状态工具）。
+  ///
+  /// 返回聚合结果（正文 = 采纳帧；fullContent = 全帧拼接，供文本状态兜底）、
+  /// 合并快照与工具执行结果（供无工具时的文本状态下发兜底判断）。
+  Future<
+      ({
+        AiCallResult result,
+        String fullContent,
+        RoundSnapshot snapshot,
+        List<AgentToolOutcome> outcomes,
+      })> _runAgentRound({
+    required _RoundRequest req,
+    required AiSettingsProvider? settings,
+    required Book book,
+    required _BookGenState gen,
+    required String apiBaseUrl,
+    required String apiKey,
+    required void Function(AiStreamChunk chunk)? onChunk,
+    required bool Function() isCancelled,
+  }) async {
+    final workingCopy = AgentStateWorkingCopy(
+      roundIndex: (latestRound?.roundIndex ?? 0) + 1,
+      lastRound: latestRound,
+      categoryNames: [for (final c in book.roleCategories) c.name],
+    );
+    // 每次 Agent 运行使用绑定到本书生成状态的工具实例（多本书并发互不串书；
+    // 测试注入的搜索工具优先）。
+    final tools = <NarrAgentTool>[
+      ...buildStateTools(workingCopy),
+      if (req.useSearch) ..._makeAgentTools(gen),
+    ];
+    final runner = AgentRoundRunner(
+      buildBody: (items, previousResponseId) => _buildAgentBody(
+        req: req,
+        items: items,
+        previousResponseId: previousResponseId,
+      ),
+      call: (body, stream, onChunk, onRequestBody, isCancelled) =>
+          _responsesCapturing(
+        gen: gen,
+        requestBody: body,
+        apiBaseUrl: apiBaseUrl,
+        apiKey: apiKey,
+        stream: stream,
+        onChunk: onChunk,
+        isCancelled: isCancelled ?? () => false,
+      ),
+      tools: tools,
+      chaining: req.agentChaining,
+      // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
+      // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
+      // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。
+      onActivity: (a) {
+        if (a.type == AgentActivityType.turn) {
+          _handleAgentActivity(a, gen);
+        }
+      },
+      onToolStarted: (o) => _handleToolStarted(o, gen),
+      onToolFinished: (o) => _handleToolFinished(o, gen),
+      // 状态完整性（整轮累计判定）：每轮三个栏目都必须被「触及」
+      //（编辑或 noChange 声明）+ advanceTime 必调；模型仅输出正文未用工具时
+      // 触发补充轮，仍在 2 次修复上限内。
+      completenessCheck: (outcomes) {
+        final used = {for (final o in outcomes) o.name};
+        final missing = <String>[];
+        for (final s in AgentStateSection.values) {
+          if (!workingCopy.touchedSections.contains(s)) {
+            missing.add('未编辑${s.label}栏目（无变化也请用 op=noChange 声明）');
+          }
+        }
+        if (!used.contains('narrchat_advanceTime')) {
+          missing.add('未调用 narrchat_advanceTime（每轮必须，时间未变可传原值）');
+        }
+        return missing;
+      },
+    );
+
+    final roundResult = await runner.run(
+      initialInputItems: req.agentInputItems,
+      stream: req.useStream,
+      onChunk: onChunk,
+      isCancelled: isCancelled,
+    );
+    gen.agentWarnings
+      ..clear()
+      ..addAll(roundResult.warnings);
+    return (
+      result: AiCallResult(
+        content: roundResult.content,
+        reasoningContent: roundResult.reasoningContent,
+        promptTokens: roundResult.promptTokens,
+        completionTokens: roundResult.completionTokens,
+        responseId: roundResult.responseId,
+      ),
+      fullContent: roundResult.fullContent,
+      snapshot: workingCopy.mergedSnapshot(),
+      outcomes: roundResult.outcomes,
+    );
+  }
+
+  /// AGENT 模式请求体（首帧 / 续接帧）。
+  ///
+  /// 有状态链式（[req.agentChaining]）且已有 [previousResponseId] 时：
+  /// `previous_response_id + 新增 input`（仅参数基座，无 instructions）；
+  /// 否则全量发送（instructions + input items + 工具 schema）。
+  Map<String, dynamic> _buildAgentBody({
+    required _RoundRequest req,
+    required List<Map<String, dynamic>> items,
+    required String? previousResponseId,
+  }) {
+    if (req.agentChaining &&
+        previousResponseId != null &&
+        previousResponseId.isNotEmpty) {
+      return {
+        ...req.agentParamBase,
+        'previous_response_id': previousResponseId,
+        'input': items,
+      };
+    }
+    return {
+      ...req.agentParamBase,
+      'instructions': req.agentInstructions,
+      'input': items,
+      'tools': req.agentToolsSchemas,
+    };
+  }
+
+  /// 响应式 input items：vision 图片 parts 转为 `input_image` 内容块
+  ///（responses 协议与 chat 的 `image_url` 形状不同）。
+  static List<Map<String, dynamic>> _responsesInputItems(
+    List<Map<String, dynamic>> messages,
+  ) {
+    return [
+      for (final m in messages)
+        {
+          'role': m['role'],
+          'content': _responsesContent(m['content']),
+        },
+    ];
+  }
+
+  static Object _responsesContent(Object? content) {
+    if (content is! List) return content ?? '';
+    return [
+      for (final part in content)
+        if (part is Map && part['type'] == 'image_url')
+          {
+            'type': 'input_image',
+            'image_url': part['image_url']?['url'] ?? '',
+          }
+        else if (part is Map && part['type'] == 'text')
+          {'type': 'input_text', 'text': part['text']}
+        else
+          part,
+    ];
+  }
+
+  /// Response API 通道的 RAW 捕获（与 [_chatCapturing] 对称）。
+  Future<AiCallResult> _responsesCapturing({
+    required _BookGenState gen,
+    required Map<String, dynamic> requestBody,
+    required String apiBaseUrl,
+    required String apiKey,
+    required bool stream,
+    required void Function(AiStreamChunk chunk)? onChunk,
+    required bool Function() isCancelled,
+  }) async {
+    final exchange = RawExchange(
+      requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
+    );
+    gen.rawExchanges.add(exchange);
+    final result = await _aiService.responses(
+      apiBaseUrl: apiBaseUrl,
+      apiKey: apiKey,
+      requestBody: requestBody,
+      stream: stream,
+      onChunk: onChunk,
+      isCancelled: isCancelled,
+    );
+    // 非流式 + 展示回放：一次性响应切成合成块驱动块时间线。AGENT 模式的
+    // 工具事件统一由「流式预览 / 开始 / 完成」承载，故开启工具预览块
+    //（同一工具调用只产生一个事件框）。
+    if (!stream && onChunk != null) {
+      await _nonStreamReplayer.replay(
+        result,
+        emit: onChunk,
+        isStopped: isCancelled,
+        emitToolPreviews: true,
+      );
+    }
+    exchange
+      ..thinking = result.reasoningContent
+      ..toolCalls = _formatToolCalls(result.toolCalls)
+      ..content = result.content;
+    return result;
+  }
+
+  /// 工具名 → 事件类型（同一工具调用只产生一个事件框；类型决定图标/标题）。
+  static AgentEventType _toolEventType(String name) => switch (name) {
+        'narrchat_webSearch' => AgentEventType.search,
+        'narrchat_webFetchPage' => AgentEventType.fetch,
+        _ => AgentEventType.tool,
+      };
+
+  /// 工具**流式预览**回调：`output_item.added` / 参数增量到达即创建 / 更新
+  /// 工具卡片（与思考块同语义：先流式出现，执行完成后展示结果）。
+  ///
+  /// 与 [onToolStarted] 共享**同一个**事件（按 callId 匹配）：每次工具调用
+  /// 只产生一个事件框，杜绝「联网搜索框 + Tool 框」并存的双框现象。
+  void _handleToolPreview(AiStreamChunk chunk, _BookGenState gen) {
+    final id = chunk.toolCallId!;
+    var idx = gen.toolEventIdxByCallId[id];
+    if (idx == null) {
+      idx = gen.agentEvents.length;
+      gen.toolEventIdxByCallId[id] = idx;
+      final name = chunk.toolName ?? '';
+      gen.agentEvents.add(
+        AgentEvent(
+          type: _toolEventType(name),
+          toolName: name,
+          callId: id,
+          content: name.isEmpty ? '工具调用' : name,
+          searching: true,
+        ),
+      );
+    }
+    if (chunk.toolArgsDelta != null) {
+      gen.toolArgsRawByCallId[id] =
+          (gen.toolArgsRawByCallId[id] ?? '') + chunk.toolArgsDelta!;
+      final name = gen.agentEvents[idx].toolName;
+      final raw = gen.toolArgsRawByCallId[id]!;
+      gen.agentEvents[idx] = gen.agentEvents[idx].copyWith(
+        content: '$name（${_clipToolArgs(raw)}）',
+      );
+    }
+    notifyListeners();
+  }
+
+  static String _clipToolArgs(String raw) {
+    final t = raw.trim();
+    return t.length <= 40 ? t : '${t.substring(0, 40)}…';
+  }
+
+  /// 工具开始回调：优先复用流式预览事件（按 callId 匹配），否则新建——
+  /// 保证同一工具调用只有一个事件框。事件主体（subject）取语义化内容
+  /// （搜索 query / 打开页面 url），未提供时回退参数摘要。
+  void _handleToolStarted(AgentToolOutcome outcome, _BookGenState gen) {
+    _finishCurrentThinking(gen);
+    final callId = outcome.callId;
+    final subject = outcome.subject.trim().isEmpty
+        ? outcome.argsSummary
+        : outcome.subject;
+    final existing =
+        callId.isEmpty ? null : gen.toolEventIdxByCallId[callId];
+    if (existing != null) {
+      gen.agentEvents[existing] = gen.agentEvents[existing].copyWith(
+        toolName: outcome.name,
+        content: subject,
+        searching: true,
+      );
+    } else {
+      gen.agentEvents.add(
+        AgentEvent(
+          type: _toolEventType(outcome.name),
+          content: subject,
+          toolName: outcome.name,
+          callId: callId,
+          searching: true,
+        ),
+      );
+      if (callId.isNotEmpty) {
+        gen.toolEventIdxByCallId[callId] = gen.agentEvents.length - 1;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 工具完成回调：按 callId（回退名称/摘要匹配）标记完成 / 失败（含结果说明）。
+  void _handleToolFinished(AgentToolOutcome outcome, _BookGenState gen) {
+    var target = -1;
+    final callId = outcome.callId;
+    if (callId.isNotEmpty && gen.toolEventIdxByCallId.containsKey(callId)) {
+      target = gen.toolEventIdxByCallId[callId]!;
+      gen.toolEventIdxByCallId.remove(callId);
+      gen.toolArgsRawByCallId.remove(callId);
+    } else {
+      final subject = outcome.subject.trim().isEmpty
+          ? outcome.argsSummary
+          : outcome.subject;
+      for (var i = gen.agentEvents.length - 1; i >= 0; i--) {
+        final e = gen.agentEvents[i];
+        if (e.searching &&
+            (e.toolName == outcome.name ||
+                e.content == outcome.argsSummary ||
+                e.content == subject)) {
+          target = i;
+          break;
+        }
+      }
+    }
+    if (target >= 0) {
+      gen.agentEvents[target] = gen.agentEvents[target].copyWith(
+        searching: false,
+        done: true,
+        failed: !outcome.applied,
+        toolDetail: outcome.message,
+      );
+    }
+    notifyListeners();
+  }
+
   /// 流式增量回调：累积正文，思考按块累积（agent 每轮一个新思考块），
   /// 并驱动 UI 更新（非流式返回 null）。
+  ///
+  /// [agentGate] 为 true（AGENT 模式）时启用**帧级分类门控**（与
+  /// `AgentRoundRunner` 采纳策略同步）：
+  /// - 帧内容先缓冲到 [gen.frameContent]，出现 `## 剧情演绎` 标题才上屏
+  ///   （正文从标题开始，搜索/说明开场白不上屏）；
+  /// - 帧结束（[AiStreamChunk.done]）时采纳：标题帧 → 置 [gen.narrativeTaken]；
+  ///   「无标题 + 无工具」帧兜底采纳（展示与落库一致）；
+  /// - 采纳后（修复 / 补充轮）复读的正文增量直接丢弃——正文块始终只有
+  ///   本轮真正采纳的正文，杜绝「我先搜索一下…」开场白成为正文、
+  ///   也杜绝两帧正文拼接进同一块。
+  ///
+  /// Chat 模式（[agentGate] 为 false）保持原语义：正文增量即时上屏
+  ///（Chat 协议无「标题帧」契约，且允许无标题直接开始输出）。
+  /// [enabled] 为 true（流式传输或非流式回放）时构建块处理管道，
+  /// 否则返回 null（展示无关的直发路径）。
   void Function(AiStreamChunk chunk)? _buildStreamingOnChunk(
-    bool useStream,
     _BookGenState gen,
-    int genToken,
-  ) {
-    if (!useStream) return null;
+    int genToken, {
+    required bool agentGate,
+    required bool enabled,
+  }) {
+    if (!enabled) return null;
     return (chunk) {
       // 旧一轮的残留 chunk（令牌不一致）：直接丢弃，绝不注入本轮。
       if (genToken != gen.token) return;
-      if (chunk.done) return;
+      if (chunk.done) {
+        // AGENT 帧结束：标题帧（已上屏）→ 采纳；「无标题 + 无工具」帧 →
+        // 兜底采纳（起点边界 / 缓冲补上屏，保证展示与落库一致）。
+        if (agentGate && !gen.narrativeTaken) {
+          if (gen.narrativePublished) {
+            gen.narrativeTaken = true;
+          } else if (gen.frameContent.trim().isNotEmpty && !gen.frameHadTools) {
+            gen.narrativeTaken = true;
+            if (gen.contentBoundaryIndex < 0) {
+              gen.contentBoundaryIndex = gen.agentEvents.length;
+            }
+            _finishCurrentThinking(gen);
+            gen.streamingContent = gen.frameContent;
+          }
+        }
+        return;
+      }
       // 新一次尝试开始产出内容：清除重试提示（灰字消失）。
       gen.retryStatus = null;
+      // 工具流式预览：先于正文记录「本帧有工具调用」（AGENT 帧级分类用）。
+      if (agentGate && chunk.toolCallId != null) {
+        gen.frameHadTools = true;
+      }
       if (chunk.contentDelta.isNotEmpty) {
-        // 进入正文阶段：当前轮的思考已完成。
-        _finishCurrentThinking(gen);
-        gen.streamingContent += chunk.contentDelta;
+        if (agentGate) {
+          if (gen.narrativeTaken) {
+            // 正文已采纳：后续帧（修复/补充轮）的正文按契约丢弃，不上屏。
+            return;
+          }
+          gen.frameContent += chunk.contentDelta;
+          if (!gen.narrativePublished) {
+            // 等待标题出现：只缓冲，不上屏（搜索开场白不外露）。
+            final start = AiResponseParser.storyHeadingStart(gen.frameContent);
+            if (start == null) return;
+            gen.narrativePublished = true;
+            // 进入正文阶段：当前轮的思考已完成；首个正文增量固定「正文起点边界」
+            //（正文块插入在该下标：此前的块在正文上方、之后的块在正文下方）。
+            if (gen.contentBoundaryIndex < 0) {
+              gen.contentBoundaryIndex = gen.agentEvents.length;
+            }
+            _finishCurrentThinking(gen);
+            gen.streamingContent = gen.frameContent.substring(start);
+          } else {
+            gen.streamingContent += chunk.contentDelta;
+          }
+        } else {
+          // Chat 模式：正文增量即时上屏（首个增量固定正文起点边界）。
+          if (gen.contentBoundaryIndex < 0) {
+            gen.contentBoundaryIndex = gen.agentEvents.length;
+          }
+          _finishCurrentThinking(gen);
+          gen.streamingContent += chunk.contentDelta;
+        }
+      }
+      if (chunk.toolCallId != null) {
+        _handleToolPreview(chunk, gen);
       }
       if (chunk.reasoningDelta.isNotEmpty) {
         // 需要新建思考事件（首段思考或 agent 新一轮开始）时先开新事件。
@@ -978,6 +1579,10 @@ class RoundProvider extends ChangeNotifier {
     if (activity.type == AgentActivityType.turn) {
       _finishCurrentThinking(gen);
       gen.newReasoningBlockPending = true;
+      // 新一轮 LLM 调用：帧级正文分类复位（本帧缓冲 / 标题标记 / 工具标记）。
+      gen.frameContent = '';
+      gen.narrativePublished = false;
+      gen.frameHadTools = false;
       notifyListeners();
     } else if (activity.type == AgentActivityType.searching) {
       _finishCurrentThinking(gen);
@@ -1202,8 +1807,10 @@ class RoundProvider extends ChangeNotifier {
 /// 一轮请求的组装结果（供 `sendRound` 与「预览请求体」共用）。
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
+/// [agent] 为 true 时：请求体走 Response API 协议（AGENT 模式），
+/// 其余 Agent 字段随之生效。
 class _RoundRequest {
-  /// 组装后的系统提示词（最终文本）。
+  /// 组装后的系统提示词（最终文本；AGENT 模式为 instructions）。
   final String systemPrompt;
 
   /// 历史 messages（user/assistant 交替；识图模型下已含图片 parts）。
@@ -1221,8 +1828,26 @@ class _RoundRequest {
   /// 是否启用联网搜索（Agent 工具循环）。
   final bool useSearch;
 
-  /// 直发（非搜索）路径的请求体。
+  /// 直发（非搜索）路径的请求体；AGENT 模式为响应式首帧体。
   final Map<String, dynamic> directBody;
+
+  /// 是否 AGENT 模式（Response API 协议）。
+  final bool agent;
+
+  /// AGENT 模式 instructions（系统指令）。
+  final String agentInstructions;
+
+  /// AGENT 模式初始 input items（历史 + 用户消息）。
+  final List<Map<String, dynamic>> agentInputItems;
+
+  /// AGENT 模式工具 schema（状态工具 + 可选搜索工具）。
+  final List<Map<String, dynamic>> agentToolsSchemas;
+
+  /// AGENT 模式参数基座（链式帧复用：model/stream/reasoning|temperature/max）。
+  final Map<String, dynamic> agentParamBase;
+
+  /// 平台是否支持有状态链式续接（previous_response_id）。
+  final bool agentChaining;
 
   const _RoundRequest({
     required this.systemPrompt,
@@ -1232,5 +1857,11 @@ class _RoundRequest {
     required this.useStream,
     required this.useSearch,
     required this.directBody,
+    this.agent = false,
+    this.agentInstructions = '',
+    this.agentInputItems = const [],
+    this.agentToolsSchemas = const [],
+    this.agentParamBase = const {},
+    this.agentChaining = false,
   });
 }

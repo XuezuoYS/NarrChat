@@ -4,7 +4,7 @@ import 'api_type.dart';
 ///
 /// 每个模型携带发送给 API 的 [id]、对话框显示用的 [shortLabel]（简写标识，
 /// 为空则回退到 [id]）、以及当前有效参数（[temperature] / [reasoningEffort] /
-/// [maxTokens]）；[requestTemplate] 非空时请求体走自定义 JSON 模板路径。
+/// [maxTokens]）；请求体由所属平台 [AiPlatform.apiType] 的规则构建。
 class AiModel {
   /// 实际发送给 API 的模型名（平台内唯一）。
   final String id;
@@ -20,10 +20,6 @@ class AiModel {
 
   /// 最大输出 Tokens（null 表示不限制，由服务端决定）。
   final int? maxTokens;
-
-  /// 可选的自定义请求体 JSON 模板（OpenAI 兼容，支持占位符）；
-  /// 非空时以模板直发，否则按所属平台 [AiPlatform.apiType] 的规则构建。
-  final String? requestTemplate;
 
   // ---- 可调配功能（能力表，决定 Chat 页对话框内可用的模式与发送参数）----
   /// 是否支持流式输出。
@@ -44,7 +40,6 @@ class AiModel {
     this.temperature = 1.0,
     this.reasoningEffort = 'high',
     this.maxTokens,
-    this.requestTemplate,
     this.supportsStreaming = true,
     this.supportsThinking = true,
     this.supportsSearch = true,
@@ -60,7 +55,6 @@ class AiModel {
     double? temperature,
     String? reasoningEffort,
     int? maxTokens,
-    String? requestTemplate,
     bool? supportsStreaming,
     bool? supportsThinking,
     bool? supportsSearch,
@@ -72,7 +66,6 @@ class AiModel {
       temperature: temperature ?? this.temperature,
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
       maxTokens: maxTokens ?? this.maxTokens,
-      requestTemplate: requestTemplate ?? this.requestTemplate,
       supportsStreaming: supportsStreaming ?? this.supportsStreaming,
       supportsThinking: supportsThinking ?? this.supportsThinking,
       supportsSearch: supportsSearch ?? this.supportsSearch,
@@ -91,8 +84,6 @@ class AiModel {
       'supportsSearch': supportsSearch,
       'supportsVision': supportsVision,
       if (maxTokens != null && maxTokens! > 0) 'maxTokens': maxTokens,
-      if (requestTemplate != null && requestTemplate!.trim().isNotEmpty)
-        'requestTemplate': requestTemplate,
     };
   }
 
@@ -103,7 +94,6 @@ class AiModel {
       temperature: (json['temperature'] as num?)?.toDouble() ?? 1.0,
       reasoningEffort: json['reasoningEffort'] as String? ?? 'high',
       maxTokens: (json['maxTokens'] as num?)?.toInt(),
-      requestTemplate: json['requestTemplate'] as String?,
       supportsStreaming: json['supportsStreaming'] as bool? ?? true,
       supportsThinking: json['supportsThinking'] as bool? ?? true,
       supportsSearch: json['supportsSearch'] as bool? ?? true,
@@ -133,6 +123,12 @@ class AiPlatform {
   /// 是否内置平台（默认 DeepSeek 开放平台）——不可删除。
   final bool isBuiltin;
 
+  /// Response API 协议的「单轮内链式续接」能力（`previous_response_id`）。
+  ///
+  /// 仅当服务商实现了有状态续接（如 OpenAI 官方；DeepSeek 为无状态 API）时
+  /// 才应开启；默认关闭，关闭时 AGENT 工具循环的后续帧全量重发输入。
+  final bool supportsResponseChaining;
+
   /// 该平台下的模型列表（至少保留一个）。
   final List<AiModel> models;
 
@@ -142,6 +138,7 @@ class AiPlatform {
     required this.apiType,
     required this.baseUrl,
     this.isBuiltin = false,
+    this.supportsResponseChaining = false,
     required this.models,
   });
 
@@ -168,6 +165,7 @@ class AiPlatform {
     ApiType? apiType,
     String? baseUrl,
     bool? isBuiltin,
+    bool? supportsResponseChaining,
     List<AiModel>? models,
   }) {
     return AiPlatform(
@@ -176,6 +174,8 @@ class AiPlatform {
       apiType: apiType ?? this.apiType,
       baseUrl: baseUrl ?? this.baseUrl,
       isBuiltin: isBuiltin ?? this.isBuiltin,
+      supportsResponseChaining:
+          supportsResponseChaining ?? this.supportsResponseChaining,
       models: models ?? this.models,
     );
   }
@@ -187,6 +187,7 @@ class AiPlatform {
       'apiTypeId': apiType.id,
       'baseUrl': baseUrl,
       'isBuiltin': isBuiltin,
+      'supportsResponseChaining': supportsResponseChaining,
       'models': [for (final m in models) m.toJson()],
     };
   }
@@ -205,6 +206,8 @@ class AiPlatform {
       ),
       baseUrl: json['baseUrl'] as String? ?? '',
       isBuiltin: json['isBuiltin'] as bool? ?? false,
+      supportsResponseChaining:
+          json['supportsResponseChaining'] as bool? ?? false,
       models: models,
     );
   }

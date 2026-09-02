@@ -1697,8 +1697,10 @@ class _ChatScreenState extends State<ChatScreen>
       _lastChatLayoutWidth = chatWidth;
     }
     final isSending = roundProvider.isSending;
-    final isStreaming = roundProvider.isStreaming;
-    final showPending = isSending || isStreaming;
+    // 展示模式：流式传输或非流式回放（AGENT / 联网搜索多轮）都渲染
+    // 块时间线气泡；纯等结果的非流式直发仍显示转圈提示。
+    final showTimeline = roundProvider.showTimeline;
+    final showPending = isSending || showTimeline;
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
     final pendingInput = roundProvider.pendingUserInput;
     final showPendingUser = showPending && pendingInput.isNotEmpty;
@@ -1774,10 +1776,12 @@ class _ChatScreenState extends State<ChatScreen>
             );
           } else if (showPending &&
               index == virtualBase + (showPendingUser ? 1 : 0)) {
-            item = isStreaming
+            item = showTimeline
                 ? _StreamingBubble(
                     content: roundProvider.streamingContent,
                     agentEvents: roundProvider.agentEvents,
+                    contentBoundaryIndex: roundProvider.contentBoundaryIndex,
+                    agentWarnings: roundProvider.agentWarnings,
                     retryStatus: roundProvider.retryStatus,
                   )
                 : _TypingBubble(retryStatus: roundProvider.retryStatus);
@@ -2267,6 +2271,7 @@ class _ChatScreenState extends State<ChatScreen>
                           supportsStreaming: aiSettings.supportsStreaming,
                           supportsSearch: aiSettings.supportsSearch,
                           supportsVision: aiSettings.supportsVision,
+                          agentMode: aiSettings.selectedPlatform.apiType.isResponses,
                           thinking: aiSettings.thinking,
                           streaming: aiSettings.streaming,
                           search: aiSettings.lastSearch,
@@ -2415,6 +2420,7 @@ class _ChatModeDropdown extends StatelessWidget {
   final bool supportsStreaming;
   final bool supportsSearch;
   final bool supportsVision;
+  final bool agentMode;
   final bool thinking;
   final bool streaming;
   final bool search;
@@ -2428,6 +2434,7 @@ class _ChatModeDropdown extends StatelessWidget {
     required this.supportsStreaming,
     required this.supportsSearch,
     required this.supportsVision,
+    required this.agentMode,
     required this.thinking,
     required this.streaming,
     required this.search,
@@ -2437,8 +2444,9 @@ class _ChatModeDropdown extends StatelessWidget {
     required this.onImportImages,
   });
 
-  /// 摘要各段（顺序：流式 | 思考 | 搜索(BETA)）。
+  /// 摘要各段（顺序：AGENT | 流式 | 思考 | 搜索(BETA)）。
   List<String> get _activeParts => [
+        if (agentMode) 'AGENT',
         if (supportsStreaming && streaming) '流式',
         if (supportsThinking && thinking) '思考',
         if (supportsSearch && search) '搜索(BETA)',
@@ -2472,6 +2480,41 @@ class _ChatModeDropdown extends StatelessWidget {
         ),
       ),
       menuChildren: [
+        if (agentMode) ...[
+          MenuItemButton(
+            onPressed: () {},
+            closeOnActivate: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.check_circle, size: 13, color: scheme.primary),
+                    const SizedBox(width: 4),
+                    Text(
+                      'AGENT 模式',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '由「OpenAI Response API 兼容」协议自动启用，状态经行级工具维护',
+                    style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 8),
+        ],
         if (supportsThinking)
           _ModeMenuRow(
             label: '思考',
@@ -3003,30 +3046,129 @@ class _RetryStatusText extends StatelessWidget {
   }
 }
 
-/// 搜索细节框：每个框独立展开/折叠状态（多搜索框互不影响）。
-/// 进行中显示转圈；成功显示 ✓；失败显示小 ✕（不报错截断）。
-class _SearchBox extends StatefulWidget {
-  final String query;
+/// 统一工具块（联网搜索 / 打开页面 / 状态工具）——仅保留这一种工具块，
+/// 并继承原各框的优秀体验：
+///
+/// - **执行中**：自动展开状态明细（约 3~4 行）：进度说明 + 实时流式信息
+///   （打开页面的跳转链逐条列出、工具参数摘要）；
+/// - **执行成功**：自动收起为一行状态栏（图标 + 名称 + **结果要点** + ✓，
+///   与联网搜索框同款形态）：搜索显示「N 条结果」、页面显示「重定向 N 次」、
+///   状态工具显示执行结果说明；点击 chevron 展开完整明细
+///   （结果列表 / 跳转链 / 结果全文）；
+/// - **执行失败**：保持展开完整失败原因（黄色 = 页面拒绝访问 HTTP 4xx/5xx、
+///   红色 = 校验失败），错误说明始终可见；
+/// - **重定向状态全程继承**：执行中逐条流式展示跳转链，成功后一行状态栏仍
+///   带「重定向 N 次」标记，展开可见完整跳转链。
+class _ToolEventBox extends StatefulWidget {
+  final AgentEventType type;
+  final String toolName;
+  final String summary;
   final bool searching;
   final bool failed;
   final bool refused;
   final List<SearchResult> results;
+  final List<FetchHop> hops;
+  final String detail;
 
-  const _SearchBox({
+  const _ToolEventBox({
     super.key,
-    required this.query,
+    required this.type,
+    this.toolName = '',
+    this.summary = '',
     required this.searching,
     required this.failed,
     this.refused = false,
-    required this.results,
+    this.results = const [],
+    this.hops = const [],
+    this.detail = '',
   });
 
   @override
-  State<_SearchBox> createState() => _SearchBoxState();
+  State<_ToolEventBox> createState() => _ToolEventBoxState();
 }
 
-class _SearchBoxState extends State<_SearchBox> {
-  bool _expanded = false;
+class _ToolEventBoxState extends State<_ToolEventBox> {
+  /// 用户手动展开/收起覆盖（null = 跟随默认：执行中强制展开、结束后
+  /// 成功收起为一行 / 失败保持展开）。
+  bool? _userOverride;
+
+  @override
+  void didUpdateWidget(covariant _ToolEventBox oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 状态切换（开始 / 结束）后撤销用户覆盖，恢复默认展开策略。
+    if (oldWidget.searching != widget.searching) {
+      _userOverride = null;
+    }
+  }
+
+  bool get _isSearch => widget.type == AgentEventType.search;
+  bool get _isFetch => widget.type == AgentEventType.fetch;
+
+  IconData get _icon => switch (widget.type) {
+        AgentEventType.search => Icons.travel_explore_outlined,
+        AgentEventType.fetch => Icons.open_in_new,
+        _ => Icons.handyman_outlined,
+      };
+
+  /// 标题：工具事件统一为「Tool · 工具名」（联网搜索 / 打开页面 / 状态工具
+  /// 只保留一种工具框）；Chat 模式的活动事件无工具名时保留原语义化标题。
+  String get _title {
+    if (widget.toolName.isNotEmpty) return 'Tool · ${widget.toolName}';
+    if (_isSearch) return widget.searching ? '正在搜索' : '联网搜索';
+    if (_isFetch) return '打开页面';
+    return '工具';
+  }
+
+  /// 重定向次数：仅计 HTTP 3xx 与应用级回退跳数
+  ///（不含最终成功 / 最终失败收尾跳）。
+  int get _redirectCount => widget.hops
+      .where(
+        (h) =>
+            !h.failed &&
+            (h.statusCode == null ||
+                (h.statusCode! >= 300 && h.statusCode! < 400)),
+      )
+      .length;
+
+  /// 头部一行摘要（执行结束后即一行状态栏文本，始终携带结果要点）。
+  String get _headline {
+    if (_isSearch) {
+      if (widget.searching) return '「${widget.summary}」搜索中';
+      if (widget.failed) {
+        return '「${widget.summary}」· ${widget.refused ? '页面拒绝访问' : '搜索失败'}';
+      }
+      return '「${widget.summary}」· ${widget.results.length} 条结果';
+    }
+    if (_isFetch) {
+      final redirects =
+          _redirectCount == 0 ? '' : ' · 重定向 $_redirectCount 次';
+      if (widget.failed) return '${widget.summary}$redirects（打开失败）';
+      return '${widget.summary}$redirects';
+    }
+    // 状态工具：完成后展示结果说明（成功说明 / 校验拒绝原因），
+    // 执行中展示参数摘要。
+    if (!widget.searching && widget.detail.isNotEmpty) return widget.detail;
+    return widget.summary;
+  }
+
+  /// 是否还有可展开的明细（结束后无明细则无可展开内容）。
+  bool get _hasDetail {
+    if (_isSearch) {
+      return !widget.searching && (widget.results.isNotEmpty || widget.failed);
+    }
+    if (_isFetch) {
+      return !widget.searching && (widget.hops.isNotEmpty || widget.failed);
+    }
+    return !widget.searching && widget.detail.isNotEmpty;
+  }
+
+  /// 展开状态：执行中强制展开；结束后默认（失败展开 / 成功收起），
+  /// 用户点击 chevron 可覆盖。
+  bool get _expanded {
+    if (widget.searching) return true;
+    if (_userOverride != null) return _userOverride!;
+    return widget.failed;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3042,41 +3184,39 @@ class _SearchBoxState extends State<_SearchBox> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 头部：图标 + 状态文本 + 转圈/✓ + chevron。
           InkWell(
             borderRadius: BorderRadius.circular(10),
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: () {
+              if (!searching) {
+                setState(() => _userOverride = !_expanded);
+              }
+            },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.travel_explore_outlined,
-                    size: 15,
-                    color: NarrChatTheme.primary,
-                  ),
+                  Icon(_icon, size: 15, color: NarrChatTheme.primary),
                   const SizedBox(width: 6),
                   Text(
-                    searching ? '正在搜索' : '联网搜索',
+                    _title,
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: NarrChatTheme.primary,
                     ),
                   ),
-                  if (widget.query.isNotEmpty) ...[
+                  if (_headline.isNotEmpty) ...[
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        searching
-                            ? '「${widget.query}」搜索中'
-                            : '「${widget.query}」· '
-                                  '${widget.results.length} 条结果',
+                        _headline,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 11,
-                          color: context.narrColors.textSecondary,
+                          color: widget.failed && !searching
+                              ? context.narrColors.warning
+                              : context.narrColors.textSecondary,
                         ),
                       ),
                     ),
@@ -3102,192 +3242,247 @@ class _SearchBoxState extends State<_SearchBox> {
                       size: 14,
                       color: NarrChatTheme.primary,
                     ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    _expanded ? Icons.expand_more : Icons.chevron_right,
-                    size: 16,
-                    color: scheme.onSurfaceVariant,
-                  ),
+                  if (!searching && _hasDetail) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      _expanded ? Icons.expand_more : Icons.chevron_right,
+                      size: 16,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
-          // 展开：固定高度展示结果明细。
           if (_expanded) ...[
             Divider(height: 1, color: scheme.outlineVariant),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 150),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(10),
-                child: _buildResults(context),
-              ),
-            ),
+            _buildBody(context),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildResults(BuildContext context) {
+  /// 明细区（执行中 = 当前状态明细；展开 = 完整结果）。
+  Widget _buildBody(BuildContext context) {
+    // 执行中：进度说明 + 实时流式信息（跳转链逐条列出），
+    // 配合头部构成 3~4 行状态栏。
+    if (widget.searching) {
+      if (_isFetch) {
+        return _bodyPadding(
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '正在打开页面…',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+              // 重定向状态全程继承：执行中即逐条流式展示跳转链。
+              for (final hop in widget.hops) ...[
+                const SizedBox(height: 4),
+                _HopLine(hop: hop),
+              ],
+            ],
+          ),
+        );
+      }
+      final text = _isSearch
+          ? '正在搜索「${widget.summary}」…，稍后将在此列示结果'
+          : '正在执行，稍后将在此展示执行结果…';
+      return _bodyPadding(
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
+        ),
+      );
+    }
+    // 执行结束 / 用户展开：完整明细。
+    if (_isSearch) {
+      return _buildSearchResults(context);
+    }
+    if (_isFetch) {
+      if (widget.hops.isEmpty && !widget.failed) {
+        return const SizedBox.shrink();
+      }
+      return _bodyPadding(
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (widget.failed)
+              Text(
+                widget.refused
+                    ? '页面拒绝访问（HTTP 4xx/5xx），未能获取内容'
+                    : '打开页面失败',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: widget.refused
+                      ? context.narrColors.warning
+                      : context.narrColors.textSecondary,
+                ),
+              ),
+            for (var i = 0; i < widget.hops.length; i++) ...[
+              if (i > 0 || widget.failed) const SizedBox(height: 4),
+              _HopLine(hop: widget.hops[i]),
+            ],
+          ],
+        ),
+      );
+    }
+    // 状态工具：执行结果说明（成功说明 / 校验拒绝原因）。
+    if (widget.detail.isEmpty) return const SizedBox.shrink();
+    return _bodyPadding(
+      Text(
+        widget.detail,
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 11,
+          color: widget.failed
+              ? context.narrColors.warning
+              : context.narrColors.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  /// 搜索明细：结果列表（标题 / 链接 / 摘要）。
+  Widget _buildSearchResults(BuildContext context) {
     final results = widget.results;
     if (widget.failed) {
-      return Text(
-        widget.refused
-            ? '页面拒绝访问（HTTP 4xx/5xx），未能获取内容'
-            : '搜索失败，未获取到结果',
-        style: TextStyle(
-          fontSize: 12,
-          color: context.narrColors.textSecondary,
+      return _bodyPadding(
+        Text(
+          widget.refused
+              ? '页面拒绝访问（HTTP 4xx/5xx），未能获取内容'
+              : '搜索失败，未获取到结果',
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
       );
     }
     if (results.isEmpty) {
-      return Text(
-        widget.searching ? '正在搜索…' : '未获取到结果',
-        style: TextStyle(
-          fontSize: 12,
-          color: context.narrColors.textSecondary,
+      return _bodyPadding(
+        Text(
+          '未获取到结果',
+          style: TextStyle(
+            fontSize: 12,
+            color: context.narrColors.textSecondary,
+          ),
         ),
       );
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < results.length; i++) ...[
-          if (i > 0) const SizedBox(height: 8),
-          Text(
-            '${i + 1}. ${results[i].title}',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: context.narrColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            results[i].url,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11,
-              color: context.narrColors.textSecondary,
-            ),
-          ),
-          if (results[i].snippet.isNotEmpty) ...[
-            const SizedBox(height: 2),
-            Text(
-              results[i].snippet,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                color: context.narrColors.textSecondary,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 150),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < results.length; i++) ...[
+              if (i > 0) const SizedBox(height: 8),
+              Text(
+                '${i + 1}. ${results[i].title}',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: context.narrColors.textPrimary,
+                ),
               ),
-            ),
+              const SizedBox(height: 2),
+              Text(
+                results[i].url,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: context.narrColors.textSecondary,
+                ),
+              ),
+              if (results[i].snippet.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  results[i].snippet,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: context.narrColors.textSecondary,
+                  ),
+                ),
+              ],
+            ],
           ],
-        ],
-      ],
+        ),
+      ),
     );
   }
+
+  Widget _bodyPadding(Widget child) => Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+        child: child,
+      );
 }
 
-/// 打开页面细节框：显示被打开的网页链接、状态（转圈 / ✓ / ✕）与跳转链。
-class _FetchBox extends StatelessWidget {
-  final String url;
-  final bool searching;
-  final bool failed;
-  final bool refused;
-  final List<FetchHop> hops;
+/// AGENT 模式钳制警告框：修复 2 次后仍未通过校验、被跳过应用的修改项。
+class _AgentWarningsBox extends StatelessWidget {
+  final List<String> warnings;
 
-  const _FetchBox({
-    super.key,
-    required this.url,
-    required this.searching,
-    required this.failed,
-    this.refused = false,
-    this.hops = const [],
-  });
+  const _AgentWarningsBox({required this.warnings});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
+        color: context.narrColors.warning.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: scheme.outlineVariant),
+        border: Border.all(
+          color: context.narrColors.warning.withValues(alpha: 0.4),
+        ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.open_in_new,
-                size: 15,
-                color: NarrChatTheme.primary,
-              ),
-              const SizedBox(width: 6),
-              const Text(
-                '打开页面',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: NarrChatTheme.primary,
-                ),
-              ),
-              if (url.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    url,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: context.narrColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ],
-              const SizedBox(width: 4),
-              if (searching)
-                const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else if (failed)
-                Icon(
-                  Icons.close,
-                  size: 14,
-                  color: refused
-                      ? context.narrColors.warning
-                      : const Color(0xFFE5484D),
-                )
-              else
-                const Icon(
-                  Icons.check_circle,
-                  size: 14,
-                  color: NarrChatTheme.primary,
-                ),
-            ],
+          Text(
+            '部分状态修改未通过校验，已跳过（不影响剧情正文）',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: context.narrColors.warning,
+            ),
           ),
-          // 跳转链：HTTP 重定向 / 应用级回退，流式列出。
-          if (hops.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            for (var i = 0; i < hops.length; i++) ...[if (i > 0) const SizedBox(height: 3), _HopLine(hop: hops[i])],
-          ],
+          for (final w in warnings)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                w,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
         ],
       ),
     );
   }
 }
 
-/// 抓取跳转链的一行：URL + 状态码 / 应用重定向。
+/// 抓取跳转链的一行：URL + 状态码 / 应用重定向 / 失败终止点。
 class _HopLine extends StatelessWidget {
   final FetchHop hop;
   const _HopLine({required this.hop});
@@ -3296,12 +3491,21 @@ class _HopLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.narrColors;
     final isAppRedirect = hop.statusCode == null;
+    final failed = hop.failed;
     return Row(
       children: [
         Icon(
-          isAppRedirect ? Icons.swap_horiz : Icons.arrow_forward,
+          failed
+              ? Icons.arrow_forward
+              : (isAppRedirect
+                  ? Icons.swap_horiz
+                  : Icons.arrow_forward),
           size: 12,
-          color: NarrChatTheme.primary,
+          color: failed
+              ? const Color(0xFFE5484D)
+              : (isAppRedirect
+                  ? colors.warning
+                  : NarrChatTheme.primary),
         ),
         const SizedBox(width: 4),
         Expanded(
@@ -3314,14 +3518,20 @@ class _HopLine extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         Text(
-          isAppRedirect ? '应用重定向' : '${hop.statusCode}',
+          failed
+              ? 'HTTP ${hop.statusCode}'
+              : (isAppRedirect ? '应用重定向' : '${hop.statusCode}'),
           style: TextStyle(
             fontSize: 11,
-            color: isAppRedirect ? colors.warning : colors.textSecondary,
+            color: failed
+                ? const Color(0xFFE5484D)
+                : (isAppRedirect ? colors.warning : colors.textSecondary),
           ),
         ),
         const SizedBox(width: 3),
-        const Icon(Icons.check, size: 12, color: NarrChatTheme.primary),
+        failed
+            ? const Icon(Icons.close, size: 12, color: Color(0xFFE5484D))
+            : const Icon(Icons.check, size: 12, color: NarrChatTheme.primary),
       ],
     );
   }
@@ -3472,12 +3682,21 @@ class _StreamingBubble extends StatefulWidget {
   final String content;
   final List<AgentEvent> agentEvents;
 
+  /// 正文起点边界（-1 = 正文尚未开始）：正文是「块外」的特殊块，
+  /// 插入到事件序列的该下标位置（此前的块在正文上方、之后的块在下方）。
+  final int contentBoundaryIndex;
+
+  /// AGENT 模式状态钳制警告（修复 2 次后仍失败、已跳过应用的修改项）。
+  final List<String> agentWarnings;
+
   /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
   final (int, int)? retryStatus;
 
   const _StreamingBubble({
     required this.content,
     required this.agentEvents,
+    this.contentBoundaryIndex = -1,
+    this.agentWarnings = const [],
     this.retryStatus,
   });
 
@@ -3492,8 +3711,8 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     final content = widget.content;
     final events = widget.agentEvents;
     final retry = widget.retryStatus;
+    final warnings = widget.agentWarnings;
     final hasContent = content.isNotEmpty;
-    final hasEvents = events.isNotEmpty;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -3510,48 +3729,14 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Agent 过程时间线：思考 / 搜索 / 打开页面按真实顺序交错，
-                  // 每个框独立展开/折叠状态（按 index 作为 key 保持状态）。
-                  for (var i = 0; i < events.length; i++) ...[
-                    if (i > 0) const SizedBox(height: 8),
-                    if (events[i].type == AgentEventType.thinking)
-                      _ThinkingBox(
-                        key: ValueKey('think_$i'),
-                        content: events[i].content,
-                        done: events[i].done,
-                      )
-                    else if (events[i].type == AgentEventType.search)
-                      _SearchBox(
-                        key: ValueKey('search_$i'),
-                        query: events[i].content,
-                        searching: events[i].searching,
-                        failed: events[i].failed,
-                        refused: events[i].refused,
-                        results: events[i].results,
-                      )
-                    else
-                      _FetchBox(
-                        key: ValueKey('fetch_$i'),
-                        url: events[i].content,
-                        searching: events[i].searching,
-                        failed: events[i].failed,
-                        refused: events[i].refused,
-                        hops: events[i].hops,
-                      ),
-                  ],
-                  // 自动重试提示（灰字）：思考/搜索块之后、正文之前。
-                  if (retry != null) ...[const SizedBox(height: 8), _RetryStatusText(attempt: retry.$1, total: retry.$2)],
-                  // 剧情正文：调用统一 Markdown 渲染模块实时渲染（含末尾光标）。
-                  if (hasContent) ...[
-                    if (hasEvents) const Divider(height: 14),
-                    MarkdownPreview(
-                      data: '$content▍',
-                      base: TextStyle(
-                        fontSize: 15,
-                        height: 1.65,
-                        color: context.narrColors.textPrimary,
-                      ),
-                    ),
+                  // Agent 时间线：思考 / 搜索 / 打开页 / 状态工具**严格按
+                  // AI 返回顺序**交错；正文是「块外」特殊块，插入到
+                  // [contentBoundaryIndex] 处（此前的块在上、之后的块在下）。
+                  ..._buildOrderedBlocks(context, events, content, retry),
+                  // AGENT 模式钳制警告：修复 2 次后仍失败、已跳过应用的修改项。
+                  if (warnings.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _AgentWarningsBox(warnings: warnings),
                   ],
                   // 生成中：气泡最底部持续显示转圈图标。
                   const SizedBox(height: 8),
@@ -3580,5 +3765,91 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
         ),
       ),
     );
+  }
+
+  /// 按返回顺序构建时间线子块：正文在 [contentBoundaryIndex] 处插入。
+  List<Widget> _buildOrderedBlocks(
+    BuildContext context,
+    List<AgentEvent> events,
+    String content,
+    (int, int)? retry,
+  ) {
+    final blocks = <Widget>[];
+    final boundary = widget.contentBoundaryIndex;
+    var narrativeRendered = false;
+    for (var i = 0; i < events.length; i++) {
+      // 正文起点：插在边界下标处（此前块之上、之后块之下的「块外」正文）。
+      if (i == boundary && content.isNotEmpty) {
+        if (blocks.isNotEmpty) blocks.add(const SizedBox(height: 8));
+        blocks.add(_narrativeText(context, content));
+        narrativeRendered = true;
+      }
+      if (i > 0) blocks.add(const SizedBox(height: 8));
+      final e = events[i];
+      switch (e.type) {
+        case AgentEventType.thinking:
+          blocks.add(
+            _ThinkingBox(
+              key: ValueKey('think_$i'),
+              content: e.content,
+              done: e.done,
+            ),
+          );
+        case AgentEventType.search:
+        case AgentEventType.fetch:
+        case AgentEventType.tool:
+          // 统一工具块：搜索 / 打开页面 / 状态工具同一形态——执行中
+          // 展示当前明细（约 3~4 行状态栏），结束自动收起为一行可展开。
+          blocks.add(
+            _ToolEventBox(
+              key: ValueKey('tool_$i'),
+              type: e.type,
+              toolName: e.toolName,
+              summary: e.content,
+              searching: e.searching,
+              failed: e.failed,
+              refused: e.refused,
+              results: e.results,
+              hops: e.hops,
+              detail: e.toolDetail,
+            ),
+          );
+      }
+    }
+    // 正文尚未就位（边界未命中 / 尚未开始时）：渲染在事件之后（或单独）。
+    if (content.isNotEmpty && !narrativeRendered) {
+      if (blocks.isNotEmpty) blocks.add(const SizedBox(height: 8));
+      if (retry != null) blocks.add(_retryLine(context, retry));
+      blocks.add(_narrativeText(context, content));
+      narrativeRendered = true;
+    } else if (retry != null) {
+      // 重试提示紧邻正文之前（正文已就位时）。
+      final insertAt = blocks.length;
+      blocks.insert(
+        insertAt,
+        Padding(
+          padding: EdgeInsets.only(
+            top: blocks.isEmpty ? 0 : 8,
+          ),
+          child: _RetryStatusText(attempt: retry.$1, total: retry.$2),
+        ),
+      );
+    }
+    return blocks;
+  }
+
+  Widget _narrativeText(BuildContext context, String content) {
+    return MarkdownPreview(
+      data: '$content▍',
+      base: TextStyle(
+        fontSize: 15,
+        height: 1.65,
+        color: context.narrColors.textPrimary,
+      ),
+    );
+  }
+
+  Widget _retryLine(BuildContext context, (int, int) retry) {
+    return _RetryStatusText(attempt: retry.$1, total: retry.$2);
   }
 }

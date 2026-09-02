@@ -19,7 +19,7 @@ class SearchResult {
   });
 }
 
-/// 抓取网页过程中的一跳（HTTP 3xx 重定向或应用级回退）。
+/// 抓取网页过程中的一跳（HTTP 3xx 重定向 / 应用级回退 / 最终响应）。
 class FetchHop {
   /// 本跳访问的 URL。
   final String url;
@@ -27,7 +27,11 @@ class FetchHop {
   /// HTTP 状态码；为 null 表示应用级重定向（如百度百科回退 WAP 端点）。
   final int? statusCode;
 
-  const FetchHop({required this.url, this.statusCode});
+  /// 是否最终失败跳（3xx/4xx/5xx 拒绝访问，跳转链的终止点；
+  /// 非重定向，不计入「重定向 N 次」）。
+  final bool failed;
+
+  const FetchHop({required this.url, this.statusCode, this.failed = false});
 }
 
 /// 抓取结果：最终 HTML 与跳转链。
@@ -223,6 +227,15 @@ class HtmlSearchService {
     }
     // 2xx（含 206 等）视为访问成功；3xx/4xx/5xx 一律视为拒绝访问。
     if (resp.statusCode >= 300) {
+      // 记录最终失败一跳（目标 URL + 状态码）：跳转链始终以「终止点」收尾，
+      // UI 可见完整重定向结果（应用重定向目标 / 最终 HTTP 状态）。
+      addHop(
+        FetchHop(
+          url: uri.toString(),
+          statusCode: resp.statusCode,
+          failed: true,
+        ),
+      );
       throw HttpStatusException(resp.statusCode, url);
     }
     addHop(FetchHop(url: uri.toString(), statusCode: resp.statusCode));

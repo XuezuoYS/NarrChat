@@ -5,7 +5,6 @@ import '../models/ai_platform.dart';
 import '../models/api_type.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
-import '../services/ai_request_body_builder.dart';
 import '../services/sync/sync_models.dart';
 
 /// 设置页全量表单状态（API 设置 + 云同步）。
@@ -103,13 +102,22 @@ class SettingsFormState extends ChangeNotifier {
     _replacePlatform(id, (p) => p.copyWith(baseUrl: value.trim()));
   }
 
+  /// 切换平台接入协议（Response / Chat 兼容，含内置默认平台）。
+  void setPlatformApiType(String id, String apiTypeId) {
+    _replacePlatform(id, (p) => p.copyWith(apiType: ApiType.byId(apiTypeId)));
+  }
+
   /// 新增自定义平台（初始无模型，需在界面添加至少一个；保存前会校验）。
-  void addPlatform({required String name, required String baseUrl}) {
+  void addPlatform({
+    required String name,
+    required String baseUrl,
+    required String apiTypeId,
+  }) {
     final id = 'custom_${DateTime.now().microsecondsSinceEpoch}';
     final platform = AiPlatform(
       id: id,
       displayName: name.trim(),
-      apiType: ApiType.openAiCompatible,
+      apiType: ApiType.byId(apiTypeId),
       baseUrl: baseUrl.trim(),
       models: const [],
     );
@@ -200,14 +208,6 @@ class SettingsFormState extends ChangeNotifier {
         }
         if (m.maxTokens != null && m.maxTokens! <= 0) {
           errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：最大输出 Tokens 需为正整数或留空');
-        }
-        final template = m.requestTemplate;
-        if (template != null && template.trim().isNotEmpty) {
-          try {
-            AiRequestBodyBuilder.validateCustomTemplate(template);
-          } on FormatException catch (e) {
-            errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：${e.message}');
-          }
         }
       }
     }

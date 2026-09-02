@@ -12,6 +12,9 @@ enum AgentEventType {
 
   /// 一次打开网页（narrchat_webFetchPage）。
   fetch,
+
+  /// 一次状态工具调用（narrchat_setLine / narrchat_advanceTime 等）。
+  tool,
 }
 
 /// Agent 过程事件。
@@ -34,6 +37,15 @@ class AgentEvent {
   /// 抓取页面的跳转链（HTTP 重定向 / 应用级回退；仅 fetch 事件使用）。
   final List<FetchHop> hops;
 
+  /// 状态工具名（仅 tool 事件使用）。
+  final String toolName;
+
+  /// 工具调用 id（流式预览事件与执行结果事件的匹配键）。
+  final String callId;
+
+  /// 状态工具结果说明（应用 / 校验拒绝原因；仅 tool 事件使用）。
+  final String toolDetail;
+
   /// 事件完成（思考结束 / 搜索完成）。
   final bool done;
 
@@ -50,6 +62,9 @@ class AgentEvent {
     this.searching = false,
     this.results = const [],
     this.hops = const [],
+    this.toolName = '',
+    this.callId = '',
+    this.toolDetail = '',
     this.done = false,
     this.failed = false,
     this.refused = false,
@@ -60,6 +75,9 @@ class AgentEvent {
     bool? searching,
     List<SearchResult>? results,
     List<FetchHop>? hops,
+    String? toolName,
+    String? callId,
+    String? toolDetail,
     bool? done,
     bool? failed,
     bool? refused,
@@ -70,6 +88,9 @@ class AgentEvent {
       searching: searching ?? this.searching,
       results: results ?? this.results,
       hops: hops ?? this.hops,
+      toolName: toolName ?? this.toolName,
+      callId: callId ?? this.callId,
+      toolDetail: toolDetail ?? this.toolDetail,
       done: done ?? this.done,
       failed: failed ?? this.failed,
       refused: refused ?? this.refused,

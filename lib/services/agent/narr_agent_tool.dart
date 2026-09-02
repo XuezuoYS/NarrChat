@@ -1,3 +1,5 @@
+import 'agent_activity.dart';
+
 /// Agent 工具执行结果。
 class AgentToolResult {
   /// 是否成功（false 表示失败/无结果，错误信息仍写入 [content] 回传模型继续执行）。
@@ -31,4 +33,11 @@ abstract class NarrAgentTool {
   /// 执行工具并返回文本结果；失败时返回 `success:false` 的错误信息，
   /// 由 Agent 循环回传模型继续执行。
   Future<AgentToolResult> run(Map<String, dynamic> arguments);
+
+  /// 工具的活动类型（决定 UI 展示为搜索框 / 打开页框 / 状态修改框）。
+  ///
+  /// 默认 [AgentActivityType.searching]（兼容既有测试假工具）；
+  /// 打开网页工具应为 [AgentActivityType.fetching]，
+  /// 状态工具应为 [AgentActivityType.tooling]。
+  AgentActivityType get activityType => AgentActivityType.searching;
 }

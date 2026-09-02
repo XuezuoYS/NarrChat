@@ -1,4 +1,5 @@
 import '../html_search_service.dart';
+import 'agent_activity.dart';
 import 'narr_agent_tool.dart';
 
 /// 联网搜索工具：通过 [HtmlSearchService] 自研抓取搜索引擎结果。
@@ -20,6 +21,9 @@ class WebSearchTool implements NarrAgentTool {
 
   /// 搜索失败 / 无结果回调（供 UI 把搜索框标记为失败，显示 ✕）。
   final void Function()? _onFail;
+
+  @override
+  AgentActivityType get activityType => AgentActivityType.searching;
 
   @override
   String get name => 'narrchat_webSearch';

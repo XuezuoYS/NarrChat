@@ -236,7 +236,8 @@ const double _kScrollTopPadding = 40;
 /// RAW 调试对话框：查看每轮实际发出的请求 JSON 与 AI 原始返回。
 ///
 /// - 请求 / 返回按时间线交错展示：【请求体】→【AI返回】→…；
-/// - AI 返回分三块：思考块 / 搜索块（原始 tool_calls JSON）/ 正文块，
+/// - AI 返回分三块：思考块 / 工具调用块（原始 tool_calls JSON，含
+///   `narrchat_webSearch` / `narrchat_setLine` 等全部工具）/ 正文块，
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
@@ -307,7 +308,7 @@ class _RawDialogState extends State<RawDialog> {
 
   /// 是否有返回内容（任一区块非空）。
   bool _hasReturn(RawExchange ex) =>
-      ex.thinking.isNotEmpty || ex.search.isNotEmpty || ex.content.isNotEmpty;
+      ex.thinking.isNotEmpty || ex.toolCalls.isNotEmpty || ex.content.isNotEmpty;
 
   /// 按文档顺序遍历全部块（请求体 + 思考/搜索/正文），回调传入
   /// 全局块序号、展示文本与是否等宽。
@@ -317,7 +318,7 @@ class _RawDialogState extends State<RawDialog> {
       fn(blockIndex++, _requestDisplay(ex), true);
       if (_hasReturn(ex)) {
         fn(blockIndex++, _display(ex.thinking), false);
-        fn(blockIndex++, _display(ex.search), false);
+        fn(blockIndex++, _display(ex.toolCalls), false);
         fn(blockIndex++, _display(ex.content), false);
       }
     }
@@ -708,7 +709,7 @@ class _RawDialogState extends State<RawDialog> {
     if (_hasReturn(ex)) {
       final parts = <(String, String)>[
         ('思考块', _display(ex.thinking)),
-        ('搜索块', _display(ex.search)),
+        ('工具调用块', _display(ex.toolCalls)),
         ('正文块', _display(ex.content)),
       ];
       for (final (label, text) in parts) {

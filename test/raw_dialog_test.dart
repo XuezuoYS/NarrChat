@@ -7,7 +7,6 @@ import 'package:http/testing.dart';
 import 'package:narrchat/models/agent_event.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/raw_exchange.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
@@ -17,14 +16,14 @@ import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/fakes.dart';
 
-/// 禁用联网搜索的 AI 设置（强制走直发路径，且不触碰本地配置文件）。
-class _SearchDisabledSettings extends AiSettingsProvider {
+/// 禁用联网搜索的 AI 设置（强制走 Chat 直发路径，且不触碰本地配置文件）。
+class _SearchDisabledSettings extends ChatCompatibleSettings {
   @override
   bool get lastSearch => false;
 }
 
-/// 强制开启联网搜索的 AI 设置（走 Agent 工具循环；不触碰本地配置文件）。
-class _SearchEnabledSettings extends AiSettingsProvider {
+/// 强制开启联网搜索的 AI 设置（走 Chat Agent 工具循环；不触碰本地配置文件）。
+class _SearchEnabledSettings extends ChatCompatibleSettings {
   @override
   bool get lastSearch => true;
 
@@ -236,7 +235,7 @@ void main() {
       expect(req['messages'] as List, isNotEmpty);
       // 三块：思考 / 搜索（无 tool_calls 为空）/ 正文。
       expect(ex.thinking, '思考内容A');
-      expect(ex.search, isEmpty);
+      expect(ex.toolCalls, isEmpty);
       expect(ex.content, contains('正文内容'));
     });
 
@@ -285,12 +284,12 @@ void main() {
       expect(exchanges, hasLength(2));
       // 第 1 对：思考 + 搜索块（tool_calls JSON），无正文。
       expect(exchanges[0].thinking, '思考1');
-      expect(exchanges[0].search, contains('narrchat_webSearch'));
-      expect(exchanges[0].search, contains('青云宗'));
+      expect(exchanges[0].toolCalls, contains('narrchat_webSearch'));
+      expect(exchanges[0].toolCalls, contains('青云宗'));
       expect(exchanges[0].content, isEmpty);
       // 第 2 对：正文块，无搜索。
       expect(exchanges[1].content, contains('正文内容'));
-      expect(exchanges[1].search, isEmpty);
+      expect(exchanges[1].toolCalls, isEmpty);
     });
 
     test('Agent 路径：搜索 → 打开页面（fetch 事件与 RAW 捕获）', () async {
@@ -383,8 +382,8 @@ void main() {
       final exchanges = provider.rawExchangesFor(round.id!)!;
       expect(ai.calls, 3);
       expect(exchanges, hasLength(3));
-      expect(exchanges[1].search, contains('narrchat_webFetchPage'));
-      expect(exchanges[1].search, contains('https://example.com/qingyun'));
+      expect(exchanges[1].toolCalls, contains('narrchat_webFetchPage'));
+      expect(exchanges[1].toolCalls, contains('https://example.com/qingyun'));
     });
 
     test('请求失败：捕获失败条目的请求（无返回三块）', () async {
@@ -505,7 +504,7 @@ void main() {
         RawExchange(
           requestBody: '{\n  "model": "deepseek-v4-flash"\n}',
           thinking: '思考内容',
-          search: '',
+          toolCalls: '',
           content: '正文内容',
         ),
       ];
@@ -518,7 +517,7 @@ void main() {
       expect(find.text('【请求体 1】'), findsOneWidget);
       expect(find.text('【AI返回 1】'), findsOneWidget);
       expect(find.text('思考块'), findsOneWidget);
-      expect(find.text('搜索块'), findsOneWidget);
+      expect(find.text('工具调用块'), findsOneWidget);
       expect(find.text('正文块'), findsOneWidget);
       // 搜索块为空 → 显示（无）。
       expect(find.text('（无）'), findsOneWidget);
@@ -544,7 +543,7 @@ void main() {
         RawExchange(
           requestBody: '{"a": "青云宗 青云宗"}',
           thinking: '青云宗',
-          search: '',
+          toolCalls: '',
           content: '',
         ),
       ];
@@ -570,7 +569,7 @@ void main() {
         RawExchange(
           requestBody: '{"a": "青云宗 青云宗"}',
           thinking: '青云宗',
-          search: '',
+          toolCalls: '',
           content: '',
         ),
       ];
@@ -619,7 +618,7 @@ void main() {
         RawExchange(
           requestBody: '{"model":"x"}',
           thinking: '思考内容',
-          search: '',
+          toolCalls: '',
           content: '正文内容',
         ),
       ];
@@ -647,7 +646,7 @@ void main() {
         RawExchange(
           requestBody: r'{"a": "x\ny"}',
           thinking: '行一\n行二',
-          search: '',
+          toolCalls: '',
           content: '',
         ),
       ];
@@ -686,7 +685,7 @@ void main() {
           requestBody:
               '{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}',
           thinking: '',
-          search: '',
+          toolCalls: '',
           content: '',
         ),
       ];
@@ -719,7 +718,7 @@ void main() {
           requestBody:
               '{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,$bigB64"}}]}',
           thinking: '',
-          search: '',
+          toolCalls: '',
           content: '',
         ),
       ];
@@ -744,7 +743,7 @@ void main() {
         RawExchange(
           requestBody: '{"model":"deepseek-v4-pro"}',
           thinking: '不该出现的思考',
-          search: '',
+          toolCalls: '',
           content: '不该出现的正文',
         ),
       ];
