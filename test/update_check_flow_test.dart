@@ -1,34 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:narrchat/services/update_check_flow.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/widgets/update_available_dialog.dart';
 
 import 'helpers/fakes.dart';
-
-/// 更新检查服务替身：不发网络请求，按预置结果序列回放。
-class _FakeCheckService extends UpdateCheckService {
-  _FakeCheckService(List<UpdateCheckResult> results)
-      : _results = results,
-        super(client: MockClient((_) async => http.Response('', 404)));
-
-  final List<UpdateCheckResult> _results;
-
-  /// 被调用时传入的本地版本号（依序）。
-  final List<String> checkedVersions = [];
-
-  /// 调用次数。
-  int calls = 0;
-
-  @override
-  Future<UpdateCheckResult> check({required String currentVersion}) async {
-    calls++;
-    checkedVersions.add(currentVersion);
-    return _results.removeAt(0);
-  }
-}
 
 const GitHubRelease _release = GitHubRelease(
   tagVersion: 'v1.4.0',
@@ -41,7 +17,7 @@ const GitHubRelease _release = GitHubRelease(
 void main() {
   late Map<String, dynamic> config;
   late DateTime currentTime;
-  late _FakeCheckService service;
+  late FakeUpdateCheckService service;
   late FakeNotificationBackend backend;
   late List<String> promptedVersions;
   late List<UpdateDialogChoice> choices;
@@ -64,7 +40,7 @@ void main() {
   setUp(() {
     config = <String, dynamic>{};
     currentTime = DateTime(2026, 1, 1, 10);
-    service = _FakeCheckService([const NoRelease()]);
+    service = FakeUpdateCheckService([const NoRelease()]);
     backend = FakeNotificationBackend();
     promptedVersions = [];
     choices = [];
@@ -103,7 +79,7 @@ void main() {
     });
 
     test('检查失败：发一条失败通知，且时间戳落盘（失败计入每天一次）', () async {
-      service = _FakeCheckService([const CheckFailed('网络请求失败：boom')]);
+      service = FakeUpdateCheckService([const CheckFailed('网络请求失败：boom')]);
       await buildFlow().runAtStartup(navigatorKey);
 
       expect(backend.shown, hasLength(1));
@@ -116,19 +92,19 @@ void main() {
     });
 
     test('已是最新 / 仓库无发布：完全静默', () async {
-      service = _FakeCheckService([const UpToDate()]);
+      service = FakeUpdateCheckService([const UpToDate()]);
       await buildFlow().runAtStartup(navigatorKey);
       expect(backend.shown, isEmpty);
       expect(promptedVersions, isEmpty);
 
-      service = _FakeCheckService([const NoRelease()]);
+      service = FakeUpdateCheckService([const NoRelease()]);
       await buildFlow().runAtStartup(navigatorKey);
       expect(backend.shown, isEmpty);
       expect(promptedVersions, isEmpty);
     });
 
     test('navigator 无 context：检查执行但不弹窗、不抛异常', () async {
-      service = _FakeCheckService([UpdateAvailable(_release)]);
+      service = FakeUpdateCheckService([UpdateAvailable(_release)]);
       expect(navigatorKey.currentContext, isNull);
 
       await buildFlow().runAtStartup(navigatorKey);
@@ -149,7 +125,7 @@ void main() {
     testWidgets('发现新版本：弹窗一次；跳过此版本落盘，隔日同版本不再弹窗',
         (tester) async {
       await pumpNavigator(tester);
-      service = _FakeCheckService([
+      service = FakeUpdateCheckService([
         UpdateAvailable(_release),
         UpdateAvailable(_release),
       ]);
@@ -171,7 +147,7 @@ void main() {
 
     testWidgets('选择「以后再说」：仅记录检查时间，不写跳过版本', (tester) async {
       await pumpNavigator(tester);
-      service = _FakeCheckService([UpdateAvailable(_release)]);
+      service = FakeUpdateCheckService([UpdateAvailable(_release)]);
       choices = [UpdateDialogChoice.later];
 
       await buildFlow().runAtStartup(navigatorKey);

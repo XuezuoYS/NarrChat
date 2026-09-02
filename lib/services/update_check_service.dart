@@ -109,7 +109,14 @@ class UpdateCheckService {
   /// - 远端相同或更低 / 本地版本无法解析 → [UpToDate]（不打扰用户）；
   /// - 仓库无任何发布（HTTP 404）→ [NoRelease]（静默）；
   /// - 其余异常 → [CheckFailed]（含面向用户的中文原因）。
-  Future<UpdateCheckResult> check({required String currentVersion}) async {
+  ///
+  /// [forceShow]：调试用「强制演示」模式——即使远端版本相同或更旧也返回
+  /// [UpdateAvailable]（调试菜单「触发检查更新提示框」使用；默认 `false`
+  /// 保持生产「不打扰」语义，提示框仅展示已获取到的远端信息）。
+  Future<UpdateCheckResult> check({
+    required String currentVersion,
+    bool forceShow = false,
+  }) async {
     try {
       final response = await _client
           .get(
@@ -144,7 +151,8 @@ class UpdateCheckService {
       }
       final local = AppVersion.tryParse(currentVersion);
       // 本地版本号未知时按"已是最新"处理：宁可少打扰，不可误报。
-      if (local != null && remote.compareTo(local) <= 0) {
+      // forceShow：调试强制演示，跳过版本比较直接返回 UpdateAvailable。
+      if (!forceShow && local != null && remote.compareTo(local) <= 0) {
         return const UpToDate();
       }
       return UpdateAvailable(release);

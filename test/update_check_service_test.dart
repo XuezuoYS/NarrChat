@@ -176,4 +176,40 @@ void main() {
       });
     });
   });
+
+  group('check（forceShow 调试强制演示）', () {
+    test('版本相同也返回 UpdateAvailable', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.1'))),
+      );
+
+      final result = await service.check(currentVersion: '1.3.1', forceShow: true);
+
+      expect(result, isA<UpdateAvailable>());
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.3.1');
+    });
+
+    test('版本更旧也返回 UpdateAvailable', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.0'))),
+      );
+
+      final result = await service.check(currentVersion: '1.3.1', forceShow: true);
+
+      expect(result, isA<UpdateAvailable>());
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.3.0');
+    });
+
+    test('默认 false 时保持原行为：相同 / 更旧 → UpToDate', () async {
+      final same = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.1'))),
+      );
+      expect(await same.check(currentVersion: '1.3.1'), isA<UpToDate>());
+
+      final lower = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.0'))),
+      );
+      expect(await lower.check(currentVersion: '1.3.1'), isA<UpToDate>());
+    });
+  });
 }

@@ -21,6 +21,7 @@ import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
+import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
@@ -29,6 +30,8 @@ import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/sync/sync_remote_store.dart';
 import 'package:narrchat/services/taskbar_attention_backend.dart';
 import 'package:narrchat/database/sync_dao.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 
 /// 公共测试替身（Fakes）。
@@ -612,6 +615,38 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
       page: page,
       pageSize: pageSize,
     );
+  }
+}
+
+/// 更新检查服务替身：不发网络请求，按预置结果序列回放，并记录调用参数。
+///
+/// 供「启动更新检查流程」（`update_check_flow_test`）与「调试菜单强制触发
+/// 更新提示框」（`debug_screen_test`）两类用例共用。
+class FakeUpdateCheckService extends UpdateCheckService {
+  FakeUpdateCheckService([List<UpdateCheckResult> results = const []])
+      : _results = List.of(results),
+        super(client: MockClient((_) async => http.Response('', 404)));
+
+  final List<UpdateCheckResult> _results;
+
+  /// 每次调用传入的本地版本号（依序）。
+  final List<String> checkedVersions = [];
+
+  /// 每次调用传入的 forceShow（依序；默认 `false`）。
+  final List<bool> forceShowValues = [];
+
+  /// 调用次数。
+  int calls = 0;
+
+  @override
+  Future<UpdateCheckResult> check({
+    required String currentVersion,
+    bool forceShow = false,
+  }) async {
+    calls++;
+    checkedVersions.add(currentVersion);
+    forceShowValues.add(forceShow);
+    return _results.removeAt(0);
   }
 }
 

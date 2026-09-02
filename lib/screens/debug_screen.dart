@@ -1,17 +1,24 @@
 import 'package:flutter/material.dart';
 
 import '../services/debug_database_service.dart';
+import '../services/update_check_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/release_info.dart';
+import '../widgets/update_available_dialog.dart';
 import 'database_inspect_screen.dart';
 
 /// 「调试」页面：隐藏的调试选项菜单（由设置→关于页连点版本号进入）。
 ///
-/// 目前提供一个入口——查看当前数据库结构、内容和表；后续调试功能可在此追加选项。
+/// 目前提供两个入口：查看当前数据库结构、内容和表；触发「发现新版本」
+/// 提示框（调试用，即使版本相同或更旧也触发）。后续调试功能可在此追加选项。
 class DebugScreen extends StatelessWidget {
   /// [databaseService] 供测试注入；缺省使用真实 sqlite 实现。
-  const DebugScreen({super.key, this.databaseService});
+  const DebugScreen({super.key, this.databaseService, this.updateService});
 
   final DebugDatabaseService? databaseService;
+
+  /// 更新检查服务（供测试注入替身；缺省使用真实 GitHub 实现）。
+  final UpdateCheckService? updateService;
 
   /// 打开调试页。
   static Future<void> open(BuildContext context) {
@@ -30,6 +37,36 @@ class DebugScreen extends StatelessWidget {
     );
   }
 
+  /// 触发「发现新版本」提示框（调试用）：不管开关与版本比较，绕过 24h 节流，
+  /// 仅演示远端最新 Release 的提示框；检查失败 / 无发布时以 SnackBar 提示。
+  /// 返回值（跳过版本等）不落盘，避免污染真实的启动检查状态。
+  Future<void> _probeUpdateDialog(BuildContext context) async {
+    final currentVersion = await ReleaseInfo.version();
+    final result = await (updateService ?? UpdateCheckService()).check(
+      currentVersion: currentVersion,
+      forceShow: true,
+    );
+    if (!context.mounted) return;
+    switch (result) {
+      case UpdateAvailable(:final release):
+        await showUpdateAvailableDialog(
+          context,
+          release: release,
+          currentVersion: currentVersion,
+        );
+      case CheckFailed(:final reason):
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('检查更新失败：$reason')),
+        );
+      case UpToDate() || NoRelease():
+        // forceShow 下正常不会走到这里（仓库有发布即返回 UpdateAvailable）；
+        // 保留分支仅为穷尽枚举并给出可读反馈。
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('未获取到 GitHub 发布信息')),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
@@ -43,6 +80,12 @@ class DebugScreen extends StatelessWidget {
             icon: Icons.storage_outlined,
             label: '查看当前数据库结构、内容和表',
             onTap: () => _openDatabaseInspect(context),
+          ),
+          const SizedBox(height: 12),
+          _DebugOptionCard(
+            icon: Icons.system_update_alt,
+            label: '触发检查到更新的提示框（即使版本相同或更旧也触发）',
+            onTap: () => _probeUpdateDialog(context),
           ),
         ],
       ),
