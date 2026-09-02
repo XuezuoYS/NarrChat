@@ -5,7 +5,8 @@ import '../providers/ui_settings_provider.dart';
 import '../services/system_fonts_service.dart';
 import '../theme/app_theme.dart';
 
-/// UI 设置面板：全局字体选择（列出系统可用字体，按真实字体名预览）。
+/// UI 设置子模块内容（通用设置面板内）：全局字体选择
+/// （列出系统可用字体，按真实字体名预览）。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
 class UiSettingsForm extends StatefulWidget {
@@ -34,25 +35,10 @@ class _UiSettingsFormState extends State<UiSettingsForm> {
   @override
   Widget build(BuildContext context) {
     final ui = context.watch<UiSettingsProvider>();
-    final colors = context.narrColors;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'UI 设置',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: colors.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '界面显示偏好，保存到本地配置文件（不参与云同步）。',
-          style: TextStyle(fontSize: 12, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 20),
         _buildThemeSetting(context, ui),
         const SizedBox(height: 4),
         _buildFontSetting(context, ui),

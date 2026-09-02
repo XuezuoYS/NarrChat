@@ -6,25 +6,23 @@ import 'licenses_screen.dart';
 import 'update_log_screen.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
-import '../services/local_config_service.dart';
-import '../services/update_check_flow.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../utils/triple_tap_detector.dart';
 import '../widgets/ai_settings_form.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
+import '../widgets/general_settings_form.dart';
 import '../widgets/mod_management_panel.dart';
 import '../widgets/settings_form_state.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/storage_management_panel.dart';
-import '../widgets/ui_settings_form.dart';
 
 /// 全窗口设置界面。
 ///
 /// 5 个子模块：
 /// - API 设置：平台/连接 + 各模型参数（始终可调）；
-/// - UI 设置：全局字体等界面偏好（即时生效）；
+/// - 通用设置：UI 设置 / 其它设置 / 实验性设置三个子分区（即时生效）；
 /// - Mod 管理：查看预置 Mod，创建/编辑/导出/导入自定义 Mod；
 /// - 云同步：WebDAV 云端备份 / 恢复；
 /// - 关于：应用信息。
@@ -95,7 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       initialIndex: widget.initialIndex.clamp(0, 5),
       navItems: const [
         SettingsNavItem(icon: Icons.smart_toy_outlined, label: 'API 设置'),
-        SettingsNavItem(icon: Icons.palette_outlined, label: 'UI 设置'),
+        SettingsNavItem(icon: Icons.tune_outlined, label: '通用设置'),
         SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
         SettingsNavItem(icon: Icons.storage_outlined, label: '存储管理'),
@@ -115,7 +113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           case 0:
             return AiSettingsForm(form: _form);
           case 1:
-            return const UiSettingsForm();
+            return const GeneralSettingsForm();
           case 2:
             return const ModManagementPanel();
           case 3:
@@ -142,42 +140,17 @@ class _AboutPanelState extends State<_AboutPanel> {
   late Future<String> _versionFuture;
   late final TripleTapDetector _versionTapDetector;
 
-  /// 「检查更新」开关（默认开启；从本地配置读取，读取失败按默认值）。
-  bool _updateCheckEnabled = true;
-
   @override
   void initState() {
     super.initState();
     _versionFuture = ReleaseInfo.versionLabel();
     _versionTapDetector = TripleTapDetector(onTripleTap: _openDebug);
-    _loadUpdateCheckEnabled();
   }
 
   @override
   void dispose() {
     _versionTapDetector.dispose();
     super.dispose();
-  }
-
-  /// 读取「检查更新」开关（本地明文配置文件；读取失败按默认开启）。
-  Future<void> _loadUpdateCheckEnabled() async {
-    var enabled = true;
-    try {
-      final config = await LocalConfigService.read();
-      enabled = UpdateCheckFlow.updateCheckEnabledFrom(config);
-    } catch (_) {
-      // 配置不可用（如测试环境无 path_provider）时按默认开启。
-    }
-    if (mounted) setState(() => _updateCheckEnabled = enabled);
-  }
-
-  /// 切换「检查更新」开关：先生效再持久化，保存失败不影响本次会话。
-  void _toggleUpdateCheck(bool value) {
-    setState(() => _updateCheckEnabled = value);
-    LocalConfigService.update({UpdateCheckFlow.keyUpdateCheckEnabled: value})
-        .catchError((Object e) {
-      debugPrint('检查更新开关保存失败：$e');
-    });
   }
 
   /// 连点版本号三次进入「调试」页。
@@ -259,12 +232,6 @@ class _AboutPanelState extends State<_AboutPanel> {
               icon: Icons.history,
               label: '更新日志',
               onTap: () => UpdateLogScreen.open(context),
-            ),
-            const SizedBox(height: 12),
-            // 启动检查更新开关（默认开启）。
-            _AboutToggle(
-              value: _updateCheckEnabled,
-              onChanged: _toggleUpdateCheck,
             ),
           ],
         ),
@@ -371,77 +338,6 @@ class _AboutEntry extends StatelessWidget {
                   Icons.chevron_right,
                   size: 18,
                   color: colors.textSecondary,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 「关于」面板开关行卡片：图标 + 标题 + 副标题 + Switch
-/// （样式对齐 [_AboutEntry]，整行可点、Switch 显示当前值）。
-class _AboutToggle extends StatelessWidget {
-  const _AboutToggle({required this.value, required this.onChanged});
-
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.divider),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: () => onChanged(!value),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.system_update_alt_outlined,
-                  size: 18,
-                  color: colors.textSecondary,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '检查更新',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: colors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '启动时检查新版本（每天最多一次）',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Switch(
-                  key: const ValueKey('about_update_check_switch'),
-                  value: value,
-                  onChanged: onChanged,
                 ),
               ],
             ),
