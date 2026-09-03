@@ -27,10 +27,11 @@ const double kUserBubbleNarrowRatio = 0.9;
 /// 聊天气泡。
 ///
 /// 布局约定：用户气泡靠右，AI 气泡靠左。
-/// - 窄屏（可用宽度 < [kResponsiveBreakpoint]）：AI 头像移至正文上方，
-///   正文左右对齐填满内容列；用户气泡额外留出左侧空白（占内容列
-///   `1 - [kUserBubbleNarrowRatio]`）。
+/// - 窄屏（可用宽度 < [kResponsiveBreakpoint]）：AI 头像移至正文上方并左对齐，
+///   右侧以「第 n 轮」小字标注（标题色、小于正文），正文左右对齐填满内容列；
+///   用户气泡额外留出左侧空白（占内容列 `1 - [kUserBubbleNarrowRatio]`）。
 /// - 宽屏：AI 头像内嵌正文左上，正文按内容收窄、受阅读列宽上限约束。
+/// - [roundIndex]：AI 气泡窄屏头部的「第 n 轮」标注；为空时不显示。
 /// - [images]：本轮附带的图片（相对路径），展示于正文**上方**的预览条，
 ///   点击打开全屏查看；文件缺失以灰色占位图提示。
 /// - [recommendedAction]：AI 气泡正文下方的「推荐下一步」，位于气泡内部且可复制。
@@ -42,6 +43,7 @@ class ChatBubble extends StatelessWidget {
   final List<String> images;
   final String? recommendedAction;
   final Widget? footer;
+  final int? roundIndex;
   final void Function(Offset globalPosition)? onContextMenu;
 
   const ChatBubble({
@@ -51,6 +53,7 @@ class ChatBubble extends StatelessWidget {
     this.images = const [],
     this.recommendedAction,
     this.footer,
+    this.roundIndex,
     this.onContextMenu,
   });
 
@@ -91,10 +94,9 @@ class ChatBubble extends StatelessWidget {
             ),
           );
         } else if (narrow) {
-          // 窄屏 AI：头像移至正文上方并**左对齐**（注意：外层 stretch 会把
-          // 子项拉满宽度，若直接放 BrandLogo 会因图片 scaleDown 而居中，
-          // 故用 Align 显式固定为 30×30 靠左）；正文列左右对齐填满内容列
-          // （主流 Chat APP 移动端形态）。
+          // 窄屏 AI：头像移至正文上方并左对齐（Align 固定 30×30，避免被
+          // stretch 拉宽后居中）；头像右侧以「第 n 轮」小字标注（markdown
+          // 标题色、小于正文），弱化孤零感；正文列左右对齐填满内容列。
           bubble = Align(
             alignment: Alignment.centerLeft,
             child: SizedBox(
@@ -103,9 +105,24 @@ class ChatBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: BrandLogo(size: 30),
+                  Row(
+                    children: [
+                      const BrandLogo(size: 30),
+                      if (roundIndex != null) ...[
+                        const SizedBox(width: 10),
+                        Text(
+                          // 气泡页眉：完成后仅剩「第 n 轮」。
+                          '第 $roundIndex 轮',
+                          style: TextStyle(
+                            // 软件二级描述文本色（次要文本色），随主题切换。
+                            color: context.narrColors.textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            height: 1,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 8),
                   _buildContent(context, theme, showAction,
@@ -116,7 +133,8 @@ class ChatBubble extends StatelessWidget {
           );
         } else {
           // 宽屏 AI：头像内嵌正文左上（模仿 DeepSeek：无气泡、纯文本消息流），
-          // 正文按内容收窄、受阅读列宽上限约束。
+          // 「第 n 轮」标注置于正文**上方**、顶部与头像顶部对齐（Row 顶部
+          // 对齐）；正文按内容收窄、受阅读列宽上限约束。
           bubble = Align(
             alignment: Alignment.centerLeft,
             child: ConstrainedBox(
@@ -130,8 +148,28 @@ class ChatBubble extends StatelessWidget {
                   const BrandLogo(size: 30),
                   const SizedBox(width: 10),
                   Flexible(
-                    child: _buildContent(context, theme, showAction,
-                        CrossAxisAlignment.start),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (roundIndex != null) ...[
+                          Text(
+                            // 气泡页眉：完成后仅剩「第 n 轮」。
+                            '第 $roundIndex 轮',
+                            style: TextStyle(
+                              // 软件二级描述文本色（次要文本色），随主题切换。
+                              color: context.narrColors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              height: 1,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        _buildContent(context, theme, showAction,
+                            CrossAxisAlignment.start),
+                      ],
+                    ),
                   ),
                 ],
               ),

@@ -1811,8 +1811,12 @@ class _ChatScreenState extends State<ChatScreen>
                     contentBoundaryIndex: roundProvider.contentBoundaryIndex,
                     agentWarnings: roundProvider.agentWarnings,
                     retryStatus: roundProvider.retryStatus,
+                    roundIndex: roundProvider.nextRoundIndex,
                   )
-                : _TypingBubble(retryStatus: roundProvider.retryStatus);
+                : _TypingBubble(
+                    retryStatus: roundProvider.retryStatus,
+                    roundIndex: roundProvider.nextRoundIndex,
+                  );
           } else {
             final round = chatRounds[index ~/ 2];
             final isAi = index.isOdd;
@@ -1839,6 +1843,7 @@ class _ChatScreenState extends State<ChatScreen>
                       : round.aiNarrative,
                   images: round.aiImages,
                   recommendedAction: round.recommendedAction,
+                  roundIndex: round.roundIndex,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
                   footer: Column(
@@ -3024,7 +3029,10 @@ class _TypingBubble extends StatelessWidget {
   /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
   final (int, int)? retryStatus;
 
-  const _TypingBubble({this.retryStatus});
+  /// 本轮序号（生成中的轮次），页眉显示「第 n 轮 · 正在生成中……」。
+  final int roundIndex;
+
+  const _TypingBubble({this.retryStatus, required this.roundIndex});
 
   @override
   Widget build(BuildContext context) {
@@ -3035,26 +3043,26 @@ class _TypingBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 气泡页眉：头像 + 「第 n 轮 · 正在生成中……」 + 转圈。
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               const BrandLogo(size: 30),
               const SizedBox(width: 10),
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: NarrChatTheme.primary,
-                ),
-              ),
-              const SizedBox(width: 8),
               Text(
-                'AI 正在创作…',
+                '第 $roundIndex 轮 · 正在生成中……',
                 style: TextStyle(
                   color: context.narrColors.textSecondary,
                   fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  height: 1,
                 ),
+              ),
+              const SizedBox(width: 6),
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ],
           ),
@@ -3772,9 +3780,13 @@ class _StreamingBubble extends StatefulWidget {
   /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
   final (int, int)? retryStatus;
 
+  /// 本轮序号（生成中的轮次），窄屏头部显示「第 n 轮」标注。
+  final int roundIndex;
+
   const _StreamingBubble({
     required this.content,
     required this.agentEvents,
+    required this.roundIndex,
     this.contentBoundaryIndex = -1,
     this.agentWarnings = const [],
     this.retryStatus,
@@ -3791,7 +3803,6 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     final events = widget.agentEvents;
     final retry = widget.retryStatus;
     final warnings = widget.agentWarnings;
-    final hasContent = content.isNotEmpty;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -3811,26 +3822,6 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
               const SizedBox(height: 8),
               _AgentWarningsBox(warnings: warnings),
             ],
-            // 生成中：气泡最底部持续显示转圈图标。
-            const SizedBox(height: 8),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  hasContent ? '正在生成…' : 'AI 正在创作…',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: context.narrColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
           ],
         );
 
@@ -3845,9 +3836,28 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: BrandLogo(size: 30),
+                  Row(
+                    children: [
+                      const BrandLogo(size: 30),
+                      const SizedBox(width: 10),
+                      // 气泡页眉：窄屏「头像 + 第 n 轮 · 正在生成中…… + 转圈」。
+                      Text(
+                        '第 ${widget.roundIndex} 轮 · 正在生成中……',
+                        style: TextStyle(
+                          // 软件二级描述文本色（次要文本色），随主题切换。
+                          color: context.narrColors.textSecondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          height: 1,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   body,
@@ -3868,7 +3878,39 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
               children: [
                 const BrandLogo(size: 30),
                 const SizedBox(width: 10),
-                Flexible(child: body),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 气泡页眉：宽屏「第 n 轮 · 正在生成中…… + 转圈」
+                      // 置于正文上方、顶部与头像顶部对齐。
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '第 ${widget.roundIndex} 轮 · 正在生成中……',
+                            style: TextStyle(
+                              // 软件二级描述文本色（次要文本色），随主题切换。
+                              color: context.narrColors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              height: 1,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      body,
+                    ],
+                  ),
+                ),
               ],
             ),
           ),

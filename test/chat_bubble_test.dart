@@ -133,16 +133,17 @@ void main() {
     expect(chatBubbleMaxWidth(0), 0);
   });
 
-  testWidgets('窄屏 AI 气泡：头像在正文上方，正文左右对齐填满内容列', (tester) async {
+  testWidgets('窄屏 AI 气泡：头像在正文上方左对齐，右侧标注「第 n 轮」', (tester) async {
     await tester.pumpWidget(
       buildInWidth(
         width: 360,
-        bubble: ChatBubble(isUser: false, text: longText),
+        bubble: ChatBubble(isUser: false, text: longText, roundIndex: 3),
       ),
     );
     await tester.pump();
 
     // 头像移至正文上方并**左对齐**（30×30 原始尺寸，不被 stretch 拉宽）；
+    // 头像右侧以「第 n 轮」标注（markdown 标题色 + 小于正文字号）；
     // 正文块左右对齐 = 内容列全宽 360。
     // 注：窄屏分支内部也有一个 SizedBox(width: available)，与外壳同宽同位置，
     // ancestor 匹配到多个时取 .first（两者矩形一致，均可作为内容列基准）。
@@ -161,7 +162,26 @@ void main() {
     expect(logoRect.bottom, lessThanOrEqualTo(textRect.top));
     expect(logoRect.width, 30);
     expect(logoRect.left, closeTo(boxRect.left, 0.01));
+    // 「第 3 轮」页眉位于头像右侧同一行：软件二级描述文本色（浅色 #8A8F98）、13px。
+    final label = tester.widget<Text>(find.text('第 3 轮'));
+    expect(label.style?.color, NarrChatColors.light.textSecondary);
+    expect(label.style?.fontSize, 13);
+    final labelRect = tester.getRect(find.text('第 3 轮'));
+    expect(labelRect.left, greaterThan(logoRect.right));
+    expect(labelRect.center.dy, closeTo(logoRect.center.dy, 1));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('窄屏 AI 气泡：未提供 roundIndex 时不显示轮次标注', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: const ChatBubble(isUser: false, text: '纯文本'),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('第'), findsNothing);
   });
 
   testWidgets('窄屏 AI 气泡：短消息正文块同样左右对齐（满宽列，与主流一致）', (tester) async {
@@ -176,20 +196,27 @@ void main() {
     expect(tester.getSize(find.byType(MarkdownPreview)).width, 360);
   });
 
-  testWidgets('宽屏 AI 气泡：头像内嵌正文左侧，正文受 680 阅读列宽上限约束', (tester) async {
+  testWidgets('宽屏 AI 气泡：头像居左，「第 n 轮」在正文上方且顶部与头像对齐', (tester) async {
     await tester.pumpWidget(
       buildInWidth(
         width: 800,
-        bubble: ChatBubble(isUser: false, text: longText),
+        bubble: ChatBubble(isUser: false, text: longText, roundIndex: 5),
       ),
     );
     await tester.pump();
 
-    // 680（上限）− 头像 40 = 640；头像仍内嵌正文左上（同一行）。
+    // 680（上限）− 头像 40 = 640；头像仍内嵌正文左侧（同一行）。
     final logoRect = tester.getRect(find.byType(BrandLogo));
     final textRect = tester.getRect(find.byType(MarkdownPreview));
     expect(textRect.width, 640);
     expect(logoRect.right, lessThanOrEqualTo(textRect.left));
+    // 「第 5 轮」页眉位于正文上方：顶部与头像顶部对齐、颜色为次要文本色。
+    final label = tester.widget<Text>(find.text('第 5 轮'));
+    expect(label.style?.color, NarrChatColors.light.textSecondary);
+    expect(label.style?.fontSize, 13);
+    final labelRect = tester.getRect(find.text('第 5 轮'));
+    expect(labelRect.top, closeTo(logoRect.top, 0.01));
+    expect(labelRect.bottom, lessThanOrEqualTo(textRect.top));
   });
 
   testWidgets('窄屏用户气泡：右侧对齐，左侧留出 10% 空白表达「靠右」', (tester) async {
