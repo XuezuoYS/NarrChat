@@ -20,6 +20,7 @@ import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/non_stream_replay.dart';
+import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
@@ -53,7 +54,9 @@ const String kHarnessBookUuid = 'book-1';
 /// - [nonStreamReplayer]：非流式展示回放器（测试可注入零间隔加速）；
 /// - [seedRounds]：预置的对话轮次（roundIndex 1..n，正文足够长便于滚动断言）；
 /// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；楼层跳转等需要
-///   “单轮高于视口”的场景可加大）。
+///   “单轮高于视口”的场景可加大）；
+/// - [warningsStore]：常驻黄框警告的本地存储（默认新建内存替身，
+///   冷启动恢复场景可预置数据）。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
   AiService? ai,
@@ -71,6 +74,7 @@ Future<RoundProvider> pumpChatScreen(
   Duration retryDelay = const Duration(milliseconds: 800),
   HtmlSearchService? searchService,
   NonStreamReplayer? nonStreamReplayer,
+  RoundWarningsStore? warningsStore,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
   Size size = const Size(1400, 900),
@@ -107,6 +111,7 @@ Future<RoundProvider> pumpChatScreen(
     retryDelay: retryDelay,
     searchService: searchService,
     nonStreamReplayer: nonStreamReplayer,
+    warningsStore: warningsStore ?? FakeRoundWarningsStore(),
     onGenerationCompleted: onGenerationCompleted,
   );
   await roundProvider.loadRounds(kHarnessBookUuid);

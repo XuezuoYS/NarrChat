@@ -28,6 +28,7 @@ import '../services/image_store.dart';
 import '../services/non_stream_replay.dart';
 import '../services/prompt_builder.dart';
 import '../services/prompt_formats.dart';
+import '../services/round_warnings_store.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
 import 'cloud_sync_provider.dart';
@@ -92,10 +93,15 @@ class _BookGenState {
 
   /// 轮次级**常驻**警告：roundIndex → 提示行。
   ///
-  /// 只存内存：不入库、不进云同步（属于本机生成过程的诊断信息，不该污染
-  /// 用户数据或同步到其它设备）。手动关闭、重生成该轮、改提问、删除该轮
-  /// 都会随轮次一起清除；换书保留（各书独立），杀进程即清空。
+  /// 本地持久化（`round_warnings.json`，见 [RoundWarningsStore]）：
+  /// 不入用户库、不进云同步（属于本机生成过程的诊断信息，不该污染
+  /// 用户数据或同步到其它设备）。重启 / 重新进入书籍后恢复展示；
+  /// 手动关闭、重生成该轮、改提问、删除该轮都会随轮次一起清除；
+  /// 换书保留（各书独立）。
   final Map<int, List<String>> roundWarnings = {};
+
+  /// 是否已从本地存储水合过（每书每会话仅一次，避免重启读回覆盖会话内状态）。
+  bool warningsHydrated = false;
 
   /// [roundWarnings] 的变更计数：对话列表据此失效缓存的条目高度。
   int warningsVersion = 0;
@@ -153,6 +159,9 @@ class RoundProvider extends ChangeNotifier {
     NonStreamReplayer? nonStreamReplayer,
     /// 网络类失败重试间隔（测试可注入零时长）。
     Duration retryDelay = const Duration(milliseconds: 800),
+    /// 轮次常驻警告的本地存储（缺省用内存实现：仅会话内存、不落盘，
+    /// 行为与「仅内存」时代一致；生产由 main 注入 [FileRoundWarningsStore]）。
+    RoundWarningsStore? warningsStore,
   })  : _dao = dao ?? RoundDao(),
         _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
@@ -169,7 +178,9 @@ class RoundProvider extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _cloudSyncProvider = cloudSyncProvider,
         // ignore: prefer_initializing_formals
-        _retryDelay = retryDelay {
+        _retryDelay = retryDelay,
+        // ignore: prefer_initializing_formals
+        _warningsStore = warningsStore ?? MemoryRoundWarningsStore() {
     // 共享搜索服务实例（默认 Agent 工具按书复用，避免重复创建 http client）。
     _searchService = searchService ?? HtmlSearchService();
     _nonStreamReplayer = nonStreamReplayer ?? const NonStreamReplayer();
@@ -200,6 +211,9 @@ class RoundProvider extends ChangeNotifier {
 
   /// 网络类失败重试间隔。
   final Duration _retryDelay;
+
+  /// 轮次常驻警告的本地存储（本地数据层，不入库、不云同步）。
+  final RoundWarningsStore _warningsStore;
 
   /// 生成成功回调（书籍 uuid, 书名）。
   final void Function(String bookUuid, String bookTitle)? onGenerationCompleted;
@@ -256,7 +270,7 @@ class RoundProvider extends ChangeNotifier {
   List<String> get agentWarnings =>
       _curGen == null ? const [] : List.unmodifiable(_curGen!.agentWarnings);
 
-  /// 某轮的常驻警告（仅内存；生成结束时由 AGENT 写入，可手动关闭）。
+  /// 某轮的常驻警告（本地持久化；生成结束时由 AGENT 写入，可手动关闭）。
   List<String> roundWarningsFor(int roundIndex) {
     final lines = _curGen?.roundWarnings[roundIndex];
     return (lines == null || lines.isEmpty) ? const [] : List.unmodifiable(lines);
@@ -265,15 +279,18 @@ class RoundProvider extends ChangeNotifier {
   /// 常驻警告的变更计数（对话列表据此重算条目高度）。
   int get roundWarningsVersion => _curGen?.warningsVersion ?? 0;
 
-  /// 手动关闭某轮的常驻警告。
+  /// 手动关闭某轮的常驻警告（同时从本地存储移除，重启不复活）。
   void dismissRoundWarnings(int roundIndex) {
     final gen = _curGen;
     if (gen == null || gen.roundWarnings.remove(roundIndex) == null) return;
     gen.warningsVersion++;
+    unawaited(_persistWarnings(gen));
     notifyListeners();
   }
 
   /// 写入 / 清除某轮常驻警告（[lines] 为空即清除）。不通知：由调用方收尾。
+  ///
+  /// 变更即异步落盘（本地数据层；失败静默，下次变更重试整书快照）。
   void _setRoundWarnings(
     _BookGenState gen,
     int roundIndex,
@@ -284,19 +301,69 @@ class RoundProvider extends ChangeNotifier {
       if (had) {
         gen.roundWarnings.remove(roundIndex);
         gen.warningsVersion++;
+        unawaited(_persistWarnings(gen));
       }
       return;
     }
     if (had && listEquals(gen.roundWarnings[roundIndex]!, lines)) return;
     gen.roundWarnings[roundIndex] = List.of(lines);
     gen.warningsVersion++;
+    unawaited(_persistWarnings(gen));
   }
 
   /// 清除 [fromIndex] 及之后的警告（这些轮即将被重生成 / 删除）。
   void _dropRoundWarningsFrom(_BookGenState gen, int fromIndex) {
     final before = gen.roundWarnings.length;
     gen.roundWarnings.removeWhere((index, _) => index >= fromIndex);
-    if (gen.roundWarnings.length != before) gen.warningsVersion++;
+    if (gen.roundWarnings.length != before) {
+      gen.warningsVersion++;
+      unawaited(_persistWarnings(gen));
+    }
+  }
+
+  /// 将某书当前的全部常驻警告异步写回本地存储（快照副本，避免写期间
+  /// 内存 Map 被后续变更改动）；失败静默——本地诊断缓存不阻断主流程。
+  Future<void> _persistWarnings(_BookGenState gen) async {
+    try {
+      await _warningsStore.saveForBook(
+        gen.bookUuid,
+        {for (final e in gen.roundWarnings.entries) e.key: List.of(e.value)},
+      );
+    } catch (_) {
+      // 本地持久化失败不打扰用户：内存态仍正确，下次变更会重试。
+    }
+  }
+
+  /// 水合 + 校验某书常驻警告（[loadRounds] 收尾调用）：
+  ///
+  /// - 每书每会话首次：从本地存储恢复（重启/换书后黄框重新出现）；
+  /// - 每次：仅保留「仍存在的轮次」∪「失败条目本该产生的那一轮」，
+  ///   其余（云端恢复替换轮次、残留孤儿条目）一并清除并回写存储。
+  ///
+  /// 此时 [_rounds] 已切换为 [bookUuid] 的轮次、[failedAttempt] 已加载。
+  Future<void> _syncWarningsWithBook(String bookUuid) async {
+    final gen = _gen(bookUuid);
+    if (!gen.warningsHydrated) {
+      gen.warningsHydrated = true;
+      Map<int, List<String>> loaded = const {};
+      try {
+        loaded = await _warningsStore.loadForBook(bookUuid);
+      } catch (_) {
+        // 读取失败视为无缓存（诊断信息可缺失）。
+      }
+      for (final e in loaded.entries) {
+        gen.roundWarnings[e.key] = List.of(e.value);
+      }
+    }
+    // 校验：轮次已不存在（删除 / 云端恢复替换）的警告不再显示。
+    final validIndexes = {for (final r in _rounds) r.roundIndex};
+    if (!gen.failedAttempt.isEmpty) validIndexes.add(nextRoundIndex);
+    final before = gen.roundWarnings.length;
+    gen.roundWarnings.removeWhere((index, _) => !validIndexes.contains(index));
+    if (gen.roundWarnings.length != before) {
+      gen.warningsVersion++;
+      unawaited(_persistWarnings(gen));
+    }
   }
 
   /// 当前自动重试进度（灰字「错误重连……（x/3）」）；null = 无重试。
@@ -382,6 +449,8 @@ class RoundProvider extends ChangeNotifier {
     }
     // 加载本书「失败条目」（best-effort：读取失败不影响轮次加载）。
     await _loadFailedAttempt(bookUuid);
+    // 常驻警告：水合本地存储 + 按当前轮次校验清理（须在失败条目之后）。
+    await _syncWarningsWithBook(bookUuid);
     notifyListeners();
   }
 
@@ -935,7 +1004,7 @@ class RoundProvider extends ChangeNotifier {
       );
       final newRoundId = await _dao.insertRound(newRound);
       // 结束态：生成期间的顶部警告转存为该轮的常驻警告（空即清除上一轮失败
-      // 尝试留下的同下标提示）；只存内存，不入库、不云同步。
+      // 尝试留下的同下标提示）；写入本地数据层，不入用户库、不云同步。
       _setRoundWarnings(gen, newRound.roundIndex, gen.agentWarnings);
       // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
       _rawDataByRound[newRoundId] = List.of(gen.rawExchanges);
@@ -1373,7 +1442,8 @@ class RoundProvider extends ChangeNotifier {
     if (roundResult.content.trim().isEmpty) {
       // 整轮没有任何正文（纯工具轮 / 服务端只回工具调用 / 首帧即被截断）：
       // 本轮判失败，走既有的「失败条目保留用户输入」路径，不写入半截轮次；
-      // 同时留下常驻黄框说明后果（状态改动随工作副本一起作废，仅内存提示）。
+      // 同时留下常驻黄框说明后果（状态改动随工作副本一起作废，
+      // 仅本机本地数据层提示，不入用户库、不云同步）。
       final truncated = roundResult.incomplete;
       _setRoundWarnings(gen, workingCopy.roundIndex, [
         truncated

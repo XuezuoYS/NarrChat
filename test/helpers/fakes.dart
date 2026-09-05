@@ -20,6 +20,7 @@ import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
@@ -848,5 +849,49 @@ class StubCloudSyncProvider extends CloudSyncProvider {
     cloudKeepVersions = value;
     debugSetKeepVersions(value);
     return null;
+  }
+}
+
+/// 内存版 [RoundWarningsStore]：可预置 / 读取落盘结果（供「重启恢复」用例复用）。
+///
+/// 与 [MemoryRoundWarningsStore] 同语义，但公开底层数据以便断言，
+/// 并记录保存调用次数（供触发时机 / 校验回写断言）。
+class FakeRoundWarningsStore implements RoundWarningsStore {
+  /// 模拟本地数据：bookUuid → (roundIndex → 警告行)。
+  final Map<String, Map<int, List<String>>> data = {};
+
+  /// 每个保存周期（读-改-写）一次；无变化未触发保存时保持原值。
+  int saveCalls = 0;
+
+  /// 下一轮 load 抛出的异常（模拟本地文件损坏 / 读取失败）。
+  Object? nextLoadError;
+
+  @override
+  Future<Map<int, List<String>>> loadForBook(String bookUuid) async {
+    final err = nextLoadError;
+    if (err != null) {
+      nextLoadError = null;
+      throw err;
+    }
+    final book = data[bookUuid];
+    return book == null
+        ? const {}
+        : {for (final e in book.entries) e.key: List.of(e.value)};
+  }
+
+  @override
+  Future<void> saveForBook(
+    String bookUuid,
+    Map<int, List<String>> warnings,
+  ) async {
+    saveCalls++;
+    final book = warnings.isEmpty
+        ? null
+        : {for (final e in warnings.entries) e.key: List.of(e.value)};
+    if (book == null) {
+      data.remove(bookUuid);
+    } else {
+      data[bookUuid] = book;
+    }
   }
 }

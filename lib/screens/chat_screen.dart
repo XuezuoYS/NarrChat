@@ -1832,7 +1832,7 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               );
             } else {
-              // 本轮常驻警告（仅内存，可手动关闭）：AGENT 状态未完整落地。
+              // 本轮常驻警告（本地持久化，可手动关闭）：AGENT 状态未完整落地。
               final warnings = roundProvider.roundWarningsFor(round.roundIndex);
               item = Padding(
                 padding: const EdgeInsets.only(bottom: 20),
@@ -3491,7 +3491,8 @@ class _ToolEventBoxState extends State<_ToolEventBox> {
 
 /// 警告框（黄，Warning 级）：两种用法同一形态——
 /// - 生成中：流式气泡顶部实时提示本轮已跳过的状态修改（[onDismiss] 为空）；
-/// - 结束后：挂在对应轮次上的**常驻**提示（仅内存、不入库不云同步，可手动关闭）。
+/// - 结束后：挂在对应轮次上的**常驻**提示（本地持久化、不入库不云同步，
+///   重启后恢复展示，可手动关闭）。
 class _AgentWarningsBox extends StatelessWidget {
   final List<String> warnings;
 

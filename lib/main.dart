@@ -23,6 +23,7 @@ import 'services/clipboard_paste_service.dart';
 import 'services/manual_licenses_service.dart';
 import 'services/image_import_service.dart';
 import 'services/notification_service.dart';
+import 'services/round_warnings_store.dart';
 import 'services/storage_service.dart';
 import 'services/sync/image_revival.dart';
 import 'services/sync/image_deletion.dart';
@@ -108,6 +109,8 @@ Future<void> main() async {
     worldBookProvider: worldBookProvider,
     modProvider: modProvider,
     cloudSyncProvider: cloudSyncProvider,
+    // 常驻黄框警告持久化到本地数据层（round_warnings.json）：不入库、不云同步。
+    warningsStore: FileRoundWarningsStore(),
     onGenerationCompleted: notificationService.onGenerationCompleted,
     onGenerationActiveChanged: notificationService.onGenerationActiveChanged,
   );
