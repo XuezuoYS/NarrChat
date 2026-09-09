@@ -250,6 +250,7 @@ void main() {
     );
 
     await tester.enterText(composerField(), '开始新的剧情');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await waitSendDone(tester, roundProvider);
 
@@ -291,6 +292,7 @@ void main() {
 
     // 触发生成（UI 发送，流式进行中）。
     await tester.enterText(composerField(), '继续剧情');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await tester.pump();
     ai.emit('第一段内容');
@@ -460,6 +462,7 @@ void main() {
     expect(find.byKey(const Key('composer_image_strip')), findsOneWidget);
 
     await tester.enterText(composerField(), '看图');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await tester.pump();
 
@@ -495,6 +498,7 @@ void main() {
     expect(find.byKey(const Key('composer_image_strip')), findsOneWidget);
 
     await tester.enterText(composerField(), '看图');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await tester.pump();
 
@@ -513,5 +517,103 @@ void main() {
       await tester.pump();
     }
     await tester.pumpAndSettle();
+  });
+
+  // —— 发送按钮置灰（无输入与可点状态区分） ——
+
+  /// 输入卡内的发送/停止 IconButton（按 tooltip 定位，全局唯一）。
+  Finder sendButton() => find.byWidgetPredicate(
+        (w) =>
+            w is IconButton &&
+            (w.tooltip == '发送' || w.tooltip == '停止生成'),
+      );
+
+  /// 发送按钮的实际底色（ButtonStyleButton 把 background 解析到 Material.color）。
+  Color sendButtonBackground(WidgetTester tester) {
+    final material = tester.widget<Material>(
+      find
+          .descendant(of: sendButton(), matching: find.byType(Material))
+          .first,
+    );
+    return material.color!;
+  }
+
+  testWidgets('发送按钮：输入为空时禁用，底色为浅色（区分可点态）', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNull);
+    expect(
+      sendButtonBackground(tester),
+      NarrChatTheme.light.colorScheme.surfaceContainerHighest,
+      reason: '浅色主题下禁用底色应为浅灰而非品牌蓝',
+    );
+  });
+
+  testWidgets('发送按钮：输入文本后恢复可点且底色为品牌蓝', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.enterText(composerField(), '有内容');
+    await tester.pump();
+
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNotNull);
+    expect(sendButtonBackground(tester), NarrChatTheme.primary);
+  });
+
+  testWidgets('发送按钮：仅空白字符仍禁用，清空后回到禁用', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.enterText(composerField(), '   ');
+    await tester.pump();
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNull);
+
+    await tester.enterText(composerField(), 'x');
+    await tester.pump();
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNotNull);
+
+    await tester.enterText(composerField(), '');
+    await tester.pump();
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNull);
+    expect(
+      sendButtonBackground(tester),
+      NarrChatTheme.light.colorScheme.surfaceContainerHighest,
+    );
+  });
+
+  testWidgets('发送按钮：深色主题下禁用底色为深色', (tester) async {
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      theme: NarrChatTheme.dark,
+    );
+
+    final bg = sendButtonBackground(tester);
+    expect(bg, NarrChatTheme.dark.colorScheme.surfaceContainerHighest);
+    expect(
+      bg.computeLuminance(),
+      lessThan(0.2),
+      reason: '深色主题下禁用底色应为深色',
+    );
+  });
+
+  testWidgets('发送按钮：生成中（输入已清空）仍可点击作为停止', (tester) async {
+    final ai = FakeStreamingAiService();
+    final rp = await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      ai: ai,
+    );
+
+    await tester.enterText(composerField(), '继续剧情');
+    await tester.pump(); // 让发送按钮随输入文本重建后再点击。
+    await tester.tap(sendButton());
+    await tester.pump();
+
+    // 发送后输入框已清空，但生成期间按钮转为「停止生成」，仍可点击且保持主色底。
+    expect(tester.widget<IconButton>(sendButton()).tooltip, '停止生成');
+    expect(tester.widget<IconButton>(sendButton()).onPressed, isNotNull);
+    expect(sendButtonBackground(tester), NarrChatTheme.primary);
+
+    ai.complete();
+    await waitSendDone(tester, rp);
   });
 }

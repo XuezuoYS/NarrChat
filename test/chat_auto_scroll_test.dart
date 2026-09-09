@@ -202,6 +202,7 @@ void main() {
     // 通过 UI 发送（走生产 _send → _startGeneration / _endGeneration 收尾，
     // 而非直接调 provider，确保生成结束的底部滚动路径被覆盖）。
     await tester.enterText(find.byType(TextField).first, '继续剧情');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
     await tester.tap(find.byIcon(Icons.arrow_upward));
     await tester.pump();
     ai.emit('后续内容');

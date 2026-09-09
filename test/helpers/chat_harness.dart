@@ -55,6 +55,7 @@ const String kHarnessBookUuid = 'book-1';
 /// - [seedRounds]：预置的对话轮次（roundIndex 1..n，正文足够长便于滚动断言）；
 /// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；楼层跳转等需要
 ///   “单轮高于视口”的场景可加大）；
+/// - [theme]：应用主题（默认浅色主题；深色置灰等外观用例可传 dark）；
 /// - [warningsStore]：常驻黄框警告的本地存储（默认新建内存替身，
 ///   冷启动恢复场景可预置数据）。
 Future<RoundProvider> pumpChatScreen(
@@ -77,6 +78,7 @@ Future<RoundProvider> pumpChatScreen(
   RoundWarningsStore? warningsStore,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
+  ThemeData? theme,
   Size size = const Size(1400, 900),
 }) async {
   tester.view.physicalSize = size;
@@ -147,7 +149,7 @@ Future<RoundProvider> pumpChatScreen(
         ),
       ],
       child: MaterialApp(
-        theme: NarrChatTheme.light,
+        theme: theme ?? NarrChatTheme.light,
         home: Scaffold(body: const ChatScreen()),
       ),
     ),

@@ -2359,36 +2359,47 @@ class _ChatScreenState extends State<ChatScreen>
                       ),
                     ),
                     const SizedBox(width: endGap),
-                    SizedBox(
-                      width: sendWidth,
-                      height: 36,
-                      child: IconButton.filled(
-                        // 生成中：点击中断生成（仍显示加载图标）；空闲：发送。
-                        onPressed: isSending
-                            ? roundProvider.cancelGeneration
-                            : _send,
-                        tooltip: isSending ? '停止生成' : '发送',
-                        style: IconButton.styleFrom(
-                          backgroundColor: NarrChatTheme.primary,
-                          disabledBackgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.outline,
-                        ),
-                        icon: isSending
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.arrow_upward,
-                                size: 18,
-                                color: Colors.white,
-                              ),
-                      ),
+                    // 发送/停止按钮：无输入文本（空闲）时禁用，呈浅色（深色主题下为
+                    // 深灰），与可点击的品牌蓝态视觉区分；仅随文本变化重建此按钮子树
+                    // （整页 build 并不随每次键入重跑）。
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _inputController,
+                      builder: (context, value, _) {
+                        final hasInput = value.text.trim().isNotEmpty;
+                        return SizedBox(
+                          width: sendWidth,
+                          height: 36,
+                          child: IconButton.filled(
+                            // 生成中：点击中断（仍显示加载图标）；空闲有输入：发送；
+                            // 空闲无输入：禁用（置灰）。
+                            onPressed: isSending
+                                ? roundProvider.cancelGeneration
+                                : hasInput
+                                ? _send
+                                : null,
+                            tooltip: isSending ? '停止生成' : '发送',
+                            style: IconButton.styleFrom(
+                              backgroundColor: NarrChatTheme.primary,
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerHighest,
+                              disabledForegroundColor:
+                                  context.narrColors.placeholder,
+                            ),
+                            icon: isSending
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.arrow_upward, size: 18),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 );
