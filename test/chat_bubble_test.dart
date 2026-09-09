@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/theme/app_theme.dart';
@@ -23,6 +24,21 @@ void main() {
       ),
     );
   }
+
+  /// 单一 pump 入口：以用户 / AI 气泡渲染 [text]（渲染模式判定用例复用）。
+  Future<void> pumpBubble(WidgetTester tester,
+      {required bool isUser, required String text}) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: NarrChatTheme.light,
+        home: Scaffold(
+          body: Center(child: ChatBubble(isUser: isUser, text: text)),
+        ),
+      ),
+    );
+    await tester.pump();
+  }
+
   Widget buildBubble({required VoidCallback onMenu}) {
     return MaterialApp(
       theme: NarrChatTheme.light,
@@ -240,5 +256,63 @@ void main() {
     final textRect = tester.getRect(find.byType(MarkdownPreview));
     expect(textRect.width, 296);
     expect(textRect.left - boxRect.left, 50);
+  });
+
+  testWidgets('用户气泡：无 md 特征的多行手打文本按纯文本渲染（换行生效）',
+      (tester) async {
+    await pumpBubble(tester, isUser: true, text: '第一行\n第二行');
+
+    // 不进入 Markdown 解析：单换行若被当作软换行会折叠成空格。
+    expect(find.byType(MarkdownBody), findsNothing);
+    final plain = tester.widget<Text>(find.text('第一行\n第二行'));
+    expect(plain.data, '第一行\n第二行');
+    // 纯文本沿用用户气泡正文样式（15px / 1.65 行高）。
+    expect(plain.style?.fontSize, 15);
+    expect(plain.style?.height, 1.65);
+    expect(find.text('第一行 第二行'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('用户气泡：无空行的 Markdown 列表按 Markdown 渲染', (tester) async {
+    await pumpBubble(tester, isUser: true, text: '- 列出了\n- 一些\n- 项目');
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    // 每条各自成块：逐行呈现（行首符号渲染为 •，而非字面 `- `）。
+    expect(find.text('•'), findsNWidgets(3));
+    expect(find.text('- 列出了'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('用户气泡：单行成对粗体按 Markdown 渲染', (tester) async {
+    await pumpBubble(tester, isUser: true, text: '**这种**格式的一行式');
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    // 星号被解析掉，而不是按字面显示（纯文本分支才会原样保留）。
+    expect(find.text('**这种**格式的一行式'), findsNothing);
+    expect(find.textContaining('**'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('用户气泡：含空行分段按 Markdown 渲染', (tester) async {
+    await pumpBubble(tester, isUser: true, text: '# 标题\n\n正文内容');
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.text('标题'), findsOneWidget);
+    expect(find.text('# 标题\n\n正文内容'), findsNothing);
+  });
+
+  testWidgets('用户气泡：语气波浪线 / 裸星号等口语符号不被误判为 Markdown',
+      (tester) async {
+    const raw = '~~你好呀~~\n10*20*30\n>a<';
+    await pumpBubble(tester, isUser: true, text: raw);
+
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.text(raw), findsOneWidget);
+  });
+
+  testWidgets('AI 气泡：不受纯文本判定影响，始终走 Markdown 渲染', (tester) async {
+    await pumpBubble(tester, isUser: false, text: '第一行\n第二行');
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
   });
 }

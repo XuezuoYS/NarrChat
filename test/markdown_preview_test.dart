@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/theme/app_theme.dart';
@@ -260,5 +261,207 @@ void main() {
   test('GitHubMarkdownStyle 可独立构建样式表', () {
     // 纯逻辑校验：样式表可构建且关键样式存在。
     expect(GitHubMarkdownStyle.extensionSet, isNotNull);
+  });
+
+  group('isMarkdownFormatted 结构特征判定', () {
+    /// 反向清单：「像 md 但不是 md」的写法必须保持纯文本渲染，否则用户手打的
+    /// 换行会被软换行规则折叠成空格（本次优化的动机）。
+    const notMarkdown = [
+      '单行正文',
+      '第一行\n第二行\n第三行',
+      '正文\n\n', // 末尾多敲回车：首尾空白不算分段
+      '\n\n正文',
+      '  正文  \n',
+      '**开头没闭合的星号',
+      '10*20*30', // 单星号乘积
+      'user_name_is_bad', // snake_case
+      '__init__ 初始化', // 双下划线标识符
+      '~~还是要你~~', // 语气波浪线：不作判定依据
+      '~~~',
+      '先这样==那样', // 等号：不作判定依据
+      '>_<', // 颜文字（`>` 后无空格）
+      '#话题标签', // 井号后无空格
+      '-不是列表', // 列表符后无空格
+      '2.十点半', // 编号后无空格
+      'a < b 且 c > d', // 比较符号
+      'https://example.com 裸链接', // 裸 URL 不作判定依据
+      '第 3 点：先吃饭',
+      '详见---原文---后面', // 分割线须整行仅此符号
+      '今天写了 3 段，很好',
+    ];
+
+    /// 正向清单：任一 md 结构特征（含无空行的块级/内联标记）都应走 Markdown。
+    const withMarkdown = [
+      '段落一\n\n段落二', // 空行分段
+      '段落一\n \n段落二', // 空行内含空格
+      '段落一\r\n\r\n段落二', // CRLF
+      '**这种**格式的一行式', // 单行成对粗体（无空行）
+      '- 列出了\n- 一些\n- 项目', // 无空行列表
+      '* 星号列表\n* 第二项',
+      '+ 加号列表',
+      '1. 第一项\n2. 第二项',
+      '1) 旧式编号',
+      '- [x] 已完成\n- [ ] 未完成', // 任务列表（无空行）
+      '# 标题\n正文', // 无空行标题
+      '> 引用内容',
+      '> [!NOTE]\n> 提示', // GitHub Alert
+      '```dart\ncode();\n```', // 围栏代码块
+      '| A | B |\n| --- | --- |\n| 1 | 2 |', // 表格
+      '上段\n---\n下段', // 整行分割线
+      '<div>html</div>',
+      '正文 `行内代码` 结尾',
+      '[链接](https://example.com)',
+      '![图](https://example.com/a.png)',
+      '<https://example.com>',
+    ];
+
+    test('纯文本 / 颜文字 / 口语写法一律不判为 Markdown', () {
+      for (final text in notMarkdown) {
+        expect(isMarkdownFormatted(text), isFalse, reason: '误判为 md：$text');
+      }
+    });
+
+    test('空行分段、块级标记、成对内联标记一律判为 Markdown', () {
+      for (final text in withMarkdown) {
+        expect(isMarkdownFormatted(text), isTrue, reason: '漏判 md：$text');
+      }
+    });
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：无 md 特征时按纯文本渲染并保留换行',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          data: '第一行\n第二行',
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 不走 Markdown 解析器（否则段内单换行会被折叠成空格）。
+    expect(find.byType(MarkdownBody), findsNothing);
+    final plain = tester.widget<Text>(find.text('第一行\n第二行'));
+    expect(plain.data, '第一行\n第二行');
+    expect(find.text('第一行 第二行'), findsNothing);
+    // 纯文本分支同样可跨块选中（外层统一 SelectionArea）。
+    expect(find.byType(SelectionArea), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：CRLF 归一化且末尾空行不占位',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          data: '第一行\r\n第二行\r\n\r\n',
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsNothing);
+    final plain = tester.widget<Text>(find.text('第一行\n第二行'));
+    expect(plain.data, '第一行\n第二行', reason: 'CRLF 归一化 + 去掉末尾空行');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：无空行的列表与成对标记走 Markdown',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          data: '- 列出了\n- 一些\n- 项目',
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 列表是 md 块级结构：逐条渲染为列表项（各行天然独立成行）。
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.text('•'), findsNWidgets(3));
+    expect(find.text('- 列出了'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：单行成对粗体按 Markdown 加粗渲染',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          data: '**这种**格式的一行式',
+          base: TextStyle(fontSize: 15),
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    // `**` 被解析为 strong：星号消失，文字带粗体样式。
+    expect(find.text('**这种**格式的一行式'), findsNothing);
+    final boldStyle = _spanStyle(tester, '这种');
+    expect(boldStyle?.fontWeight, FontWeight.w600,
+        reason: '**…** 应解析为 strong');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：语气波浪线等仍按纯文本渲染',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          data: '~~你好呀~~\n第二行还是换行',
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.text('~~你好呀~~\n第二行还是换行'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown：命中 md 后严格按 Markdown 规则',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(
+          // 判定为 md（成对粗体）后，段内单换行按标准 md 规则折叠为空格。
+          data: '**重点**\n在下一行被合并',
+          plainTextWhenNotMarkdown: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    final rendered = tester
+        .widgetList<RichText>(find.byType(RichText))
+        .map((r) => r.text.toPlainText())
+        .toList();
+    expect(
+      rendered.any((t) => t.contains('重点') && t.contains('在下一行被合并')),
+      isTrue,
+      reason: '两行应合并为同一段落',
+    );
+    expect(rendered.any((t) => t.contains('\n')), isFalse,
+        reason: 'md 分支不注入硬换行');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('plainTextWhenNotMarkdown 默认关闭：纯文本仍走 Markdown',
+      (tester) async {
+    await tester.pumpWidget(
+      _wrap(const MarkdownPreview(data: '第一行\n第二行')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

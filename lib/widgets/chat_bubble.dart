@@ -208,7 +208,9 @@ class ChatBubble extends StatelessWidget {
           const SizedBox(height: 8),
         ],
         // 正文：AI 为无气泡纯文本；用户消息带浅色气泡。
-        // 两者均调用统一 Markdown 渲染模块实时渲染。
+        // AI 侧始终走 Markdown；用户侧仅在文本具有 Markdown 结构特征（空行分段、
+        // 行首块级标记、成对内联标记）时走 Markdown，否则按纯文本渲染，保证
+        // 手打的换行不被软换行规则折叠成空格。
         if (isUser)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -218,6 +220,7 @@ class ChatBubble extends StatelessWidget {
             ),
             child: MarkdownPreview(
               data: text,
+              plainTextWhenNotMarkdown: true,
               base: TextStyle(
                 fontSize: 15,
                 height: 1.65,

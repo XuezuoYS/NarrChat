@@ -300,6 +300,78 @@ class GitHubMarkdownStyle {
       _GitHubSyntaxHighlighter(GitHubPalette.of(context));
 }
 
+/// 归一化换行符：`\r\n` / `\r` → `\n`，使后续的判定与渲染不受平台差异影响。
+String _normalizeNewlines(String data) =>
+    data.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+/// 纯文本展示内容：换行归一化，并去掉**末尾**多余的空白行（打字时多敲的回车
+/// 不该在气泡里占出一行高度）；行内换行原样保留。
+String _plainDisplayText(String data) =>
+    _normalizeNewlines(data).replaceFirst(RegExp(r'[ \t]*(?:\n[ \t]*)+$'), '');
+
+/// Markdown 结构特征模式集：**任一命中**即认为文本按 Markdown 排版。
+///
+/// 判定对象是「换行归一化 + 去掉首尾空白后」的文本；行首锚定模式以
+/// `multiLine` 逐行匹配。刻意保守收录，误判方向一律偏向纯文本（宁可少渲染
+/// 一点 md，也不能把用户手打的换行折叠成空格）：
+///
+/// - 列表/标题/编号/引用等行首标记一律要求**空格 + 非空内容**，故 `#话题`、
+///   `-不是列表`、`2.十点半`、`>_<` 这类口语与颜文字写法不会被误判；
+/// - 只认成对的 `**粗体**`，不认单 `*` / `_` / `__` 强调，避免 `10*20*30`、
+///   `snake_case`、`__init__` 被误判；
+/// - 不认 `~~删除线~~` 与 `==高亮==`：这两个符号在聊天里更常被当作语气波浪线 /
+///   等号颜文字使用（渲染侧仍支持，只是不作为「这是 Markdown」的判定依据）；
+/// - 围栏只认反引号、不认 `~~~`（同上，`~` 属语气符号）；
+/// - HTML 只认标签白名单，避免 `a < b`、`>=` 命中。
+final List<RegExp> _markdownSignalPatterns = [
+  // ── 块级：段落分隔（内部空行；空行允许只含空格/Tab）。
+  RegExp(r'\n[ \t]*\n'),
+  // ── 块级：ATX 标题（`#` ~ `######` + 空白 + 内容，最多 3 个前导空格）。
+  RegExp(r'^[ \t]{0,3}#{1,6}[ \t]+\S', multiLine: true),
+  // ── 块级：无序列表项（`- ` / `* ` / `+ ` + 内容；任务列表 `- [x]` 同样命中）。
+  RegExp(r'^[ \t]{0,3}[-*+][ \t]+\S', multiLine: true),
+  // ── 块级：有序列表项（`1.` / `1)` + 内容）。
+  RegExp(r'^[ \t]{0,3}\d{1,9}[.)][ \t]+\S', multiLine: true),
+  // ── 块级：引用（要求 `>` 后有空格；GitHub Alerts `> [!NOTE]` 亦命中）。
+  RegExp(r'^[ \t]{0,3}>[ \t]+\S', multiLine: true),
+  // ── 块级：围栏代码块（行首三个及以上反引号）。
+  RegExp(r'^[ \t]{0,3}`{3,}'),
+  // ── 块级：表格分隔行（`| --- | --- |`，需 ≥2 列，避免与分割线混淆）。
+  RegExp(
+    r'^[ \t]{0,3}\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$',
+    multiLine: true,
+  ),
+  // ── 块级：分割线（整行只有 `---` / `***` / `___`）。
+  RegExp(r'^[ \t]{0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$', multiLine: true),
+  // ── 块级：HTML 标签（白名单，含 `<br>` 单独成行）。
+  RegExp(
+    r'^[ \t]{0,3}</?(?:div|span|p|br|hr|img|a|table|thead|tbody|tr|td|th|ul|'
+    r'ol|li|dl|dt|dd|blockquote|pre|code|kbd|sup|sub|b|i|u|s|em|strong|del|'
+    r'ins|mark|details|summary|center|h[1-6])\b',
+    multiLine: true,
+  ),
+  // ── 内联：`**粗体**`（成对、内容两端不留空格、内部不含 `*`）。
+  RegExp(r'\*\*(?![ \t*])[^*\n]*?[^ \t*]\*\*'),
+  // ── 内联：`` `行内代码` ``（同一行内的成对反引号）。
+  RegExp(r'`[^`\n]+`'),
+  // ── 内联：`[文本](链接)` / `![图片](链接)`（方括号与圆括号紧邻）。
+  RegExp(r'!?\[[^\]\n]*\]\([^)\n]*\)'),
+  // ── 内联：自动链接 `<https://…>` / `<mailto:…>`。
+  RegExp(r'<(?:https?|ftp|mailto):[^>\n]+>'),
+];
+
+/// 判断 [data] 是否具有 Markdown 排版特征（见 [_markdownSignalPatterns]）。
+///
+/// Markdown 会把段内单个换行当作「软换行」折叠成空格，而用户手打消息里的
+/// 换行是真实意图。因此对**没有任何 md 结构**的文本直接按纯文本渲染；只要
+/// 出现空行分段、块级标记或成对内联标记，就按 Markdown 渲染（此时遵循标准
+/// md 规则，段内单换行仍会被折叠——这是使用 md 语法的自然结果）。
+bool isMarkdownFormatted(String data) {
+  final text = _normalizeNewlines(data).trim();
+  if (text.isEmpty) return false;
+  return _markdownSignalPatterns.any((p) => p.hasMatch(text));
+}
+
 /// 统一的 Markdown 预览组件。
 ///
 /// - 默认即可选中文本（使用 [SelectionArea]，跨块连续选择），
@@ -318,23 +390,53 @@ class MarkdownPreview extends StatelessWidget {
   /// 链接点击回调。
   final MarkdownTapLinkCallback? onTapLink;
 
+  /// 文本无 Markdown 特征（见 [isMarkdownFormatted]）时按**纯文本**渲染。
+  ///
+  /// 用于用户气泡等「多半是手打纯文本」的场景：保留用户输入的单个换行，
+  /// 不被 Markdown 软换行折叠成空格。默认 false（始终走 Markdown 渲染）。
+  final bool plainTextWhenNotMarkdown;
+
   const MarkdownPreview({
     super.key,
     required this.data,
     this.base,
     this.selectable = true,
     this.onTapLink,
+    this.plainTextWhenNotMarkdown = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final body = plainTextWhenNotMarkdown && !isMarkdownFormatted(data)
+        ? _plainTextBody(context)
+        : _markdownBody(context);
+
+    if (!selectable) return body;
+
+    return SelectionArea(
+      contextMenuBuilder: (context, selectableRegionState) =>
+          const SizedBox.shrink(),
+      child: body,
+    );
+  }
+
+  /// 纯文本正文：沿用 [base] 观感，`\n` 按字面换行，不做任何 Markdown 解析。
+  Widget _plainTextBody(BuildContext context) {
+    return Text(
+      _plainDisplayText(data),
+      style: base ?? Theme.of(context).textTheme.bodyMedium,
+    );
+  }
+
+  /// Markdown 正文（GitHub 风格样式表 + 统一扩展集 / builders）。
+  Widget _markdownBody(BuildContext context) {
     final styleSheet = GitHubMarkdownStyle.of(context, base: base);
     final git = GitHubPalette.of(context);
     // ⚠️ 不传 selectable 给 MarkdownBody（保持默认 false，内部用普通 Text 渲染），
     // 由外层 [SelectionArea] 统一处理选中——若 MarkdownBody.selectable=true
     // 或 builder 返回 SelectableText，会与外层 SelectionArea 冲突导致
     // 文本无法选中（已用官方 selection_area_compatibility_test 逻辑验证）。
-    final body = MarkdownBody(
+    return MarkdownBody(
       data: data,
       styleSheet: styleSheet,
       onTapLink: onTapLink,
@@ -345,14 +447,6 @@ class MarkdownPreview extends StatelessWidget {
       checkboxBuilder: _buildCheckbox,
       bulletBuilder: (params) => _buildBullet(params, git),
       listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
-    );
-
-    if (!selectable) return body;
-
-    return SelectionArea(
-      contextMenuBuilder: (context, selectableRegionState) =>
-          const SizedBox.shrink(),
-      child: body,
     );
   }
 
