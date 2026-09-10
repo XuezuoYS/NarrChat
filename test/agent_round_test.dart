@@ -97,7 +97,7 @@ void main() {
     expect(round.memorySummary, contains('第1轮'));
     expect(round.tokensIn, 12);
     expect(round.tokensOut, 5);
-    expect(round.modelName, 'deepseek-v4-pro');
+    expect(round.modelName, 'deepseek-flash');
     // RAW 完成：1 次交换，工具调用块含状态工具。
     final exchanges = provider.rawExchangesFor(round.id!)!;
     expect(exchanges, hasLength(1));
@@ -228,7 +228,7 @@ void main() {
       book: book,
     );
     final body = jsonDecode(preview) as Map<String, dynamic>;
-    expect(body['model'], 'deepseek-v4-pro');
+    expect(body['model'], 'deepseek-flash');
     expect(body['instructions'], contains('【AGENT 模式契约】'));
     expect(body['input'], isA<List>());
     final tools = (body['tools'] as List).cast<Map<String, dynamic>>();

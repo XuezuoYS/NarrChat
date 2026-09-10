@@ -112,23 +112,39 @@ void main() {
   });
 
   group('AiPlatform', () {
-    test('默认平台：预置 Pro / Flash / Vision Exp，协议为 Response API 兼容', () {
+    test('默认平台：预置 Flash（识图，默认选中）与 v4 Pro，协议为 Response API 兼容', () {
       final platform = AiPlatforms.defaultPlatform;
       expect(platform.id, AiPlatforms.defaultPlatformId);
       expect(platform.apiType.id, ApiType.openAiResponses.id);
       expect(platform.supportsResponseChaining, isFalse);
       expect(
         platform.models.map((m) => m.id),
-        ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+        ['deepseek-flash', 'deepseek-v4-pro'],
       );
-      expect(platform.defaultModel.id, 'deepseek-v4-pro');
-      expect(platform.modelOrFirst('不存在').id, 'deepseek-v4-pro');
-      expect(AiPlatforms.defaultModelId, 'deepseek-v4-pro');
+      expect(platform.defaultModel.id, 'deepseek-flash');
+      expect(platform.modelOrFirst('不存在').id, 'deepseek-flash');
+      expect(AiPlatforms.defaultModelId, 'deepseek-flash');
       expect(AiPlatforms.defaultSupportsSearch, isTrue);
-      // 识图能力：Vision Exp 模型开启，Pro / Flash 关闭。
-      expect(platform.modelById('deepseek-v4-flash-vision-exp')!.supportsVision, isTrue);
-      expect(platform.modelById('deepseek-v4-pro')!.supportsVision, isFalse);
-      expect(platform.modelById('deepseek-v4-flash')!.supportsVision, isFalse);
+
+      // v4 Pro：能力默认（流式 / 思考 / 搜索开、识图关）。
+      final pro = platform.modelById('deepseek-v4-pro')!;
+      expect(pro.supportsStreaming, isTrue);
+      expect(pro.supportsThinking, isTrue);
+      expect(pro.supportsSearch, isTrue);
+      expect(pro.supportsVision, isFalse);
+
+      // Flash：简写名称 DeepSeek V4.1 Flash，能力全开（含识图）。
+      final flash = platform.modelById('deepseek-flash')!;
+      expect(flash.shortLabel, 'DeepSeek V4.1 Flash');
+      expect(flash.displayLabel, 'DeepSeek V4.1 Flash');
+      expect(flash.supportsStreaming, isTrue);
+      expect(flash.supportsThinking, isTrue);
+      expect(flash.supportsSearch, isTrue);
+      expect(flash.supportsVision, isTrue);
+
+      // 已下线的旧预置模型不再存在。
+      expect(platform.modelById('deepseek-v4-flash'), isNull);
+      expect(platform.modelById('deepseek-v4-flash-vision-exp'), isNull);
     });
 
     test('supportsResponseChaining：toJson/fromJson 往返，旧配置缺失默认 false', () {

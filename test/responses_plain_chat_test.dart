@@ -66,7 +66,7 @@ void main() {
     // 单次 /responses 请求：仅协议形态的纯文本轮。
     expect(bodies, hasLength(1));
     final body = bodies.single;
-    expect(body['model'], 'deepseek-v4-pro');
+    expect(body['model'], 'deepseek-flash');
     // Chat 模式提示词（6 区块要求），而非 AGENT 契约。
     expect(body['instructions'], contains('【绝对服从】'));
     expect(body['instructions'], isNot(contains('AGENT 模式契约')));
@@ -105,7 +105,7 @@ void main() {
       book: book,
     );
     final body = jsonDecode(preview) as Map<String, dynamic>;
-    expect(body['model'], 'deepseek-v4-pro');
+    expect(body['model'], 'deepseek-flash');
     expect(body['instructions'], contains('【绝对服从】'));
     expect(body['input'], isA<List>());
     expect(body.containsKey('tools'), isFalse);

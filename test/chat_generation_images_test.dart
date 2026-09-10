@@ -26,7 +26,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final ai = FakeStreamingAiService();
     final rp = await pumpChatScreen(

@@ -172,7 +172,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                   style: TextStyle(fontSize: 14),
                 ),
                 subtitle: Text(
-                  '由于 Deepseek-V4-Flash-Vision-Exp 不支持 jpg，因此提供此选项进行格式转换',
+                  '部分识图模型不支持 jpg，因此提供此选项进行格式转换',
                   style: TextStyle(
                     fontSize: 11,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,

@@ -14,9 +14,8 @@ import 'app_config.dart';
 ///   完整副本，可手工修改或转移到其它机器。
 ///
 /// 当前预置一个平台（DeepSeek 开放平台，OpenAI Response API 兼容接入），
-/// 预置 v4 Pro / v4 Flash / v4 Flash Vision Exp（识图）三个模型；未来新增
-/// 内置平台只需在 [buildPresetPlatforms] 追加，UI 会按其 id 自动提供
-/// 平台级「重置为内置预置」。
+/// 预置 Flash（识图，列表首位 ⇒ 默认选中）与 v4 Pro 两个模型；未来新增内置平台
+/// 只需在 [buildPresetPlatforms] 追加，UI 会按其 id 自动提供平台级「重置为内置预置」。
 class AiPlatforms {
   AiPlatforms._();
 
@@ -26,29 +25,25 @@ class AiPlatforms {
   /// 内置默认平台的稳定 id（= 预置列表第一个平台）。
   static const String defaultPlatformId = deepseekPlatformId;
 
-  /// 预置 DeepSeek V4 Pro 模型。
-  static const AiModel deepseekV4Pro = AiModel(
-    id: 'deepseek-v4-pro',
-    temperature: 1.0,
-    reasoningEffort: 'high',
-  );
-
-  /// 预置 DeepSeek V4 Flash 模型。
-  static const AiModel deepseekV4Flash = AiModel(
-    id: 'deepseek-v4-flash',
-    temperature: 1.0,
-    reasoningEffort: 'high',
-  );
-
-  /// 预置 DeepSeek V4 Flash Vision Exp 模型（识图，多模态视觉模型）。
-  static const AiModel deepseekV4FlashVisionExp = AiModel(
-    id: 'deepseek-v4-flash-vision-exp',
+  /// 预置 DeepSeek V4.1 Flash 模型（识图，多模态视觉模型；能力全开）。
+  ///
+  /// 位于预置列表首位 ⇒ 也是新建配置时默认选中的对话模型。
+  static const AiModel deepseekFlash = AiModel(
+    id: 'deepseek-flash',
+    shortLabel: 'DeepSeek V4.1 Flash',
     temperature: 1.0,
     reasoningEffort: 'high',
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
     supportsVision: true,
+  );
+
+  /// 预置 DeepSeek V4 Pro 模型。
+  static const AiModel deepseekV4Pro = AiModel(
+    id: 'deepseek-v4-pro',
+    temperature: 1.0,
+    reasoningEffort: 'high',
   );
 
   // ---------------------------------------------------------------------------
@@ -72,7 +67,8 @@ class AiPlatforms {
       displayName: '默认（DeepSeek 开放平台）',
       apiType: ApiType.openAiResponses,
       baseUrl: AppConfig.defaultApiBaseUrlEffective,
-      models: const [deepseekV4Pro, deepseekV4Flash, deepseekV4FlashVisionExp],
+      // 顺序即对话框模型列表顺序；Flash 在前 ⇒ 默认选中 Flash。
+      models: const [deepseekFlash, deepseekV4Pro],
     );
   }
 

@@ -110,7 +110,7 @@ void main() {
       );
       final switched = await provider.setSelectedModel(
         AiPlatforms.defaultPlatformId,
-        'deepseek-v4-flash',
+        'deepseek-v4-pro',
       );
       expect(switched, isTrue);
 
@@ -130,7 +130,7 @@ void main() {
       expect(ai['lastThinking'], isFalse);
       expect(ai['lastStreaming'], isTrue);
       expect(ai['lastSearch'], isTrue);
-      expect(ai['selectedModelId'], 'deepseek-v4-flash');
+      expect(ai['selectedModelId'], 'deepseek-v4-pro');
     });
 
     test('写 ai 命名空间不破坏其它命名空间与顶层设置键', () async {
@@ -155,7 +155,9 @@ void main() {
       expect(provider.platforms.length, 1);
       expect(provider.selectedPlatformId, AiPlatforms.defaultPlatformId);
       expect(provider.selectedModelId, AiPlatforms.defaultModelId);
-      expect(provider.model, 'deepseek-v4-pro');
+      // 预置列表首位 = deepseek-flash（识图全开）⇒ 默认选中。
+      expect(provider.model, 'deepseek-flash');
+      expect(provider.supportsVision, isTrue);
       expect(provider.thinking, isTrue);
       expect(provider.streaming, isTrue);
       expect(provider.lastSearch, isFalse);

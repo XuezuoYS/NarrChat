@@ -350,20 +350,22 @@ void main() {
     final settings = AiSettingsProvider();
     await pumpChatScreen(tester, settings: settings);
 
-    // 当前模型（默认 deepseek-v4-pro，无简写标识时显示模型名）。
-    expect(find.text('deepseek-v4-pro'), findsWidgets);
+    // 当前模型（默认预置首位 deepseek-flash，有简写标识时显示简写名称）。
+    expect(find.text('DeepSeek V4.1 Flash'), findsWidgets);
 
     // 打开模型菜单。
-    await tester.tap(find.text('deepseek-v4-pro').first);
+    await tester.tap(find.text('DeepSeek V4.1 Flash').first);
     await tester.pumpAndSettle();
 
-    // 菜单含其它模型。
-    expect(find.text('deepseek-v4-flash'), findsWidgets);
+    // 菜单含另一模型（无简写标识时显示模型名）。
+    expect(find.text('deepseek-v4-pro'), findsWidgets);
 
-    // 切换到 flash。
-    await tester.tap(find.text('deepseek-v4-flash').last);
+    // 切换到 V4 Pro。
+    await tester.tap(find.text('deepseek-v4-pro').last);
     await tester.pumpAndSettle();
-    expect(settings.selectedModelId, 'deepseek-v4-flash');
+    expect(settings.selectedModelId, 'deepseek-v4-pro');
+    // 选择器当前模型随之显示模型名。
+    expect(find.text('deepseek-v4-pro'), findsOneWidget);
   });
 
   testWidgets('识图模型：功能菜单出现「导入图片」', (tester) async {
@@ -371,7 +373,7 @@ void main() {
     // 不 await：FakeAsync 下真实文件 I/O 的 Future 不会完成，但内存态同步生效。
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     await pumpChatScreen(tester, settings: settings);
 
@@ -382,8 +384,13 @@ void main() {
   });
 
   testWidgets('非识图模型：功能菜单不出现「导入图片」', (tester) async {
-    // 默认选中 deepseek-v4-pro（supportsVision=false）。
-    await pumpChatScreen(tester);
+    // 显式选 v4 Pro（supportsVision=false）；默认预置首位的 Flash 识图全开。
+    final settings = AiSettingsProvider();
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-pro',
+    );
+    await pumpChatScreen(tester, settings: settings);
 
     await tester.tap(find.byIcon(Icons.tune));
     await tester.pumpAndSettle();
@@ -395,7 +402,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final imageImport = FakeImageImportService(
       results: [const ImageImportResult(paths: ['img/aaa.png'])],
@@ -418,7 +425,7 @@ void main() {
     // 不 await：FakeAsync 下真实文件 I/O 的 Future 不会完成，但内存态同步生效。
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final imageImport = FakeImageImportService(
       results: [const ImageImportResult(paths: ['img/aaa.png'])],
@@ -444,7 +451,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final imageImport = FakeImageImportService(
       results: [const ImageImportResult(paths: ['img/aaa.png'])],
@@ -478,7 +485,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final imageImport = FakeImageImportService(
       results: [const ImageImportResult(paths: ['img/aaa.png'])],

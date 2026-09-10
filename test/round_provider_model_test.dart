@@ -15,16 +15,16 @@ void main() {
       dao: dao,
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
-      // 默认预设（DeepSeek V4 Pro，模型 ID deepseek-v4-pro）。
+      // 默认预设（列表首位 = DeepSeek V4.1 Flash，模型 ID deepseek-flash）。
       aiSettingsProvider: ChatCompatibleSettings(),
     );
 
     final ok = await provider.sendRound(userInput: '你好', book: book);
     expect(ok, isTrue);
     expect(dao.rounds, hasLength(1));
-    expect(dao.rounds.single.modelName, 'deepseek-v4-pro');
+    expect(dao.rounds.single.modelName, 'deepseek-flash');
     // 关键：存的是 {{model}}（API ID），不是友好名称。
-    expect(dao.rounds.single.modelName, isNot('DeepSeek V4 Pro'));
+    expect(dao.rounds.single.modelName, isNot('DeepSeek V4.1 Flash'));
   });
 
   test('无设置注入时按默认预设回退模型名', () async {

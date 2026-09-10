@@ -52,7 +52,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     await pumpChatScreen(
       tester,
@@ -72,9 +72,16 @@ void main() {
   });
 
   testWidgets('非识图模型：粘贴图片提示并忽略', (tester) async {
+    // 显式选 v4 Pro（supportsVision=false）；默认预置首位的 Flash 识图全开。
+    final settings = AiSettingsProvider();
+    settings.setSelectedModel(
+      AiPlatforms.defaultPlatformId,
+      'deepseek-v4-pro',
+    );
     await pumpChatScreen(
       tester,
       bookDao: FakeBookDao(books: [book]),
+      settings: settings,
       clipboardPaste: FakeClipboardPasteService(
         imagePng: Uint8List.fromList([0, 1, 2]),
       ),
@@ -93,7 +100,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     await pumpChatScreen(
       tester,
@@ -134,7 +141,7 @@ void main() {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     );
     final rp = await pumpChatScreen(
       tester,

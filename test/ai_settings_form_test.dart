@@ -38,10 +38,10 @@ class _NoPersistAiSettingsProvider extends AiSettingsProvider {
   }
 }
 
-/// 展开第一个平台的第一个模型（deepseek-v4-pro）的编辑器。
+/// 展开第一个平台的第一个模型（deepseek-flash，预置列表首位 / 默认选中）的编辑器。
 Future<void> _expandFirstModel(WidgetTester tester) async {
   await tester.tap(
-    find.textContaining('deepseek-v4-pro', findRichText: true).first,
+    find.textContaining('deepseek-flash', findRichText: true).first,
   );
   await tester.pumpAndSettle();
 }
@@ -75,8 +75,7 @@ void main() {
     expect(find.text('模型'), findsOneWidget);
     for (final modelId in const [
       'deepseek-v4-pro',
-      'deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp',
+      'deepseek-flash',
     ]) {
       expect(
         find.textContaining(modelId, findRichText: true),
@@ -84,6 +83,11 @@ void main() {
         reason: '预置模型 $modelId 应列出',
       );
     }
+    // 预置首位（默认选中）的 Flash 在卡片标题显示简写名称。
+    expect(
+      find.textContaining('DeepSeek V4.1 Flash', findRichText: true),
+      findsWidgets,
+    );
     // 限制已放开：预置平台同样有「添加模型」；仅一个平台时删除入口禁用。
     expect(find.text('添加模型'), findsOneWidget);
     final deleteButton = tester.widget<TextButton>(
@@ -117,7 +121,7 @@ void main() {
     // 编辑简写标识：写回工作副本，界面切换为"已自定义"。
     await tester.enterText(labelField, 'V4P');
     await tester.pump();
-    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
+    expect(form.platforms.first.modelById('deepseek-flash')!.shortLabel, 'V4P');
     expect(find.text('已自定义'), findsOneWidget);
     expect(find.text('内置默认'), findsNothing);
     expect(find.text('重置为内置预置'), findsOneWidget);
@@ -148,22 +152,26 @@ void main() {
     expect(find.textContaining('API Key 与其它平台不受影响'), findsOneWidget);
     await tester.tap(find.widgetWithText(TextButton, '取消'));
     await tester.pumpAndSettle();
-    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
+    expect(form.platforms.first.modelById('deepseek-flash')!.shortLabel, 'V4P');
     expect(find.text('已自定义'), findsOneWidget);
 
-    // 确认：还原为预置值，输入框文本同步清空，标注回到「内置默认」。
+    // 确认：还原为预置值（简写名称 DeepSeek V4.1 Flash），输入框文本同步回预置值，
+    // 标注回到「内置默认」。
     await tester.tap(find.text('重置为内置预置'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, '重置'));
     await tester.pumpAndSettle();
 
-    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, '');
+    expect(
+      form.platforms.first.modelById('deepseek-flash')!.shortLabel,
+      'DeepSeek V4.1 Flash',
+    );
     final restoredField = tester.widget<TextField>(
       find.byWidgetPredicate(
         (w) => w is TextField && w.decoration?.hintText == '如 V4F',
       ),
     );
-    expect(restoredField.controller!.text, '');
+    expect(restoredField.controller!.text, 'DeepSeek V4.1 Flash');
     expect(find.text('内置默认'), findsOneWidget);
     expect(find.text('重置为内置预置'), findsNothing);
     expect(find.text('当前为软件内置预置配置（未自定义模型）'), findsOneWidget);
@@ -191,7 +199,7 @@ void main() {
     await tester.tap(find.widgetWithText(SwitchListTile, '联网搜索'));
     await tester.pump();
     expect(
-      form.platforms.first.modelById('deepseek-v4-pro')!.supportsSearch,
+      form.platforms.first.modelById('deepseek-flash')!.supportsSearch,
       isFalse,
     );
     expect(tester.takeException(), isNull);

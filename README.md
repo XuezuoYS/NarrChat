@@ -35,9 +35,10 @@
 
 ### AI 接入
 
-- **OpenAI 兼容 API**：默认内置 DeepSeek 开放平台（预置 V4 Pro / V4 Flash /
-  V4 Flash Vision Exp 识图模型），支持自定义平台、Base URL 与模型（含推理强度、
-  温度、流式等参数），也支持预设 Mod 一键切换参数组合。
+- **OpenAI 兼容 API**：默认内置 DeepSeek 开放平台（预置 V4.1 Flash 与 V4 Pro 两个
+  模型，前者为默认选中且识图能力全开），支持自定义平台、Base URL 与模型（含推理强度、
+  温度、流式等参数），也支持预设 Mod 一键切换参数组合；内置预置平台可整平台
+  重置为出厂预置（见下文「AI 模型配置的分层」）。
 
 ### 云同步
 
@@ -77,7 +78,9 @@
 ### AI 模型配置的分层（`ai` 命名空间）
 
 `local_config/app_settings.json` 里的 `ai` 命名空间是**用户层**，软件本体预置
-（DeepSeek 开放平台及 v4 Pro / v4 Flash / v4 Flash Vision Exp）始终是缺省兜底：
+始终是缺省兜底：DeepSeek 开放平台，预置 `deepseek-flash`（简写名称
+「DeepSeek V4.1 Flash」，流式 / 思考 / 搜索 / 识图全开，**默认选中**）与
+`deepseek-v4-pro` 两个模型（列表顺序即对话框模型顺序）。
 
 - `ai` 键**缺失 / 为空 / 不可读**（含 JSON 写坏）⇒ 全部遵循软件内置预置，
   设置页提示「当前为软件内置预置配置」，平台标注「内置默认」；
@@ -99,6 +102,9 @@
         "baseUrl": "https://api.deepseek.com",
         "supportsResponseChaining": false,
         "models": [
+          { "id": "deepseek-flash", "shortLabel": "DeepSeek V4.1 Flash", "temperature": 1.0,
+            "reasoningEffort": "high", "supportsStreaming": true,
+            "supportsThinking": true, "supportsSearch": true, "supportsVision": true },
           { "id": "deepseek-v4-pro", "shortLabel": "", "temperature": 1.0,
             "reasoningEffort": "high", "supportsStreaming": true,
             "supportsThinking": true, "supportsSearch": true, "supportsVision": false }

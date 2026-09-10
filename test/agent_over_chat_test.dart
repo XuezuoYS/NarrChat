@@ -300,7 +300,7 @@ void main() {
       book: book,
     );
     final body = jsonDecode(preview) as Map<String, dynamic>;
-    expect(body['model'], 'deepseek-v4-pro');
+    expect(body['model'], 'deepseek-flash');
     expect(body['messages'], isA<List>());
     expect(body.containsKey('instructions'), isFalse);
     expect(body['tool_choice'], 'auto');

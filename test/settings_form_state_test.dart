@@ -283,7 +283,7 @@ void main() {
         proModel.id,
         proModel.copyWith(temperature: 0.2, supportsSearch: false),
       );
-      form.removeModel(presetId, 'deepseek-v4-flash');
+      form.removeModel(presetId, 'deepseek-flash');
       form.addModel(presetId, id: 'my-model', shortLabel: 'MY');
 
       // 自添加平台 aliyun：改名称 + 加模型。
