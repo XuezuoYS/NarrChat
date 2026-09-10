@@ -58,6 +58,10 @@ const double _kSidebarMaxWidthRatio = 0.4;
 /// 消息与输入框的最大内容宽度。
 const double _kContentMaxWidth = 760;
 
+/// 输入卡内「文本区 ↔ 底部控件行」的间隙（px）。
+/// 该间隙从输入框自身的起步行数里让出，不叠加到控件默认高度上。
+const double _kComposerTextGap = 8;
+
 /// 流式自动跟随滚动：距底部小于该距离视为「位于底部」。
 const double _kAutoScrollThreshold = 80;
 
@@ -2192,8 +2196,12 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 输入卡：多行输入框（3 行起步、最高 8 行，超出内滚，Markdown 高亮自动）
+  /// 输入卡：多行输入框（2 行起步、最高 8 行，超出内滚，Markdown 高亮自动）
+  /// + 文本区与底部控件行之间的小间隙
   /// + 左下角选项下拉 + 右下角发送/停止按钮。
+  ///
+  /// 默认只容纳 2 行文本：输入到第 3 行起卡片才向上顶高，因此 [_kComposerTextGap]
+  /// 是在控件原有高度预算内让出的呼吸空间，不会整体抬高输入卡的默认高度。
   Widget _buildComposerCard(
     BuildContext context,
     RoundProvider roundProvider,
@@ -2277,7 +2285,7 @@ class _ChatScreenState extends State<ChatScreen>
             child: TextField(
               controller: _inputController,
               onTapOutside: unfocusOnTapOutside,
-              minLines: 3,
+              minLines: 2,
               maxLines: 8,
               style: TextStyle(
                 fontSize: 15,
@@ -2299,6 +2307,8 @@ class _ChatScreenState extends State<ChatScreen>
               onSubmitted: (_) => _send(),
             ),
           ),
+          // 文本区与底部控件行之间的小间隙：仅隔开内容与控件，不随行数变化。
+          const SizedBox(height: _kComposerTextGap),
           // 底部行：左下角功能选择栏 + 中间空隙 + 右下角模型选择 + 发送/停止。
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),

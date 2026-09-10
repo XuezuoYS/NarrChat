@@ -52,12 +52,69 @@ void main() {
             (w.decoration as BoxDecoration).color == Colors.red,
       );
 
-  testWidgets('输入框：预设 3 行起步，最高 8 行（超出内滚）', (tester) async {
+  testWidgets('输入框：预设 2 行起步，最高 8 行（超出内滚）', (tester) async {
     await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
 
     final field = tester.widget<TextField>(composerField());
-    expect(field.minLines, 3);
+    expect(field.minLines, 2);
     expect(field.maxLines, 8);
+  });
+
+  // —— 输入卡布局：文本区 ↔ 底部控件行 ——
+
+  /// 输入卡底部控件行的顶端 y 坐标（承载选项下拉 / 模型选择 / 发送按钮的那一行）。
+  double controlRowTop(WidgetTester tester) => tester
+      .getTopLeft(
+        find
+            .ancestor(
+              of: find.byIcon(Icons.arrow_upward),
+              matching: find.byType(Row),
+            )
+            .first,
+      )
+      .dy;
+
+  /// 输入卡文本区的底端 y 坐标。
+  double textAreaBottom(WidgetTester tester) =>
+      tester.getBottomLeft(composerField()).dy;
+
+  /// 输入卡文本区高度。
+  double textAreaHeight(WidgetTester tester) =>
+      tester.getSize(composerField()).height;
+
+  testWidgets('输入框：第 3 行起才向上顶高（默认高度只按 2 行起算）', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    final defaultHeight = textAreaHeight(tester);
+
+    await tester.enterText(composerField(), '第一行');
+    await tester.pump();
+    expect(textAreaHeight(tester), defaultHeight, reason: '第 1 行不顶高');
+
+    await tester.enterText(composerField(), '第一行\n第二行');
+    await tester.pump();
+    expect(textAreaHeight(tester), defaultHeight, reason: '第 2 行仍保持默认高度');
+
+    await tester.enterText(composerField(), '第一行\n第二行\n第三行');
+    await tester.pump();
+    // 第 3 行起卡片向上顶高，步长恰为一行（fontSize 15 × height 1.5 = 22.5px）。
+    expect(textAreaHeight(tester), closeTo(defaultHeight + 22.5, 0.5));
+  });
+
+  testWidgets('输入卡：文本区与底部控件行之间保留间隙（不再无间隙贴合）', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    expect(controlRowTop(tester) - textAreaBottom(tester), closeTo(8, 0.01));
+  });
+
+  testWidgets('输入卡：填满三行（已被顶高）时底部间隙依旧保留', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.enterText(composerField(), '第一行\n第二行\n第三行');
+    await tester.pump();
+
+    // 顶高由文本区行数承担，不压缩文本区与控件行之间的间隙。
+    expect(controlRowTop(tester) - textAreaBottom(tester), closeTo(8, 0.01));
   });
 
   testWidgets('宽屏侧栏常驻：仅显示滚动到底部按钮（侧栏按钮隐藏）', (tester) async {
