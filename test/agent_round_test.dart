@@ -41,7 +41,7 @@ void main() {
         'data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\\"section\\":\\"characterState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"# 主角\\\\n## 林远\\\\n- 气血：100\\"}]}"}',
         'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_3","name":"narrchat_editSection"}}',
         'data: {"type":"response.function_call_arguments.delta","item_id":"fc_3","delta":"{\\"section\\":\\"memorySummary\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 第1轮｜日期：第三天 卯时｜主角踏门而入\\"}]}"}',
-        'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":5}}}',
+        'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":5,"input_tokens_details":{"cached_tokens":8}}}}',
         '',
       ];
 
@@ -97,6 +97,8 @@ void main() {
     expect(round.memorySummary, contains('第1轮'));
     expect(round.tokensIn, 12);
     expect(round.tokensOut, 5);
+    // 缓存命中输入 token 随 Responses usage 一路落库（气泡明细用）。
+    expect(round.cachedTokensIn, 8);
     expect(round.modelName, 'deepseek-flash');
     // RAW 完成：1 次交换，工具调用块含状态工具。
     final exchanges = provider.rawExchangesFor(round.id!)!;

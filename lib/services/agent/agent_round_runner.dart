@@ -103,9 +103,12 @@ class AgentRoundResult {
   /// 聚合思考内容。
   final String reasoningContent;
 
-  /// 聚合 Token 用量。
-  final int promptTokens;
-  final int completionTokens;
+  /// 聚合 Token 用量（各帧同桶累加；全帧都未带回该字段 → null = 无数据）。
+  final int? promptTokens;
+  final int? completionTokens;
+
+  /// 聚合缓存命中输入 token（服务商未返回该字段 → null）。
+  final int? cachedTokensIn;
 
   /// 全部工具调用结果（按执行顺序）。
   final List<AgentToolOutcome> outcomes;
@@ -133,6 +136,7 @@ class AgentRoundResult {
     required this.reasoningContent,
     required this.promptTokens,
     required this.completionTokens,
+    required this.cachedTokensIn,
     required this.outcomes,
     required this.warnings,
     required this.responseId,
@@ -278,8 +282,9 @@ class AgentRoundRunner {
   final List<String> _warnings = [];
   final List<String> _modelProblems = [];
   final StringBuffer _reasoning = StringBuffer();
-  int _promptTokens = 0;
-  int _completionTokens = 0;
+  int? _promptTokens;
+  int? _completionTokens;
+  int? _cachedTokensIn;
   int _frames = 0;
   String _lastResponseId = '';
   String? _previousResponseId;
@@ -315,8 +320,9 @@ class AgentRoundRunner {
     _warnings.clear();
     _modelProblems.clear();
     _reasoning.clear();
-    _promptTokens = 0;
-    _completionTokens = 0;
+    _promptTokens = null;
+    _completionTokens = null;
+    _cachedTokensIn = null;
     _frames = 0;
     _lastResponseId = '';
     _previousResponseId = null;
@@ -369,6 +375,7 @@ class AgentRoundRunner {
       reasoningContent: _reasoning.toString(),
       promptTokens: _promptTokens,
       completionTokens: _completionTokens,
+      cachedTokensIn: _cachedTokensIn,
       outcomes: _outcomes,
       warnings: _warnings,
       responseId: _lastResponseId,
@@ -621,8 +628,10 @@ class AgentRoundRunner {
   /// 吸收一帧：聚合用量 / 思考、按帧分类采纳正文、把 assistant 消息追加进
   /// 会话累积（工具条目在 [_executeTools] 中紧随其后追加）。
   void _absorbFrame(AiCallResult result, AgentStage stage) {
-    _promptTokens += result.promptTokens;
-    _completionTokens += result.completionTokens;
+    // null = 该帧未带该用量字段（跳过）；全 null 时结果保持 null → 界面「（无）」。
+    _promptTokens = addTokenUsage(_promptTokens, result.promptTokens);
+    _completionTokens = addTokenUsage(_completionTokens, result.completionTokens);
+    _cachedTokensIn = addTokenUsage(_cachedTokensIn, result.cachedTokensIn);
     if (result.reasoningContent.isNotEmpty) {
       _reasoning.write(result.reasoningContent);
     }

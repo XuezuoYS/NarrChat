@@ -79,8 +79,20 @@ class AiCallResult {
 
   /// 模型请求的工具调用（空列表 = 无工具调用，直接返回最终内容）。
   final List<AiToolCall> toolCalls;
-  final int promptTokens;
-  final int completionTokens;
+
+  /// 输入 token（提示词侧，**含**缓存命中部分）。
+  ///
+  /// `null` = 本次响应未带回该字段（无数据），界面显示「（无）」；不以 0 代替。
+  final int? promptTokens;
+
+  /// 输出 token（补全侧）；`null` 语义同 [promptTokens]。
+  final int? completionTokens;
+
+  /// 缓存命中的输入 token（DeepSeek `usage.prompt_cache_hit_tokens` /
+  /// OpenAI `usage.prompt_tokens_details.cached_tokens`）。
+  ///
+  /// `null` = 服务商未返回该字段——**不代表命中为 0**，界面显示「（无）」。
+  final int? cachedTokensIn;
 
   /// Responses API 的响应 id（`previous_response_id` 链式续接用；
   /// Chat 协议与不支持有状态续接时为空）。
@@ -100,11 +112,19 @@ class AiCallResult {
     this.toolCalls = const [],
     required this.promptTokens,
     required this.completionTokens,
+    this.cachedTokensIn,
     this.responseId = '',
     this.incomplete = false,
     this.incompleteReason = '',
   });
 }
+
+/// 累加 Token 用量桶（[total] 为累计值、[delta] 为本次增量）。
+///
+/// `null` = 该次响应未带回该字段：跳过，全部为 null 时结果仍为 null——
+/// 「无数据」不能在跨帧 / 跨迭代累加中被悄悄变成 0。
+int? addTokenUsage(int? total, int? delta) =>
+    delta == null ? total : (total ?? 0) + delta;
 
 /// AI 请求失败类别：决定是否自动重试。
 ///
@@ -247,14 +267,14 @@ class AiService {
       final reasoningContent = (message?['reasoning_content'] as String?) ?? '';
       final toolCalls = _parseToolCalls(message?['tool_calls']);
       final usage = data['usage'] as Map<String, dynamic>?;
-      final promptTokens = (usage?['prompt_tokens'] as num?)?.toInt() ?? 0;
-      final completionTokens = (usage?['completion_tokens'] as num?)?.toInt() ?? 0;
       return AiCallResult(
         content: content,
         reasoningContent: reasoningContent,
         toolCalls: toolCalls,
-        promptTokens: promptTokens,
-        completionTokens: completionTokens,
+        // 未带 usage / 缺键 → null（无数据），不回落 0。
+        promptTokens: (usage?['prompt_tokens'] as num?)?.toInt(),
+        completionTokens: (usage?['completion_tokens'] as num?)?.toInt(),
+        cachedTokensIn: _cacheHitTokensOf(usage),
       );
     } on FormatException {
       throw AiException('API 响应解析失败：$rawBody');
@@ -399,8 +419,10 @@ class AiService {
     final reasoningSb = StringBuffer();
     // 流式工具调用按 index 累积（id/name/arguments 分块到达）。
     final toolCallAcc = <int, _ToolCallAccumulator>{};
-    int promptTokens = 0;
-    int completionTokens = 0;
+    // Token 用量：null = 尚未收到 usage（部分服务商只在最后一个 chunk 附带）。
+    int? promptTokens;
+    int? completionTokens;
+    int? cachedTokensIn;
 
     // 完成信号：正常读完（onDone）/ 用户中断 / 空闲超时 / 流错误。
     final doneSignal = Completer<void>();
@@ -458,6 +480,7 @@ class AiService {
               completionTokens =
                   (usage['completion_tokens'] as num?)?.toInt() ??
                   completionTokens;
+              cachedTokensIn = _cacheHitTokensOf(usage) ?? cachedTokensIn;
             }
             final choices = (json['choices'] as List<dynamic>?) ?? const [];
             if (choices.isEmpty) return;
@@ -546,6 +569,7 @@ class AiService {
       ],
       promptTokens: promptTokens,
       completionTokens: completionTokens,
+      cachedTokensIn: cachedTokensIn,
     );
   }
 
@@ -643,6 +667,7 @@ class AiService {
         toolCalls: toolCalls,
         promptTokens: _usageCount(usage ?? const {}, 'input_tokens'),
         completionTokens: _usageCount(usage ?? const {}, 'output_tokens'),
+        cachedTokensIn: _cacheHitTokensOf(usage),
         responseId: (data['id'] as String?) ?? '',
         incomplete: truncated,
         incompleteReason: truncated ? _incompleteReasonOf(data) : '',
@@ -691,8 +716,9 @@ class AiService {
     final toolAcc = <String, _ToolCallAccumulator>{};
     // 已出现正文（用于流式结尾排序：工具列表按首次出现顺序输出）。
     final toolOrder = <String>[];
-    int promptTokens = 0;
-    int completionTokens = 0;
+    int? promptTokens;
+    int? completionTokens;
+    int? cachedTokensIn;
     String responseId = '';
     var incomplete = false;
     var incompleteReason = '';
@@ -802,9 +828,10 @@ class AiService {
                 if (resp != null) {
                   responseId = (resp['id'] as String?) ?? responseId;
                 }
-                _mergeResponsesUsage(json, (p, c) {
+                _mergeResponsesUsage(json, (p, c, cached) {
                   promptTokens = p;
                   completionTokens = c;
+                  cachedTokensIn = cached ?? cachedTokensIn;
                 });
                 if (!doneSignal.isCompleted) doneSignal.complete();
                 break;
@@ -825,17 +852,19 @@ class AiService {
                 if (bad != null) {
                   responseId = (bad['id'] as String?) ?? responseId;
                 }
-                _mergeResponsesUsage(json, (p, c) {
+                _mergeResponsesUsage(json, (p, c, cached) {
                   promptTokens = p;
                   completionTokens = c;
+                  cachedTokensIn = cached ?? cachedTokensIn;
                 });
                 if (!doneSignal.isCompleted) doneSignal.complete();
                 break;
               default:
                 // 未知事件（response.created / in_progress / 各 done 事件等）忽略。
-                _mergeResponsesUsage(json, (p, c) {
-                  promptTokens = p == 0 ? promptTokens : p;
-                  completionTokens = c == 0 ? completionTokens : c;
+                _mergeResponsesUsage(json, (p, c, cached) {
+                  promptTokens = p ?? promptTokens;
+                  completionTokens = c ?? completionTokens;
+                  cachedTokensIn = cached ?? cachedTokensIn;
                 });
             }
           } catch (_) {
@@ -879,6 +908,7 @@ class AiService {
       ],
       promptTokens: promptTokens,
       completionTokens: completionTokens,
+      cachedTokensIn: cachedTokensIn,
       responseId: responseId,
       incomplete: incomplete,
       incompleteReason: incompleteReason,
@@ -922,7 +952,7 @@ class AiService {
   /// 从事件中合并 usage（`response.completed` 的 `response.usage` 或顶层 `usage`）。
   static void _mergeResponsesUsage(
     Map<String, dynamic> json,
-    void Function(int prompt, int completion) assign,
+    void Function(int? prompt, int? completion, int? cachedTokensIn) assign,
   ) {
     final usage = (json['response'] as Map<String, dynamic>?)?['usage']
             as Map<String, dynamic>? ??
@@ -931,7 +961,27 @@ class AiService {
     assign(
       _usageCount(usage, 'input_tokens'),
       _usageCount(usage, 'output_tokens'),
+      _cacheHitTokensOf(usage),
     );
+  }
+
+  /// 缓存命中的输入 token（无数据 → null）。
+  ///
+  /// 兼容两种字段形态：DeepSeek 的 `usage.prompt_cache_hit_tokens`
+  /// 与 OpenAI 的 `usage.prompt_tokens_details.cached_tokens` /
+  /// `usage.input_tokens_details.cached_tokens`（Responses 线路）。
+  static int? _cacheHitTokensOf(Map<String, dynamic>? usage) {
+    if (usage == null) return null;
+    final direct = (usage['prompt_cache_hit_tokens'] as num?)?.toInt();
+    if (direct != null) return direct;
+    for (final key in const ['prompt_tokens_details', 'input_tokens_details']) {
+      final details = usage[key];
+      if (details is Map) {
+        final cached = (details['cached_tokens'] as num?)?.toInt();
+        if (cached != null) return cached;
+      }
+    }
+    return null;
   }
 
   /// 从响应对象 item 抽取文本（容错 content / summary / text 三种形态）。
@@ -994,8 +1044,8 @@ class AiService {
     );
   }
 
-  static int _usageCount(Map<String, dynamic> usage, String key) =>
-      (usage[key] as num?)?.toInt() ?? 0;
+  static int? _usageCount(Map<String, dynamic> usage, String key) =>
+      (usage[key] as num?)?.toInt();
 
   /// 累积器 Map（key = Responses 的 item id）→ 调用 id（回填用）。
   ///

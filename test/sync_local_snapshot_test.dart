@@ -48,6 +48,7 @@ void main() {
             recommended_action TEXT,
             tokens_in INTEGER,
             tokens_out INTEGER,
+            cached_tokens_in INTEGER,
             model_name TEXT,
             created_at TEXT,
             user_images TEXT,

@@ -860,6 +860,129 @@ void main() {
     }
     await migrated.close();
   });
+
+  test('v16→v17：Token 用量列改可空并新增 cached_tokens_in，数据与索引保留', () async {
+    final path = _newDbPath();
+    final db16 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 16, onCreate: _createV16Schema),
+    );
+    await db16.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db16.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'tokens_in': 10,
+      'tokens_out': 20,
+      'model_name': 'deepseek-v4-flash',
+      'updated_at': 1234,
+    });
+    // 迁移前的旧约束必须真实存在，否则本用例测不到「取消 NOT NULL」。
+    final before = _columnInfo(await db16.rawQuery('PRAGMA table_info(rounds)'));
+    expect(before['tokens_in']!['notnull'], 1);
+    expect(before['tokens_out']!['notnull'], 1);
+    expect(before.containsKey('cached_tokens_in'), isFalse);
+    await db16.close();
+
+    final db = await _openUpgraded(path);
+    final after = _columnInfo(await db.rawQuery('PRAGMA table_info(rounds)'));
+    expect(after['tokens_in']!['notnull'], 0, reason: '无数据须能落 NULL');
+    expect(after['tokens_out']!['notnull'], 0);
+    expect(after['cached_tokens_in']!['notnull'], 0);
+    expect(after['cached_tokens_in']!['dflt_value'], isNull);
+
+    // 旧行原样保留：历史 0 即「真实 0 消耗」，不做数据迁移。
+    final row = (await db.query('rounds')).single;
+    expect(row['id'], 1, reason: '自增 id 是本地行标识，重建后不得改变');
+    expect(row['tokens_in'], 10);
+    expect(row['tokens_out'], 20);
+    expect(row['cached_tokens_in'], isNull, reason: 'v16 无该列，迁移后为无数据');
+    expect(row['model_name'], 'deepseek-v4-flash');
+    expect(row['updated_at'], 1234);
+
+    // NULL（无数据）与 0（真实 0 消耗）在库内可区分。
+    await db.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 2,
+      'tokens_in': null,
+      'tokens_out': 0,
+    });
+    final rows = await db.query('rounds', orderBy: 'round_index ASC');
+    expect(rows[1]['tokens_in'], isNull);
+    expect(rows[1]['tokens_out'], 0);
+
+    // 索引随旧表 DROP 消失，迁移按新装库同名同定义重建；外键仍指向 books(uuid)。
+    await db.delete('books', where: 'uuid = ?', whereArgs: ['u-1']);
+    expect(await db.query('rounds'), isEmpty, reason: '级联删除仍生效');
+    expect(
+      _fkTargets(await db.rawQuery('PRAGMA foreign_key_list(rounds)')),
+      {'books': 'uuid'},
+    );
+    expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    await db.close();
+  });
+
+  test('v17 迁移幂等：同一库重跑不重复重建，数据保留', () async {
+    final path = _newDbPath();
+    final db16 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 16, onCreate: _createV16Schema),
+    );
+    await db16.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db16.close();
+
+    final db = await _openUpgraded(path);
+    await db.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'tokens_in': 0,
+      'cached_tokens_in': 7,
+    });
+    // 版本回退到 16 后再升级：v17 分支必须识别「列已存在」并跳过重建。
+    await DatabaseHelper.migrate(db, 16, 17);
+
+    final round = (await db.query('rounds')).single;
+    expect(round['tokens_in'], 0);
+    expect(round['cached_tokens_in'], 7);
+    expect(
+      _columnNames(await db.rawQuery('PRAGMA table_info(rounds)'))
+          .where((n) => n == 'cached_tokens_in'),
+      hasLength(1),
+    );
+    await db.close();
+  });
+
+  test('v16→v17 迁移结果与全新安装库的 rounds DDL 一致', () async {
+    final migratedPath = _newDbPath();
+    final db16 = await databaseFactoryFfi.openDatabase(
+      migratedPath,
+      options: OpenDatabaseOptions(version: 16, onCreate: _createV16Schema),
+    );
+    await db16.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db16.close();
+    final migrated = await _openUpgraded(migratedPath);
+
+    final freshPath = _newDbPath();
+    DatabaseHelper.debugDatabasePathOverride = freshPath;
+    final fresh = await DatabaseHelper.instance.database;
+    addTearDown(() async {
+      DatabaseHelper.debugDatabasePathOverride = null;
+      await DatabaseHelper.instance.close();
+    });
+
+    const names = ['rounds', 'idx_rounds_book_index'];
+    final migratedSchema = await _businessSchema(migrated, names);
+    final freshSchema = await _businessSchema(fresh, names);
+    expect(migratedSchema.keys.toList()..sort(),
+        freshSchema.keys.toList()..sort());
+    for (final name in names) {
+      expect(
+        migratedSchema[name],
+        freshSchema[name],
+        reason: '$name 的 DDL 在新装库与迁移库之间不一致',
+      );
+    }
+    await migrated.close();
+  });
 }
 
 final List<Directory> _tempDirs = [];
@@ -1164,6 +1287,12 @@ Future<Database> _openUpgraded(String path) =>
 List<String> _columnNames(List<Map<String, Object?>> rows) =>
     rows.map((r) => r['name'] as String).toList();
 
+/// `PRAGMA table_info` → {列名: 该行}（断言可空性 / 默认值用）。
+Map<String, Map<String, Object?>> _columnInfo(
+  List<Map<String, Object?>> rows,
+) =>
+    {for (final r in rows) r['name'] as String: r};
+
 /// \`PRAGMA foreign_key_list\` → {父表名: 父列名}。
 Map<String, String> _fkTargets(List<Map<String, Object?>> rows) => {
       for (final r in rows) r['table'] as String: r['to'] as String,
@@ -1203,4 +1332,93 @@ Future<void> _createV15Schema(Database db, int version) async {
   await _createV14Schema(db, version);
   await db.execute('DROP TABLE IF EXISTS sync_pending_del');
   await db.execute('DROP TABLE IF EXISTS sync_image_revived');
+}
+
+/// 已发布 v16 schema（uuid 即身份）：Token 用量列仍为 `NOT NULL DEFAULT 0`，
+/// 且没有缓存命中列——v17 迁移要把它们改成「可空 = 无数据」。
+Future<void> _createV16Schema(Database db, int version) async {
+  await db.execute('''
+    CREATE TABLE books (
+      uuid TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT DEFAULT '',
+      base_setting TEXT DEFAULT '',
+      writing_requirements TEXT DEFAULT '',
+      writing_style TEXT DEFAULT '',
+      global_pre_prompt TEXT DEFAULT '',
+      global_post_prompt TEXT DEFAULT '',
+      history_rounds INTEGER NOT NULL DEFAULT 1,
+      role_hierarchy TEXT DEFAULT '',
+      role_hierarchy_detail TEXT DEFAULT '',
+      failed_user_input TEXT DEFAULT '',
+      failed_error_message TEXT DEFAULT '',
+      failed_user_images TEXT NOT NULL DEFAULT '[]',
+      settings_updated_at INTEGER NOT NULL DEFAULT 0,
+      rounds_updated_at INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE rounds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_uuid TEXT NOT NULL,
+      round_index INTEGER NOT NULL,
+      user_input TEXT DEFAULT '',
+      ai_narrative TEXT DEFAULT '',
+      world_state TEXT DEFAULT '',
+      character_state TEXT DEFAULT '',
+      memory_summary TEXT DEFAULT '',
+      current_time TEXT DEFAULT '',
+      recommended_action TEXT DEFAULT '',
+      tokens_in INTEGER NOT NULL DEFAULT 0,
+      tokens_out INTEGER NOT NULL DEFAULT 0,
+      model_name TEXT DEFAULT '',
+      user_images TEXT NOT NULL DEFAULT '[]',
+      ai_images TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX idx_rounds_book_index ON rounds (book_uuid, round_index)',
+  );
+  await db.execute('''
+    CREATE TABLE world_book_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_uuid TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      content TEXT DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE mods (
+      uuid TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      pre_prompt TEXT DEFAULT '',
+      post_prompt TEXT DEFAULT '',
+      system_prompt TEXT DEFAULT '',
+      world_book TEXT DEFAULT '',
+      created_at DATETIME,
+      updated_at DATETIME,
+      deleted_at INTEGER
+    )
+  ''');
+  await db.execute('''
+    CREATE TABLE book_mods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_uuid TEXT NOT NULL,
+      preset_key TEXT,
+      mod_uuid TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_enabled INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE,
+      FOREIGN KEY (mod_uuid) REFERENCES mods (uuid) ON DELETE CASCADE
+    )
+  ''');
 }

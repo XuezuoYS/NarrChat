@@ -996,6 +996,8 @@ class RoundProvider extends ChangeNotifier {
         recommendedAction: parsed.recommendedAction,
         tokensIn: result.promptTokens,
         tokensOut: result.completionTokens,
+        // 缓存命中输入 token（服务商未返回该字段 → null → 界面「（无）」）。
+        cachedTokensIn: result.cachedTokensIn,
         // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
         modelName: req.model,
         // 用户消息附带的图片（相对路径），随轮次落库，供气泡展示与历史回放。
@@ -1466,6 +1468,7 @@ class RoundProvider extends ChangeNotifier {
         reasoningContent: roundResult.reasoningContent,
         promptTokens: roundResult.promptTokens,
         completionTokens: roundResult.completionTokens,
+        cachedTokensIn: roundResult.cachedTokensIn,
         responseId: roundResult.responseId,
       ),
       snapshot: workingCopy.mergedSnapshot(),

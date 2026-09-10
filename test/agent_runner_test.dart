@@ -121,8 +121,66 @@ void main() {
       expect(result.completionTokens, 3);
     });
 
-    test('搜索失败：错误作为 tool 结果回传，AI 继续执行', () async {
+    test('Token 用量聚合：缺字段的帧跳过，全部缺字段 → null（不回落 0）', () async {
       final tool = _FakeTool(
+        result: const AgentToolResult(success: true, content: 'ok'),
+      );
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) => {'messages': messages, 'tools': tools},
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex++ == 0) {
+            // 首帧：服务商未返回 usage（三桶均缺字段）。
+            return AiCallResult(
+              content: '',
+              toolCalls: [_toolCall({'query': 'x'})],
+              promptTokens: null,
+              completionTokens: null,
+            );
+          }
+          // 末帧：只带回输入与缓存命中（输出仍缺字段）。
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 100,
+            completionTokens: null,
+            cachedTokensIn: 64,
+          );
+        },
+        tools: [tool],
+      );
+
+      final result = await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      expect(result.promptTokens, 100);
+      expect(result.cachedTokensIn, 64);
+      expect(result.completionTokens, isNull, reason: '两帧都没返回输出用量');
+    });
+
+    test('Token 用量聚合：全帧无 usage → 三桶全为 null', () async {
+      final runner = AgentRunner(
+        buildBody: (messages, tools) => {'messages': messages, 'tools': tools},
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async =>
+            const AiCallResult(
+          content: '正文',
+          promptTokens: null,
+          completionTokens: null,
+        ),
+      );
+
+      final result = await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      expect(result.promptTokens, isNull);
+      expect(result.completionTokens, isNull);
+      expect(result.cachedTokensIn, isNull);
+    });
+
+    test('搜索失败：错误作为 tool 结果回传，AI 继续执行', () async {      final tool = _FakeTool(
         result: const AgentToolResult(success: false, content: '联网搜索失败：网络异常'),
       );
       var callIndex = 0;

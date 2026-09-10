@@ -15,8 +15,19 @@ class Round {
   final String memorySummary;
   final String currentTime;
   final String recommendedAction;
-  final int tokensIn;
-  final int tokensOut;
+
+  /// 输入 token（提示词侧用量，含缓存命中部分）。
+  ///
+  /// `null` = **无数据**（模型未返回 usage / 历史轮次未记录），界面显示「（无）」；
+  /// 与 `0`（模型确实报了 0）区分，故读写都保留 null，不回落 0。
+  final int? tokensIn;
+
+  /// 输出 token（补全侧用量）；`null` 语义同 [tokensIn]。
+  final int? tokensOut;
+
+  /// 缓存命中的输入 token（DeepSeek `usage.prompt_cache_hit_tokens` /
+  /// OpenAI `usage.prompt_tokens_details.cached_tokens`）；`null` = 模型未返回该字段。
+  final int? cachedTokensIn;
 
   /// 本轮实际发送的模型名（`{{model}}` 解析值，如 `deepseek-v4-pro`）。
   final String modelName;
@@ -39,8 +50,9 @@ class Round {
     this.memorySummary = '',
     this.currentTime = '',
     this.recommendedAction = '',
-    this.tokensIn = 0,
-    this.tokensOut = 0,
+    this.tokensIn,
+    this.tokensOut,
+    this.cachedTokensIn,
     this.modelName = '',
     this.createdAt,
     this.userImages = const [],
@@ -59,8 +71,9 @@ class Round {
       memorySummary: (map['memory_summary'] as String?) ?? '',
       currentTime: (map['current_time'] as String?) ?? '',
       recommendedAction: (map['recommended_action'] as String?) ?? '',
-      tokensIn: (map['tokens_in'] as int?) ?? 0,
-      tokensOut: (map['tokens_out'] as int?) ?? 0,
+      tokensIn: map['tokens_in'] as int?,
+      tokensOut: map['tokens_out'] as int?,
+      cachedTokensIn: map['cached_tokens_in'] as int?,
       modelName: (map['model_name'] as String?) ?? '',
       createdAt: map['created_at'] == null
           ? null
@@ -84,6 +97,7 @@ class Round {
       'recommended_action': recommendedAction,
       'tokens_in': tokensIn,
       'tokens_out': tokensOut,
+      'cached_tokens_in': cachedTokensIn,
       'model_name': modelName,
       'user_images': jsonEncode(userImages),
       'ai_images': jsonEncode(aiImages),
@@ -117,6 +131,7 @@ class Round {
     String? recommendedAction,
     int? tokensIn,
     int? tokensOut,
+    int? cachedTokensIn,
     String? modelName,
     DateTime? createdAt,
     List<String>? userImages,
@@ -135,6 +150,7 @@ class Round {
       recommendedAction: recommendedAction ?? this.recommendedAction,
       tokensIn: tokensIn ?? this.tokensIn,
       tokensOut: tokensOut ?? this.tokensOut,
+      cachedTokensIn: cachedTokensIn ?? this.cachedTokensIn,
       modelName: modelName ?? this.modelName,
       createdAt: createdAt ?? this.createdAt,
       userImages: userImages ?? this.userImages,

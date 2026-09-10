@@ -31,4 +31,29 @@ class Formats {
     final l = t.toLocal();
     return '${two(l.hour)}:${two(l.minute)}:${two(l.second)}';
   }
+
+  /// 「无数据」占位文本（模型未返回该字段 / 数据库无该列值）。
+  static const String noData = '（无）';
+
+  /// Token 数量展示：无数据（null）→ [noData]，否则原样十进制数字。
+  static String formatTokenCount(int? count) =>
+      count == null ? noData : '$count';
+
+  /// 缓存命中率（如 `49.4%`）：缓存命中输入 token / 输入 token。
+  ///
+  /// 任一侧无数据（null）或输入为 0 → null（调用方显示 [noData]）。
+  /// 保留一位小数；末位 `.0` 省略；**未真正全命中时绝不四舍五入成 100%**
+  /// （逐位增加精度直到小于 100，最多 4 位）。
+  static String? formatCacheHitRate(int? cachedTokensIn, int? tokensIn) {
+    if (cachedTokensIn == null || tokensIn == null || tokensIn <= 0) return null;
+    if (cachedTokensIn >= tokensIn) return '100%';
+    final percent = cachedTokensIn * 100 / tokensIn;
+    for (var digits = 1; digits <= 4; digits++) {
+      final text = percent.toStringAsFixed(digits);
+      if (double.parse(text) < 100) {
+        return '${text.endsWith('.0') ? text.substring(0, text.length - 2) : text}%';
+      }
+    }
+    return '<100%';
+  }
 }

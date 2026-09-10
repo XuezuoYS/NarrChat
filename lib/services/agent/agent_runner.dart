@@ -56,8 +56,10 @@ class AgentRunner {
     void Function(AgentActivity activity)? onActivity,
   }) async {
     final messages = List<Map<String, dynamic>>.from(initialMessages);
-    var totalPrompt = 0;
-    var totalCompletion = 0;
+    // null = 尚未有任何一次调用带回该用量字段（全 null → 界面「（无）」）。
+    int? totalPrompt;
+    int? totalCompletion;
+    int? totalCached;
     final contentSb = StringBuffer();
     final reasoningSb = StringBuffer();
     // 本轮内各工具连续失败次数：达到 3 次后不再执行该工具，并告知模型停用。
@@ -76,8 +78,9 @@ class AgentRunner {
         onRequestBody,
         isCancelled,
       );
-      totalPrompt += result.promptTokens;
-      totalCompletion += result.completionTokens;
+      totalPrompt = addTokenUsage(totalPrompt, result.promptTokens);
+      totalCompletion = addTokenUsage(totalCompletion, result.completionTokens);
+      totalCached = addTokenUsage(totalCached, result.cachedTokensIn);
       contentSb.write(result.content);
       reasoningSb.write(result.reasoningContent);
 
@@ -87,6 +90,7 @@ class AgentRunner {
           reasoningContent: reasoningSb.toString(),
           promptTokens: totalPrompt,
           completionTokens: totalCompletion,
+          cachedTokensIn: totalCached,
         );
       }
 

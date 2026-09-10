@@ -49,6 +49,7 @@ class SyncFingerprint {
       row['recommended_action'],
       row['tokens_in'],
       row['tokens_out'],
+      row['cached_tokens_in'],
       row['model_name'],
       row['user_images'],
       row['ai_images'],

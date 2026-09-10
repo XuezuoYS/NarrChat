@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 16;
+  static const int _dbVersion = 17;
 
   Database? _database;
 
@@ -272,6 +272,49 @@ class DatabaseHelper {
           // [_recreateWithUuidIdentity]）。
           await _recreateWithUuidIdentity(db);
         }
+        if (oldVersion < 17) {
+          // v17：Token 用量改为「可空 = 无数据」（见 [_rebuildRoundsForUsageColumns]）。
+          await _rebuildRoundsForUsageColumns(db);
+        }
+  }
+
+  /// v16 → v17：`rounds` 的 Token 用量列改为**可空**并补 `cached_tokens_in`。
+  ///
+  /// - `tokens_in` / `tokens_out` 去掉 `NOT NULL DEFAULT 0`：`0` 是历史默认值
+  ///   （旧库已有行原样保留，即「0 = 真实 0 消耗」，**不做数据迁移**），
+  ///   此后 `NULL` 专表「无数据」（模型未返回 usage）；
+  /// - 新增 `cached_tokens_in`：缓存命中的输入 token，模型未返回该字段即 NULL。
+  ///
+  /// SQLite 无法取消列上的 `NOT NULL`，只能重建表；表定义复用
+  /// [_createRoundsTable] 的同一份 DDL，保证「迁移产物 = 新装库 schema」。
+  /// v16 分支重建出的 `rounds` 已是该形状，故按 `cached_tokens_in` 是否存在跳过：
+  /// 迁移幂等，且「v17 库被降级回 v16 后重跑」不会重复建列。
+  static Future<void> _rebuildRoundsForUsageColumns(Database db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(rounds)');
+    if (columns.any((c) => c['name'] == 'cached_tokens_in')) return;
+
+    await _createRoundsTable(db, suffix: '_new');
+    // 子表保留原自增 id（仅本地行标识，同步从不引用）；父表引用仍是 books.uuid。
+    await db.execute('''
+      INSERT INTO rounds_new (
+        id, book_uuid, round_index, user_input, ai_narrative, world_state,
+        character_state, memory_summary, current_time, recommended_action,
+        tokens_in, tokens_out, model_name, user_images, ai_images, created_at,
+        updated_at
+      )
+      SELECT
+        id, book_uuid, round_index, user_input, ai_narrative, world_state,
+        character_state, memory_summary, current_time, recommended_action,
+        tokens_in, tokens_out, model_name, user_images, ai_images, created_at,
+        updated_at
+      FROM rounds
+    ''');
+    await db.execute('DROP TABLE rounds');
+    await db.execute('ALTER TABLE rounds_new RENAME TO rounds');
+    // 索引随旧表 DROP 一并消失，按新装库的同名同定义重建。
+    await db.execute(
+      'CREATE INDEX idx_rounds_book_index ON rounds (book_uuid, round_index)',
+    );
   }
 
   /// v15 → v16：`books` / `mods` 去 int 主键，改由 uuid 承担唯一身份；子表
@@ -587,8 +630,9 @@ class DatabaseHelper {
         memory_summary TEXT DEFAULT '',
         current_time TEXT DEFAULT '',
         recommended_action TEXT DEFAULT '',
-        tokens_in INTEGER NOT NULL DEFAULT 0,
-        tokens_out INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER,
+        tokens_out INTEGER,
+        cached_tokens_in INTEGER,
         model_name TEXT DEFAULT '',
         user_images TEXT NOT NULL DEFAULT '[]',
         ai_images TEXT NOT NULL DEFAULT '[]',
