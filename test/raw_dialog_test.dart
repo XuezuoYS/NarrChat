@@ -575,6 +575,33 @@ void main() {
       expect(find.text('请求已中断，无 AI 返回'), findsNothing);
     });
 
+    testWidgets('失败信息可选中复制，并参与关键词检索定位', (tester) async {
+      const reason =
+          'API 请求失败（HTTP 400）：{"error":{"message":"Thinking mode does '
+          'not support this tool_choice"}}';
+      final exchanges = [RawExchange(requestBody: '{}', error: reason)];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      // 以**可选中文本**（SelectableText）渲染：可鼠标选中后 Ctrl+C 复制。
+      final selectables = tester
+          .widgetList<SelectableText>(find.byType(SelectableText))
+          .map((w) => w.textSpan?.toPlainText() ?? '')
+          .toList();
+      expect(selectables, hasLength(1));
+      expect(selectables.single, '请求失败：$reason');
+
+      // 参与检索定位（块序号与渲染一一对应）：只出现在失败原因里的关键词可命中。
+      await tester.enterText(
+        find.byKey(const Key('raw_search_field')),
+        'Thinking mode',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('1/1'), findsOneWidget);
+    });
+
     testWidgets('关键词检索：输入后按块显示计数', (tester) async {
       final exchanges = [
         RawExchange(
@@ -731,20 +758,27 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // 默认全部折叠：无可选中文本、无「图像」二级菜单。
-      expect(find.byType(SelectableText), findsNothing);
+      // 默认全部折叠：请求体内容不渲染（唯一可选中文本是「无返回」说明行）。
+      expect(find.byType(SelectableText), findsOneWidget);
+      expect(
+        tester
+            .widgetList<SelectableText>(find.byType(SelectableText))
+            .map((w) => w.textSpan?.toPlainText() ?? '')
+            .single,
+        '（无 AI 返回内容）',
+      );
       expect(find.text('图像 1 个（base64 已折叠）'), findsNothing);
 
       // 展开请求体：出现折叠占位文本与「图像 1 个」二级菜单。
       await tester.tap(find.text('【请求体 1】'));
       await tester.pumpAndSettle();
-      expect(find.byType(SelectableText), findsOneWidget);
+      expect(find.byType(SelectableText), findsNWidgets(2));
       expect(find.text('图像 1 个（base64 已折叠）'), findsOneWidget);
 
       // 点开头像二级菜单：出现图片详情（扩展名 / 字节数）与完整 data URL。
       await tester.tap(find.text('图像 1 个（base64 已折叠）'));
       await tester.pumpAndSettle();
-      expect(find.byType(SelectableText), findsNWidgets(2));
+      expect(find.byType(SelectableText), findsNWidgets(3));
       expect(find.text('图 1 · png · 1 B'), findsOneWidget);
     });
 

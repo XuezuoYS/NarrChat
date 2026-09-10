@@ -746,19 +746,25 @@ class _RawDialogState extends State<RawDialog> {
         blockIndex++;
       }
     } else {
+      // 无返回：以与其它文本块**同款的可选中文本**展示说明（失败原因 / 中性提示），
+      // 既能鼠标选中复制，也参与关键词检索与定位（块序号与 `_forEachBlock`
+      // 的遍历保持一一对应）。
+      final partBlockIndex = blockIndex;
       children.add(
         Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            _noReturnText(ex),
-            style: TextStyle(
-              fontSize: 12,
-              fontStyle: FontStyle.italic,
-              color: scheme.onSurfaceVariant,
+          child: _HighlightText(
+            key: _blockContentKeys.putIfAbsent(
+              partBlockIndex,
+              () => GlobalKey(),
             ),
+            text: _noReturnText(ex),
+            query: _query,
+            currentIndex: _localCurrentIndex(partBlockIndex),
           ),
         ),
       );
+      blockIndex++;
     }
     return (
       widget: Column(
