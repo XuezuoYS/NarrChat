@@ -4,19 +4,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
+import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
 
 import 'helpers/fakes.dart';
 
-/// RoundProvider AGENT 模式（Response API 协议）集成测试。
+/// RoundProvider Agent 档位（Response API 协议）集成测试。
 ///
-/// 覆盖：主响应正文 + 状态工具同响应 → 合并落库；校验失败 → 修复轮
-/// （第 2 帧含状态校验反馈、全量重发）；预览请求体为响应式 JSON。
+/// 覆盖：Lv.2（六工具 + 三小节正文）主响应落库 / 缺口修复轮 / 预览 /
+/// 强制选项；Lv.1（仅历史工具 + 5 区块正文）的混合落库与维护轮必发。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -33,19 +37,68 @@ void main() {
         headers: {'content-type': 'text/event-stream; charset=utf-8'},
       );
 
+  String textDelta(String text) => 'data: ${jsonEncode({
+        'type': 'response.output_text.delta',
+        'delta': text,
+      })}';
+
+  String callAdded(String id, String name) => 'data: ${jsonEncode({
+        'type': 'response.output_item.added',
+        'item': {'type': 'function_call', 'id': id, 'name': name},
+      })}';
+
+  String callArgs(String id, Map<String, dynamic> arguments) =>
+      'data: ${jsonEncode({
+        'type': 'response.function_call_arguments.delta',
+        'item_id': id,
+        'delta': jsonEncode(arguments),
+      })}';
+
+  String completed(String id, {int input = 1, int output = 1}) =>
+      'data: ${jsonEncode({
+        'type': 'response.completed',
+        'response': {
+          'id': id,
+          'usage': {'input_tokens': input, 'output_tokens': output},
+        },
+      })}';
+
+  /// 单条编辑调用的三行 SSE（item.added → args delta）。
+  List<String> editLines(
+    String id,
+    AgentStateSection section,
+    List<Map<String, dynamic>> edits,
+  ) =>
+      [
+        callAdded(id, agentEditToolName(section)),
+        callArgs(id, {'edits': edits}),
+      ];
+
+  /// Lv.2 主响应：正文三小节 + 三栏编辑（一次响应闭环）。
   List<String> happySse() => [
-        'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n主角踏门而入。\\n\\n## 推荐行动\\n叩见掌门。\\n\\n## 当前时间\\n第三天 卯时"}',
-        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
-        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"worldState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 地点：青云宗\\"}]}"}',
-        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"narrchat_editSection"}}',
-        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\\"section\\":\\"characterState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"# 主角\\\\n## 林远\\\\n- 气血：100\\"}]}"}',
-        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_3","name":"narrchat_editSection"}}',
-        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_3","delta":"{\\"section\\":\\"memorySummary\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 第1轮｜日期：第三天 卯时｜主角踏门而入\\"}]}"}',
-        'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":5,"input_tokens_details":{"cached_tokens":8}}}}',
+        textDelta('## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。\n'
+            '\n## 当前时间\n第三天 卯时'),
+        ...editLines('fc_1', AgentStateSection.worldState, [
+          {'op': 'append', 'newLine': '- 地点：青云宗'},
+        ]),
+        ...editLines('fc_2', AgentStateSection.characterState, [
+          {'op': 'append', 'newLine': '# 主角\n## 林远\n- 气血：100'},
+        ]),
+        ...editLines('fc_3', AgentStateSection.memorySummary, [
+          {'op': 'append', 'newLine': '- 第1轮｜日期：第三天 卯时｜主角踏门而入'},
+        ]),
+        completed('resp_1', input: 12, output: 5),
         '',
       ];
 
-  test('AGENT 主响应：正文 + 状态工具 → 落库快照来自工作副本合并', () async {
+  /// 只回正文的帧（三栏全缺 → 触发维护轮）。
+  List<String> storyOnlyLines(String narrative) => [
+        textDelta(narrative),
+        completed('resp_s', input: 1, output: 1),
+        '',
+      ];
+
+  test('AGENT Lv.2 主响应：正文 + 状态工具 → 落库快照来自工作副本合并', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
@@ -59,7 +112,7 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      // Agent 档位与协议解耦：显式开启实验性档位（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -68,21 +121,31 @@ void main() {
     final ok = await provider.sendRound(userInput: '第一章', book: book);
     expect(ok, isTrue);
 
-    // 请求体形态：单次请求闭环（正文轮把状态补齐 → 不发起状态轮）。
+    // 请求体形态：单次请求闭环（正文轮把状态补齐 → 不发起维护轮）。
     expect(bodies, hasLength(1));
     final body = bodies.single;
     expect(body['tool_choice'], 'auto');
     expect(body['instructions'], contains('【AGENT 模式契约】'));
-    // 工具集 = 读取器 + 编辑器（时间属于正文，无时间工具）。
+    // 工具集 = 六个状态工具 + 强制开启的联网工具（时间属于正文，无时间工具）。
+    final names = (body['tools'] as List)
+        .cast<Map<String, dynamic>>()
+        .map((t) => t['name'])
+        .toList();
     expect(
-      (body['tools'] as List).cast<Map<String, dynamic>>().map((t) => t['name']),
-      containsAll(['narrchat_readState', 'narrchat_editSection']),
+      names,
+      containsAll([
+        'narrchat_readWorldState',
+        'narrchat_readCharacterState',
+        'narrchat_readHistory',
+        'narrchat_editWorldState',
+        'narrchat_editCharacterState',
+        'narrchat_editHistory',
+      ]),
     );
-    expect(
-      (body['tools'] as List).cast<Map<String, dynamic>>().map((t) => t['name']),
-      isNot(contains('narrchat_advanceTime')),
-    );
-    // 快照**不预置**：input 里没有应用伪造的 function_call 序列。
+    expect(names, containsAll(['narrchat_webSearch', 'narrchat_webFetchPage']));
+    expect(names, isNot(contains('narrchat_readState')));
+    expect(names, isNot(contains('narrchat_advanceTime')));
+    // 状态**不预置**：input 里没有应用伪造的 function_call 序列。
     final input = (body['input'] as List).cast<Map<String, dynamic>>();
     expect(input.where((i) => i['type'] == 'function_call'), isEmpty);
 
@@ -97,13 +160,11 @@ void main() {
     expect(round.memorySummary, contains('第1轮'));
     expect(round.tokensIn, 12);
     expect(round.tokensOut, 5);
-    // 缓存命中输入 token 随 Responses usage 一路落库（气泡明细用）。
-    expect(round.cachedTokensIn, 8);
     expect(round.modelName, 'deepseek-flash');
     // RAW 完成：1 次交换，工具调用块含状态工具。
     final exchanges = provider.rawExchangesFor(round.id!)!;
     expect(exchanges, hasLength(1));
-    expect(exchanges.single.toolCalls, contains('narrchat_editSection'));
+    expect(exchanges.single.toolCalls, contains('narrchat_editWorldState'));
     expect(provider.agentWarnings, isEmpty);
   });
 
@@ -115,23 +176,28 @@ void main() {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = capturedBodies.length;
         if (idx == 1) {
+          // 第 1 帧：正文 + 历史声明无变化（每轮必须补条目 → 被拒）。
           return sse([
-            'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n正文初稿\\n\\n## 推荐行动\\nx\\n\\n## 当前时间\\n第一天 申时"}',
-            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
-            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"memorySummary\\",\\"edits\\":[{\\"op\\":\\"noChange\\"}]}"}',
-            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}',
+            textDelta('## 剧情演绎\n正文初稿\n\n## 推荐行动\nx\n\n## 当前时间\n第一天 申时'),
+            ...editLines('fc_1', AgentStateSection.memorySummary, [
+              {'op': 'noChange'},
+            ]),
+            completed('resp_1', input: 1, output: 1),
             '',
           ]);
         }
         return sse([
-          'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n修正后正文\\n\\n## 推荐行动\\ny"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\\"section\\":\\"worldState\\",\\"edits\\":[{\\"op\\":\\"set\\",\\"before\\":\\"- 地点：青云宗\\",\\"newLine\\":\\"- 地点：主峰\\"}]}"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_4","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_4","delta":"{\\"section\\":\\"characterState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"# 主角\\\\n## 林远\\\\n- 气血：60\\"}]}"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_5","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_5","delta":"{\\"section\\":\\"memorySummary\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 第2轮｜日期：第一天 申时｜前往主峰\\"}]}"}',
-          'data: {"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":2,"output_tokens":2}}}',
+          textDelta('## 剧情演绎\n修正后正文\n\n## 推荐行动\ny'),
+          ...editLines('fc_2', AgentStateSection.worldState, [
+            {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
+          ]),
+          ...editLines('fc_4', AgentStateSection.characterState, [
+            {'op': 'append', 'newLine': '# 主角\n## 林远\n- 气血：60'},
+          ]),
+          ...editLines('fc_5', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第2轮｜日期：第一天 申时｜前往主峰'},
+          ]),
+          completed('resp_2', input: 2, output: 2),
           '',
         ]);
       }),
@@ -141,7 +207,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -158,7 +223,7 @@ void main() {
     expect(ok, isTrue);
 
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 2);
-    // 正文采纳制：本轮正文 = 正文轮的标题帧；状态轮复读的正文被结构性丢弃。
+    // 正文采纳制：本轮正文 = 正文轮的标题帧；维护轮复读的正文被结构性丢弃。
     expect(round.aiNarrative, contains('正文初稿'));
     expect(round.aiNarrative, isNot(contains('修正后正文')));
     expect(round.recommendedAction, contains('x'));
@@ -166,36 +231,46 @@ void main() {
     expect(round.currentTime, '第一天 申时');
     expect(round.memorySummary, contains('第2轮'));
     expect(provider.rawExchangesFor(round.id!), hasLength(2));
-    // 第 2 帧 = 状态轮：全量重发（无 previous_response_id），
+    // 第 2 帧 = 维护轮：全量重发（无 previous_response_id），
     // 且 instructions / tools 前缀与第 1 帧**逐字节一致**（缓存命中前提）。
     final body1 = capturedBodies[0];
     final body2 = capturedBodies[1];
     expect(body2.containsKey('previous_response_id'), isFalse);
     expect(body2['instructions'], body1['instructions']);
     expect(jsonEncode(body2['tools']), jsonEncode(body1['tools']));
-    // 正文轮 auto，状态轮 required（模型无法只回文本逃避维护状态）。
+    // 正文轮 auto，维护轮 required（模型无法只回文本逃避维护状态）。
     expect(body1['tool_choice'], 'auto');
     expect(body2['tool_choice'], 'required');
     final input = (body2['input'] as List).cast<Map<String, dynamic>>();
-    // 状态轮**不再预置**快照：应用侧没有任何伪造的 readState 轨迹
-    // （正文轮自己调用的编辑工具条目是模型产物，正常存在）。
+    // 状态**不再预置**：应用侧没有任何伪造的读取轨迹。
     expect(
       input.where(
-        (i) => i['type'] == 'function_call' && i['name'] == 'narrchat_readState',
+        (i) =>
+            i['type'] == 'function_call' &&
+            kReadStateToolNames.contains(i['name']),
       ),
       isEmpty,
-      reason: '状态快照改为模型自取（narrchat_readState），应用不预置',
+      reason: '状态改为模型自取（各栏读取器），应用不预置',
     );
-    // 状态轮指令要求「先调用 readState 再按清单编辑」。
+    // 维护轮指令要求「读取器已禁用，直接用正文回合读到的结果编辑」。
     expect(
       input.any(
         (i) =>
             '${i['content']}'.contains('[State-maintenance turn]') &&
-            '${i['content']}'.contains('narrchat_readState'),
+            '${i['content']}'.contains('narrchat_readWorldState'),
       ),
       isTrue,
     );
-    // 状态轮指令（EN 标记 + 中文标记 + 缺项清单）。
+    expect(
+      input.any(
+        (i) =>
+            '${i['content']}'.contains('[State-maintenance turn]') &&
+            '${i['content']}'.contains('读取器') &&
+            '${i['content']}'.contains('已禁用'),
+      ),
+      isTrue,
+      reason: '维护轮不再重复读取：指令明示读取器已禁用',
+    );
     expect(
       input.any(
         (i) =>
@@ -219,7 +294,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(happySse()))),
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -237,8 +311,12 @@ void main() {
     expect(
       tools.map((t) => t['name']),
       containsAll([
-        'narrchat_readState',
-        'narrchat_editSection',
+        'narrchat_readWorldState',
+        'narrchat_readCharacterState',
+        'narrchat_readHistory',
+        'narrchat_editWorldState',
+        'narrchat_editCharacterState',
+        'narrchat_editHistory',
       ]),
     );
     expect(tools.map((t) => t['name']), isNot(contains('narrchat_advanceTime')));
@@ -248,33 +326,59 @@ void main() {
     expect(tools.first.containsKey('name'), isTrue);
   });
 
-  test('AGENT 用户关闭思考：请求体显式 reasoning.effort=none（平台规则）', () async {
-    final dao = FakeRoundDao();
+  test('Agent 强制开启思考 / 搜索：忽略用户已保存的 Chat 每轮选项', () async {
+    // 先把用户的 Chat 每轮选项全关（思考/流式/搜索）。
     final settings = AiSettingsProvider();
-    await settings.setPerRoundOptions(thinking: false, streaming: true);
-    final provider = RoundProvider(
-      dao: dao,
-      bookDao: FakeBookDao(),
-      aiService: AiService(client: MockClient((_) async => sse(happySse()))),
-      aiSettingsProvider: settings,
-      experimentalSettings: AgentModeSettings(),
-      retryDelay: Duration.zero,
+    await settings.setPerRoundOptions(
+      thinking: false,
+      streaming: false,
+      search: false,
     );
-    await provider.loadRounds('b1');
+    expect(settings.thinking, isFalse);
+    expect(settings.streaming, isFalse);
+    expect(settings.lastSearch, isFalse);
 
-    final preview = await provider.previewRequestBody(
-      userInput: '第一章',
-      book: book,
+    Future<Map<String, dynamic>> previewWith(
+      ExperimentalSettingsProvider experimental,
+    ) async {
+      final provider = RoundProvider(
+        dao: FakeRoundDao(),
+        bookDao: FakeBookDao(),
+        aiService: AiService(client: MockClient((_) async => sse(happySse()))),
+        aiSettingsProvider: settings,
+        experimentalSettings: experimental,
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds('b1');
+      return jsonDecode(
+        await provider.previewRequestBody(userInput: '第一章', book: book),
+      ) as Map<String, dynamic>;
+    }
+
+    // Agent 开：思考照旧发送（不再被用户选项关掉），联网工具同批注入。
+    final agentBody = await previewWith(AgentModeSettings());
+    expect(agentBody.containsKey('tools'), isTrue);
+    expect(
+      (agentBody['tools'] as List)
+          .cast<Map<String, dynamic>>()
+          .map((t) => t['name']),
+      contains('narrchat_webSearch'),
     );
-    final body = jsonDecode(preview) as Map<String, dynamic>;
-    // DeepSeek 思考模式默认开启（默认 high）；Responses 格式以
-    // reasoning.effort 控制，`none` = 关闭——省略即思考开启（曾经的缺陷）。
-    expect((body['reasoning'] as Map)['effort'], 'none');
-    expect(body['temperature'], isNotNull);
-    expect(body.containsKey('reasoning_effort'), isFalse);
+    // DeepSeek 思考模式默认开启（默认 high）；`none` = 关闭。
+    expect('${agentBody['reasoning']}', isNot(contains('none')));
+    // 搜索指令随强制开启一并注入。
+    expect('${agentBody['instructions']}', contains('【联网搜索】'));
+
+    // Agent 关：用户的 Chat 选项原样生效（思考关闭 + 无搜索工具）。
+    final chatBody =
+        await previewWith(ExperimentalSettingsProvider());
+    expect(chatBody.containsKey('tools'), isFalse);
+    expect((chatBody['reasoning'] as Map)['effort'], 'none');
+    expect(chatBody.containsKey('reasoning_effort'), isFalse);
   });
 
-  test('AGENT 搜索开场白：无标题帧不采纳为正文，标题帧正文正常落库', () async {    final dao = FakeRoundDao();
+  test('AGENT 搜索开场白：无标题帧不采纳为正文，标题帧正文正常落库', () async {
+    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -283,21 +387,26 @@ void main() {
         if (idx == 1) {
           // 帧 1：说明性开场白（无 ## 剧情演绎 标题）+ 状态工具调用。
           return sse([
-            'data: {"type":"response.output_text.delta","delta":"I\'ll search for information about the two characters before writing the story."}',
-            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
-            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"worldState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 地点：灯会\\"}]}"}',
-            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}',
+            textDelta(
+                'I\'ll search for information about the two characters before writing the story.'),
+            ...editLines('fc_1', AgentStateSection.worldState, [
+              {'op': 'append', 'newLine': '- 地点：灯会'},
+            ]),
+            completed('resp_1'),
             '',
           ]);
         }
         // 帧 2：标题帧（真正的正文 + 当前时间）+ 剩余状态工具。
         return sse([
-          'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n洛天依与乐正绫在灯会深处的小巷里……\\n\\n## 推荐行动\\n继续观察\\n\\n## 当前时间\\n第一日 深夜"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_3","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_3","delta":"{\\"section\\":\\"memorySummary\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 第1轮｜日期：第一日 深夜｜观察到两人走入小巷\\"}]}"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_4","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_4","delta":"{\\"section\\":\\"characterState\\",\\"edits\\":[{\\"op\\":\\"noChange\\",\\"reason\\":\\"两人状态本轮未发生变化\\"}]}"}',
-          'data: {"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":2,"output_tokens":2}}}',
+          textDelta(
+              '## 剧情演绎\n洛天依与乐正绫在灯会深处的小巷里……\n\n## 推荐行动\n继续观察\n\n## 当前时间\n第一日 深夜'),
+          ...editLines('fc_3', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第1轮｜日期：第一日 深夜｜观察到两人走入小巷'},
+          ]),
+          ...editLines('fc_4', AgentStateSection.characterState, [
+            {'op': 'noChange', 'reason': '两人状态本轮未发生变化'},
+          ]),
+          completed('resp_2', input: 2, output: 2),
           '',
         ]);
       }),
@@ -307,7 +416,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -328,22 +436,21 @@ void main() {
     expect(provider.rawExchangesFor(round.id!), hasLength(2));
   });
 
-  test('AGENT 只写正文不调工具 → 状态轮接管（文本状态区块不再兜底落库）', () async {
+  test('AGENT 只写正文不调工具 → 维护轮接管（文本状态区块不再兜底落库）', () async {
     final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = capturedBodies.length;
-        // 首帧：正文 + 违规的状态文本区块（不调用任何工具）；状态帧：只有文本。
-        final narrative =
-            'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n刀刃出鞘，寒光掠过。\\n\\n## 推荐行动\\n继续赶路"}';
+        // 首帧：正文 + 违规的状态文本区块（不调用任何工具）；维护帧：只有文本。
+        final narrative = textDelta(
+            '## 剧情演绎\n刀刃出鞘，寒光掠过。\n\n## 推荐行动\n继续赶路');
         final lines = <String>[
           narrative,
-          if (idx == 1) ...[
-            'data: {"type":"response.output_text.delta","delta":"\\n\\n## 当前时间\\n第三天 卯时\\n\\n## 世界状态\\n- 地点：荒原"}',
-          ],
-          'data: {"type":"response.completed","response":{"id":"r$idx","usage":{"input_tokens":1,"output_tokens":1}}}',
+          if (idx == 1)
+            textDelta('\n\n## 当前时间\n第三天 卯时\n\n## 世界状态\n- 地点：荒原'),
+          completed('r$idx'),
           '',
         ];
         return sse(lines);
@@ -354,7 +461,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -369,7 +475,7 @@ void main() {
     // 时间属于正文：`## 当前时间` 解析落库；`## 世界状态` 是 banned 段被剥离。
     expect(round.currentTime, '第三天 卯时');
     expect(round.worldState, isEmpty);
-    // 正文轮 1 帧 + 状态轮 4 帧（状态帧只回文本 → 空手帧不再立即止损，
+    // 正文轮 1 帧 + 维护轮 4 帧（维护帧只回文本 → 空手帧不再立即止损，
     // 继续给修复机会直到帧数上限，缺项转常驻警告）。
     expect(capturedBodies, hasLength(5));
     expect(capturedBodies[1]['tool_choice'], 'required');
@@ -379,7 +485,7 @@ void main() {
     expect(provider.agentWarnings.join(), isNot(contains('当前时间')));
   });
 
-  test('AGENT 历史：上一轮 assistant 只带三个正文小节（状态区块不再是模仿通道）', () async {
+  test('AGENT Lv.2 历史：上一轮 assistant 只带三个正文小节（状态区块不再是模仿通道）', () async {
     final dao = FakeRoundDao();
     await dao.insertRound(const Round(
       bookUuid: 'b1',
@@ -396,11 +502,7 @@ void main() {
     final ai = AiService(
       client: MockClient((request) async {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-        return sse([
-          'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n殿前风冷。\\n\\n## 推荐行动\\n递上名帖"}',
-          'data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}',
-          '',
-        ]);
+        return sse(storyOnlyLines('## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖'));
       }),
     );
     final provider = RoundProvider(
@@ -408,7 +510,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -426,26 +527,99 @@ void main() {
     expect(
       input.where((i) => i['type'] == 'function_call'),
       isEmpty,
-      reason: '状态快照改为模型自取（narrchat_readState），应用不预置',
+      reason: '状态改为模型自取（各栏读取器），应用不预置',
     );
   });
 
-  test('AGENT 状态帧请求体：required + 思考降为 low + 不改 max_output_tokens', () async {
+  test('AGENT Lv.1：正文 5 区块 + 仅历史工具 → 世界/角色取自正文、历史取自工具', () async {
     final dao = FakeRoundDao();
-    final bodies = <Map<String, dynamic>>[];
-    var calls = 0;
+    final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
-        bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-        calls++;
-        // 帧 1 只写正文（状态全缺）→ 帧 2 状态轮补齐。
+        capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final idx = capturedBodies.length;
+        if (idx == 1) {
+          // 正文轮：5 区块（世界 / 角色随正文携带，无记忆区块）。
+          return sse(storyOnlyLines(
+              '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n## 当前时间\n第二天 辰时\n\n'
+              '## 世界状态\n- 地点：青云宗主殿\n\n## 角色状态\n## 林远\n- 气血：60'));
+        }
+        // 维护轮（每轮必发）：只补本轮历史条目。
+        return sse([
+          ...editLines('h1', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+          ]),
+          completed('resp_h', input: 2, output: 2),
+          '',
+        ]);
+      }),
+    );
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(),
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
+      experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
+    expect(capturedBodies, hasLength(2), reason: 'Lv.1 维护轮每轮必发');
+
+    // 工具集 = 历史一读一写 + 联网（世界 / 角色不在其中）。
+    final names = (capturedBodies.first['tools'] as List)
+        .cast<Map<String, dynamic>>()
+        .map((t) => t['name'])
+        .toList();
+    expect(
+      names,
+      containsAll([
+        'narrchat_readHistory',
+        'narrchat_editHistory',
+        'narrchat_webSearch',
+        'narrchat_webFetchPage',
+      ]),
+    );
+    expect(names, isNot(contains('narrchat_editWorldState')));
+    expect(names, isNot(contains('narrchat_readCharacterState')));
+    // instructions = Lv.1 的 5 区块契约 + 历史工具契约。
+    expect('${capturedBodies.first['instructions']}',
+        contains('完整输出以下 5 个二级标题'));
+    expect('${capturedBodies.first['instructions']}',
+        contains('narrchat_readHistory'));
+
+    // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
+    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    expect(round.aiNarrative, contains('殿前风冷'));
+    expect(round.worldState, '- 地点：青云宗主殿');
+    expect(round.characterState, contains('- 气血：60'));
+    expect(round.currentTime, '第二天 辰时');
+    expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
+    expect(provider.agentWarnings, isEmpty);
+  });
+
+  test('兼容降级重发：400 探测帧**不计失败轮**、不计 token，RAW 写明 HTTP 码', () async {
+    final dao = FakeRoundDao();
+    final bodies = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        bodies.add(body);
+        // 模拟「只接受 auto、不接受 required」的兼容实现：维护帧探测被拒（HTTP 400）。
+        if (body['tool_choice'] == 'required') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'error': {'message': 'tool_choice 参数不受支持'},
+            })),
+            400,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        // 正文帧（带 auto）→ 只写正文；维护帧重发（无 tool_choice）→ 补齐三栏。
         return sse(
-          calls == 1
-              ? [
-                  'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n主角踏门而入。\\n\\n## 推荐行动\\n叩见掌门。"}',
-                  'data: {"type":"response.completed","response":{"id":"resp_a","usage":{"input_tokens":12,"output_tokens":5}}}',
-                  '',
-                ]
+          body.containsKey('tool_choice')
+              ? storyOnlyLines('## 剧情演绎\n正文。\n\n## 推荐行动\n行动')
               : happySse(),
         );
       }),
@@ -455,7 +629,73 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
+      experimentalSettings: AgentModeSettings(),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
+
+    // 三次底层请求：正文帧(auto) → 维护帧探测(required，被 400 拒绝) → 同一帧重发(无 tool_choice)。
+    expect(bodies, hasLength(3));
+    expect(bodies[0]['tool_choice'], 'auto');
+    expect(bodies[1]['tool_choice'], 'required');
+    expect(bodies[2].containsKey('tool_choice'), isFalse,
+        reason: '降级后就地重发同一帧：不再携带 tool_choice');
+    // 重发的是**同一帧**：input 完全一致（帧序号不变、不重跑正文轮）。
+    expect(bodies[2]['input'], bodies[1]['input']);
+
+    // 本轮照常成功落库（正文 + 状态齐备），且**没有被记为失败**：
+    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    expect(round.aiNarrative, contains('正文。'));
+    expect(round.memorySummary, contains('第1轮'));
+    expect(provider.failedAttempt.isEmpty, isTrue, reason: '不产生失败条目');
+    expect(provider.retryStatus, isNull, reason: '不触发「错误重连……」重试提示');
+    expect(provider.roundWarningsFor(1), isEmpty, reason: '不产生常驻黄框');
+    expect(provider.error, isNull);
+
+    // **不计 token**：本轮用量只累加两次成功帧（正文帧 1/1 + 维护帧 12/5），
+    // 被 400 拒绝的那次探测不产生 usage，也不计入本轮。
+    expect(round.tokensIn, 13);
+    expect(round.tokensOut, 6);
+
+    // RAW：失败的那次探测保留下来并写明 HTTP 码与报错原文（可追溯）。
+    final exchanges = provider.rawExchangesFor(round.id!)!;
+    expect(exchanges, hasLength(3));
+    final failed = exchanges.where((e) => e.error.isNotEmpty).toList();
+    expect(failed, hasLength(1), reason: '只有探测帧没有返回');
+    expect(failed.single.error, contains('HTTP 400'));
+    expect(failed.single.error, contains('tool_choice'));
+    // 它确实没有返回内容（三个块全空）——RAW 就是靠 error 说明原因。
+    expect(failed.single.thinking, isEmpty);
+    expect(failed.single.toolCalls, isEmpty);
+    expect(failed.single.content, isEmpty);
+    // 成功帧不受影响：正文帧与维护帧重发都有返回内容。
+    expect(exchanges.first.content, contains('正文。'));
+    expect(exchanges.last.content, contains('主角踏门而入'));
+  });
+
+  test('维护帧请求体：required + 思考降为 low + 不改 max_output_tokens', () async {
+    final dao = FakeRoundDao();
+    final bodies = <Map<String, dynamic>>[];
+    var calls = 0;
+    final ai = AiService(
+      client: MockClient((request) async {
+        bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        calls++;
+        // 帧 1 只写正文（状态全缺）→ 帧 2 维护轮补齐。
+        return sse(
+          calls == 1
+              ? storyOnlyLines('## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。')
+              : happySse(),
+        );
+      }),
+    );
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(),
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -468,13 +708,13 @@ void main() {
     expect(bodies[0]['tool_choice'], 'auto');
     expect('${bodies[0]['reasoning']}', isNot(contains('none')));
 
-    // 状态帧：强制调工具 + 思考强度降为 low（用户开启思考时不硬关）；
+    // 维护帧：强制调工具 + 思考强度降为 low（用户开启思考时不硬关）；
     // `max_output_tokens` 与正文轮**完全一致**——程序不擅自抬高。
     expect(bodies[1]['tool_choice'], 'required');
     expect(
       bodies[1]['max_output_tokens'],
       bodies[0]['max_output_tokens'],
-      reason: '状态帧不得改写用户设置的输出上限',
+      reason: '维护帧不得改写用户设置的输出上限',
     );
     expect(bodies[1]['reasoning'], {'effort': 'low'});
     // 两阶段共用同一 instructions / tools（前缀缓存依赖此）。
@@ -482,14 +722,19 @@ void main() {
     expect(bodies[1]['tools'], bodies[0]['tools']);
   });
 
-  test('状态帧截断：提示用户调高「最大 token」，但请求体上限始终沿用用户设置', () async {
-    const storyLines = [
-      'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n正文。\\n\\n## 推荐行动\\n行动"}',
-      'data: {"type":"response.completed","response":{"id":"rs","usage":{"input_tokens":9,"output_tokens":9}}}',
-    ];
+  test('维护帧截断：提示用户调高「最大 token」，但请求体上限始终沿用用户设置', () async {
+    final storyLines = storyOnlyLines('## 剧情演绎\n正文。\n\n## 推荐行动\n行动');
     // 触顶截断（无 error 字段，只有 incomplete_details）。
-    const truncatedLines = [
-      'data: {"type":"response.incomplete","response":{"id":"rs","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":9,"output_tokens":4096}}}',
+    final truncatedLines = [
+      'data: ${jsonEncode({
+        'type': 'response.incomplete',
+        'response': {
+          'id': 'rs',
+          'status': 'incomplete',
+          'incomplete_details': {'reason': 'max_output_tokens'},
+          'usage': {'input_tokens': 9, 'output_tokens': 4096},
+        },
+      })}',
     ];
     final bodies = <Map<String, dynamic>>[];
     var calls = 0;
@@ -497,7 +742,7 @@ void main() {
       client: MockClient((request) async {
         bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         calls++;
-        // 每轮：正文帧（只写正文）→ 状态帧（前 3 帧空手文本，第 4 帧被截断，
+        // 每轮：正文帧（只写正文）→ 维护帧（前 3 帧空手文本，第 4 帧被截断，
         // 作为本轮最后一帧 → 截断提示 + 缺项警告同时出现）。
         return sse(calls == 5 ? truncatedLines : storyLines);
       }),
@@ -507,14 +752,13 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
-    expect(bodies, hasLength(5)); // 1 正文 + 4 状态（空手帧不再提前止损）
+    expect(bodies, hasLength(5)); // 1 正文 + 4 维护（空手帧不再提前止损）
     // 截断不再让整轮失败：正文照常落库 + 黄框给出可操作提示。
     expect(bodies[1]['tool_choice'], 'required');
     expect(
@@ -523,7 +767,7 @@ void main() {
     );
 
     expect(await provider.sendRound(userInput: '第二章', book: book), isTrue);
-    // 三轮请求（含下一轮的状态帧）的 max_output_tokens 全等于正文轮的值：
+    // 三轮请求（含下一轮的维护帧）的 max_output_tokens 全等于正文轮的值：
     // 程序不因截断擅自抬高用户设置。
     for (final b in bodies.skip(1)) {
       expect(b['max_output_tokens'], bodies.first['max_output_tokens']);
@@ -536,13 +780,9 @@ void main() {
     final ai = AiService(
       client: MockClient((request) async {
         calls++;
-        // 每帧都只回文本：正文轮一帧收工，状态轮空手帧不再止损 →
+        // 每帧都只回文本：正文轮一帧收工，维护帧空手帧不再止损 →
         // 直到帧数上限，缺项转警告。
-        return sse([
-          'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n正文。\\n\\n## 推荐行动\\n行动"}',
-          'data: {"type":"response.completed","response":{"id":"r$calls","usage":{"input_tokens":1,"output_tokens":1}}}',
-          '',
-        ]);
+        return sse(storyOnlyLines('## 剧情演绎\n正文。\n\n## 推荐行动\n行动'));
       }),
     );
     final provider = RoundProvider(
@@ -550,15 +790,15 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
     expect(await provider.sendRound(userInput: '开始', book: book), isTrue);
+    expect(calls, greaterThan(1));
 
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
-    // 时间属正文、不参与缺项；世界/角色/记忆缺项全部点名。
+    // 时间属正文、不参与缺项；世界/角色/历史缺项全部点名。
     expect(provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
     expect(provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
     expect(provider.roundWarningsFor(1), isNot(contains('当前时间')));
@@ -581,9 +821,10 @@ void main() {
     final ai = AiService(
       client: MockClient((request) async => sse([
         // 每帧只有状态工具调用，从不产出正文 → 正文轮耗尽 → 本轮判失败。
-        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
-        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"worldState\\",\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 地点：荒原\\"}]}"}',
-        'data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}',
+        ...editLines('fc_1', AgentStateSection.worldState, [
+          {'op': 'append', 'newLine': '- 地点：荒原'},
+        ]),
+        completed('r1'),
         '',
       ])),
     );
@@ -592,7 +833,6 @@ void main() {
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
-      // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
+import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/services/image_import_service.dart';
@@ -23,6 +24,12 @@ class _AllDisabledSettings extends ChatCompatibleSettings {
   bool get streaming => false;
   @override
   bool get lastSearch => false;
+}
+
+/// 「搜索能力被模型配置页关闭」的设置替身（能力开关直接决定行是否显示）。
+class _NoSearchSettings extends AiSettingsProvider {
+  @override
+  bool get supportsSearch => false;
 }
 
 /// 记录生成完成回调的测试记录器（参数 = 书籍 uuid + 书名）。
@@ -806,5 +813,154 @@ void main() {
     // 字数另起一行后，模型名宽度不随字数位数变化（不再被横向争抢）。
     expect(tester.getSize(modelLabel()).width, labelWidth);
     expect(tester.takeException(), isNull);
+  });
+
+  // —— Agent 档位（实验性）：黄色徽标 + 置灰不可切换的强制选项 ——
+
+  /// 左下角功能触发区（含徽标/摘要）的底色与边框色。
+  ({Color color, Color? border}) triggerDecoration(WidgetTester tester) {
+    final container = tester.widget<Container>(
+      find
+          .ancestor(
+            of: find.byIcon(Icons.tune),
+            matching: find.byType(Container),
+          )
+          .first,
+    );
+    final decoration = container.decoration! as BoxDecoration;
+    return (color: decoration.color!, border: decoration.border?.top.color);
+  }
+
+  /// 菜单里某一行（思考/流式/搜索）的 MenuItemButton。
+  MenuItemButton modeRow(WidgetTester tester, String label) =>
+      tester.widget<MenuItemButton>(
+        find
+            .ancestor(
+              of: find.text(label),
+              matching: find.byType(MenuItemButton),
+            )
+            .first,
+      );
+
+  testWidgets('Agent Lv.1：左下角改为联网同款黄色徽标，不再显示选项摘要', (tester) async {
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
+    );
+
+    // 徽标文本（Lv.1）与联网同款警告黄。
+    expect(find.text('Agent Lv.1 On (BETA)'), findsOneWidget);
+    final badge = tester.widget<Text>(find.text('Agent Lv.1 On (BETA)'));
+    expect(badge.style?.color, _kWarningYellow);
+    final trigger = triggerDecoration(tester);
+    expect(trigger.border, _kWarningYellow);
+    expect(trigger.color, _kWarningYellow.withValues(alpha: 0.08));
+    // 不再显示 Chat 摘要（流式 | 思考）。
+    expect(find.textContaining('流式'), findsNothing);
+    expect(find.textContaining('思考'), findsNothing);
+  });
+
+  testWidgets('Agent Lv.2：徽标为 Agent Lv.2 On (BETA)', (tester) async {
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    expect(find.text('Agent Lv.2 On (BETA)'), findsOneWidget);
+    expect(find.text('Agent Lv.1 On (BETA)'), findsNothing);
+  });
+
+  testWidgets('Agent 窄屏（360 宽）：徽标单行省略且不溢出', (tester) async {
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      experimentalSettings: AgentModeSettings(),
+      size: const Size(360, 740),
+    );
+
+    final badge = tester.widget<Text>(find.text('Agent Lv.2 On (BETA)'));
+    expect(badge.maxLines, 1);
+    expect(badge.overflow, TextOverflow.ellipsis);
+    // 徽标区不越到发送按钮上（外层 55% 宽度约束 + 单行省略共同保证）。
+    expect(
+      tester.getRect(find.text('Agent Lv.2 On (BETA)')).right,
+      lessThanOrEqualTo(tester.getRect(sendButton()).left),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Agent 模式菜单：思考/流式/搜索置灰不可切换（显示用户原配置 + 小字说明）', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      settings: settings,
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+
+    // 三行都在，但整行禁用（Agent 期间强制开启，只受模型配置页能力开关限制）。
+    for (final label in ['思考', '流式', '搜索']) {
+      expect(modeRow(tester, label).onPressed, isNull, reason: '$label 行应禁用');
+    }
+    expect(find.textContaining('Agent 模式已强制开启，此处不可关闭'), findsWidgets);
+    // 搜索行仍带 BETA 试验版提示（与强制开启说明拼接）。
+    expect(
+      find.textContaining('此功能为试验版，存在大量问题，启动会数倍增加 token 消耗'),
+      findsOneWidget,
+    );
+
+    // 行内状态 = 用户原本配置（默认思考/流式开、搜索关），不因强制开启而改写。
+    expect(find.byIcon(Icons.circle_outlined), findsOneWidget); // 搜索（未开）
+    expect(find.byIcon(Icons.check_circle), findsWidgets); // 信息块 + 思考 + 流式
+
+    // 点击置灰行不生效（用户已保存的 Chat 每轮选项不被改写）。
+    await tester.tap(find.text('搜索'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(settings.lastSearch, isFalse);
+
+    // 识图模型下「导入图片」入口在 Agent 模式仍保留。
+    expect(find.text('导入图片'), findsOneWidget);
+  });
+
+  testWidgets('Agent 模式菜单：模型配置页关闭的能力不显示该行', (tester) async {
+    // 模型配置页把「搜索」能力关掉 → 该行不显示（思考 / 流式仍在，且置灰）。
+    final settings = _NoSearchSettings();
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      settings: settings,
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+
+    expect(find.text('思考'), findsOneWidget);
+    expect(find.text('流式'), findsOneWidget);
+    expect(find.text('搜索'), findsNothing, reason: '能力被关闭 → 不显示该行');
+    expect(modeRow(tester, '思考').onPressed, isNull);
+  });
+
+  testWidgets('Agent 关闭：菜单行可正常切换（强制开启只作用于 Agent 模式）', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      settings: settings,
+    );
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    expect(modeRow(tester, '搜索').onPressed, isNotNull);
+    expect(find.textContaining('Agent 模式已强制开启'), findsNothing);
+
+    await tester.tap(find.text('搜索'));
+    await tester.pumpAndSettle();
+    expect(settings.lastSearch, isTrue);
   });
 }

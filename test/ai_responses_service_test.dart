@@ -220,8 +220,8 @@ void main() {
       final ai = AiService(
         client: MockClient((request) async => sseResponse([
           'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n写到一半"}',
-          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editSection"}}',
-          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"section\\":\\"worldState\\""}',
+          'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editWorldState"}}',
+          'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"edits\\":[{\\"op\\":\\"set\\""}',
           'data: {"type":"response.incomplete","response":{"id":"r9","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":5,"output_tokens":4096}}}',
           '',
         ])),

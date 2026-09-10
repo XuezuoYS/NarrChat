@@ -538,6 +538,43 @@ void main() {
       expect(find.text('请求失败，无 AI 返回'), findsOneWidget);
     });
 
+    testWidgets('无返回的交换：优先展示该次请求的失败原因（协议降级探测帧）', (tester) async {
+      // 成功轮里也可能出现「无返回」的交换：协议兼容降级前的探测帧被服务商
+      // 拒绝（随后同一帧重发），原因写在 exchange.error 里而不是含糊的「无返回」。
+      final exchanges = [
+        RawExchange(
+          requestBody: '{"tool_choice":"required"}',
+          error: 'API 请求失败（HTTP 400）：tool_choice 参数不受支持',
+        ),
+        RawExchange(
+          requestBody: '{"tool_choice":null}',
+          content: '第二轮（去掉 tool_choice 后重发成功）',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('请求失败：API 请求失败（HTTP 400）：tool_choice 参数不受支持'),
+        findsOneWidget,
+      );
+      // 有正常返回的那一条照常展示三块，不受影响。
+      expect(find.text('正文块'), findsOneWidget);
+    });
+
+    testWidgets('无返回且无原因：显示中性「无 AI 返回内容」', (tester) async {
+      final exchanges = [RawExchange(requestBody: '{}')];
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('（无 AI 返回内容）'), findsOneWidget);
+      expect(find.text('请求已中断，无 AI 返回'), findsNothing);
+    });
+
     testWidgets('关键词检索：输入后按块显示计数', (tester) async {
       final exchanges = [
         RawExchange(
@@ -761,7 +798,7 @@ void main() {
       expect(find.text('【请求体 1】'), findsOneWidget);
       expect(find.text('【AI返回 1】'), findsNothing);
       expect(find.text('思考块'), findsNothing);
-      expect(find.text('请求已中断，无 AI 返回'), findsNothing);
+      expect(find.text('（无 AI 返回内容）'), findsNothing);
       expect(find.text('请求失败，无 AI 返回'), findsNothing);
     });
 

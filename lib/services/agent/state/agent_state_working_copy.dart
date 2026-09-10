@@ -31,7 +31,7 @@ enum AgentStateSection {
 
 /// 单条锚定式行级编辑指令（编辑文件式，但**不用行号**）。
 ///
-/// 定位的唯一依据是 [before]：当前状态快照（`narrchat_readState` 输出）中的
+/// 定位的唯一依据是 [before]：当前状态快照（对应栏目读取工具的输出）中的
 /// 某行（或连续多行）。应用侧按下述优先级匹配（见 `AgentStateWorkingCopy`
 /// 的 `_findAnchor`）：整行逐字 → 归一化整行 → 归一化行内子串，并要求**唯一**
 /// 命中。模型不需要（也不应该）计算行号。
@@ -171,31 +171,22 @@ class AgentStateWorkingCopy {
   }
 
   // ---------------------------------------------------------------------------
-  // 快照渲染（readState 工具结果；时间属于正文，快照不含时间块）
+  // 快照渲染（读取工具结果；时间属于正文，快照不含时间块）
   // ---------------------------------------------------------------------------
 
-  /// 渲染当前状态快照（readState 工具的返回；也是模型复制 `before` 锚点的
-  /// 唯一来源）。**不含时间**——时间在正文 `## 当前时间` 小节里，
-  /// 上一轮时间经用户消息的【上轮时间】前置提供。
-  String renderSnapshot() => _renderSnapshot(
+  /// 渲染**单个栏目**的当前快照块（该栏目读取工具的返回；也是模型复制
+  /// `before` 锚点的唯一来源）。**不含时间**——时间在正文 `## 当前时间`
+  /// 小节里，上一轮时间经用户消息的【上轮时间】前置提供。
+  ///
+  /// 只渲染被请求的那一栏：读取工具按栏目拆分后，上下文里不该出现模型没有
+  /// 请求的其它栏目（省 token，也让「锚点来自哪一栏」的对应关系唯一）。
+  String renderSection(AgentStateSection section) => _renderSections(
         roundIndex: roundIndex,
-        sections: {
-          for (final s in AgentStateSection.values) s: sectionText(s),
-        },
+        sections: {section: sectionText(section)},
       );
 
-  /// 渲染某轮数据库快照为同一格式（与工作副本渲染同源）。
-  static String renderSnapshotOf({required int roundIndex, Round? lastRound}) =>
-      _renderSnapshot(
-        roundIndex: roundIndex,
-        sections: {
-          AgentStateSection.worldState: lastRound?.worldState ?? '',
-          AgentStateSection.characterState: lastRound?.characterState ?? '',
-          AgentStateSection.memorySummary: lastRound?.memorySummary ?? '',
-        },
-      );
-
-  static String _renderSnapshot({
+  /// 渲染 [sections] 中列出的栏目（顺序按 [AgentStateSection] 声明顺序稳定）。
+  static String _renderSections({
     required int roundIndex,
     required Map<AgentStateSection, String> sections,
   }) {
@@ -206,18 +197,16 @@ class AgentStateWorkingCopy {
         'reply (it is input, not an output format).');
     buf.writeln('【中】这是应用侧状态真值（刚读取回来的）。before 锚点必须从本块'
         '逐字复制；**禁止**把本块重复输出到回复里（它是输入，不是输出格式）。');
-    void block(String tag, String text) {
-      if (text.trim().isEmpty) {
-        buf.writeln('<$tag empty="true"></$tag>');
-        return;
-      }
-      buf.writeln('<$tag>');
-      buf.writeln(text.trim());
-      buf.writeln('</$tag>');
-    }
-
     for (final s in AgentStateSection.values) {
-      block(s.tag, sections[s] ?? '');
+      if (!sections.containsKey(s)) continue;
+      final text = sections[s] ?? '';
+      if (text.trim().isEmpty) {
+        buf.writeln('<${s.tag} empty="true"></${s.tag}>');
+        continue;
+      }
+      buf.writeln('<${s.tag}>');
+      buf.writeln(text.trim());
+      buf.writeln('</${s.tag}>');
     }
     buf.write('<<<END_NARRCHAT_STATE>>>');
     return buf.toString();
@@ -408,7 +397,7 @@ class AgentStateWorkingCopy {
   ) {
     if (before.trim().isEmpty) {
       throw const StateEditException(
-        'before 不能为空：请从状态快照块（narrchat_readState 输出）中逐字复制要修改的行。',
+        'before 不能为空：请从状态快照块（对应栏目读取工具的输出）中逐字复制要修改的行。',
       );
     }
     final anchor = [for (final l in before.split('\n')) l.trimRight()];

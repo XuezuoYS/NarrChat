@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/agent_mode_level.dart';
 import '../providers/experimental_settings_provider.dart';
 import '../services/local_config_service.dart';
 import '../services/update_check_flow.dart';
@@ -13,7 +14,7 @@ import 'ui_settings_form.dart';
 /// 「图片设置 / 模型设置」一致）：
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
 /// - 其它设置：应用行为类杂项（如「检查更新」开关）；
-/// - 实验性设置：实验性功能开关（如「Agent 模式」，默认关闭）。
+/// - 实验性设置：实验性功能档位（如「Agent 模式」三档：关 / Lv.1 / Lv.2）。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
 class GeneralSettingsForm extends StatelessWidget {
@@ -182,12 +183,21 @@ class _OtherSettingsSectionState extends State<_OtherSettingsSection> {
   }
 }
 
-/// 「实验性设置」子模块内容：Agent 模式开关（默认关闭）。
+/// 「实验性设置」子模块内容：Agent 模式档位（默认「无 / 使用传统 Chat 方式」）。
 ///
-/// 开关与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
+/// 档位与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
-/// - Agent 模式开启后调用自定义工具走两阶段生成，属于实验性功能——
-///   描述中明确声明所调用的工具、用到的特性与可能的风险。
+/// - **Lv.1**：仅历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），
+///   历史由工具读写（正文轮先读、维护轮每轮必发地写）；
+/// - **Lv.2**：完整 Agent（六个状态工具：世界 / 角色 / 历史各一读一写 + 联网）；
+///   正文只输出 3 个小节，状态全部由工具维护。
+///
+/// 交互与文案分工：
+/// - **整张卡片任意位置可点**即可展开档位菜单（不必对准右侧箭头）；
+/// - 卡片内只保留**简要**介绍（工具 / 两阶段 + 指示器限制 + 破坏性变更声明），
+///   各档位的差异写在**下拉选项内**（[AgentModeLevel.menuDetail]）；
+/// - 菜单用 [MenuAnchor]（与对话页模型选择器同款交互）而非 `DropdownButton`：
+///   后者的展开热区只覆盖按钮本身。
 class _ExperimentalSettingsSection extends StatefulWidget {
   const _ExperimentalSettingsSection();
 
@@ -198,78 +208,151 @@ class _ExperimentalSettingsSection extends StatefulWidget {
 
 class _ExperimentalSettingsSectionState
     extends State<_ExperimentalSettingsSection> {
-  /// 开关声明文案（覆盖工具清单、特性与风险）。
+  /// 简要介绍：工具 / 两阶段 + 指示器限制 + 破坏性变更声明（细节在选项内）。
   static const String _agentModeDescription =
-      '实验性功能（默认关闭）：启用后本应用将调用自定义工具'
-      '（narrchat_readState、narrchat_editSection、narrchat_webSearch、'
-      'narrchat_webFetchPage），并使用两阶段生成（正文轮 → 状态轮）、'
-      'tool_choice 强制工具调用、previous_response_id 链式续接与'
-      '状态工作副本合并等特性。'
-      '⚠ 可能导致请求失败、生成错误或状态数据不符合预期；'
-      '不同服务商支持程度不同，可能不被支持；正确性不保证，请谨慎使用。';
+      '实验性功能（默认「无」）：启用后调用自定义工具（narrchat_*）走两阶段生成，'
+      '由 Agent 托管部分状态——各档位托管范围见下拉选项说明。'
+      '⚠ 档位开启期间，模型已支持的功能（思考 / 流式 / 搜索）无法通过对话页'
+      '指示器关闭；未来更新可能对本功能做出破坏性变更，正确性不保证。';
 
-  void _toggle(bool value) {
+  void _setLevel(AgentModeLevel level) {
     // Provider 内先乐观生效并异步持久化（保存失败仅记录）。
-    context.read<ExperimentalSettingsProvider>().setAgentModeEnabled(value);
+    context.read<ExperimentalSettingsProvider>().setAgentModeLevel(level);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
     final experimental = context.watch<ExperimentalSettingsProvider>();
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.divider),
+    final current = experimental.agentModeLevel;
+    return MenuAnchor(
+      // 与对话页模型选择器同款动画与圆角；选项带标题 + 一行说明。
+      animated: true,
+      style: MenuStyle(
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
       ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: () => _toggle(!experimental.agentModeEnabled),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
+      menuChildren: [
+        for (final level in AgentModeLevel.values)
+          MenuItemButton(
+            key: ValueKey('experimental_agent_mode_option_${level.id}'),
+            onPressed: () => _setLevel(level),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  Icons.psychology_outlined,
-                  size: 18,
-                  color: colors.textSecondary,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      level == current
+                          ? Icons.check_circle
+                          : Icons.circle_outlined,
+                      size: 13,
+                      color: level == current
+                          ? Theme.of(context).colorScheme.primary
+                          : colors.textSecondary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      level.menuTitle,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight:
+                            level == current ? FontWeight.w600 : FontWeight.normal,
+                        color: colors.textPrimary,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
+                Padding(
+                  padding: const EdgeInsets.only(left: 17, top: 2),
+                  child: Text(
+                    level.menuDetail,
+                    style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+      builder: (context, controller, _) => Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: colors.background,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: colors.divider),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          child: InkWell(
+            key: const ValueKey('experimental_agent_mode_card'),
+            borderRadius: BorderRadius.circular(16),
+            // 整卡可点：展开 / 收起档位菜单（不必对准右侧箭头）。
+            onTap: () => controller.isOpen
+                ? controller.close()
+                : controller.open(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.psychology_outlined,
+                    size: 18,
+                    color: colors.textSecondary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Agent 模式',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: colors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _agentModeDescription,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // 当前档位展示（纯展示；点击热区由整卡承担）：
+                  // 将来追加档位只需扩展 [AgentModeLevel]，此处与对话页徽标自动跟随。
+                  Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Agent 模式',
+                        current.label,
+                        key: const ValueKey('experimental_agent_mode_label'),
                         style: TextStyle(
-                          fontSize: 14,
+                          fontSize: 13,
                           color: colors.textPrimary,
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _agentModeDescription,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          color: colors.textSecondary,
-                        ),
+                      Icon(
+                        controller.isOpen
+                            ? Icons.arrow_drop_up
+                            : Icons.arrow_drop_down,
+                        size: 18,
+                        color: colors.textSecondary,
                       ),
                     ],
                   ),
-                ),
-                Switch(
-                  key: const ValueKey('experimental_agent_mode_switch'),
-                  value: experimental.agentModeEnabled,
-                  onChanged: _toggle,
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

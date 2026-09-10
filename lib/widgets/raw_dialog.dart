@@ -237,7 +237,7 @@ const double _kScrollTopPadding = 40;
 ///
 /// - 请求 / 返回按时间线交错展示：【请求体】→【AI返回】→…；
 /// - AI 返回分三块：思考块 / 工具调用块（原始 tool_calls JSON，含
-///   `narrchat_webSearch` / `narrchat_editSection` 等全部工具）/ 正文块，
+///   `narrchat_webSearch` / `narrchat_edit*` 等全部工具）/ 正文块，
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
@@ -322,8 +322,21 @@ class _RawDialogState extends State<RawDialog> {
         fn(blockIndex++, _display(ex.thinking), false);
         fn(blockIndex++, _display(ex.toolCalls), false);
         fn(blockIndex++, _display(ex.content), false);
+      } else {
+        // 无返回：把失败原因（若有）纳入检索与定位。
+        fn(blockIndex++, _noReturnText(ex), false);
       }
     }
+  }
+
+  /// 无返回时的说明行：优先展示**本次请求的失败原因**（协议兼容降级前的探测
+  /// 帧被服务商拒绝等），其次按整个对话框是否为失败尝试给出中性 / 失败提示。
+  ///
+  /// 注意：一条交换「没有返回内容」本身不代表发生错误——降级探测帧之外，
+  /// 服务商也可能返回空响应。
+  String _noReturnText(RawExchange ex) {
+    if (ex.error.isNotEmpty) return '请求失败：${ex.error}';
+    return widget.failedError == null ? '（无 AI 返回内容）' : '请求失败，无 AI 返回';
   }
 
   /// 计算全部匹配（按文档顺序、大小写不敏感）。
@@ -737,7 +750,7 @@ class _RawDialogState extends State<RawDialog> {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-            widget.failedError == null ? '请求已中断，无 AI 返回' : '请求失败，无 AI 返回',
+            _noReturnText(ex),
             style: TextStyle(
               fontSize: 12,
               fontStyle: FontStyle.italic,

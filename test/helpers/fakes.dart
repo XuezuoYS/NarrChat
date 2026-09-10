@@ -7,6 +7,7 @@ import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
 import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
@@ -73,13 +74,16 @@ class ChatCompatibleSettings extends AiSettingsProvider {
       );
 }
 
-/// 开启 Agent 模式的实验性设置替身（构造注入初值，不触碰真实配置文件）。
+/// 开启 Agent 模式的实验性设置替身（构造注入档位，不触碰真实配置文件）。
 ///
-/// Agent 模式与平台协议**正交**：与 [ChatCompatibleSettings] /
+/// 默认 [AgentModeLevel.lv2]（完整 Agent：六个状态工具 + 正文三小节）；
+/// 需要 Lv.1（仅历史工具 + 正文 5 区块）时显式传 `level:`。
+/// Agent 档位与平台协议**正交**：与 [ChatCompatibleSettings] /
 /// 默认 Response 平台组合分别覆盖「Agent × Chat 线路」与
 /// 「Agent × Responses 线路」两条路径。
 class AgentModeSettings extends ExperimentalSettingsProvider {
-  AgentModeSettings() : super(initialAgentModeEnabled: true);
+  AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv2})
+      : super(initialLevel: level);
 }
 
 /// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。

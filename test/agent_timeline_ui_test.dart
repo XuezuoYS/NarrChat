@@ -72,10 +72,10 @@ class _GatedStreamResponsesService extends AiService {
       AiStreamChunk(
           contentDelta:
               '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动\n\n## 当前时间\n第二天 申时'),
-      AiStreamChunk(toolCallId: 'fc_1', toolName: 'narrchat_editSection'),
+      AiStreamChunk(toolCallId: 'fc_1', toolName: 'narrchat_editHistory'),
       AiStreamChunk(
         toolCallId: 'fc_1',
-        toolArgsDelta: '{"section":"memorySummary","edits":[{"op":"noChange"}]}',
+        toolArgsDelta: '{"edits":[{"op":"noChange"}]}',
       ),
     ],
     result: AiCallResult(
@@ -83,9 +83,8 @@ class _GatedStreamResponsesService extends AiService {
       toolCalls: [
         AiToolCall(
           id: 'fc_1',
-          name: 'narrchat_editSection',
+          name: 'narrchat_editHistory',
           arguments: {
-            'section': 'memorySummary',
             'edits': [
               {'op': 'noChange'},
             ],
@@ -153,8 +152,8 @@ void main() {
       experimentalSettings: AgentModeSettings(),
     );
 
-    // AGENT 实验性开关开启 → 徽标出现在模式摘要（与协议正交）。
-    expect(find.textContaining('AGENT'), findsWidgets);
+    // Agent 档位开启 → 左下角徽标为联网同款黄色 `Agent Lv.2 On (BETA)`。
+    expect(find.textContaining('Agent Lv.2 On (BETA)'), findsWidgets);
 
     final future = provider.sendRound(userInput: '测试', book: book);
     for (var i = 0; i < 60 && ai.calls < 1; i++) {
@@ -169,9 +168,8 @@ void main() {
         toolCalls: const [
           AiToolCall(
             id: 'fc_1',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'append', 'newLine': '- 地点：青云宗'},
               ],
@@ -190,7 +188,10 @@ void main() {
     expect(ai.calls, 2, reason: '应已发出第 2 帧（正文轮）请求');
 
     // 正文未开始时：工具结果框按「返回顺序」显示在正文上方（工具先到）。
-    expect(find.textContaining('Tool · narrchat_editSection'), findsWidgets);
+    expect(
+      find.textContaining('Tool · narrchat_editWorldState'),
+      findsWidgets,
+    );
 
     // 第 2 帧：产出正文 + 当前时间 + 补齐剩余状态工具，本轮完整结束。
     gates[1].complete(
@@ -200,9 +201,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_2',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editHistory',
             arguments: {
-              'section': 'memorySummary',
               'edits': [
                 {
                   'op': 'append',
@@ -213,9 +213,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_3',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editCharacterState',
             arguments: {
-              'section': 'characterState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -241,9 +240,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_2',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editHistory',
             arguments: {
-              'section': 'memorySummary',
               'edits': [
                 {
                   'op': 'append',
@@ -254,9 +252,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_3',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -264,9 +261,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_4',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editCharacterState',
             arguments: {
-              'section': 'characterState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -303,7 +299,7 @@ void main() {
     expect(find.textContaining('重复正文'), findsNothing);
     // 执行失败的工具块保持展开：校验失败原因（原状态工具框语义）直接可见；
     // 成功的工具块则收起为一行状态栏。
-    expect(find.textContaining('Tool · narrchat_editSection'), findsOneWidget);
+    expect(find.textContaining('Tool · narrchat_editHistory'), findsOneWidget);
     expect(find.textContaining('不能声明 noChange'), findsWidgets);
 
     // 放行帧 2 并完成本轮：落库正文 = 首帧正文。
@@ -325,11 +321,11 @@ void main() {
           contentDelta:
               'I\'ll search for information about the two characters before writing the story.',
         ),
-        AiStreamChunk(toolCallId: 'fc_1', toolName: 'narrchat_editSection'),
+        AiStreamChunk(toolCallId: 'fc_1', toolName: 'narrchat_editWorldState'),
         AiStreamChunk(
           toolCallId: 'fc_1',
           toolArgsDelta:
-              '{"section":"worldState","edits":[{"op":"append","newLine":"- 地点：灯会"}]}',
+              '{"edits":[{"op":"append","newLine":"- 地点：灯会"}]}',
         ),
       ],
       result: const AiCallResult(
@@ -338,9 +334,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_1',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'append', 'newLine': '- 地点：灯会'},
               ],
@@ -364,9 +359,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_3',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editHistory',
             arguments: {
-              'section': 'memorySummary',
               'edits': [
                 {
                   'op': 'append',
@@ -377,9 +371,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_4',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editCharacterState',
             arguments: {
-              'section': 'characterState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -462,9 +455,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_2',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -472,9 +464,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_3',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editCharacterState',
             arguments: {
-              'section': 'characterState',
               'edits': [
                 {'op': 'noChange'},
               ],
@@ -482,9 +473,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_4',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editHistory',
             arguments: {
-              'section': 'memorySummary',
               'edits': [
                 {
                   'op': 'append',

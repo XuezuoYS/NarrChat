@@ -3,18 +3,20 @@ import '../models/mod.dart';
 import '../models/round.dart';
 import 'prompt_formats.dart';
 
-/// 共享提示词模块：两种生成模式（Chat / AGENT）**共用**的组装流程，单一真源。
+/// 共享提示词模块：各生成模式（Chat / Agent Lv.1 / Agent Lv.2）**共用**的
+/// 组装流程，单一真源。
 ///
 /// 设计约定：
 /// - **文案直接内联在组装函数体内**（[buildSystemPrompt] / [buildUserPrompt]）：
 ///   函数即完整可读的提示词文本流，改动直观、就地可改；
 /// - **仅大字段保留为类级常量**：目前仅 [endPrompt]（多行双语块，且系统指令
 ///   与用户消息两处共用）；
-/// - 模式特有的「格式生成要求」（Chat 的 6 区块纪律 / 状态快照规则 /
-///   角色状态格式 / 记忆格式；AGENT 的工具契约）**不放在本文件**，一律收敛于
-///   `prompt_formats.dart` 的 `ChatPromptFormat` / `AgentPromptFormat`；
-/// - Chat / AGENT 两种模式的最终 Prompt 由 `PromptBuilder` + `PromptMode`
-///   统一入口组装（调用共享组装并传入对应格式规格）。
+/// - 模式特有的「格式生成要求」（Chat 的区块纪律 / 状态快照规则 /
+///   角色状态格式 / 记忆格式；Agent 各档位的工具契约）**不放在本文件**，
+///   一律收敛于 `prompt_formats.dart` 的 `ChatPromptFormat` /
+///   `AgentLv1PromptFormat` / `AgentLv2PromptFormat`；
+/// - 各模式的最终 Prompt 由 `PromptBuilder` + `PromptMode` 统一入口组装
+///   （调用共享组装并传入对应格式规格）。
 class PromptSections {
   const PromptSections();
 

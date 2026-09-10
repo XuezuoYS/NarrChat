@@ -4,8 +4,8 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_sections.dart';
 
-/// 模式格式生成要求（ChatPromptFormat / AgentPromptFormat / PromptMode）
-/// 与共享组装（PromptSections）单元测试。
+/// 模式格式生成要求（ChatPromptFormat / AgentLv1PromptFormat /
+/// AgentLv2PromptFormat / PromptMode）与共享组装（PromptSections）单元测试。
 ///
 /// 验证点：
 /// - 各格式规格集中持有模式特有文案（槽位内容、契约常量）；
@@ -45,16 +45,17 @@ class _StubFormat implements PromptFormatSpec {
 
 void main() {
   group('PromptMode', () {
-    test('chat / agent 解析到各自格式规格（单一真源）', () {
+    test('chat / agentLv1 / agentLv2 解析到各自格式规格（单一真源）', () {
       expect(PromptMode.chat.format, same(const ChatPromptFormat()));
-      expect(PromptMode.agent.format, same(const AgentPromptFormat()));
+      expect(PromptMode.agentLv1.format, same(const AgentLv1PromptFormat()));
+      expect(PromptMode.agentLv2.format, same(const AgentLv2PromptFormat()));
     });
   });
 
   group('ChatPromptFormat', () {
     const format = ChatPromptFormat();
 
-    test('sectionOrder 为 6 区块固定顺序', () {
+    test('sectionOrder 为 6 区块固定顺序；includeMemory=false 时排除记忆总结', () {
       expect(ChatPromptFormat.sectionOrder, [
         '剧情演绎',
         '推荐行动',
@@ -63,15 +64,22 @@ void main() {
         '角色状态',
         '记忆总结',
       ]);
+      expect(format.sections, ChatPromptFormat.sectionOrder);
+      expect(
+        const ChatPromptFormat(includeMemory: false).sections,
+        ['剧情演绎', '推荐行动', '当前时间', '世界状态', '角色状态'],
+      );
     });
 
     test('systemHead 集中 6 区块纪律（绝对服从 + 缩进清单 + 纪律 + 快照规则）', () {
       final lines = format.systemHead;
       expect(lines.first, '【绝对服从】以下规则必须无条件、无例外地严格执行，'
           '不得拒绝、不得询问、不得省略：');
+      expect(lines[1], contains('完整输出以下 6 个二级标题'));
       expect(lines, contains('   ## 剧情演绎'));
       expect(lines, contains('   ## 记忆总结'));
       expect(lines.any((l) => l.contains('【二级标题纪律】')), isTrue);
+      expect(lines.any((l) => l.contains('上述 6 个二级标题')), isTrue);
       expect(lines.any((l) => l.contains('【状态快照规则】')), isTrue);
       // 不含 AGENT 契约。
       expect(
@@ -119,27 +127,121 @@ void main() {
     });
   });
 
-  group('AgentPromptFormat', () {
-    const format = AgentPromptFormat();
+  group('AgentLv1PromptFormat（5 区块 + 历史工具契约）', () {
+    const format = AgentLv1PromptFormat();
 
-    test('契约常量：输出标题与状态工具名（时间属于正文、无时间工具）', () {
-      expect(AgentPromptFormat.outputSections, ['剧情演绎', '推荐行动', '当前时间']);
-      expect(AgentPromptFormat.stateToolNames, [
-        'narrchat_editSection',
+    test('契约常量：5 个输出标题（无记忆总结）+ 历史一读一写', () {
+      expect(AgentLv1PromptFormat.outputSections, [
+        '剧情演绎',
+        '推荐行动',
+        '当前时间',
+        '世界状态',
+        '角色状态',
+      ]);
+      expect(AgentLv1PromptFormat.outputSections,
+          isNot(contains('记忆总结')));
+      expect(AgentLv1PromptFormat.stateToolNames, [
+        'narrchat_readHistory',
+        'narrchat_editHistory',
       ]);
     });
 
-    test('systemHead 集中双语 7 条契约（三区块输出 / 锚定编辑 / 状态维护回合），末行为空行', () {
+    test('systemHead 复用 Chat 骨架但只列 5 个区块（排除记忆总结）+ 思考语言规则', () {
+      final lines = format.systemHead;
+      expect(lines.first, contains('【绝对服从】'));
+      expect(lines[1], contains('完整输出以下 5 个二级标题'));
+      expect(lines, contains('   ## 世界状态'));
+      expect(lines, contains('   ## 角色状态'));
+      expect(lines, isNot(contains('   ## 记忆总结')));
+      expect(lines.any((l) => l.contains('上述 5 个二级标题')), isTrue);
+      // 状态快照规则仍在（世界/角色由正文携带），但不再有记忆格式段。
+      expect(lines.any((l) => l.contains('【状态快照规则】')), isTrue);
+      // 思考语言规则（Agent 档位专属，编号 4）。
+      expect(lines, contains('4. 【思考语言】思考（reasoning）一律用**英文**书写。'
+          '本规则只约束思考通道：正文与工具参数保持原有语言（中文），'
+          '**不要**翻译正文或锚点。'));
+      expect(lines.any((l) => l.contains('4. [Reasoning language]')), isTrue);
+    });
+
+    test('systemTail 为历史工具契约（先读后写 / 只读一次 / 每轮恰一条 / 正文禁止记忆区块）', () {
+      final lines = format.systemTail;
+      expect(lines.first, contains('narrchat_readHistory'));
+      expect(lines.first, contains('state-maintenance turn'));
+      expect(lines.any((l) => l.contains('禁止')), isTrue);
+      expect(lines.any((l) => l.contains('恰好一条')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_editHistory')), isTrue);
+      expect(lines.any((l) => l.contains('不接受')), isTrue);
+      // 历史只读一次：维护回合复用正文回合的读取结果。
+      expect(lines.any((l) => l.contains('历史**只读一次**')), isTrue);
+      expect(lines.first, contains('Read history ONCE'));
+      expect(lines.any((l) => l.contains('第一个维护帧就直接写')), isTrue);
+      // 记忆格式（Chat 的 6 条规则）不在这里——历史由工具维护。
+      expect(lines.any((l) => l.contains('【记忆总结格式】')), isFalse);
+      expect(lines.last, '');
+    });
+
+    test('userHead 只声明 5 区块，无记忆格式提醒', () {
+      final lines = format.userHead;
+      expect(lines, hasLength(1));
+      expect(lines.single, contains('【格式要求】'));
+      expect(lines.single,
+          contains('剧情演绎 → 推荐行动 → 当前时间 → 世界状态 → 角色状态'));
+      expect(lines.single, isNot(contains('记忆总结')));
+      expect(lines.single, contains('5 个二级标题（##）区块'));
+    });
+
+    test('userExecuteNote 双语：先读历史再输出 5 区块（历史只读一次）', () {
+      final lines = format.userExecuteNote;
+      expect(lines, hasLength(2));
+      expect(lines[0], contains('[Execute now]'));
+      expect(lines[0], contains('narrchat_readHistory'));
+      expect(lines[0], contains('ONCE'));
+      expect(lines[0], contains('five'));
+      expect(lines[0], contains('reuses this read'));
+      expect(lines[1], contains('【指令执行】'));
+      expect(lines[1], contains('先调用 narrchat_readHistory'));
+      expect(lines[1], contains('**一次**'));
+      expect(lines[1], contains('复用这次读取结果'));
+      expect(lines[1], contains('五个区块'));
+      expect(lines[1], contains('## 角色状态'));
+    });
+  });
+
+  group('AgentLv2PromptFormat', () {
+    const format = AgentLv2PromptFormat();
+
+    test('契约常量：输出标题与六个状态工具名（时间属于正文、无时间工具）', () {
+      expect(AgentLv2PromptFormat.outputSections, ['剧情演绎', '推荐行动', '当前时间']);
+      expect(AgentLv2PromptFormat.stateToolNames, [
+        'narrchat_readWorldState',
+        'narrchat_readCharacterState',
+        'narrchat_readHistory',
+        'narrchat_editWorldState',
+        'narrchat_editCharacterState',
+        'narrchat_editHistory',
+      ]);
+    });
+
+    test('systemHead 集中双语 8 条契约（三区块输出 / 锚定编辑 / 维护回合 / 思考语言），末行为空行', () {
       final lines = format.systemHead;
       expect(lines.first, contains('【AGENT 模式契约】'));
-      // 双语成对出现（中文 7 条 + 英文 7 条）。
+      // 双语成对出现（中文 8 条 + 英文 8 条：7 条流程规则 + 思考语言规则）。
       final zhCount = lines.where((l) => l.startsWith(RegExp(r'^\d\. 【'))).length;
       final enCount = lines.where((l) => l.startsWith(RegExp(r'^\d\. \['))).length;
-      expect(zhCount, 7);
-      expect(enCount, 7);
-      // 关键规则与工具契约引用（中英双语规则各一次）。
-      expect(lines.any((l) => l.contains('narrchat_editSection')), isTrue);
-      expect(lines.any((l) => l.contains('narrchat_readState')), isTrue);
+      expect(zhCount, 8);
+      expect(enCount, 8);
+      // 思考（reasoning）一律英文（英文思考便于阅读模型推理）。
+      expect(lines.any((l) => l.contains('Write ALL of your reasoning')), isTrue);
+      expect(lines.any((l) => l.contains('思考（reasoning）一律用**英文**书写')), isTrue);
+      // 关键规则与工具契约引用（中英双语规则各一次），且只引用六个新工具。
+      expect(lines.any((l) => l.contains('narrchat_editWorldState')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_editCharacterState')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_editHistory')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_readWorldState')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_readHistory')), isTrue);
+      expect(lines.any((l) => l.contains('narrchat_readState')), isFalse,
+          reason: '旧的合并工具已完全移除');
+      expect(lines.any((l) => l.contains('narrchat_editSection')), isFalse);
       expect(lines.any((l) => l.contains('锚定式编辑')), isTrue);
       expect(lines.where((l) => l.contains('op=append')).length, 4);
       expect(lines.any((l) => l.contains('懒修改')), isTrue);
@@ -155,9 +257,14 @@ void main() {
       expect(lines.any((l) => l.contains('每条对应一行改动')), isTrue);
       expect(lines.any((l) => l.contains('noChange 是例外而非偷懒捷径')), isTrue);
       expect(lines.any((l) => l.contains('「无需大改」这类空泛理由')), isTrue);
-      // 状态来源 = readState 工具输出（模型自取）；历史形状 = 三个正文小节。
-      expect(lines.any((l) => l.contains('narrchat_readState')), isTrue);
+      // 历史形状 = 三个正文小节；状态由读取器提供。
       expect(lines.any((l) => l.contains('历史中你之前的消息恰好就是这三个小节')), isTrue);
+      // 读取**只一次**：维护回合复用正文回合的读取结果、不重复读取。
+      expect(lines.any((l) => l.contains('只读一次')), isTrue);
+      expect(lines.any((l) => l.contains('reuses THESE results')), isTrue);
+      expect(lines.any((l) => l.contains('The readers are DISABLED in this turn')),
+          isTrue);
+      expect(lines.any((l) => l.contains('本回合**读取工具已禁用**')), isTrue);
       expect(lines.last, '');
     });
 
@@ -173,9 +280,11 @@ void main() {
       // 规则句 EN 在前、中文在后（英文遵循率更高）。
       expect(lines[0], contains('[Execute now]'));
       expect(lines[0], contains('then write the STORY'));
-      expect(lines[0], contains('narrchat_readState'));
+      expect(lines[0], contains('narrchat_readWorldState'));
+      expect(lines[0], contains('narrchat_readHistory'));
       expect(lines[1], contains('【指令执行】'));
-      expect(lines[1], contains('先调用 narrchat_readState'));
+      expect(lines[1], contains('先调用读取工具'));
+      expect(lines[1], contains('narrchat_readWorldState'));
       expect(lines[1], contains('三个小节'));
       // 状态修改只在状态维护回合（旧文案「全部四个状态工具」是模型输出 6 区块的诱因）。
       for (final l in lines) {
@@ -267,26 +376,38 @@ void main() {
       ]);
     });
 
-    test('Chat / AGENT 格式组装结果相互排除', () {
-      final chat = sections.buildSystemPrompt(
-        book: book,
-        worldBookEntries: '',
-        mods: null,
-        format: const ChatPromptFormat(),
-      );
-      final agent = sections.buildSystemPrompt(
-        book: book,
-        worldBookEntries: '',
-        mods: null,
-        format: const AgentPromptFormat(),
-      );
+    test('三种格式组装结果相互排除', () {
+      String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
+            book: book,
+            worldBookEntries: '',
+            mods: null,
+            format: format,
+          );
+      final chat = systemOf(const ChatPromptFormat());
+      final lv1 = systemOf(const AgentLv1PromptFormat());
+      final lv2 = systemOf(const AgentLv2PromptFormat());
+
+      // Chat：6 区块纪律 + 记忆格式，无工具契约。
       expect(chat, contains('【绝对服从】'));
+      expect(chat, contains('【记忆总结格式】'));
       expect(chat, isNot(contains('【AGENT 模式契约】')));
-      expect(agent, contains('【AGENT 模式契约】'));
-      expect(agent, isNot(contains('【绝对服从】')));
-      expect(agent, isNot(contains('【二级标题纪律】')));
-      expect(agent, isNot(contains('【状态快照规则】')));
-      expect(agent, isNot(contains('【记忆总结格式】')));
+      expect(chat, isNot(contains('narrchat_readHistory')));
+
+      // Lv.1：Chat 骨架（含角色状态格式）但无记忆格式，有历史工具契约。
+      expect(lv1, contains('【绝对服从】'));
+      expect(lv1, contains('【角色状态输出格式】'));
+      expect(lv1, isNot(contains('【记忆总结格式】')));
+      expect(lv1, contains('narrchat_readHistory'));
+      expect(lv1, contains('narrchat_editHistory'));
+      expect(lv1, isNot(contains('narrchat_readWorldState')));
+      expect(lv1, isNot(contains('【AGENT 模式契约】')));
+
+      // Lv.2：只有 AGENT 契约（无区块纪律 / 无快照规则 / 无记忆格式）。
+      expect(lv2, contains('【AGENT 模式契约】'));
+      expect(lv2, isNot(contains('【绝对服从】')));
+      expect(lv2, isNot(contains('【二级标题纪律】')));
+      expect(lv2, isNot(contains('【状态快照规则】')));
+      expect(lv2, isNot(contains('【记忆总结格式】')));
     });
   });
 }

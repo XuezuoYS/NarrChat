@@ -25,6 +25,10 @@ class WebSearchTool implements NarrAgentTool {
   @override
   AgentActivityType get activityType => AgentActivityType.searching;
 
+  /// 搜索是「喂正文」的工具（非状态读取），不参与正文轮闭环判定。
+  @override
+  bool get isReadOnly => false;
+
   @override
   String get name => 'narrchat_webSearch';
 

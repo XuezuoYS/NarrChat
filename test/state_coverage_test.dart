@@ -190,6 +190,65 @@ void main() {
     );
   });
 
+  test('档位范围：Lv.1 只判定历史栏目（世界 / 角色由正文携带）', () {
+    final c = copy();
+    final gaps = inspectState(
+      copy: c,
+      story: '林远握紧了剑，沈清侧目。',
+      sections: const [AgentStateSection.memorySummary],
+      checkLazy: false,
+    );
+    // 只有历史缺口：世界 / 角色未触及不报，角色懒修改检查关闭后也不报。
+    expect(kinds(gaps), [StateGapKind.sectionUntouched]);
+    expect(sectionsOf(gaps, StateGapKind.sectionUntouched),
+        {AgentStateSection.memorySummary});
+    expect(gaps.single.uiText, '记忆总结本轮未更新');
+
+    // 历史补齐后无缺口（世界 / 角色仍未触及也不影响）。
+    c.applyEdits(AgentStateSection.memorySummary, [
+      const AgentLineEdit(
+        op: 'append',
+        newLine: '- 第2轮｜日期：第一天 申时｜林远赴主峰',
+      ),
+    ]);
+    expect(
+      inspectState(
+        copy: c,
+        story: '林远赴主峰。',
+        sections: const [AgentStateSection.memorySummary],
+        checkLazy: false,
+      ),
+      isEmpty,
+    );
+  });
+
+  test('缺口指令点名对应编辑工具（拆分后按栏目）', () {
+    final gaps = inspectState(
+      copy: copy(),
+      story: '山门寂然。',
+      checkLazy: false,
+    );
+    final bySection = {
+      for (final g in gaps)
+        if (g.section != null) g.section!: g.modelText,
+    };
+    expect(
+      bySection[AgentStateSection.worldState],
+      contains('narrchat_editWorldState'),
+    );
+    expect(
+      bySection[AgentStateSection.characterState],
+      contains('narrchat_editCharacterState'),
+    );
+    expect(
+      bySection[AgentStateSection.memorySummary],
+      contains('narrchat_editHistory'),
+    );
+    // 旧合并工具名不再出现。
+    expect(bySection[AgentStateSection.worldState],
+        isNot(contains('narrchat_editSection')));
+  });
+
   group('lazyCharacterNames', () {
     test('出场且块未变的具名角色被点名；改过 / 未出场 / 单字名不算', () {
       final names = lazyCharacterNames(

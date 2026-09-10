@@ -11,6 +11,16 @@ import 'package:narrchat/services/non_stream_replay.dart';
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
+/// 模型配置页关闭「流式」能力的设置替身。
+///
+/// Agent 档位下流式由档位**强制开启**（Chat 页选项不再可关），要覆盖非流式
+/// 回放路径只能从模型能力开关入手——与真实「模型配置页直接关闭即禁用对应
+/// 功能」的语义一致。
+class _NoStreamSettings extends AiSettingsProvider {
+  @override
+  bool get supportsStreaming => false;
+}
+
 /// 按序返回门控结果的 responses 服务（AGENT 模式替身）：非流式请求。
 class _GatedResponsesService extends AiService {
   _GatedResponsesService(this.gates);
@@ -99,9 +109,8 @@ void main() {
   ) async {
     final gates = [Completer<AiCallResult>(), Completer<AiCallResult>()];
     final ai = _GatedResponsesService(gates);
-    final settings = AiSettingsProvider();
-    // 非流式（记忆值同步生效，持久化在 FakeAsync 下不等待）。
-    settings.setPerRoundOptions(thinking: true, streaming: false);
+    // Agent 档位下思考 / 流式强制开启：非流式只能由模型能力开关关闭。
+    final settings = _NoStreamSettings();
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
@@ -130,9 +139,8 @@ void main() {
         toolCalls: const [
           AiToolCall(
             id: 'fc_1',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'append', 'newLine': '- 地点：青云宗'},
               ],
@@ -154,7 +162,7 @@ void main() {
     expect(firstThinking, hasLength(1));
     expect(firstThinking.single.content, '需要先维护世界状态。');
     // 工具框执行过程中可见（工具轮已执行完，正文轮进行中）。
-    expect(find.textContaining('Tool · narrchat_editSection'), findsWidgets);
+    expect(find.textContaining('Tool · narrchat_editWorldState'), findsWidgets);
     expect(provider.streamingContent, isEmpty, reason: '正文轮尚未返回');
 
     // 第 2 帧：正文 + 当前时间 + 补齐剩余状态工具（完整性通过，无修复轮）。
@@ -165,9 +173,8 @@ void main() {
         toolCalls: [
           AiToolCall(
             id: 'fc_2',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editHistory',
             arguments: {
-              'section': 'memorySummary',
               'edits': [
                 {
                   'op': 'append',
@@ -178,9 +185,8 @@ void main() {
           ),
           AiToolCall(
             id: 'fc_3',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editCharacterState',
             arguments: {
-              'section': 'characterState',
               'edits': [
                 {'op': 'noChange', 'reason': '主角状态本轮无变化'},
               ],
@@ -287,8 +293,8 @@ void main() {
   testWidgets('AGENT 非流式：回放期间取消，立即终止并保留失败条目', (tester) async {
     final gates = [Completer<AiCallResult>()];
     final ai = _GatedResponsesService(gates);
-    final settings = AiSettingsProvider();
-    settings.setPerRoundOptions(thinking: true, streaming: false);
+    // Agent 档位下流式强制开启：非流式由模型能力开关关闭。
+    final settings = _NoStreamSettings();
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
@@ -314,9 +320,8 @@ void main() {
         toolCalls: const [
           AiToolCall(
             id: 'fc_1',
-            name: 'narrchat_editSection',
+            name: 'narrchat_editWorldState',
             arguments: {
-              'section': 'worldState',
               'edits': [
                 {'op': 'noChange', 'reason': '本轮未涉及世界设定'},
               ],

@@ -275,47 +275,62 @@ void main() {
   });
 
   group('快照渲染（模型唯一的状态来源）', () {
-    test('轮号标记 / 三类标签（无时间）/ 空栏目 empty="true" / 禁止复读提示', () {
+    test('轮号标记 / 单栏目标签（无时间）/ 空栏目 empty="true" / 禁止复读提示', () {
       final c = copy(lastRound: baseRound, roundIndex: 4);
-      final dump = c.renderSnapshot();
-      expect(dump, startsWith('<<<NARRCHAT_STATE round=4>>>'));
-      expect(dump, endsWith('<<<END_NARRCHAT_STATE>>>'));
+      final world = c.renderSection(AgentStateSection.worldState);
+      expect(world, startsWith('<<<NARRCHAT_STATE round=4>>>'));
+      expect(world, endsWith('<<<END_NARRCHAT_STATE>>>'));
       // 时间属于正文：快照不含 <time> 块。
-      expect(dump, isNot(contains('<time>')));
-      expect(dump, contains('- 地点：青云宗'));
-      expect(dump, contains('## 苏清月'));
+      expect(world, isNot(contains('<time>')));
+      expect(world, contains('- 地点：青云宗'));
+      // 只渲染被请求的那一栏（读取工具按栏目拆分）。
+      expect(world, isNot(contains('<characterState>')));
+      expect(world, isNot(contains('## 苏清月')));
+      expect(world, isNot(contains('<memorySummary>')));
+      expect(
+        c.renderSection(AgentStateSection.memorySummary),
+        contains('第1轮'),
+      );
       // 空栏目显式标注（模型据此知道该用 op=reset / 首次填入）。
       expect(
-        copy(roundIndex: 1).renderSnapshot(),
+        copy(roundIndex: 1).renderSection(AgentStateSection.worldState),
         contains('<worldState empty="true"></worldState>'),
       );
       // 输入身份声明（防止把快照块当成输出模板复读）。
-      expect(dump, contains('it is input, not an output format'));
-      expect(dump, contains('它是输入，不是输出格式'));
+      expect(world, contains('it is input, not an output format'));
+      expect(world, contains('它是输入，不是输出格式'));
     });
 
-    test('首轮渲染与库快照同源（renderSnapshotOf）', () {
-      final dump = AgentStateWorkingCopy.renderSnapshotOf(
-        roundIndex: 1,
-        lastRound: baseRound,
+    test('首轮渲染与库快照同源（工作副本基座 = 库内快照）', () {
+      final c = AgentStateWorkingCopy(roundIndex: 1, lastRound: baseRound);
+      final world = c.renderSection(AgentStateSection.worldState);
+      expect(world, contains('<<<NARRCHAT_STATE round=1>>>'));
+      expect(world, contains('- 天气：晴'));
+      expect(
+        c.renderSection(AgentStateSection.characterState),
+        contains('- 心情：平静'),
       );
-      expect(dump, contains('<<<NARRCHAT_STATE round=1>>>'));
-      expect(dump, contains('- 天气：晴'));
-      expect(AgentStateWorkingCopy(roundIndex: 1, lastRound: baseRound)
-          .renderSnapshot(), dump);
+      expect(c.sectionText(AgentStateSection.memorySummary),
+          baseRound.memorySummary);
     });
 
     test('契约引用的标签与渲染器一致（改一处必须同步另一处）', () {
-      final contract = const AgentPromptFormat().systemHead.join('\n');
-      final dump = copy(lastRound: baseRound).renderSnapshot();
-      for (final tag in ['<worldState>', '<characterState>', '<memorySummary>']) {
-        expect(dump, contains(tag), reason: '渲染器缺标签 $tag');
-        expect(contract, contains(tag), reason: 'AGENT 契约未引用 $tag');
+      final contract = const AgentLv2PromptFormat().systemHead.join('\n');
+      final c = copy(lastRound: baseRound);
+      for (final section in AgentStateSection.values) {
+        final tag = '<${section.tag}>';
+        expect(c.renderSection(section), contains(tag),
+            reason: '渲染器缺标签 $tag');
+        expect(contract, contains(tag), reason: 'Lv.2 契约未引用 $tag');
       }
       // 时间在正文（## 当前时间），契约与快照都不再以 <time> 引用。
-      expect(dump, isNot(contains('<time>')));
+      final world = c.renderSection(AgentStateSection.worldState);
+      expect(world, isNot(contains('<time>')));
       expect(contract, isNot(contains('<time>')));
-      expect(contract, contains(kReadStateToolName));
+      // 契约引用六个工具（读取器在前）。
+      for (final name in kStateToolNames) {
+        expect(contract, contains(name), reason: 'Lv.2 契约未引用 $name');
+      }
     });
   });
 }

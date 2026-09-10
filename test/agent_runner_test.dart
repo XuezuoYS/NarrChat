@@ -22,6 +22,10 @@ class _FakeTool implements NarrAgentTool {
   @override
   String get name => toolName;
 
+  /// 假工具均为「喂正文」类（非状态读取器）。
+  @override
+  bool get isReadOnly => false;
+
   @override
   AgentActivityType get activityType => switch (toolName) {
         'narrchat_webFetchPage' => AgentActivityType.fetching,

@@ -162,7 +162,7 @@ class AiResponseParser {
   /// 世界/角色/记忆三栏在 AGENT 模式下由工具维护，**绝不出现在 assistant
   /// 历史里**：历史中的 assistant 消息是模型的模仿对象，一旦那里出现
   /// `## 世界状态`，模型就会照抄 Chat 模式 6 区块输出（旧版 AGENT 不稳定的
-  /// 根因之一）。状态改由 `narrchat_readState` 的**工具结果**形态提供
+  /// 根因之一）。状态改由 `narrchat_read*` 的**工具结果**形态提供
   /// （模型主动调用获取，工具结果不会被模仿成输出格式）。时间属于正文，
   /// 故随正文一起序列化。
   static String serializeAgentBody(ParsedAiResponse parsed) =>
@@ -170,6 +170,21 @@ class AiResponseParser {
         ('aiNarrative', parsed.aiNarrative),
         ('recommendedAction', parsed.recommendedAction),
         ('currentTime', parsed.currentTime),
+      ]);
+
+  /// Agent **Lv.1** 正文序列化：五个小节（`## 剧情演绎` → `## 推荐行动` →
+  /// `## 当前时间` → `## 世界状态` → `## 角色状态`）。
+  ///
+  /// 与 [serialize] 的差别只有一处：**不含 `## 记忆总结`**——Lv.1 的历史由
+  /// 历史工具读写，历史里出现 `## 记忆总结` 会让模型照抄它（与 Lv.2 中
+  /// 状态区块「绝不出现在历史里」是同一原因）。
+  static String serializeChatWithoutMemory(ParsedAiResponse parsed) =>
+      _serializeBlocks([
+        ('aiNarrative', parsed.aiNarrative),
+        ('recommendedAction', parsed.recommendedAction),
+        ('currentTime', parsed.currentTime),
+        ('worldState', parsed.worldState),
+        ('characterState', parsed.characterState),
       ]);
 
   /// [serialize] / [serializeStoryOnly] 的共同实现：按给定字段顺序输出

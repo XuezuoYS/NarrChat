@@ -20,8 +20,8 @@ void main() {
         {
           'type': 'function_call',
           'call_id': 'call_1',
-          'name': 'narrchat_editSection',
-          'arguments': '{"section":"worldState"}',
+          'name': 'narrchat_editWorldState',
+          'arguments': '{"edits":[{"op":"append"}]}',
         },
         {
           'type': 'function_call_output',
@@ -38,8 +38,8 @@ void main() {
               'id': 'call_1',
               'type': 'function',
               'function': {
-                'name': 'narrchat_editSection',
-                'arguments': '{"section":"worldState"}',
+                'name': 'narrchat_editWorldState',
+                'arguments': '{"edits":[{"op":"append"}]}',
               },
             },
           ],

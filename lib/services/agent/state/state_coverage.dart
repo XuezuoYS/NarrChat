@@ -1,12 +1,17 @@
 import 'agent_state_working_copy.dart';
 import 'state_tools.dart';
 
-/// 状态维护缺口：正文轮结束后判断「要不要发起状态轮」，以及状态轮要修什么。
+/// 状态维护缺口：正文轮结束后判断「要不要发起维护回合」，以及维护回合要修什么。
 ///
 /// 判定完全基于应用侧工作副本（谁被编辑过 / 谁被声明过无变化 / 角色块是否
 /// 逐字节没动），**不依赖模型自述**——模型说「已更新」不算更新。
 /// 当前时间属于**正文**（`## 当前时间` 小节由模型输出、应用解析写入），
 /// 故不在此判定范围内；时间缺失时正文沿用上一轮时间（不算缺口）。
+///
+/// 判定范围由 [inspectState] 的 `sections` 决定（档位差异）：
+/// - Agent Lv.2：三个栏目全部判定（含角色块懒修改检查）；
+/// - Agent Lv.1：只有历史（记忆总结）栏目经工具维护，世界 / 角色由正文携带，
+///   故只判定 `{memorySummary}` 且关闭懒修改检查。
 enum StateGapKind {
   /// 栏目本轮完全没被处理（既没编辑，也没 `op=noChange` 声明）。
   sectionUntouched,
@@ -36,40 +41,46 @@ class StateGap {
   String get namesText => names.take(6).join('、');
 
   /// 面向模型：英文指令在前（遵循度更高）+ 中文一行摘要。
-  String get modelText => switch (kind) {
-        StateGapKind.sectionUntouched =>
-          'Section "${section!.tag}" was neither edited nor declared unchanged '
-              'this round. Call $kEditSectionToolName for it once (op=noChange '
-              '+ reason if truly nothing changed). '
-              '【中】$sectionLabel栏目本轮既未编辑也未声明无变化，'
-              '请对该栏目调用一次 $kEditSectionToolName（确无变化用 op=noChange + reason）。',
-        StateGapKind.sectionUnchanged =>
-          'Section "${section!.tag}" is byte-identical to last round although '
-              'the story moved on. Edit it now with $kEditSectionToolName, '
-              'anchored on lines copied from the latest snapshot. '
-              '【中】$sectionLabel栏目与上一轮逐字节相同（剧情已推进），'
-              '请用 $kEditSectionToolName 按最新快照原文锚点做实际编辑。',
-        StateGapKind.lazyCharacters =>
-          'These characters appear in this round but their blocks are '
-              'byte-identical to last round: $namesText. The story moved '
-              'them, so edit each block NOW: one op=set per line the story '
-              'changed (当前心理 / 当前状态 / 当前位置 / 好感度 / 伤势 / 物品 / '
-              '关系…), all packed into ONE $kEditSectionToolName call on '
-              'characterState. op=noChange is allowed ONLY for a character the '
-              'story merely mentions with no new information at all — never '
-              'for all of them together, and always with a per-character '
-              'reason; a noChange that dodges a visible move is a lazy edit '
-              'and will be re-flagged. '
-              '【中】本轮出场角色 $namesText 的角色块与上一轮逐字节相同，'
-              '但正文里他们确有动向：现在必须逐个 `## 角色名` 块实际编辑——'
-              '正文改动了几行，就补几条 op=set（当前心理/当前状态/当前位置/'
-              '好感度/伤势/物品/关系…，全部合并到同一次 characterState 调用）。'
-              '只有当某角色在正文里「只是被提及、完全没有新信息」时才允许对其声明 '
-              'op=noChange 并附逐条 reason；拿 noChange 回避可见变化会被再次点名，'
-              '属懒修改。',
-      };
+  ///
+  /// 工具名按栏目取（六个工具按栏目拆分后，「该调哪个编辑器」本身也是信息）。
+  String get modelText {
+    final editTool = section == null ? '' : agentEditToolName(section!);
+    return switch (kind) {
+      StateGapKind.sectionUntouched =>
+        'Section "${section!.tag}" was neither edited nor declared unchanged '
+            'this round. Call $editTool for it once (op=noChange '
+            '+ reason if truly nothing changed). '
+            '【中】$sectionLabel栏目本轮既未编辑也未声明无变化，'
+            '请对该栏目调用一次 $editTool（确无变化用 op=noChange + reason）。',
+      StateGapKind.sectionUnchanged =>
+        'Section "${section!.tag}" is byte-identical to last round although '
+            'the story moved on. Edit it now with $editTool, '
+            'anchored on lines copied from the latest read result. '
+            '【中】$sectionLabel栏目与上一轮逐字节相同（剧情已推进），'
+            '请用 $editTool 按最新读取结果原文锚点做实际编辑。',
+      StateGapKind.lazyCharacters =>
+        'These characters appear in this round but their blocks are '
+            'byte-identical to last round: $namesText. The story moved '
+            'them, so edit each block NOW: one op=set per line the story '
+            'changed (当前心理 / 当前状态 / 当前位置 / 好感度 / 伤势 / 物品 / '
+            '关系…), all packed into ONE $kEditCharacterStateToolName call. '
+            'op=noChange is allowed ONLY for a character the '
+            'story merely mentions with no new information at all — never '
+            'for all of them together, and always with a per-character '
+            'reason; a noChange that dodges a visible move is a lazy edit '
+            'and will be re-flagged. '
+            '【中】本轮出场角色 $namesText 的角色块与上一轮逐字节相同，'
+            '但正文里他们确有动向：现在必须逐个 `## 角色名` 块实际编辑——'
+            '正文改动了几行，就补几条 op=set（当前心理/当前状态/当前位置/'
+            '好感度/伤势/物品/关系…，全部合并到同一次 '
+            '$kEditCharacterStateToolName 调用）。'
+            '只有当某角色在正文里「只是被提及、完全没有新信息」时才允许对其声明 '
+            'op=noChange 并附逐条 reason；拿 noChange 回避可见变化会被再次点名，'
+            '属懒修改。',
+    };
+  }
 
-  /// 面向用户：状态轮用尽后仍存在的缺项（常驻提示）。
+  /// 面向用户：维护回合用尽后仍存在的缺项（常驻提示）。
   String get uiText => switch (kind) {
         StateGapKind.sectionUntouched => '$sectionLabel本轮未更新',
         StateGapKind.sectionUnchanged => '$sectionLabel本轮无实际变化',
@@ -77,18 +88,21 @@ class StateGap {
       };
 }
 
-/// 判定本轮状态维护缺口（返回空列表 = 无需状态轮）。
+/// 判定本轮状态维护缺口（返回空列表 = 无需维护回合）。
 ///
 /// [copy] 是本轮工作副本（正文轮工具已执行过的状态）；[story] 为已采纳正文
-/// （懒修改判定的输入）。[checkLazy] 关闭时跳过角色块比对。
+/// （懒修改判定的输入）。[sections] 限定参与判定的栏目（缺省 = 三个栏目全部，
+/// 即 Lv.2 语义）；[checkLazy] 关闭时跳过角色块比对（世界 / 角色由正文携带的
+/// Lv.1 必须关闭，否则会对正文维护的栏目误报）。
 /// 当前时间不参与判定（属于正文，见类文档）。
 List<StateGap> inspectState({
   required AgentStateWorkingCopy copy,
   required String story,
+  List<AgentStateSection>? sections,
   bool checkLazy = true,
 }) {
   final gaps = <StateGap>[];
-  for (final section in AgentStateSection.values) {
+  for (final section in sections ?? AgentStateSection.values) {
     final touched = copy.touchedSections.contains(section);
     final declared = copy.declaredUnchanged.containsKey(section);
     if (!touched && !declared) {

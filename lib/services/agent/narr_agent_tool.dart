@@ -47,4 +47,10 @@ abstract class NarrAgentTool {
   /// 打开网页工具应为 [AgentActivityType.fetching]，
   /// 状态工具应为 [AgentActivityType.tooling]。
   AgentActivityType get activityType => AgentActivityType.searching;
+
+  /// 是否**只读**工具（状态读取器为 true；搜索 / 打开页面 / 状态编辑器为 false）。
+  ///
+  /// 执行器据此区分「查阅」与「编辑」：只读工具不结束正文轮、失败不按状态
+  /// 编辑失败反馈，读取结果也只保留最新一份（同栏旧结果自动剔除）。
+  bool get isReadOnly => false;
 }

@@ -8,10 +8,12 @@ import '../config/app_config.dart';
 import '../database/book_dao.dart';
 import '../database/round_dao.dart';
 import '../models/agent_event.dart';
+import '../models/agent_mode_level.dart';
 import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../services/agent/agent_mode_profile.dart';
 import '../services/agent/agent_round_runner.dart';
 import '../services/agent/agent_runner.dart';
 import '../services/agent/fetch_page_tool.dart';
@@ -27,7 +29,6 @@ import '../services/html_search_service.dart';
 import '../services/image_store.dart';
 import '../services/non_stream_replay.dart';
 import '../services/prompt_builder.dart';
-import '../services/prompt_formats.dart';
 import '../services/round_warnings_store.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
@@ -245,6 +246,10 @@ class RoundProvider extends ChangeNotifier {
 
   /// 当前是否至少有一本书正在生成（用于通知服务保活启停）。
   bool _hasActiveGeneration() => _gens.values.any((g) => g.isSending);
+
+  /// 当前 Agent 档位（无设置注入 = 关闭；仅测试 / 降级路径）。
+  AgentModeLevel get _agentLevel =>
+      _experimentalSettings?.agentModeLevel ?? AgentModeLevel.off;
 
   List<Round> get rounds => _roundsView;
 
@@ -504,7 +509,7 @@ class RoundProvider extends ChangeNotifier {
   /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
   ///
   /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
-  /// - AGENT 模式（实验性开关）：返回正文轮首帧（线路形态由协议决定）；
+  /// - Agent 档位（Lv.1 / Lv.2，实验性功能）：返回正文轮首帧（线路形态由协议决定）；
   /// - 联网搜索开启：返回工具循环首帧（system 追加【联网搜索】指令 + 工具 schema）；
   /// - 联网搜索关闭：返回直发请求体（无工具）。
   ///
@@ -583,22 +588,26 @@ class RoundProvider extends ChangeNotifier {
             historyRounds: recentRounds,
           );
     // 模式与协议**正交**（全解耦）：
-    // - agentMode：实验性开关（默认关闭）——两阶段生成 + 自定义工具；
+    // - agentLevel：实验性档位（关 / Lv.1 / Lv.2，默认关闭）——档位档案
+    //   （[AgentModeProfile]）决定提示词模式、工具栏目与历史拼合形态；
     //   无设置注入（仅测试/降级路径）保持 Chat 语义；
     // - responsesWire：平台接入协议决定的线路格式（只决定请求体形态）。
-    final agentMode =
-        settings != null && (_experimentalSettings?.agentModeEnabled ?? false);
+    final agentLevel =
+        settings == null ? AgentModeLevel.off : _agentLevel;
+    final profile = AgentModeProfile.of(agentLevel);
+    final agentMode = profile.isOn;
     final responsesWire =
         settings?.selectedPlatform.apiType.isResponses ?? false;
-    // 按模式组装本轮提示词：Chat / AGENT 共享同一构建流程，仅格式要求不同
-    //（AGENT 模式下 systemPrompt 即 Response API 的 instructions 字段）。
+    // 按模式组装本轮提示词：Chat / Agent 各档位共享同一构建流程，
+    // 仅格式要求不同（Agent 模式下 systemPrompt 即 Response API 的
+    // instructions 字段）。
     final prompts = _promptBuilder.build(
       book: book,
       lastRound: lastRound,
       userInput: userInput,
       worldBookEntries: worldBookEntries,
       mods: modsBundle,
-      mode: agentMode ? PromptMode.agent : PromptMode.chat,
+      mode: profile.promptMode,
     );
 
     // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
@@ -613,10 +622,9 @@ class RoundProvider extends ChangeNotifier {
       imagePartsFor: supportsVision
           ? (r) => _imagePartsFor(r, imageDataUrls)
           : null,
-      // AGENT：assistant 历史只携带三个正文小节（剧情/行动/时间；世界/角色/
-      // 记忆的唯一来源是 `narrchat_readState` 工具结果）——历史里的 6 区块
-      // 是模型照抄 Chat 格式的直接原因。
-      storyOnly: agentMode,
+      // 拼合形态随档位（见 [AssistantHistoryShape]）：Lv.2 每轮只带正文三小节、
+      // Lv.1 最新一轮带 5 区块（历史区块由工具提供）、Chat 维持原样。
+      shape: profile.historyShape,
     );
     final userText = prompts.userPrompt;
     final userContent = supportsVision
@@ -629,31 +637,40 @@ class RoundProvider extends ChangeNotifier {
 
     // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
     // 无设置注入时按预设能力回退（仅测试/降级路径）。
+    // Agent 档位下 思考 / 流式 / 搜索**强制开启**（只受模型配置页的能力开关
+    // 限制）：组合时快照覆盖，**不改写**用户已保存的 Chat 每轮选项，
+    // 关闭 Agent 后立即恢复用户原设置。
     final useSearch = settings == null
         ? AiPlatforms.defaultSupportsSearch
-        : (settings.supportsSearch && settings.lastSearch);
-    final useStream = settings?.streaming ?? true;
+        : agentMode
+            ? settings.supportsSearch
+            : (settings.supportsSearch && settings.lastSearch);
+    final useStream = agentMode
+        ? (settings?.supportsStreaming ?? true)
+        : (settings?.streaming ?? true);
     final model = (settings?.model.trim().isNotEmpty ?? false)
         ? settings!.model
         : AiPlatforms.defaultModelId;
-    final thinking = settings?.thinking ?? AiPlatforms.defaultThinking;
+    final thinking = agentMode
+        ? (settings?.supportsThinking ?? AiPlatforms.defaultThinking)
+        : (settings?.thinking ?? AiPlatforms.defaultThinking);
     final reasoningEffort =
         settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort;
     final temperature = settings?.temperature ?? 1.0;
     final maxTokens = settings?.maxTokens;
 
-    // AGENT 模式：两阶段执行器（正文轮 → 状态轮）+ 自定义状态/搜索工具。
+    // AGENT 模式：两阶段执行器（正文轮 → 维护轮）+ 自定义状态/搜索工具。
     // 线路（responses / chat）只影响请求体形态，执行器结构完全一致：
     // - responses 线路：instructions + input items + 顶层工具 schema；
     // - chat 线路：system 消息 + role 消息 + 嵌套 function schema，
     //   执行器帧内追加的 function_call 条目在组装时转 chat 消息形态。
-    if (agentMode) {
+    if (agentMode && settings != null) {
       final instructions = useSearch
           ? '${prompts.systemPrompt}\n\n$_searchInstruction'
           : prompts.systemPrompt;
       // AI 看到的初始 input：历史消息 + 当前用户消息（vision 图片在
-      // responses 线路下转换为 input_image 内容块）；状态快照**不预置**，
-      // 由模型主动调用 narrchat_readState 获取（见 AgentRoundRunner 文档）。
+      // responses 线路下转换为 input_image 内容块）；状态**不预置**，
+      // 由模型主动调用各栏读取器获取（见 AgentRoundRunner 文档）。
       final inputItems = responsesWire
           ? responsesItemsFromChatMessages([
               ...historyMessages,
@@ -664,8 +681,9 @@ class RoundProvider extends ChangeNotifier {
               ...historyMessages,
               {'role': 'user', 'content': userContent},
             ];
-      // 工具 schema 超集（状态工具 + 可选搜索工具），**两阶段共用同一份**：
-      // tools 数组任何差异都会改变请求前缀，使服务商的上下文缓存整段失效。
+      // 工具 schema 超集（档位对应的状态工具 + 可选搜索工具），
+      // **两阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
+      // 使服务商的上下文缓存整段失效。
       final schemaTools = [
         ...buildStateTools(
           AgentStateWorkingCopy(
@@ -673,6 +691,7 @@ class RoundProvider extends ChangeNotifier {
             lastRound: lastRound,
             categoryNames: [for (final c in book.roleCategories) c.name],
           ),
+          sections: profile.toolSections,
         ),
         if (useSearch) ..._makeAgentTools(null),
       ];
@@ -720,6 +739,7 @@ class RoundProvider extends ChangeNotifier {
         useSearch: useSearch,
         directBody: firstBody,
         agent: true,
+        agentLevel: agentLevel,
         responsesWire: responsesWire,
         agentValues: agentValues,
         agentChaining:
@@ -1074,7 +1094,9 @@ class RoundProvider extends ChangeNotifier {
   /// 包裹一次 AI 调用并捕获 RAW 交换记录（请求体 + 返回三块）。
   ///
   /// 直发路径与 Agent 工具循环（逐迭代）共用：调用前入列一条携带请求体的
-  /// 交换记录，返回后回填思考 / 搜索 / 正文三块。
+  /// 交换记录，返回后回填思考 / 搜索 / 正文三块；调用**失败**时把原因写进
+  /// [RawExchange.error]（RAW 里显示「请求失败：…」而不是含糊的「无返回」——
+  /// 例如协议兼容降级前的探测帧被服务商拒绝，随后同一帧会重发）。
   Future<AiCallResult> _chatCapturing({
     required _BookGenState gen,
     required Map<String, dynamic> requestBody,
@@ -1088,14 +1110,20 @@ class RoundProvider extends ChangeNotifier {
       requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
     );
     gen.rawExchanges.add(exchange);
-    final result = await _aiService.chat(
-      apiBaseUrl: apiBaseUrl,
-      apiKey: apiKey,
-      requestBody: requestBody,
-      stream: stream,
-      onChunk: onChunk,
-      isCancelled: isCancelled,
-    );
+    final AiCallResult result;
+    try {
+      result = await _aiService.chat(
+        apiBaseUrl: apiBaseUrl,
+        apiKey: apiKey,
+        requestBody: requestBody,
+        stream: stream,
+        onChunk: onChunk,
+        isCancelled: isCancelled,
+      );
+    } catch (e) {
+      exchange.error = '$e';
+      rethrow;
+    }
     // 非流式 + 展示回放（onChunk 仅在流式或回放模式非空）：把一次性响应
     // 切成合成块驱动块时间线。工具预览由活动回调创建（Chat 搜索循环），
     // 此处不开启，避免「联网搜索框 + Tool 框」双框。
@@ -1387,10 +1415,12 @@ class RoundProvider extends ChangeNotifier {
       lastRound: latestRound,
       categoryNames: [for (final c in book.roleCategories) c.name],
     );
-    // 工具超集：状态工具 + （可选）搜索工具，两阶段共用同一份 schema，
-    // 保证 instructions / tools 前缀在正文轮与状态轮之间完全一致。
+    // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
+    final profile = AgentModeProfile.of(req.agentLevel);
+    // 工具超集：档位对应的状态工具 + （可选）搜索工具，两阶段共用同一份
+    // schema，保证 instructions / tools 前缀在正文轮与维护轮之间完全一致。
     final tools = <NarrAgentTool>[
-      ...buildStateTools(workingCopy),
+      ...buildStateTools(workingCopy, sections: profile.toolSections),
       if (req.useSearch) ..._makeAgentTools(gen),
     ];
     final values = req.agentValues!;
@@ -1421,6 +1451,7 @@ class RoundProvider extends ChangeNotifier {
                 ),
       tools: tools,
       workingCopy: workingCopy,
+      profile: profile,
       chaining: req.agentChaining,
       supportsToolChoice: req.agentToolChoice,
       // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
@@ -1471,8 +1502,33 @@ class RoundProvider extends ChangeNotifier {
         cachedTokensIn: roundResult.cachedTokensIn,
         responseId: roundResult.responseId,
       ),
-      snapshot: workingCopy.mergedSnapshot(),
+      snapshot: _mergedSnapshot(profile, workingCopy, roundResult.content),
       agent: roundResult,
+    );
+  }
+
+  /// 本轮落库快照（档位差异的唯一处理点）：
+  /// - **Lv.2**：状态三栏全部来自工作副本（正文不含状态区块）；
+  /// - **Lv.1**：世界状态 / 角色状态 / 当前时间由**正文文本**携带（属正文契约），
+  ///   历史（记忆总结）由工具维护 → 从正文解析补齐前三项、记忆取工作副本；
+  ///   正文解析不到时该项为空（与 Chat 的缺失语义一致，不做兜底猜测）。
+  static RoundSnapshot _mergedSnapshot(
+    AgentModeProfile profile,
+    AgentStateWorkingCopy workingCopy,
+    String story,
+  ) {
+    final copySnapshot = workingCopy.mergedSnapshot();
+    if (profile.toolSections.contains(AgentStateSection.worldState)) {
+      return copySnapshot;
+    }
+    final parsed = AiResponseParser.parse(story);
+    return RoundSnapshot(
+      worldState: parsed.worldState,
+      characterState: parsed.characterState,
+      memorySummary: copySnapshot.memorySummary,
+      currentTime: parsed.currentTime.isNotEmpty
+          ? parsed.currentTime
+          : copySnapshot.currentTime,
     );
   }
 
@@ -1583,14 +1639,22 @@ class RoundProvider extends ChangeNotifier {
       requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
     );
     gen.rawExchanges.add(exchange);
-    final result = await _aiService.responses(
-      apiBaseUrl: apiBaseUrl,
-      apiKey: apiKey,
-      requestBody: requestBody,
-      stream: stream,
-      onChunk: onChunk,
-      isCancelled: isCancelled,
-    );
+    final AiCallResult result;
+    try {
+      result = await _aiService.responses(
+        apiBaseUrl: apiBaseUrl,
+        apiKey: apiKey,
+        requestBody: requestBody,
+        stream: stream,
+        onChunk: onChunk,
+        isCancelled: isCancelled,
+      );
+    } catch (e) {
+      // 失败原因留在 RAW 里：协议兼容降级前的探测帧（tool_choice / 思考强度）
+      // 被服务商拒绝时，RAW 会显示「请求失败：<报错原文>」而不是含糊的「无返回」。
+      exchange.error = '$e';
+      rethrow;
+    }
     // 非流式 + 展示回放：一次性响应切成合成块驱动块时间线。AGENT 模式的
     // 工具事件统一由「流式预览 / 开始 / 完成」承载，故开启工具预览块
     //（同一工具调用只产生一个事件框）。
@@ -2035,9 +2099,9 @@ class RoundProvider extends ChangeNotifier {
 /// 一轮请求的组装结果（供 `sendRound` 与「预览请求体」共用）。
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
-/// [agent]（实验性开关）与 [responsesWire]（线路协议）**正交**：
+/// [agent]（实验性档位）与 [responsesWire]（线路协议）**正交**：
 /// - [agent] 为 true：Agent 两阶段执行器启用（自定义工具 + 状态工作副本），
-///   [agentValues] 等 Agent 字段随之生效；
+///   [agentLevel] / [agentValues] 等字段随之生效；
 /// - [responsesWire] 为 true：请求体走 Response API 线路（/responses）。
 class _RoundRequest {
   /// 组装后的系统提示词（最终文本；AGENT / responses 线路为 instructions）。
@@ -2061,8 +2125,12 @@ class _RoundRequest {
   /// 直发（非搜索）路径的请求体；AGENT 模式为**正文轮首帧**体（与实发同源）。
   final Map<String, dynamic> directBody;
 
-  /// 是否 AGENT 模式（实验性开关；与协议正交）。
+  /// 是否 AGENT 模式（实验性档位 Lv.1 / Lv.2；与协议正交）。
   final bool agent;
+
+  /// Agent 档位（[agent] 为 true 时有效）：Lv.1 走 5 区块正文 + 历史工具，
+  /// Lv.2 走 3 小节正文 + 六工具。
+  final AgentModeLevel agentLevel;
 
   /// 是否 Response API 线路（/responses；协议只决定请求体形态）。
   final bool responsesWire;
@@ -2089,6 +2157,7 @@ class _RoundRequest {
     required this.useSearch,
     required this.directBody,
     this.agent = false,
+    this.agentLevel = AgentModeLevel.off,
     this.responsesWire = false,
     this.agentValues,
     this.agentChaining = false,

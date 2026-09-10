@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../config/chat_route.dart';
 import '../models/agent_event.dart';
+import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
 import '../models/book.dart';
 import '../models/raw_exchange.dart';
@@ -2209,8 +2210,9 @@ class _ChatScreenState extends State<ChatScreen>
     bool isSending,
   ) {
     final aiSettings = context.watch<AiSettingsProvider>();
-    // AGENT 徽标由实验性开关驱动（与平台协议正交）。
-    final agentMode = context.watch<ExperimentalSettingsProvider>().agentModeEnabled;
+    // Agent 档位驱动左下角徽标与菜单（关 = 传统 Chat 摘要）。
+    final agentLevel =
+        context.watch<ExperimentalSettingsProvider>().agentModeLevel;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -2338,7 +2340,7 @@ class _ChatScreenState extends State<ChatScreen>
                           supportsStreaming: aiSettings.supportsStreaming,
                           supportsSearch: aiSettings.supportsSearch,
                           supportsVision: aiSettings.supportsVision,
-                          agentMode: agentMode,
+                          agentLevel: agentLevel,
                           thinking: aiSettings.thinking,
                           streaming: aiSettings.streaming,
                           search: aiSettings.lastSearch,
@@ -2494,17 +2496,23 @@ class _DragToImportHint extends StatelessWidget {
 
 /// 聊天模式选项下拉（复用原每轮选项开关的视觉）。
 ///
-/// - 收起时显示当前启用选项摘要（如「无」「流式 | 思考 | 搜索(BETA)」，
+/// - **Agent 关闭**：收起时显示当前启用选项摘要（如「无」「流式 | 思考 | 搜索(BETA)」，
 ///   搜索段用警告色，不加粗）；流式/思考启用时触发按钮为主题蓝边框+文字；
+/// - **Agent 开启（Lv.1 / Lv.2）**：触发按钮改为**联网同款警告黄徽标**，
+///   文本 = `Agent Lv.1 On (BETA)` / `Agent Lv.2 On (BETA)`；菜单里
+///   思考 / 流式 / 搜索显示为用户原配置但**置灰不可切换**（Agent 期间强制开启，
+///   只受模型配置页的能力开关限制），并附一行小字说明；
 /// - 展开为复选菜单，切换后保持展开可连续操作；
 /// - 联网搜索行始终显示 BETA 试验版二级提示（启用=警告色，未启用=灰）；
-/// - 模型支持识图时，菜单底部提供「导入图片」入口。
+/// - 模型支持识图时，菜单底部提供「导入图片」入口（Agent 模式下同样保留）。
 class _ChatModeDropdown extends StatelessWidget {
   final bool supportsThinking;
   final bool supportsStreaming;
   final bool supportsSearch;
   final bool supportsVision;
-  final bool agentMode;
+
+  /// 当前 Agent 档位（[AgentModeLevel.off] = 传统 Chat 摘要与可切换菜单）。
+  final AgentModeLevel agentLevel;
   final bool thinking;
   final bool streaming;
   final bool search;
@@ -2518,7 +2526,7 @@ class _ChatModeDropdown extends StatelessWidget {
     required this.supportsStreaming,
     required this.supportsSearch,
     required this.supportsVision,
-    required this.agentMode,
+    required this.agentLevel,
     required this.thinking,
     required this.streaming,
     required this.search,
@@ -2528,9 +2536,11 @@ class _ChatModeDropdown extends StatelessWidget {
     required this.onImportImages,
   });
 
-  /// 摘要各段（顺序：AGENT | 流式 | 思考 | 搜索(BETA)）。
+  /// Agent 强制开启时给每行的说明小字（用户原本配置仍如实显示）。
+  static const String _forcedNote = 'Agent 模式已强制开启，此处不可关闭';
+
+  /// 摘要各段（顺序：流式 | 思考 | 搜索(BETA)；Agent 模式改用徽标，不再摘要）。
   List<String> get _activeParts => [
-        if (agentMode) 'AGENT',
         if (supportsStreaming && streaming) '流式',
         if (supportsThinking && thinking) '思考',
         if (supportsSearch && search) '搜索(BETA)',
@@ -2541,18 +2551,22 @@ class _ChatModeDropdown extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     // 警告色取自主题（浅色=黄棕色、深色=明亮琥珀黄），随深浅模式自动适配。
     final warningColor = context.narrColors.warning;
+    final agentOn = agentLevel.isOn;
     final parts = _activeParts;
-    // 触发按钮态：流式/思考任一启用 → 主题蓝；仅搜索启用 → 警告黄；全关 → 灰。
+    // 触发按钮态：Agent 开启 → 警告黄徽标（与联网同款）；
+    // 否则：流式/思考任一启用 → 主题蓝；仅搜索启用 → 警告黄；全关 → 灰。
     final blueActive =
         (supportsStreaming && streaming) ||
         (supportsThinking && thinking);
     final searchOnlyActive = !blueActive && supportsSearch && search;
-    final triggerActive = blueActive || searchOnlyActive;
-    final Color triggerColor = blueActive
-        ? scheme.primary
-        : searchOnlyActive
-            ? warningColor
-            : scheme.onSurfaceVariant;
+    final triggerActive = agentOn || blueActive || searchOnlyActive;
+    final Color triggerColor = agentOn
+        ? warningColor
+        : blueActive
+            ? scheme.primary
+            : searchOnlyActive
+                ? warningColor
+                : scheme.onSurfaceVariant;
 
     return MenuAnchor(
       // 开启 Material 菜单开合动画（打开 500ms / 关闭 150ms，含高度/透明度/
@@ -2564,7 +2578,7 @@ class _ChatModeDropdown extends StatelessWidget {
         ),
       ),
       menuChildren: [
-        if (agentMode) ...[
+        if (agentOn) ...[
           MenuItemButton(
             onPressed: () {},
             closeOnActivate: false,
@@ -2575,13 +2589,13 @@ class _ChatModeDropdown extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.check_circle, size: 13, color: scheme.primary),
+                    Icon(Icons.check_circle, size: 13, color: warningColor),
                     const SizedBox(width: 4),
                     Text(
-                      'AGENT 模式',
+                      'AGENT ${agentLevel.label}',
                       style: TextStyle(
                         fontSize: 12,
-                        color: scheme.primary,
+                        color: warningColor,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -2589,9 +2603,15 @@ class _ChatModeDropdown extends StatelessWidget {
                 ),
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    '实验性功能：设置 → 通用设置 → 实验性功能 中开启；状态经行级工具维护，兼容性不保证',
-                    style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    child: Text(
+                      '实验性功能：设置 → 通用设置 → 实验性功能 中选择档位；'
+                      '${_agentScopeNote(agentLevel)}；'
+                      '思考 / 流式 / 搜索在本模式下强制开启（模型配置页关闭能力'
+                      '即可禁用对应功能），兼容性不保证',
+                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                    ),
                   ),
                 ),
               ],
@@ -2603,23 +2623,27 @@ class _ChatModeDropdown extends StatelessWidget {
           _ModeMenuRow(
             label: '思考',
             active: thinking,
-            onChanged: onThinkingChanged,
+            onChanged: agentOn ? null : onThinkingChanged,
+            subtitle: agentOn ? _forcedNote : null,
           ),
         if (supportsStreaming)
           _ModeMenuRow(
             label: '流式',
             active: streaming,
-            onChanged: onStreamingChanged,
+            onChanged: agentOn ? null : onStreamingChanged,
+            subtitle: agentOn ? _forcedNote : null,
           ),
         if (supportsSearch)
           _ModeMenuRow(
             label: '搜索',
             active: search,
-            onChanged: onSearchChanged,
+            onChanged: agentOn ? null : onSearchChanged,
             activeLabelColor: warningColor,
             // 二级提示始终显示（启用/禁用一致），且在按钮内可整体点击切换；
-            // 未启用时为灰色，启用后为警告色。
-            subtitle: '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗',
+            // 未启用时为灰色，启用后为警告色。Agent 模式下额外前置强制开启说明。
+            subtitle: agentOn
+                ? '$_forcedNote；此功能为试验版，存在大量问题，启动会数倍增加 token 消耗'
+                : '此功能为试验版，存在大量问题，启动会数倍增加 token 消耗',
             subtitleColor: search ? warningColor : scheme.onSurfaceVariant,
           ),
         if (supportsVision) ...[
@@ -2659,32 +2683,44 @@ class _ChatModeDropdown extends StatelessWidget {
               children: [
                 Icon(Icons.tune, size: 14, color: triggerColor),
                 const SizedBox(width: 6),
-                // 摘要：分段渲染，搜索(BETA) 用警告色（不加粗）；无启用项时显示「无」；
-                // 单行溢出省略（受外层 2/3 宽度上限约束）。
+                // Agent 模式：徽标文本（`Agent Lv.1 On (BETA)`）；
+                // 否则：分段渲染摘要，搜索(BETA) 用警告色（不加粗），
+                // 无启用项时显示「无」；单行溢出省略（受外层宽度上限约束）。
                 Flexible(
-                  child: Text.rich(
-                    TextSpan(
-                      children: parts.isEmpty
-                          ? const [TextSpan(text: '无')]
-                          : [
-                              for (var i = 0; i < parts.length; i++) ...[
-                                if (i > 0) const TextSpan(text: ' | '),
-                                TextSpan(
-                                  text: parts[i],
-                                  style: TextStyle(
-                                    color: parts[i] == '搜索(BETA)'
-                                        ? warningColor
-                                        : triggerColor,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ],
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: triggerColor),
-                  ),
+                  child: agentOn
+                      ? Text(
+                          agentLevel.badge,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: triggerColor,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        )
+                      : Text.rich(
+                          TextSpan(
+                            children: parts.isEmpty
+                                ? const [TextSpan(text: '无')]
+                                : [
+                                    for (var i = 0; i < parts.length; i++) ...[
+                                      if (i > 0) const TextSpan(text: ' | '),
+                                      TextSpan(
+                                        text: parts[i],
+                                        style: TextStyle(
+                                          color: parts[i] == '搜索(BETA)'
+                                              ? warningColor
+                                              : triggerColor,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12, color: triggerColor),
+                        ),
                 ),
                 const SizedBox(width: 6),
                 Icon(
@@ -2701,6 +2737,17 @@ class _ChatModeDropdown extends StatelessWidget {
       },
     );
   }
+
+  /// 菜单信息块里的一行档位说明（Lv.1 / Lv.2 的契约差异）。
+  static String _agentScopeNote(AgentModeLevel level) => switch (level) {
+        AgentModeLevel.off => '',
+        AgentModeLevel.lv1 =>
+          '仅启用历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），'
+              '历史由工具读写',
+        AgentModeLevel.lv2 =>
+          '启用六个状态工具（世界 / 角色 / 历史各一读一写）+ 联网；'
+              '正文输出 3 个小节，状态全部由工具维护',
+      };
 }
 
 /// 右下角模型选择器：上行当前模型名（灰色、单行省略），下行可选小字说明
@@ -2836,10 +2883,14 @@ class _ModelSelector extends StatelessWidget {
 ///
 /// 激活态文本/图标用主题色（避免白字在浅色菜单上不可见）；
 /// 可带始终显示的二级提示（[subtitle]），整行（含二级文本）均可点击切换。
+///
+/// [onChanged] 为 null 时**整行禁用**（Agent 模式下思考/流式/搜索由档位强制
+/// 开启）：Material 自动置灰、点击无效；行内仍如实显示用户原本配置的开关状态，
+/// 由 [subtitle] 的小字说明「为什么点了没反应」。
 class _ModeMenuRow extends StatelessWidget {
   final String label;
   final bool active;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   /// 激活时的文字/图标颜色（默认主题色；搜索行传黄色）。
   final Color? activeLabelColor;
@@ -2860,6 +2911,7 @@ class _ModeMenuRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final enabled = onChanged != null;
     final color = active
         ? (activeLabelColor ?? scheme.primary)
         : scheme.onSurfaceVariant;
@@ -2867,7 +2919,7 @@ class _ModeMenuRow extends StatelessWidget {
     return MenuItemButton(
       // 保持菜单展开，便于连续切换多个选项。
       closeOnActivate: false,
-      onPressed: () => onChanged(!active),
+      onPressed: enabled ? () => onChanged!(!active) : null,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,

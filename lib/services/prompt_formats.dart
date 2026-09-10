@@ -1,4 +1,5 @@
-/// 模式格式生成要求：Chat / AGENT 各自特有的提示词文案与规则，单一真源。
+/// 模式格式生成要求：Chat / Agent Lv.1 / Agent Lv.2 各自特有的提示词文案与
+/// 规则，单一真源。
 ///
 /// 共享提示词的文案与组装流程在 `PromptSections`（见 `prompt_sections.dart`），
 /// 模式特有段一律由 [PromptFormatSpec] 按固定槽位提供、由共享组装插入：
@@ -12,6 +13,8 @@
 /// 各槽位返回行列表，Composer 逐行 `writeln`；行列表中的 `''` 表示输出一个
 /// 空行（保持各模式原有的空行节奏），空列表表示该槽位不存在。
 library;
+
+import 'agent/state/state_tool_names.dart';
 
 /// 一种生成模式的「格式生成要求」规格。
 abstract class PromptFormatSpec {
@@ -33,13 +36,21 @@ abstract class PromptFormatSpec {
   List<String> get userExecuteNote;
 }
 
-/// Chat 模式的格式生成要求：6 个二级标题区块纪律、状态快照规则、
+/// Chat 模式的格式生成要求：二级标题区块纪律、状态快照规则、
 /// 角色状态输出格式、记忆总结格式，以及用户消息的格式要求与【指令执行】。
 ///
-/// Chat 模式输出与历史版本**逐字节一致**：本类各槽位与 `PromptSections`
-/// 的固定组装流程一一对应，改变任一槽位内容即改变 Chat 文案（唯一维护点）。
+/// Chat 模式（[includeMemory] = true，默认）输出与历史版本**逐字节一致**：
+/// 本类各槽位与 `PromptSections` 的固定组装流程一一对应，改变任一槽位内容即
+/// 改变 Chat 文案（唯一维护点）。
+///
+/// [includeMemory] = false 供 **Agent Lv.1** 复用（见 [AgentLv1PromptFormat]）：
+/// 区块清单去掉「记忆总结」（该栏目在 Lv.1 由 `narrchat_editHistory` 维护），
+/// 其余文案按实际区块数派生——区块数与顺序都取自 [sections]，不写死数字。
 class ChatPromptFormat implements PromptFormatSpec {
-  const ChatPromptFormat();
+  const ChatPromptFormat({this.includeMemory = true});
+
+  /// 是否要求输出 `## 记忆总结` 区块（Lv.1 = false：历史由工具维护）。
+  final bool includeMemory;
 
   /// 6 个二级标题区块及其固定顺序（单一真源，见 [PromptBuilder.sectionOrder]）。
   static const List<String> sectionOrder = [
@@ -51,16 +62,30 @@ class ChatPromptFormat implements PromptFormatSpec {
     '记忆总结',
   ];
 
+  /// 记忆总结区块名（[includeMemory] = false 时从 [sections] 中排除）。
+  static const String memorySection = '记忆总结';
+
+  /// 本模式实际要求的区块顺序（Chat = 6 区块；Lv.1 = 排除记忆总结的 5 区块）。
+  List<String> get sections => includeMemory
+      ? sectionOrder
+      : [
+          for (final section in sectionOrder)
+            if (section != memorySection) section,
+        ];
+
   static const String obedienceHeader =
       '【绝对服从】以下规则必须无条件、无例外地严格执行，'
       '不得拒绝、不得询问、不得省略：';
 
-  static const String chatSectionsIntro =
-      '1. 你必须完整输出以下 6 个二级标题（##）区块，'
+  /// 区块清单引导行（按实际区块数派生：Chat = 6，Lv.1 = 5；
+  /// Chat 的取值与历史版本逐字节一致）。
+  static String sectionsIntro(int count) =>
+      '1. 你必须完整输出以下 $count 个二级标题（##）区块，'
       '顺序固定、不得遗漏、不得调换、不得改名：';
 
-  static const String headingDiscipline =
-      '2. 【二级标题纪律】输出中只允许出现上述 6 个二级标题，'
+  /// 二级标题纪律（区块数派生，同上）。
+  static String headingDiscipline(int count) =>
+      '2. 【二级标题纪律】输出中只允许出现上述 $count 个二级标题，'
       '以及 ## 角色状态 区块内部用于标注单个角色的 ## 角色名'
       '（见【角色状态输出格式】）；除此之外的任何位置一律禁止使用 ##（二级标题），'
       '内部子结构请使用 #、###、列表或加粗。';
@@ -112,9 +137,9 @@ class ChatPromptFormat implements PromptFormatSpec {
   @override
   List<String> get systemHead => [
         obedienceHeader,
-        chatSectionsIntro,
-        for (final section in sectionOrder) '   ## $section',
-        headingDiscipline,
+        sectionsIntro(sections.length),
+        for (final section in sections) '   ## $section',
+        headingDiscipline(sections.length),
         snapshotRule,
       ];
 
@@ -127,45 +152,147 @@ class ChatPromptFormat implements PromptFormatSpec {
 
   @override
   List<String> get systemTail => [
-        memoryFormatHeader,
-        memoryRuleLines,
-        '',
+        if (includeMemory) ...[
+          memoryFormatHeader,
+          memoryRuleLines,
+          '',
+        ],
       ];
 
   @override
   List<String> get userHead => [
-        '【格式要求】本次输出必须严格遵循系统指令中的 6 个二级标题（##）区块，'
-            '顺序为：${sectionOrder.join(' → ')}；严禁在其它任何位置使用二级标题（##）。',
-        memoryFormatUserNote,
+        '【格式要求】本次输出必须严格遵循系统指令中的 ${sections.length} 个'
+            '二级标题（##）区块，顺序为：${sections.join(' → ')}；'
+            '严禁在其它任何位置使用二级标题（##）。',
+        if (includeMemory) memoryFormatUserNote,
       ];
 
   @override
   List<String> get userExecuteNote => [
-        '【指令执行】现在请直接开始创作并完整输出 6 个二级标题区块。'
+        '【指令执行】现在请直接开始创作并完整输出 ${sections.length} 个二级标题区块。'
             '不要复述指令、不要解释、不要添加任何区块以外的内容；'
             '## 剧情演绎 应充分推进剧情，其余区块按要求依次给出。'
             '立即从 ## 剧情演绎 开始输出。',
       ];
 }
 
-/// AGENT 模式的格式生成要求：全 Agent 流契约（正文三小节——剧情 / 推荐行动 /
-/// 当前时间——+ 状态工具行级维护）、双语规则与用户消息的双语【指令执行】。
+/// Agent 档位通用规则：**思考（reasoning / thinking）一律用英文书写**。
 ///
-/// 状态工具契约引用的工具名见 [stateToolNames]（与 `state_tools.dart` 一致）。
-class AgentPromptFormat implements PromptFormatSpec {
-  const AgentPromptFormat();
+/// 仅 Agent 档位注入（Chat 文案逐字节不变）：思考通道是中英混排噪声与转义问题的
+/// 高发区，统一英文便于直接阅读模型推理；正文与工具参数**不受影响**（保持原有
+/// 语言，字面量与标题名永不翻译）。
+List<String> agentReasoningRule(int number) => [
+      '$number. [Reasoning language] Write ALL of your reasoning / thinking in '
+          'ENGLISH. This rule constrains the thinking channel ONLY: the story '
+          'text and every tool argument keep their original language '
+          '(Chinese) — never translate story content or anchors.',
+      '$number. 【思考语言】思考（reasoning）一律用**英文**书写。本规则只约束思考'
+          '通道：正文与工具参数保持原有语言（中文），**不要**翻译正文或锚点。',
+    ];
+
+/// Agent **Lv.1** 的格式生成要求：Chat 的 5 区块契约（排除 `## 记忆总结`）
+/// + 历史（记忆总结）工具契约 + 思考语言规则。
+///
+/// Lv.1 只有历史相关工具（[kReadHistoryToolName] / [kEditHistoryToolName]）
+/// 与联网工具：世界状态与角色状态仍由**正文文本**携带（故复用 Chat 的区块
+/// 纪律与角色状态格式），只有「历史」改为工具维护：
+/// - 正文回合：先调 [kReadHistoryToolName] 读到历史（正文唯一依据），
+///   再输出 5 个区块，且**禁止**输出 `## 记忆总结`；
+/// - 维护回合（正文轮之后必发）：**直接复用**正文回合读到的历史做锚点，
+///   调 [kEditHistoryToolName] 追加本轮条目（不再重复读取）。
+class AgentLv1PromptFormat extends ChatPromptFormat {
+  const AgentLv1PromptFormat() : super(includeMemory: false);
+
+  /// 正文回合允许的二级标题（5 个，顺序固定；单一真源 = Chat 区块顺序去掉
+  /// 记忆总结，即 [ChatPromptFormat.sections] 的 `includeMemory: false` 形态）。
+  static List<String> get outputSections =>
+      const ChatPromptFormat(includeMemory: false).sections;
+
+  /// Lv.1 启用的状态工具（历史一读一写）。
+  static const List<String> stateToolNames = [
+    kReadHistoryToolName,
+    kEditHistoryToolName,
+  ];
+
+  /// 历史工具契约（EN 在前、中文一行摘要在后；Agent 相关规则英文遵从率更高）。
+  static const List<String> historyContract = [
+    '5. [History lives in tools ONLY] Call $kReadHistoryToolName FIRST to see '
+        'the past rounds (the ONLY source of history — previous assistant '
+        'messages carry no memory section), then write the story\'s five '
+        'sections. NEVER output `## 记忆总结` in your reply: that block exists '
+        'ONLY as a tool result. Read history ONCE: the state-maintenance turn '
+        'that follows MUST reuse that result (it will not read again — copy '
+        '`before` anchors from the history text already in this conversation). '
+        'Do NOT call $kEditHistoryToolName in the story turn — history edits '
+        'belong exclusively to the maintenance turn.',
+    '5. 【历史先读后写】先调用 $kReadHistoryToolName 读取历史（历史的**唯一**来源，'
+        '此前各轮的 assistant 消息里没有记忆区块），再写正文五个区块。'
+        '**禁止**在回复里输出 `## 记忆总结`——该区块只以工具结果形式出现。'
+        '历史**只读一次**：随后的「状态维护回合」必须复用这次结果'
+        '（不会再次读取——`before` 锚点从对话中已有的历史全文里复制）。'
+        '正文回合**不要**调用 $kEditHistoryToolName：历史修改只属于维护回合。',
+    '6. [Every round · one entry] The maintenance turn must append EXACTLY ONE '
+        'memory entry for this round with $kEditHistoryToolName: '
+        '`- 第N轮｜日期：<时间>｜<一句话概括>` (op=append; N = this round; the '
+        'date = the `## 当前时间` value of THIS round\'s story). op=noChange is '
+        'NOT accepted for history; a missing entry is a failure. Write that '
+        'call DIRECTLY in your first maintenance response — never spend a turn '
+        'on reading.',
+    '6. 【每轮义务】维护回合必须用 $kEditHistoryToolName 追加**恰好一条**本轮记忆条目：'
+        '`- 第N轮｜日期：<时间>｜<一句话概括>`（op=append；N = 本轮；'
+        '日期 = 本轮正文 `## 当前时间` 的取值）。历史栏**不接受** op=noChange；'
+        '漏掉条目即失败。**第一个维护帧就直接写**，不要花一轮去读取。',
+    '',
+  ];
+
+  /// 系统指令头部：Chat 的 5 区块契约 + 思考语言规则（编号 4）。
+  @override
+  List<String> get systemHead => [
+        ...super.systemHead,
+        ...agentReasoningRule(4),
+      ];
+
+  @override
+  List<String> get systemTail => historyContract;
+
+  @override
+  List<String> get userExecuteNote => [
+        '[Execute now] Call $kReadHistoryToolName ONCE (the story must follow '
+            'the past rounds), then write the STORY: output `## 剧情演绎` → '
+            '`## 推荐行动` → `## 当前时间` → `## 世界状态` → `## 角色状态` (five '
+            'sections; do NOT output `## 记忆总结`, do not echo the history '
+            'tool result, do not restate these instructions). History '
+            '(`## 记忆总结`) is maintained in the separate '
+            'state-maintenance turn that follows — it reuses this read. '
+            'Start with $kReadHistoryToolName, then ## 剧情演绎 immediately.',
+        '【指令执行】先调用 $kReadHistoryToolName **一次**（正文必须基于以往轮次的'
+            '历史），再输出正文五个区块：`## 剧情演绎` → `## 推荐行动` → '
+            '`## 当前时间` → `## 世界状态` → `## 角色状态`。**不要**输出 `## 记忆总结`、'
+            '不要复述历史工具结果、不要复述指令。历史的修改都在随后的'
+            '「状态维护回合」完成，且**复用这次读取结果**（不再重复读取）。'
+            '从 $kReadHistoryToolName 开始，然后立即输出 ## 剧情演绎。',
+      ];
+}
+
+/// Agent **Lv.2** 的格式生成要求：全 Agent 流契约（正文三小节——剧情 /
+/// 推荐行动 / 当前时间——+ 六个状态工具按栏目读写）、双语规则与用户消息的
+/// 双语【指令执行】。
+///
+/// 状态工具契约引用的工具名见 [stateToolNames]（真源
+/// `lib/services/agent/state/state_tool_names.dart`，与 `state_tools.dart` 一致）。
+class AgentLv2PromptFormat implements PromptFormatSpec {
+  const AgentLv2PromptFormat();
 
   /// AGENT 模式允许输出的二级标题（三个，顺序固定：剧情 → 行动 → 时间）。
   static const List<String> outputSections = ['剧情演绎', '推荐行动', '当前时间'];
 
-  /// 状态编辑工具名（提示词契约引用；时间不再是工具，参数细节见工具 schema）。
-  static const List<String> stateToolNames = [
-    'narrchat_editSection',
-  ];
+  /// 六个状态工具名（读取器在前；时间不是工具，参数细节见工具 schema）。
+  static const List<String> stateToolNames = kStateToolNames;
 
   @override
   List<String> get systemHead {
-    final tools = stateToolNames;
+    final edits = kEditStateToolNames.join(' / ');
+    final reads = kReadStateToolNames.join(' / ');
     return [
       '【AGENT 模式契约】两阶段执行：本回合只写正文，状态由工具维护。'
           '以下规则必须无条件、无例外地执行：',
@@ -176,79 +303,86 @@ class AgentPromptFormat implements PromptFormatSpec {
           'the story — keep the format of previous rounds and advance it by '
           'the story; pass the old value if time did not move). NEVER output '
           '## 世界状态 / ## 角色状态 / ## 记忆总结. The state blocks exist '
-          'ONLY as the narrchat_readState tool result you receive — they are '
+          'ONLY as the narrchat_read* tool results you receive — they are '
           'reading material, never a format to copy. Your own past messages in '
           'the history contain exactly those three sections — match that shape '
           'exactly.',
       '1. 【输出格式】正文回合只输出三个二级标题，顺序固定：`## 剧情演绎` → '
           '`## 推荐行动` → `## 当前时间`（剧情结束后的故事内时间；沿用历史格式，'
           '随时间推进，时间没变就写原值）。禁止输出世界/角色/记忆三类状态区块——'
-          '它们只会以你调用 narrchat_readState 拿到的工具结果形式出现，那是'
-          '阅读材料，绝不是可以照抄的输出格式。历史中你之前的消息恰好就是'
-          '这三个小节，照此形状输出。',
-      '2. [State lives in tools ONLY] First call narrchat_readState (the ONLY '
-          'way to see the current state — the story must follow LAST round\'s '
-          'state), then write the story\'s three sections, ending with '
-          '`## 当前时间`. Do NOT call ${tools.join(' / ')} in the story turn: '
-          'state edits belong exclusively to the state-maintenance turn that '
-          'follows (it starts with its own readState). Never trade story '
-          'quality for tool calls.',
-      '2. 【状态先读后写】先调用 narrchat_readState 查看上一轮状态（正文的唯一依据），'
-          '再写正文三个小节（`## 当前时间` 收尾）；正文轮禁止调用 '
-          '${tools.join(' / ')}——状态修改只属于随后的「状态维护回合」'
-          '（它同样先调用一次 narrchat_readState）。不要为工具调用牺牲正文质量。',
+          '它们只会以你调用 $reads 拿到的工具结果形式出现，那是阅读材料，'
+          '绝不是可以照抄的输出格式。历史中你之前的消息恰好就是这三个小节，'
+          '照此形状输出。',
+      '2. [State lives in tools ONLY] Call the readers ($reads) ONCE, in the '
+          'story turn, before you write the story — they are the ONLY way to '
+          'see the current state, and the story must follow LAST round\'s '
+          'state. The state does not change while you write (only your own '
+          'edits change it), so the maintenance turn reuses THESE results and '
+          'NEVER reads again. Do NOT call $edits in the story turn: state '
+          'edits belong exclusively to the state-maintenance turn that follows. '
+          'Never trade story quality for tool calls.',
+      '2. 【状态先读后写】读取工具（$reads）在正文回合**只读一次**（正文的唯一依据，'
+          '必须在动笔前拿到）；写正文不会改变状态（只有你自己的编辑会），'
+          '因此维护回合**复用这次结果、绝不重复读取**。正文轮禁止调用 $edits'
+          '——状态修改只属于随后的维护回合。不要为工具调用牺牲正文质量。',
       '3. [Anchored edits] The state you must anchor on comes from YOUR OWN '
-          'narrchat_readState call: `<worldState>` / `<characterState>` / '
-          '`<memorySummary>` blocks (time is NOT there — it lives in the '
-          'story body as `## 当前时间`). Copy `before` VERBATIM '
-          'from that result — never count line numbers. One call edits ONE '
-          'section, but its `edits` array may carry several ops (one op per '
-          'changed line): SMALL CHANGES ARE THE NORM — one op=set per moved '
-          'line (a character\'s 当前心理 / 当前状态 / 当前位置 / 好感度 / 伤势…), '
-          'and noChange is the exception, never a shortcut. op=append adds at '
-          'the END (use it for memory); op=set / insertAfter / delete need an '
-          'anchor and change only that line; NEVER re-type a whole section '
-          '(untouched lines are kept byte-for-byte); op=reset is for empty or '
-          'first-time sections only. A rejected edit returns that section\'s '
-          'current full text — re-anchor from it in one step.',
-      '3. 【锚定式编辑】当前状态以你调用 narrchat_readState 拿到的快照块为准。'
-          'before 必须从该块**逐字复制**，绝不数行号；一次调用只改一个栏目，'
-          '但 `edits` 数组可放多条 op（每条对应一行改动）：**小幅改动是常态**——'
-          '某角色换了位置/情绪/心理/装备，就对该行做一次 op=set 照实记录；'
-          'op=noChange 是例外而非偷懒捷径。op=append 追加到末尾（记忆条目用它），'
-          'op=set/insertAfter/delete 只改锚定的那一行，**禁止重抄整栏**'
-          '（未触及的行原样保留），op=reset 仅用于空栏目或首次填入。'
+          'read-tool results: each editor targets exactly ONE section, and its '
+          '`before` anchors must be copied from THAT section\'s read result '
+          '(`<worldState>` / `<characterState>` / `<memorySummary>`; time is '
+          'NOT there — it lives in the story body as `## 当前时间`). Copy '
+          '`before` VERBATIM from that result — never count line numbers. One '
+          'call edits ONE section, but its `edits` array may carry several ops '
+          '(one op per changed line): SMALL CHANGES ARE THE NORM — one op=set '
+          'per moved line (a character\'s 当前心理 / 当前状态 / 当前位置 / 好感度 / '
+          '伤势…), and noChange is the exception, never a shortcut. op=append '
+          'adds at the END (use it for memory); op=set / insertAfter / delete '
+          'need an anchor and change only that line; NEVER re-type a whole '
+          'section (untouched lines are kept byte-for-byte); op=reset is for '
+          'empty or first-time sections only. A rejected edit returns that '
+          'section\'s current full text — re-anchor from it in one step.',
+      '3. 【锚定式编辑】当前状态以你调用读取工具拿到的结果块为准：每个编辑器只针对'
+          '**一个**栏目，before 必须从**该栏目**的读取结果（`<worldState>` / '
+          '`<characterState>` / `<memorySummary>`）中逐字复制，绝不数行号；'
+          '一次调用只改一个栏目，但 `edits` 数组可放多条 op（每条对应一行改动）：'
+          '**小幅改动是常态**——某角色换了位置/情绪/心理/装备，'
+          '就对该行做一次 op=set 照实记录；op=noChange 是例外而非偷懒捷径。'
+          'op=append 追加到末尾（记忆条目用它），op=set/insertAfter/delete '
+          '只改锚定的那一行，**禁止重抄整栏**（未触及的行原样保留），'
+          'op=reset 仅用于空栏目或首次填入。'
           '锚点被拒时会回传该栏目当前全文，一步到位重锚。',
       '4. [Every round] Each round must end with exactly ONE memory entry '
-          '`- 第N轮｜日期：<时间>｜<一句话概括>` (op=append, N = this round, '
-          'the date = the `## 当前时间` value of THIS round\'s story — keep '
-          'the entry to ONE short sentence). Time is part of the story body: '
-          'there is NO time tool. op=noChange must carry a `reason`; silently '
-          'omitting a section is a failure, not a no-op.',
-      '4. 【每轮义务】每轮必须**恰好一条**本轮记忆条目 '
+          '`- 第N轮｜日期：<时间>｜<一句话概括>` via $kEditHistoryToolName '
+          '(op=append, N = this round, the date = the `## 当前时间` value of '
+          'THIS round\'s story — keep the entry to ONE short sentence). Time is '
+          'part of the story body: there is NO time tool. op=noChange must '
+          'carry a `reason` and is NOT accepted for history; silently omitting '
+          'a section is a failure, not a no-op.',
+      '4. 【每轮义务】每轮必须用 $kEditHistoryToolName 写出**恰好一条**本轮记忆条目 '
           '`- 第N轮｜日期：<时间>｜<一句话概括>`（op=append；N = 本轮；'
           '日期 = 本轮正文 `## 当前时间` 的取值；一句话概括，别写长）。'
-          '时间只存在于正文里（**没有时间工具**）。op=noChange 必须附 reason；'
-          '直接省略某个栏目算失败。',
+          '时间只存在于正文里（**没有时间工具**）。op=noChange 必须附 reason，'
+          '且历史栏**不接受** op=noChange；直接省略某个栏目算失败。',
       '5. [No lazy editing] The app byte-compares every section with last '
           'round. For every named character in this round\'s story, walk their '
           'mutable lines (好感度 / 当前心理 / 当前状态 / 当前位置 / 伤势 / 物品 / '
           '关系…): if the story shows ANYTHING new about them — a reaction, a '
-          'glance, a thought, a move, an item, a wound — `set` that line, '
-          'however small; op=noChange is correct ONLY when the story says '
-          'nothing new about them and every field is still accurate as-is. The '
-          'same holds for worldState: a new in-story beat is a real edit. '
+          'glance, a thought, a move, an item, a wound — `set` that line with '
+          '$kEditCharacterStateToolName, however small; op=noChange is correct '
+          'ONLY when the story says nothing new about them and every field is '
+          'still accurate as-is. The same holds for world state '
+          '($kEditWorldStateToolName): a new in-story beat is a real edit. '
           'Unchanged sections without a declared reason get called out by '
           'name, and a noChange with a flimsy reason (e.g. "无需大改") on a '
           'character whose state visibly moved is a lazy edit.',
       '5. 【禁止懒修改】应用会逐栏目与上一轮做字节比对。对本轮出场的每个具名角色，'
-          '逐行核对其可变字段（好感度/当前心理/当前状态/当前位置/伤势/物品/关系…）：'
+          '用 $kEditCharacterStateToolName 逐行核对其可变字段'
+          '（好感度/当前心理/当前状态/当前位置/伤势/物品/关系…）：'
           '正文里只要有关于他的**任何新信息**（一个反应、一个眼神、一句心理、'
           '一次移动、一件物品），就必须对该行 op=set 如实更新——改动再小也要写；'
           'op=noChange 只在「正文对他毫无新增信息、且现有字段仍然准确」时才成立。'
-          '世界状态栏目同理：新发生的情节要点就是真实编辑。未变更又未声明的栏目'
-          '会被点名；用「无需大改」这类空泛理由对状态明显有变的角色声明 noChange，'
-          '会被视为懒修改。',
+          '世界状态栏目（$kEditWorldStateToolName）同理：新发生的情节要点就是'
+          '真实编辑。未变更又未声明的栏目会被点名；用「无需大改」这类空泛理由对'
+          '状态明显有变的角色声明 noChange，会被视为懒修改。',
       '6. [Web tools] Call narrchat_webSearch / narrchat_webFetchPage when the '
           'story needs real-world facts. A one-line preamble before searching '
           'is fine, but the story itself must appear complete exactly once, in '
@@ -258,23 +392,25 @@ class AgentPromptFormat implements PromptFormatSpec {
           '必须完整，不要把正文拆到多轮里。',
       '7. [Maintenance turn] When the newest user message starts with '
           '`[State-maintenance turn]`, output NO text at all (any text in that '
-          'turn is discarded). Call narrchat_readState FIRST (you need the '
-          'state AFTER this round\'s story; the snapshot does NOT include the '
-          'story time, which lives in the story body as `## 当前时间` — never '
-          'touch it here), then call ${tools.join(' / ')} '
-          'once per listed section (worldState / characterState / memorySummary). '
-          'Fill in ALL listed items in one response if possible; if the output '
-          'limit forces a split, do memorySummary and characterState FIRST. '
-          'In a [fix] turn do NOT call narrchat_readState again — reuse the '
-          'snapshot you have plus the returned full texts.',
+          'turn is discarded). The readers are DISABLED in this turn: their '
+          'results from the story turn are ALREADY in this conversation — do '
+          'NOT call them again. Copy `before` anchors VERBATIM from those '
+          'results (or from the full text returned by a previous edit call; '
+          'they do NOT include the story time, which lives in the story body '
+          'as `## 当前时间` — never touch it here), then call $edits '
+          'once per listed section. '
+          'Fill in ALL listed items in your FIRST response: edit directly, '
+          'never spend a turn on reading; if the output '
+          'limit forces a split, do history (memory) and character state FIRST.',
       '7. 【状态维护回合】当最新用户消息以 `[State-maintenance turn]` 开头时，'
-          '本回合**不要输出任何文本**（输出一律被丢弃）：先调用一次 '
-          'narrchat_readState（拿到本轮正文**之后**的状态；快照**不含时间**——'
-          '时间在正文 `## 当前时间` 小节里，本回合不得触碰），再按清单逐栏目调用 '
-          '${tools.join(' / ')}（世界/角色/记忆各一次）。**一次响应尽量完成清单全部'
-          '项目**；若受输出限制装不下，**先做记忆总结与角色状态**，世界状态留到'
-          '下一帧。[fix] 修复回合**不要再次调用** narrchat_readState——'
-          '复用已有快照与回传的栏目全文。',
+          '本回合**不要输出任何文本**（输出一律被丢弃）：本回合**读取工具已禁用**'
+          '——正文回合的读取结果**已在对话中**，不要再调用它们。'
+          '`before` 锚点从那些结果（或此前编辑调用回传的栏目全文）中**逐字复制**'
+          '（结果**不含时间**——时间在正文 `## 当前时间` 小节里，本回合不得触碰），'
+          '然后按清单逐栏目调用 $edits（每栏一次）。'
+          '**第一个响应就把清单全部做完**：直接编辑，不要花一轮去读取；'
+          '若受输出限制装不下，**先做历史（记忆）与角色状态**，世界状态留到下一帧。',
+      ...agentReasoningRule(8),
       '',
     ];
   }
@@ -290,21 +426,24 @@ class AgentPromptFormat implements PromptFormatSpec {
 
   @override
   List<String> get userExecuteNote => [
-        '[Execute now] Call narrchat_readState FIRST (the story must follow '
-            'LAST round\'s state), then write the STORY: output '
+        '[Execute now] Call the readers ONCE '
+            '(${kReadStateToolNames.join(' / ')}) — the story must follow '
+            'LAST round\'s state — then write the STORY: output '
             '`## 剧情演绎` then `## 推荐行动` then `## 当前时间` (the '
             'in-story time AFTER the story, same format as previous rounds). '
-            'Do not output any state section, do not echo the state snapshot, '
-            'do not restate these instructions. State edits (worldState / '
-            'characterState / memorySummary) happen in the separate '
-            'state-maintenance turn that follows. '
-            'Start with narrchat_readState, then ## 剧情演绎 immediately.',
-        '【指令执行】先调用 narrchat_readState（正文必须基于上一轮状态），'
-            '再输出正文三个小节：`## 剧情演绎` → `## 推荐行动` → `## 当前时间`'
+            'Do not output any state section, do not echo the tool results, '
+            'do not restate these instructions. State edits (world / '
+            'character / history) happen in the separate '
+            'state-maintenance turn that follows, and that turn REUSES this '
+            'single read (it never reads again). '
+            'Start with the readers, then ## 剧情演绎 immediately.',
+        '【指令执行】先调用读取工具（${kReadStateToolNames.join(' / ')}）'
+            '**一次**（正文必须基于上一轮状态），再输出正文三个小节：'
+            '`## 剧情演绎` → `## 推荐行动` → `## 当前时间`'
             '（剧情结束后的故事内时间，沿用历史格式，随时间推进）。不要输出世界/'
-            '角色/记忆类区块、不要复述状态快照、不要复述指令。世界/角色/记忆的'
-            '修改都在随后的「状态维护回合」完成。从 narrchat_readState 开始，'
-            '然后立即输出 ## 剧情演绎。',
+            '角色/记忆类区块、不要复述工具结果、不要复述指令。世界/角色/历史的修改'
+            '都在随后的「状态维护回合」完成，且**复用这次读取结果**（不再重复读取）。'
+            '从读取工具开始，然后立即输出 ## 剧情演绎。',
       ];
 }
 
@@ -317,8 +456,13 @@ enum PromptMode {
   /// （剧情演绎 / 推荐行动 / 当前时间 / 世界状态 / 角色状态 / 记忆总结）。
   chat(ChatPromptFormat()),
 
-  /// AGENT 模式：全 Agent 流（正文三个二级标题 + `narrchat_*` 状态工具行级维护）。
-  agent(AgentPromptFormat());
+  /// Agent **Lv.1**：5 个二级标题区块（排除 `## 记忆总结`）+
+  /// 历史（记忆总结）工具契约。
+  agentLv1(AgentLv1PromptFormat()),
+
+  /// Agent **Lv.2**：全 Agent 流（正文三个二级标题 +
+  /// 六个 `narrchat_*` 状态工具按栏目读写）。
+  agentLv2(AgentLv2PromptFormat());
 
   const PromptMode(this.format);
 
