@@ -6,6 +6,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/char_count_indicator.dart';
 import 'package:narrchat/widgets/image_preview.dart';
 
 import 'helpers/chat_harness.dart';
@@ -62,17 +63,17 @@ void main() {
 
   // —— 输入卡布局：文本区 ↔ 底部控件行 ——
 
-  /// 输入卡底部控件行的顶端 y 坐标（承载选项下拉 / 模型选择 / 发送按钮的那一行）。
-  double controlRowTop(WidgetTester tester) => tester
-      .getTopLeft(
-        find
-            .ancestor(
-              of: find.byIcon(Icons.arrow_upward),
-              matching: find.byType(Row),
-            )
-            .first,
+  /// 输入卡底部控件行（承载选项下拉 / 模型选择 / 发送按钮的那一行）。
+  Finder controlRow() => find
+      .ancestor(
+        of: find.byIcon(Icons.arrow_upward),
+        matching: find.byType(Row),
       )
-      .dy;
+      .first;
+
+  /// 输入卡底部控件行的顶端 y 坐标。
+  double controlRowTop(WidgetTester tester) =>
+      tester.getTopLeft(controlRow()).dy;
 
   /// 输入卡文本区的底端 y 坐标。
   double textAreaBottom(WidgetTester tester) =>
@@ -679,5 +680,131 @@ void main() {
 
     ai.complete();
     await waitSendDone(tester, rp);
+  });
+
+  // —— 实时字数指示器（中英文字 / 标点 / 空格 / 表情各计 1） ——
+
+  /// 字数指示器内的文本（按 label 定位，避免与页面上其它数字混淆）。
+  Finder charCount(String label) =>
+      find.descendant(of: find.byType(CharCountIndicator), matching: find.text(label));
+
+  /// 字数指示器内部的 Text（读样式用）。
+  Finder charCountText() => find.descendant(
+    of: find.byType(CharCountIndicator),
+    matching: find.byType(Text),
+  );
+
+  /// 模型选择器触发区里的模型名文本（模型菜单未打开时全局唯一）。
+  Finder modelLabel() => find.text('DeepSeek V4.1 Flash');
+
+  /// 字数文本当前的颜色。
+  Color charCountColor(WidgetTester tester) =>
+      tester.widget<Text>(charCountText()).style!.color!;
+
+  testWidgets('实时字数：空输入显示 0 字（弱化色），随键入实时更新', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    expect(charCount('0 字'), findsOneWidget);
+    expect(charCountColor(tester), NarrChatColors.light.placeholder);
+
+    await tester.enterText(composerField(), '你好，world!');
+    await tester.pump();
+    expect(charCount('9 字'), findsOneWidget);
+    expect(charCountColor(tester), NarrChatColors.light.textSecondary);
+
+    // 清空后回到 0 字（不残留上一次统计），并重新弱化。
+    await tester.enterText(composerField(), '');
+    await tester.pump();
+    expect(charCount('0 字'), findsOneWidget);
+    expect(charCountColor(tester), NarrChatColors.light.placeholder);
+  });
+
+  testWidgets('实时字数：空格与换行计入，表情按 1 个字符计', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.enterText(composerField(), 'a b\nc');
+    await tester.pump();
+    expect(charCount('5 字'), findsOneWidget);
+
+    await tester.enterText(composerField(), '好的👍');
+    await tester.pump();
+    expect(charCount('3 字'), findsOneWidget);
+  });
+
+  testWidgets('实时字数：位于模型名正下方、右边界与模型名对齐，字号更小', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    final labelRect = tester.getRect(modelLabel());
+    final countRect = tester.getRect(find.byType(CharCountIndicator));
+
+    // 竖向两行：模型名在上、字数在下，两行贴合（不做「隔一行」的松间距）。
+    expect(countRect.top - labelRect.bottom, lessThanOrEqualTo(4));
+    // 右边界与模型名严格对齐（不再对齐到 ▾ 图标或热区外沿）。
+    expect(countRect.right, closeTo(labelRect.right, 0.01));
+    // 不越到发送按钮上（与按钮保持 8px 间距）。
+    expect(tester.getRect(sendButton()).left - countRect.right, greaterThanOrEqualTo(8));
+
+    // 字号层级：字数小于模型名。
+    final labelSize = tester.widget<Text>(modelLabel()).style!.fontSize!;
+    final countSize = tester.widget<Text>(charCountText()).style!.fontSize!;
+    expect(countSize, lessThan(labelSize));
+  });
+
+  testWidgets('实时字数：点击字数即展开模型选择器下拉菜单', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    // 字数属于模型选择器热区：点它应弹出模型菜单（而非无响应）。
+    await tester.tap(find.byType(CharCountIndicator));
+    await tester.pumpAndSettle();
+
+    expect(find.text('deepseek-v4-pro'), findsWidgets);
+  });
+
+  testWidgets('实时字数：位数增长既不推动控件行，也不挤占模型名', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    final sendLeft = tester.getTopLeft(sendButton()).dx;
+    final labelWidth = tester.getSize(modelLabel()).width;
+
+    await tester.enterText(composerField(), 'x' * 1234);
+    await tester.pump();
+    expect(charCount('1,234 字'), findsOneWidget);
+
+    // 千分位长数字出现后：发送按钮不位移，模型名宽度不被挤占。
+    expect(tester.getTopLeft(sendButton()).dx, sendLeft);
+    expect(tester.getSize(modelLabel()).width, labelWidth);
+  });
+
+  testWidgets('实时字数：两行小字不额外撑高底部控件行', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.enterText(composerField(), 'x' * 1234);
+    await tester.pump();
+
+    // 控件行高度与 36px 的发送按钮持平（两行文字靠紧行高塞进原有一行的高度）。
+    final rowHeight = tester.getSize(controlRow()).height;
+    final sendHeight = tester.getSize(sendButton()).height;
+    expect(sendHeight, 36);
+    expect(rowHeight - sendHeight, lessThan(2));
+  });
+
+  testWidgets('实时字数：窄屏（360 宽）下不挤占模型名且不溢出', (tester) async {
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      size: const Size(360, 740),
+    );
+
+    // 窄屏正是此前「模型名被字数挤死」的场景：先记录无输入时的模型名宽度。
+    expect(modelLabel(), findsOneWidget);
+    final labelWidth = tester.getSize(modelLabel()).width;
+
+    await tester.enterText(composerField(), 'x' * 1234);
+    await tester.pump();
+
+    expect(charCount('1,234 字'), findsOneWidget);
+    // 字数另起一行后，模型名宽度不随字数位数变化（不再被横向争抢）。
+    expect(tester.getSize(modelLabel()).width, labelWidth);
+    expect(tester.takeException(), isNull);
   });
 }

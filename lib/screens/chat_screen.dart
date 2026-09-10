@@ -31,6 +31,7 @@ import '../utils/focus_utils.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
+import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/edit_text_images_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
@@ -2309,22 +2310,25 @@ class _ChatScreenState extends State<ChatScreen>
           ),
           // 文本区与底部控件行之间的小间隙：仅隔开内容与控件，不随行数变化。
           const SizedBox(height: _kComposerTextGap),
-          // 底部行：左下角功能选择栏 + 中间空隙 + 右下角模型选择 + 发送/停止。
+          // 底部行：左下角功能选择栏 + 中间空隙 + 右下角模型选择 + 发送/停止；
+          // 右侧模型选择器下方另起一行显示实时字数（竖向两行，右对齐同列）。
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            // 下边距 6：控件行本已贴住卡片底部，再留 8 会显得空；上/左/右仍为 8。
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 const sendWidth = 36.0;
                 const endGap = 8.0;
                 // 留给「左/右两个区域」的可用宽度（去掉发送按钮与其左侧固定间距）。
+                // 实时字数与模型选择器同占右侧 1/3（上下两行），不额外占用行宽。
                 final available = (constraints.maxWidth - sendWidth - endGap)
                     .clamp(0.0, double.infinity);
                 return Row(
                   children: [
-                    // 左侧功能选择栏：最长 2/3，单行溢出省略，左对齐。
+                    // 左侧功能选择栏：最长 55%，单行溢出省略，左对齐。
                     ConstrainedBox(
                       constraints:
-                          BoxConstraints(maxWidth: available * (2 / 3)),
+                          BoxConstraints(maxWidth: available * 0.55),
                       child: Align(
                         alignment: Alignment.centerLeft,
                         widthFactor: 1,
@@ -2350,10 +2354,12 @@ class _ChatScreenState extends State<ChatScreen>
                     ),
                     // 中间空隙：左右都未达到上限时的弹性空间。
                     const Spacer(),
-                    // 右侧模型选择器：最长 1/3，右对齐，灰色，单行溢出省略。
+                    // 右侧模型选择器：最长 45%（略高于 1/3，窄屏下模型名不至于被挤成
+                    // 省略号）；其触发区第二行为实时字数——同列右对齐、贴紧模型名，
+                    // 且点字数即可展开模型菜单。
                     ConstrainedBox(
                       constraints:
-                          BoxConstraints(maxWidth: available * (1 / 3)),
+                          BoxConstraints(maxWidth: available * 0.45),
                       child: Align(
                         alignment: Alignment.centerRight,
                         widthFactor: 1,
@@ -2365,6 +2371,10 @@ class _ChatScreenState extends State<ChatScreen>
                           selectedModelId: aiSettings.selectedModelId,
                           onSelect: (platformId, modelId) =>
                               aiSettings.setSelectedModel(platformId, modelId),
+                          // 实时字数：常驻显示（空输入为 0 字），仅本子树随键入重建。
+                          caption: CharCountIndicator(
+                            controller: _inputController,
+                          ),
                         ),
                       ),
                     ),
@@ -2693,7 +2703,8 @@ class _ChatModeDropdown extends StatelessWidget {
   }
 }
 
-/// 右下角模型选择器：显示当前模型名（灰色、单行省略），点击弹出菜单切换对话模型。
+/// 右下角模型选择器：上行当前模型名（灰色、单行省略），下行可选小字说明
+/// （输入卡传入实时字数）；整个触发区可点，点击弹出菜单切换对话模型。
 class _ModelSelector extends StatelessWidget {
   final String label;
   final List<AiPlatform> platforms;
@@ -2701,13 +2712,20 @@ class _ModelSelector extends StatelessWidget {
   final String selectedModelId;
   final void Function(String platformId, String modelId) onSelect;
 
+  /// 第二行小字（与模型名同列右对齐，随触发区一起点击）。
+  final Widget? caption;
+
   const _ModelSelector({
     required this.label,
     required this.platforms,
     required this.selectedPlatformId,
     required this.selectedModelId,
     required this.onSelect,
+    this.caption,
   });
+
+  /// 两行文字的行高：比默认行高更紧，让模型名与下行小字贴合成一个整体。
+  static const double _lineHeight = 1.25;
 
   @override
   Widget build(BuildContext context) {
@@ -2733,16 +2751,30 @@ class _ModelSelector extends StatelessWidget {
             }
           },
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            // 上下 4：两行文字整体高度与发送按钮（36）持平，控件行不额外长高。
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Flexible(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: gray),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    // 右对齐：下行小字的右边界与模型名右边界严格对齐。
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: _lineHeight,
+                          color: gray,
+                        ),
+                      ),
+                      // 无下行小字时整行不占位（null-aware 元素）。
+                      ?caption,
+                    ],
                   ),
                 ),
                 const SizedBox(width: 4),
