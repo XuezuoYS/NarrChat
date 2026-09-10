@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/ai_platform.dart';
@@ -166,24 +168,24 @@ void main() {
       expect(form.platforms.first.apiType.id, ApiType.openAiResponses.id);
     });
 
-    test('removePlatform：内置默认平台与最后一个平台不可删', () {
+    test('removePlatform：最后一个平台不可删，预置平台可删（可再恢复）', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
       final defaultId = AiPlatforms.defaultPlatformId;
 
-      // 仅默认平台（唯一）时删除应无效果。
+      // 仅预置平台（唯一）时删除应无效果（至少保留一个平台）。
       form.removePlatform(defaultId);
       expect(form.platforms.length, 1);
 
-      // 再添加自定义平台；删除内置默认平台仍应无效果（isBuiltin + id 双保险）。
+      // 添加自定义平台后，预置平台可删除（限制已放开，靠「恢复内置平台」找回）。
       form.addPlatform(
         name: 'p2',
         baseUrl: 'x',
         apiTypeId: ApiType.openAiCompatibleId,
       );
       form.removePlatform(defaultId);
-      expect(form.platforms.length, 2);
-      expect(form.platforms.any((p) => p.id == defaultId), isTrue);
+      expect(form.platforms.length, 1);
+      expect(form.platforms.any((p) => p.id == defaultId), isFalse);
 
       // 删除自定义平台可生效。
       form.removePlatform(form.platforms.last.id);
@@ -216,22 +218,32 @@ void main() {
       expect(form.platforms.last.models.length, 1);
     });
 
-    test('内置默认平台：模型不可增删', () {
+    test('内置预置平台：模型可增删（限制已放开），仍保证至少一个模型', () {
       final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
       addTearDown(form.dispose);
       final defaultId = AiPlatforms.defaultPlatformId;
       final before = form.platforms.first.models.length;
 
-      // 默认平台不可新增模型。
-      form.addModel(defaultId, id: 'gpt-4o-mini');
-      expect(form.platforms.first.models.length, before);
+      // 预置平台可新增模型。
+      form.addModel(defaultId, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
+      expect(form.platforms.first.models.length, before + 1);
 
-      // 默认平台不可删除模型（V4 Pro 仍然存在）。
+      // 预置平台可删除预置模型。
       form.removeModel(defaultId, 'deepseek-v4-pro');
       expect(
         form.platforms.first.models.any((m) => m.id == 'deepseek-v4-pro'),
-        isTrue,
+        isFalse,
       );
+
+      // 删到只剩一个后不可再删。
+      for (final m in [...form.platforms.first.models]) {
+        if (form.platforms.first.models.length > 1) {
+          form.removeModel(defaultId, m.id);
+        }
+      }
+      expect(form.platforms.first.models.length, 1);
+      form.removeModel(defaultId, form.platforms.first.models.first.id);
+      expect(form.platforms.first.models.length, 1);
     });
 
     test('updateModel：按模型 id 写回参数（含默认平台模型）', () {
@@ -250,6 +262,136 @@ void main() {
       expect(updated.temperature, 0.6);
       expect(updated.reasoningEffort, 'low');
       expect(updated.shortLabel, 'V4P');
+    });
+  });
+
+  group('SettingsFormState 预置平台重置与恢复', () {
+    test('resetPlatform：只还原内置预置平台，自添加平台逐字段不受影响', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final presetId = AiPlatforms.defaultPlatformId;
+      final presetModels =
+          AiPlatforms.defaultPlatform.models.map((m) => m.id).toList();
+
+      // 改动内置预置平台：连接设置 + 模型参数 + 增删模型。
+      form.setPlatformName(presetId, '我的 DeepSeek');
+      form.setPlatformBaseUrl(presetId, 'https://my-proxy.example.com');
+      form.setPlatformApiType(presetId, ApiType.openAiCompatibleId);
+      final proModel = form.platforms.first.modelById('deepseek-v4-pro')!;
+      form.updateModel(
+        presetId,
+        proModel.id,
+        proModel.copyWith(temperature: 0.2, supportsSearch: false),
+      );
+      form.removeModel(presetId, 'deepseek-v4-flash');
+      form.addModel(presetId, id: 'my-model', shortLabel: 'MY');
+
+      // 自添加平台 aliyun：改名称 + 加模型。
+      form.addPlatform(
+        name: 'aliyun',
+        baseUrl: 'https://gw.example.com/v1',
+        apiTypeId: ApiType.openAiCompatibleId,
+      );
+      final customId = form.platforms.last.id;
+      form.addModel(customId, id: 'qwen-max', shortLabel: 'QW');
+      form.setPlatformName(customId, 'aliyun-2');
+
+      expect(form.platformUnchanged(form.platforms.first), isFalse);
+      expect(form.usesBuiltinPlatforms, isFalse);
+      final revisionBefore = form.resetRevision;
+
+      form.resetPlatform(presetId);
+
+      // 内置平台完全回到预置（连接设置 + 模型列表 + 参数）。
+      final restored = form.platforms.first;
+      expect(AiPlatforms.isPresetUnchanged(restored), isTrue);
+      expect(restored.displayName, AiPlatforms.defaultPlatform.displayName);
+      expect(restored.baseUrl, AiPlatforms.defaultPlatform.baseUrl);
+      expect(restored.apiType.id, ApiType.openAiResponses.id);
+      expect(restored.models.map((m) => m.id), presetModels);
+      expect(restored.modelById('deepseek-v4-pro')!.temperature, 1.0);
+      expect(restored.modelById('deepseek-v4-pro')!.supportsSearch, isTrue);
+      expect(form.platformUnchanged(restored), isTrue);
+
+      // 平台级文本控制器同步（界面输入框不残留旧值）。
+      expect(form.nameCtrlFor(presetId).text, AiPlatforms.defaultPlatform.displayName);
+      expect(form.baseUrlCtrlFor(presetId).text, AiPlatforms.defaultPlatform.baseUrl);
+      // 重置计数自增：UI 据此重建模型编辑器（丢弃旧文本控制器）。
+      expect(form.resetRevision, revisionBefore + 1);
+
+      // 自添加平台不受影响。
+      final custom = form.platforms.last;
+      expect(custom.id, customId);
+      expect(custom.displayName, 'aliyun-2');
+      expect(custom.baseUrl, 'https://gw.example.com/v1');
+      expect(custom.models.single.id, 'qwen-max');
+      expect(custom.models.single.shortLabel, 'QW');
+      expect(form.platformUnchanged(custom), isFalse);
+      // 仍有自定义平台 ⇒ 整体不视为"内置预置"。
+      expect(form.usesBuiltinPlatforms, isFalse);
+    });
+
+    test('resetPlatform：无其它自定义时整体状态恢复"内置预置"', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final presetId = AiPlatforms.defaultPlatformId;
+      final model = form.platforms.first.models.first;
+
+      form.updateModel(presetId, model.id, model.copyWith(maxTokens: 4096));
+      expect(form.usesBuiltinPlatforms, isFalse);
+
+      form.resetPlatform(presetId);
+      expect(form.usesBuiltinPlatforms, isTrue);
+    });
+
+    test('resetPlatform：非预置平台 / 不存在的平台无操作', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      form.addPlatform(
+        name: 'gw',
+        baseUrl: 'x',
+        apiTypeId: ApiType.openAiCompatibleId,
+      );
+      final customId = form.platforms.last.id;
+      final before = [for (final p in form.platforms) jsonEncode(p.toJson())];
+
+      form.resetPlatform(customId);
+      form.resetPlatform('custom_不存在');
+
+      expect(
+        [for (final p in form.platforms) jsonEncode(p.toJson())],
+        before,
+      );
+      expect(form.resetRevision, 0);
+    });
+
+    test('missingPresetPlatforms / restorePresetPlatform：删除后一键恢复', () {
+      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      addTearDown(form.dispose);
+      final presetId = AiPlatforms.defaultPlatformId;
+
+      expect(form.missingPresetPlatforms, isEmpty);
+
+      form.addPlatform(
+        name: 'gw',
+        baseUrl: 'x',
+        apiTypeId: ApiType.openAiCompatibleId,
+      );
+      form.removePlatform(presetId);
+      expect(form.missingPresetPlatforms.map((p) => p.id), [presetId]);
+
+      form.restorePresetPlatform(presetId);
+      expect(form.platforms.last.id, presetId);
+      expect(AiPlatforms.isPresetUnchanged(form.platforms.last), isTrue);
+      expect(form.missingPresetPlatforms, isEmpty);
+      // 恢复后控制器就绪（可被界面直接使用）。
+      expect(form.baseUrlCtrlFor(presetId).text, AiPlatforms.defaultPlatform.baseUrl);
+
+      // 已存在时再恢复无效果；非预置 id 同样无效果。
+      final length = form.platforms.length;
+      form.restorePresetPlatform(presetId);
+      form.restorePresetPlatform('custom_不存在');
+      expect(form.platforms.length, length);
     });
   });
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../config/ai_platforms.dart';
 import '../models/ai_platform.dart';
 import '../models/api_type.dart';
 import '../utils/focus_utils.dart';
@@ -13,22 +14,28 @@ import 'settings_form_state.dart';
 /// `providers[].models[]`）：
 ///
 /// ```
-/// 默认API（DeepSeek 开放平台）                 ▸
-/// | API Key / Base URL / API 类型 等连接设置
-/// | 模型1                                     ▸
+/// 当前为软件内置预置配置（未自定义模型）
+/// 默认API（DeepSeek 开放平台）          内置默认   ▸
+/// | 连接设置（名称 / API Key / Base URL / API 类型）
+/// | 模型1                                       ▸
 /// | | 模型1 的简写标识 / 温度 / 推理强度 / ...
-/// 自定义API1                                  ▸
+/// | 添加模型 / 删除此平台 / 重置为内置预置
+/// 自定义API1                              自定义     ▸
 /// | ...
 /// ```
 ///
 /// - 每个【平台】是一个可展开条目，展开后显示该平台的连接设置与模型列表；
 /// - 每个【模型】是其下面的一个可展开条目，展开后显示该模型的参数设置；
-/// - 内置默认平台不可删、其模型不可增删（仅可编辑参数）；自定义平台可增删模型、可删平台。
+/// - 软件内置预置平台（`AiPlatforms.presetFor(id) != null`）可自由编辑，未改动时
+///   标注「内置默认」、改动后标注「已自定义」并出现「重置为内置预置」（二次确认，
+///   只还原该平台，自添加平台不受影响）；被删除的预置平台可一键恢复；
+/// - 任何平台都可增删模型、改名、改连接设置（每个平台至少保留一个模型）。
 ///
 /// 本面板只做「按平台 + 按模型编辑参数」，不在此选择对话所用的模型/平台。
 ///
 /// 表单值由外层 [SettingsFormState] 持有（切换面板不丢失），
 /// 由设置页右上角「保存」统一校验并落库；保存后不退出设置页。
+/// 重置同样只作用于编辑态，落盘仍由「保存」完成。
 class AiSettingsForm extends StatefulWidget {
   final SettingsFormState form;
 
@@ -59,6 +66,33 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
     _form.apiKeyCtrlFor(_form.platforms.last.id).text = result.apiKey;
   }
 
+  /// 恢复被删除的内置预置平台（二次确认后写回工作副本，保存时落盘）。
+  Future<void> _confirmRestorePresetPlatform(AiPlatform preset) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('恢复内置平台'),
+        content: Text(
+          '确定恢复软件内置预置平台「${preset.displayName}」吗？'
+          '其连接设置与模型列表为该平台的预置值，其它平台不受影响。\n\n'
+          '恢复为编辑态，点击右上角「保存」后写入配置文件。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('恢复'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    _form.restorePresetPlatform(preset.id);
+  }
+
   // ---------------------------------------------------------------------------
   // 构建
   // ---------------------------------------------------------------------------
@@ -70,6 +104,8 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
       listenable: _form,
       builder: (context, _) {
         final platforms = _form.platforms;
+        final missingPresets = _form.missingPresetPlatforms;
+        final onSurfaceVariant = Theme.of(context).colorScheme.onSurfaceVariant;
         return SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -82,12 +118,9 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
               const SizedBox(height: 4),
               Text(
                 '按「平台 → 模型」组织：展开平台查看其连接设置与模型列表；'
-                '内置默认（DeepSeek 开放平台）不可删、其模型不可增删（仅可编辑参数）；'
-                '自定义平台可增删模型。本页不选择对话所用的模型。',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+                '软件内置预置的平台标注「内置默认」，可整平台重置为预置'
+                '（自定义平台不受影响）。本页不选择对话所用的模型。',
+                style: TextStyle(fontSize: 12, color: onSurfaceVariant),
               ),
               const SizedBox(height: 8),
               Text(
@@ -158,15 +191,46 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                 ),
               ),
               const SizedBox(height: 6),
+              // 预置分层状态：默认态明确提示"当前为内置预置"，自定义态提示可重置。
+              Row(
+                children: [
+                  Icon(
+                    _form.usesBuiltinPlatforms
+                        ? Icons.verified_outlined
+                        : Icons.edit_outlined,
+                    size: 15,
+                    color: onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _form.usesBuiltinPlatforms
+                          ? '当前为软件内置预置配置（未自定义模型）'
+                          : '已自定义模型配置：内置预置平台可整平台重置为预置',
+                      style: TextStyle(fontSize: 12, color: onSurfaceVariant),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               for (var i = 0; i < platforms.length; i++)
                 _PlatformExpandableItem(
                   key: ValueKey('platform-${platforms[i].id}'),
                   form: _form,
                   platform: platforms[i],
-                  // 默认展开第一个平台（通常为内置默认），便于直接看到其设置。
+                  // 默认展开第一个平台（通常为内置预置），便于直接看到其设置。
                   initiallyExpanded: i == 0,
                 ),
               const SizedBox(height: 12),
+              // 被删除的内置预置平台：一键恢复（二次确认）。
+              for (final preset in missingPresets) ...[
+                OutlinedButton.icon(
+                  onPressed: () => _confirmRestorePresetPlatform(preset),
+                  icon: const Icon(Icons.restore, size: 18),
+                  label: Text('恢复内置平台「${preset.displayName}」'),
+                ),
+                const SizedBox(height: 8),
+              ],
               OutlinedButton.icon(
                 onPressed: _addPlatform,
                 icon: const Icon(Icons.add, size: 18),
@@ -253,7 +317,7 @@ class _ExpandableCardState extends State<ExpandableCard> {
 }
 
 // ---------------------------------------------------------------------------
-// 平台可展开条目：连接设置 + 模型列表（自定义平台可增删模型、删平台）
+// 平台可展开条目：连接设置 + 模型列表（增删模型 / 删平台 / 重置为内置预置）
 // ---------------------------------------------------------------------------
 class _PlatformExpandableItem extends StatelessWidget {
   final SettingsFormState form;
@@ -267,11 +331,23 @@ class _PlatformExpandableItem extends StatelessWidget {
     this.initiallyExpanded = false,
   });
 
-  bool get _isCustom => !platform.isBuiltin;
+  /// 是否为软件内置预置平台（按预置注册表判定，不看配置里的任何标记）。
+  bool get _isPreset => AiPlatforms.isPresetId(platform.id);
+
+  /// 是否是最后一个平台（删除入口禁用，保证至少保留一个平台）。
+  bool get _canRemove => form.platforms.length > 1;
+
+  /// 平台卡片右上角的状态标注。
+  String get _badge {
+    if (!_isPreset) return '自定义';
+    return form.platformUnchanged(platform) ? '内置默认' : '已自定义';
+  }
 
   @override
   Widget build(BuildContext context) {
     final onSurfaceVariant = Theme.of(context).colorScheme.onSurfaceVariant;
+    // 仅「预置平台且已被改动」时才提供重置入口（其余情况无可重置内容）。
+    final canReset = _isPreset && !form.platformUnchanged(platform);
     return ExpandableCard(
       initiallyExpanded: initiallyExpanded,
       title: Row(
@@ -287,7 +363,7 @@ class _PlatformExpandableItem extends StatelessWidget {
             ),
           ),
           Text(
-            platform.isBuiltin ? '内置' : '自定义',
+            _badge,
             style: TextStyle(fontSize: 11, color: onSurfaceVariant),
           ),
         ],
@@ -307,7 +383,7 @@ class _PlatformExpandableItem extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
-                '暂无模型${_isCustom ? '，点击下方「添加模型」。' : '。'}',
+                '暂无模型，点击下方「添加模型」。',
                 style: TextStyle(fontSize: 12, color: onSurfaceVariant),
               ),
             )
@@ -319,30 +395,50 @@ class _PlatformExpandableItem extends StatelessWidget {
                 platform: platform,
                 model: m,
               ),
-          if (_isCustom) ...[
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () => _openAddModel(context),
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('添加模型'),
-            ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => _openAddModel(context),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('添加模型'),
+          ),
+          if (canReset) ...[
             const SizedBox(height: 4),
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
-                onPressed: () => _confirmRemovePlatform(context),
-                icon: Icon(
-                  Icons.delete_outline,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                label: Text(
-                  '删除此平台',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
+                onPressed: () => _confirmResetPlatform(context),
+                icon: const Icon(Icons.restore, size: 18),
+                label: const Text('重置为内置预置'),
               ),
             ),
           ],
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _canRemove ? () => _confirmRemovePlatform(context) : null,
+              icon: Icon(
+                Icons.delete_outline,
+                size: 18,
+                color: _canRemove
+                    ? Theme.of(context).colorScheme.error
+                    : Theme.of(context).disabledColor,
+              ),
+              label: Text(
+                '删除此平台',
+                style: TextStyle(
+                  color: _canRemove
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).disabledColor,
+                ),
+              ),
+            ),
+          ),
+          if (!_canRemove)
+            Text(
+              '至少需要保留一个平台。',
+              style: TextStyle(fontSize: 11, color: onSurfaceVariant),
+            ),
         ],
       ),
     );
@@ -355,6 +451,35 @@ class _PlatformExpandableItem extends StatelessWidget {
     );
     if (result == null) return;
     form.addModel(platform.id, id: result.id, shortLabel: result.shortLabel);
+  }
+
+  /// 重置为内置预置（二次确认）：只影响当前平台，API Key 与其它平台不受影响。
+  Future<void> _confirmResetPlatform(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重置为内置预置'),
+        content: Text(
+          '确定把平台「${platform.displayName}」恢复为软件内置预置吗？'
+          '该平台的连接设置、模型列表与全部参数都将还原；'
+          'API Key 与其它平台不受影响。\n\n'
+          '重置为编辑态，点击右上角「保存」后写入配置文件。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              form.resetPlatform(platform.id);
+            },
+            child: const Text('重置'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _confirmRemovePlatform(BuildContext context) async {
@@ -395,20 +520,18 @@ class _PlatformSettings extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (!platform.isBuiltin) ...[
-          TextField(
-            controller: form.nameCtrlFor(platform.id),
-            onTapOutside: unfocusOnTapOutside,
-            onChanged: (v) => form.setPlatformName(platform.id, v),
-            decoration: const InputDecoration(
-              labelText: '平台名称',
-              hintText: '如 我的网关',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
+        TextField(
+          controller: form.nameCtrlFor(platform.id),
+          onTapOutside: unfocusOnTapOutside,
+          onChanged: (v) => form.setPlatformName(platform.id, v),
+          decoration: const InputDecoration(
+            labelText: '平台名称',
+            hintText: '如 我的网关',
+            border: OutlineInputBorder(),
+            isDense: true,
           ),
-          const SizedBox(height: 12),
-        ],
+        ),
+        const SizedBox(height: 12),
         AppDropdown<String>(
           label: 'API 类型',
           value: platform.apiType.id,
@@ -496,8 +619,8 @@ class _ModelExpandableItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 内置默认平台的模型不可删；自定义平台模型删到仅剩一个时也不可删。
-    final canDelete = !platform.isBuiltin && platform.models.length > 1;
+    // 每个平台至少保留一个模型；预置平台上用户自建的模型同样可删。
+    final canDelete = platform.models.length > 1;
     return ExpandableCard(
       title: Row(
         children: [
@@ -545,11 +668,15 @@ class _ModelExpandableItem extends StatelessWidget {
         ],
       ),
       child: _ModelSettingsEditor(
+        // 平台重置后按 key 重建：模型编辑器自带文本控制器，需重建以丢弃旧文本
+        // （卡片自身的展开状态由 ExpandableCard 持有，不受影响）。
+        key: ValueKey(
+          'model-editor-${platform.id}-${model.id}-${form.resetRevision}',
+        ),
         form: form,
         platformId: platform.id,
         model: model,
         apiType: platform.apiType,
-        canEditCapabilities: !platform.isBuiltin,
       ),
     );
   }
@@ -587,16 +714,12 @@ class _ModelSettingsEditor extends StatefulWidget {
   final AiModel model;
   final ApiType apiType;
 
-  /// 是否可自行设置「可调配功能」（流式 / 思考 / 联网搜索 / 识图）。
-  /// 内置默认平台的预设模型为 false（固定不可改），用户自定义模型为 true。
-  final bool canEditCapabilities;
-
   const _ModelSettingsEditor({
+    super.key,
     required this.form,
     required this.platformId,
     required this.model,
     required this.apiType,
-    required this.canEditCapabilities,
   });
 
   @override
@@ -638,14 +761,14 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     widget.form.updateModel(widget.platformId, widget.model.id, fn(current));
   }
 
-  /// 可调配功能的开关行；预设模型（[canEditCapabilities] 为 false）时为禁用只读态。
+  /// 可调配功能的开关行（预置模型同样可自由调整，改动后可整平台重置）。
   Widget _capabilitySwitch(String label, bool value, ValueChanged<bool> onChanged) {
     return SwitchListTile(
       contentPadding: EdgeInsets.zero,
       dense: true,
       title: Text(label, style: const TextStyle(fontSize: 14)),
       value: value,
-      onChanged: widget.canEditCapabilities ? onChanged : null,
+      onChanged: onChanged,
     );
   }
 
@@ -703,14 +826,6 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
           model.supportsVision,
           (v) => _update((m) => m.copyWith(supportsVision: v)),
         ),
-        if (!widget.canEditCapabilities)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              '预设模型的能力由平台固定，用户不可更改。',
-              style: TextStyle(fontSize: 11, color: outline),
-            ),
-          ),
         const SizedBox(height: 12),
         Row(
           children: [

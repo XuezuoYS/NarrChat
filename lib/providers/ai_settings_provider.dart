@@ -12,22 +12,30 @@ import '../services/local_config_service.dart';
 ///
 /// 本地存储策略（符合 AGENTS.md 数据结构规范）：
 /// - **API Key**：按平台写入 `flutter_secure_storage`，禁止明文落盘。
-///   内置默认平台复用旧键 `ai_api_key`（老用户无感迁移），自定义平台用
-///   `ai_api_key_<platformId>`；
-/// - **其余设置**：写入本地明文 JSON `local_config/app_settings.json`
-///   （[LocalConfigService]），不进入云存储。
+///   内置默认平台复用旧键 `ai_api_key`，自定义平台用 `ai_api_key_<platformId>`；
+/// - **其余设置**：写入本地明文 JSON `local_config/app_settings.json` 的
+///   `ai` 命名空间（[aiNamespaceKey]），不进入云存储。
 ///
-/// 配置结构（camelCase）：
+/// 分层语义（与 DeepSeek Harness 的「命名空间 → 用户层」一致）：
+/// - `ai` 键缺失 / 为空 / 不可读（JSON 解析失败由 [LocalConfigService.read]
+///   吞掉并返回空 Map）⇒ 平台与模型**全部遵循软件内置预置**
+///   （[AiPlatforms.presetPlatforms]），UI 提示「当前为内置默认」；
+/// - 用户在设置页修改并保存后，`ai.platforms` 写入**完整副本**（平台、模型、
+///   参数齐全），可从文件手工编辑或转移到其它机器；
+/// - 平台被重置为内置预置、且不再有自定义平台时，`platforms` 键整体消失，
+///   回到"缺失即默认"的形态。
+///
+/// 配置结构（camelCase，均位于 `ai` 命名空间内）：
 /// - `platforms`：平台数组，每个平台含 `id` / `displayName` / `apiTypeId` /
-///   `baseUrl` / `isBuiltin` / `supportsResponseChaining` / `models`
-///   （模型含 `id` / `shortLabel` / `temperature` / `reasoningEffort` /
-///   `maxTokens` 与能力开关）；
+///   `baseUrl` / `supportsResponseChaining` / `models`（模型含 `id` /
+///   `shortLabel` / `temperature` / `reasoningEffort` / `maxTokens` 与能力开关）；
 /// - `selectedPlatformId` / `selectedModelId`：当前选中的平台与模型；
-/// - `lastThinking` / `lastStreaming` / `lastSearch`：Chat 页每轮选项记忆。
+/// - `lastThinking` / `lastStreaming` / `lastSearch`：Chat 页每轮选项记忆；
+/// - `maxImageSizeMB` / `convertJpgToJpeg`：图片设置。
 class AiSettingsProvider extends ChangeNotifier {
   AiSettingsProvider() {
-    // 未 load 也能用（测试直接构造）：内置默认平台就绪。
-    _platforms = [AiPlatforms.defaultPlatform];
+    // 未 load 也能用（测试直接构造）：内置预置平台就绪。
+    _platforms = AiPlatforms.presetPlatforms;
     _selectedPlatformId = AiPlatforms.defaultPlatformId;
     _selectedModelId = AiPlatforms.defaultModelId;
   }
@@ -37,7 +45,10 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 内置默认平台的安全存储键（与旧版一致，老用户 Key 保留）。
   static const String _defaultKeyRef = 'ai_api_key';
 
-  // ---- 本地 JSON 配置文件键名（camelCase） ----
+  /// app_settings.json 中的 AI 设置命名空间键名。
+  static const String aiNamespaceKey = 'ai';
+
+  // ---- `ai` 命名空间内的配置键名（camelCase） ----
   static const String _keyPlatforms = 'platforms';
   static const String _keySelectedPlatformId = 'selectedPlatformId';
   static const String _keySelectedModelId = 'selectedModelId';
@@ -47,19 +58,8 @@ class AiSettingsProvider extends ChangeNotifier {
   static const String _keyMaxImageSizeMB = 'maxImageSizeMB';
   static const String _keyConvertJpgToJpeg = 'convertJpgToJpeg';
 
-  // ---- 旧版（v2：selectedPreset 结构）配置键，用于迁移 ----
-  static const String _keyBaseUrl = 'baseUrl';
-  static const String _keySelectedPreset = 'selectedPreset';
-  static const String _keyPresetParams = 'presetParams';
-  static const String _keyCustomModelName = 'customModelName';
-
-  // ---- 旧版（v1.2.x 及更早）配置键，用于迁移 ----
-  static const String _oldKeyModel = 'model';
-  static const String _oldKeyTemperature = 'temperature';
-  static const String _oldKeyThinking = 'thinking';
-  static const String _oldKeyReasoningEffort = 'reasoningEffort';
-  static const String _oldKeyMaxTokens = 'maxTokens';
-  static const String _oldKeyStreaming = 'streaming';
+  /// 单张图片大小上限的默认值（MB）。
+  static const int _defaultMaxImageSizeMB = 16;
 
   // ---- 状态 ----
   late List<AiPlatform> _platforms;
@@ -69,12 +69,7 @@ class AiSettingsProvider extends ChangeNotifier {
   bool _lastThinking = true;
   bool _lastStreaming = true;
   bool _lastSearch = false;
-
-  /// 单张图片大小上限（MB），导入时校验；默认 16，可在设置中调整。
-  int _maxImageSizeMB = 16;
-
-  /// 是否把导入的 `.jpg` 自动转换为 `.jpeg`（Deepseek-V4-Flash-Vision-Exp 不支持 jpg）；
-  /// 默认关闭。
+  int _maxImageSizeMB = _defaultMaxImageSizeMB;
   bool _convertJpgToJpeg = false;
 
   bool _isLoading = false;
@@ -156,38 +151,34 @@ class AiSettingsProvider extends ChangeNotifier {
   String apiKeyFor(String platformId) => _apiKeys[platformId] ?? '';
 
   // ---------------------------------------------------------------------------
-  // 加载与迁移
+  // 加载
   // ---------------------------------------------------------------------------
 
-  /// 从安全存储与本地 JSON 配置文件中加载设置（旧版配置自动迁移）。
+  /// 从安全存储与本地 JSON 配置文件的 `ai` 命名空间加载设置。
+  ///
+  /// 命名空间缺失 / 为空 / 类型不符 / 不可读时一律回退软件内置预置（`platforms`
+  /// 非数组、空数组、或逐项解析后无合法平台），**加载过程不写盘**：不迁移、
+  /// 不物化、不清理历史键。
   Future<void> load() async {
     _isLoading = true;
     try {
-      final cfg = await LocalConfigService.read();
-      if (cfg.containsKey(_keyPlatforms)) {
-        _readPlatforms(cfg);
-        _lastThinking = (cfg[_keyLastThinking] as bool?) ?? true;
-        _lastStreaming = (cfg[_keyLastStreaming] as bool?) ?? true;
-        _lastSearch = (cfg[_keyLastSearch] as bool?) ?? false;
-      } else if (cfg.containsKey(_keySelectedPreset)) {
-        final migrated = migrateFromV2(cfg);
-        _applyPlatformsConfig(migrated);
-        _lastThinking = (cfg[_keyLastThinking] as bool?) ?? true;
-        _lastStreaming = (cfg[_keyLastStreaming] as bool?) ?? true;
-        _lastSearch = (cfg[_keyLastSearch] as bool?) ?? false;
-        await _persistPlatformsConfig(migrated);
-      } else {
-        final migrated = migrateFromV1(cfg);
-        _applyPlatformsConfig(migrated);
-        _lastThinking = (cfg[_oldKeyThinking] as bool?) ?? true;
-        _lastStreaming = (cfg[_oldKeyStreaming] as bool?) ?? true;
-        _lastSearch = false;
-        await _persistPlatformsConfig(migrated);
-      }
-      await _loadApiKeys(cfg);
+      final section = _readAiSection(await LocalConfigService.read());
+      _platforms = AiPlatforms.resolvePlatforms(section[_keyPlatforms]);
+      _selectedPlatformId = _normalizePlatformId(
+        section[_keySelectedPlatformId] as String?,
+      );
+      _selectedModelId = _normalizeModelId(
+        _selectedPlatformId,
+        section[_keySelectedModelId] as String?,
+      );
+      _lastThinking = section[_keyLastThinking] as bool? ?? true;
+      _lastStreaming = section[_keyLastStreaming] as bool? ?? true;
+      _lastSearch = section[_keyLastSearch] as bool? ?? false;
       _maxImageSizeMB =
-          (cfg[_keyMaxImageSizeMB] as num?)?.toInt() ?? _maxImageSizeMB;
-      _convertJpgToJpeg = (cfg[_keyConvertJpgToJpeg] as bool?) ?? false;
+          (section[_keyMaxImageSizeMB] as num?)?.toInt() ??
+              _defaultMaxImageSizeMB;
+      _convertJpgToJpeg = section[_keyConvertJpgToJpeg] as bool? ?? false;
+      await _loadApiKeys();
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -196,79 +187,31 @@ class AiSettingsProvider extends ChangeNotifier {
     }
   }
 
-  void _readPlatforms(Map<String, dynamic> cfg) {
-    final raw = (cfg[_keyPlatforms] as List<dynamic>?) ?? const [];
-    final parsed = <AiPlatform>[
-      for (final e in raw)
-        AiPlatform.fromJson((e as Map).cast<String, dynamic>()),
-    ];
-    _platforms = parsed.isEmpty
-        ? [AiPlatforms.defaultPlatform]
-        : _normalizePlatforms(parsed);
-    _selectedPlatformId =
-        (cfg[_keySelectedPlatformId] as String?) ?? _platforms.first.id;
-    if (!_platforms.any((p) => p.id == _selectedPlatformId)) {
-      _selectedPlatformId = _platforms.first.id;
-    }
+  /// 读取 `ai` 命名空间内容；不存在 / 非对象 ⇒ 空 Map（即全部遵循内置默认）。
+  static Map<String, dynamic> _readAiSection(Map<String, dynamic> cfg) {
+    final raw = cfg[aiNamespaceKey];
+    if (raw is! Map) return const <String, dynamic>{};
+    return raw.cast<String, dynamic>();
+  }
+
+  /// 选中平台归一化：未知 / 缺失 ⇒ 平台列表第一个。
+  String _normalizePlatformId(String? raw) {
+    if (raw != null && _platforms.any((p) => p.id == raw)) return raw;
+    return _platforms.first.id;
+  }
+
+  /// 选中模型归一化：未知 / 缺失 ⇒ 该平台的第一个模型。
+  String _normalizeModelId(String platformId, String? raw) {
     final platform = _platforms.firstWhere(
-      (p) => p.id == _selectedPlatformId,
+      (p) => p.id == platformId,
       orElse: () => _platforms.first,
     );
-    _selectedModelId = (cfg[_keySelectedModelId] as String?) ?? '';
-    if (platform.modelById(_selectedModelId) == null) {
-      _selectedModelId = platform.models.isNotEmpty
-          ? platform.models.first.id
-          : '';
-    }
-  }
-
-  /// 归一化平台列表：内置默认平台始终为内置（不可删），并保证其存在。
-  ///
-  /// 防御配置文件中 `isBuiltin` 字段丢失/被篡改为 false（旧结构迁移、手改
-  /// 配置文件等）导致「默认配置可被删除」，以及此前「默认模型可被删除」的
-  /// 问题：默认平台的预置模型若缺失则自动补回。
-  ///
-  /// 默认平台的接入协议**由用户设置页自主决定**（出厂为 Response API 兼容，
-  /// 可切换 Chat 兼容），此处不做强制覆盖。
-  static List<AiPlatform> _normalizePlatforms(List<AiPlatform> platforms) {
-    var list = platforms.map((p) {
-      if (p.id == AiPlatforms.defaultPlatformId) {
-        return p.copyWith(
-          isBuiltin: true,
-          models: _restoreBuiltinModels(p.models),
-        );
-      }
-      return p;
-    }).toList();
-    if (!list.any((p) => p.id == AiPlatforms.defaultPlatformId)) {
-      list = [AiPlatforms.defaultPlatform, ...list];
-    }
-    return list;
-  }
-
-  /// 为内置默认平台补回缺失的预置模型，保证核心模型不被误删后永久丢失。
-  static List<AiModel> _restoreBuiltinModels(List<AiModel> models) {
-    final result = List<AiModel>.from(models);
-    for (final builtin in AiPlatforms.defaultPlatform.models) {
-      if (!result.any((m) => m.id == builtin.id)) {
-        result.add(builtin);
-      }
-    }
-    return result;
-  }
-
-  void _applyPlatformsConfig(AiPlatformsConfig config) {
-    _platforms = _normalizePlatforms(List.of(config.platforms));
-    _selectedPlatformId = config.selectedPlatformId;
-    _selectedModelId = config.selectedModelId;
-  }
-
-  Future<void> _persistPlatformsConfig(AiPlatformsConfig config) async {
-    await LocalConfigService.update(config.toJson());
+    if (raw != null && platform.modelById(raw) != null) return raw;
+    return platform.defaultModel.id;
   }
 
   /// 为当前所有平台加载安全存储中的 API Key。
-  Future<void> _loadApiKeys(Map<String, dynamic> cfg) async {
+  Future<void> _loadApiKeys() async {
     _apiKeys.clear();
     for (final platform in _platforms) {
       final stored = await _secureStorage.read(key: _keyRefFor(platform.id));
@@ -286,123 +229,41 @@ class AiSettingsProvider extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // 旧版迁移（纯函数，可单测）
-  // ---------------------------------------------------------------------------
-
-  /// v1.2.x 旧结构（`model` / `temperature` / `thinking` /
-  /// `reasoningEffort` / `maxTokens` / `streaming`）→ 平台结构。
-  ///
-  /// - `model` 命中内置模型 → 默认平台该模型（并入旧参数）；
-  /// - 否则 → 默认平台追加一个自定义模型（名称取旧 model，无参时回退默认模型）。
-  @visibleForTesting
-  static AiPlatformsConfig migrateFromV1(Map<String, dynamic> cfg) {
-    final oldModel = (cfg[_oldKeyModel] as String?)?.trim() ?? '';
-    final oldTemp = (cfg[_oldKeyTemperature] as num?)?.toDouble() ?? 1.0;
-    final oldReasoning =
-        (cfg[_oldKeyReasoningEffort] as String?) ??
-        AppConfig.defaultReasoningEffort;
-    final oldMaxTokens = (cfg[_oldKeyMaxTokens] as num?)?.toInt();
-
-    final base = AiPlatforms.defaultPlatform;
-    final known = base.modelById(oldModel);
-    var models = <AiModel>[];
-    String selectedModelId;
-    if (known != null) {
-      models = [
-        for (final m in base.models)
-          m.id == known.id
-              ? m.copyWith(
-                  temperature: oldTemp,
-                  reasoningEffort: oldReasoning,
-                  maxTokens: oldMaxTokens,
-                )
-              : m,
-      ];
-      selectedModelId = known.id;
-    } else {
-      final custom = oldModel.isEmpty
-          ? null
-          : AiModel(
-              id: oldModel,
-              temperature: oldTemp,
-              reasoningEffort: oldReasoning,
-              maxTokens: oldMaxTokens,
-            );
-      models = [...base.models, ?custom];
-      selectedModelId = custom?.id ?? base.defaultModel.id;
-    }
-    return AiPlatformsConfig(
-      platforms: [base.copyWith(models: models)],
-      selectedPlatformId: base.id,
-      selectedModelId: selectedModelId,
-    );
-  }
-
-  /// v2 结构（`selectedPreset` / `presetParams` / `customModelName` /
-  /// `customRequestBody` + `baseUrl`）→ 平台结构。
-  ///
-  /// - `baseUrl` → 默认平台接口地址；
-  /// - `presetParams`（按预设 id 记忆）应用到默认平台的同名模型；
-  /// - 旧自定义模型（`customModelName` + `customRequestBody`）→ 默认平台追加一个
-  ///   模型（自定义请求体模板功能已移除，仅保留模型名与参数）。
-  @visibleForTesting
-  static AiPlatformsConfig migrateFromV2(Map<String, dynamic> cfg) {
-    final presetId = (cfg[_keySelectedPreset] as String?) ?? '';
-    final baseUrl =
-        (cfg[_keyBaseUrl] as String?) ?? AppConfig.defaultApiBaseUrlEffective;
-    final presetParams =
-        (cfg[_keyPresetParams] as Map<String, dynamic>?) ?? const {};
-    final customName = (cfg[_keyCustomModelName] as String?)?.trim() ?? '';
-    final isCustom = presetId == '__custom__';
-
-    final base = AiPlatforms.defaultPlatform.copyWith(baseUrl: baseUrl);
-    final models = <AiModel>[
-      for (final m in base.models)
-        _applyPresetMemory(m, presetParams[m.id]),
-    ];
-
-    String selectedModelId;
-    if (isCustom && customName.isNotEmpty) {
-      models.add(
-        AiModel(
-          id: customName,
-          temperature: 1.0,
-          reasoningEffort: AppConfig.defaultReasoningEffort,
-        ),
-      );
-      selectedModelId = customName;
-    } else {
-      selectedModelId = models.any((m) => m.id == presetId)
-          ? presetId
-          : models.first.id;
-    }
-
-    return AiPlatformsConfig(
-      platforms: [base.copyWith(models: models)],
-      selectedPlatformId: base.id,
-      selectedModelId: selectedModelId,
-    );
-  }
-
-  /// 把旧「预设参数记忆」应用到同名模型；无记忆则保持模型默认。
-  static AiModel _applyPresetMemory(AiModel model, Object? rawMemory) {
-    if (rawMemory is! Map) return model;
-    final map = rawMemory.cast<String, dynamic>();
-    return model.copyWith(
-      temperature: (map['temperature'] as num?)?.toDouble() ?? model.temperature,
-      reasoningEffort: map['reasoningEffort'] as String? ?? model.reasoningEffort,
-      maxTokens: (map['maxTokens'] as num?)?.toInt() ?? model.maxTokens,
-    );
-  }
-
-  // ---------------------------------------------------------------------------
   // 保存
   // ---------------------------------------------------------------------------
+
+  /// 组装 `ai` 命名空间的完整用户层内容。
+  ///
+  /// 与内置预置完全一致时**不写** `platforms`（等价于"未自定义平台"），
+  /// 使重置回预置后文件自动回到"缺失即默认"的形态；其余键始终写全量，
+  /// 便于用户查看、手工修改与转移。
+  Map<String, dynamic> _buildAiSection({
+    List<AiPlatform>? platforms,
+    String? selectedPlatformId,
+    String? selectedModelId,
+  }) {
+    final list = platforms ?? _platforms;
+    return {
+      if (!AiPlatforms.matchesPresets(list))
+        _keyPlatforms: [for (final p in list) p.toJson()],
+      _keySelectedPlatformId: selectedPlatformId ?? _selectedPlatformId,
+      _keySelectedModelId: selectedModelId ?? _selectedModelId,
+      _keyLastThinking: _lastThinking,
+      _keyLastStreaming: _lastStreaming,
+      _keyLastSearch: _lastSearch,
+      _keyMaxImageSizeMB: _maxImageSizeMB,
+      _keyConvertJpgToJpeg: _convertJpgToJpeg,
+    };
+  }
+
+  /// 写入 `ai` 命名空间（整体替换，命名空间内不会丢键；其它顶层键不受影响）。
+  Future<void> _persistAiSection() =>
+      LocalConfigService.update({aiNamespaceKey: _buildAiSection()});
 
   /// 保存设置页（AI 模块）的全量平台结构。
   ///
   /// [platforms] 为编辑后的平台列表；[apiKeys] 为平台 id → API Key（空串表示无）。
-  /// 校验平台与模型非空后落库（密钥写安全存储、配置写 LocalConfig）。
+  /// 校验平台与模型非空后落库（密钥写安全存储、配置写 `ai` 命名空间内）。
   Future<bool> save({
     required List<AiPlatform> platforms,
     required String selectedPlatformId,
@@ -450,10 +311,13 @@ class AiSettingsProvider extends ChangeNotifier {
         }
       }
 
+      // 先落盘再更新内存态：写盘失败时保持原状态。
       await LocalConfigService.update({
-        _keyPlatforms: [for (final p in normalizedPlatforms) p.toJson()],
-        _keySelectedPlatformId: normPlatformId,
-        _keySelectedModelId: normModelId,
+        aiNamespaceKey: _buildAiSection(
+          platforms: normalizedPlatforms,
+          selectedPlatformId: normPlatformId,
+          selectedModelId: normModelId,
+        ),
       });
 
       _platforms = normalizedPlatforms;
@@ -487,11 +351,7 @@ class AiSettingsProvider extends ChangeNotifier {
     if (search != null) _lastSearch = search;
     notifyListeners();
     try {
-      await LocalConfigService.update({
-        _keyLastThinking: _lastThinking,
-        _keyLastStreaming: _lastStreaming,
-        _keyLastSearch: _lastSearch,
-      });
+      await _persistAiSection();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -506,7 +366,7 @@ class AiSettingsProvider extends ChangeNotifier {
     _maxImageSizeMB = value;
     notifyListeners();
     try {
-      await LocalConfigService.update({_keyMaxImageSizeMB: value});
+      await _persistAiSection();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -522,7 +382,7 @@ class AiSettingsProvider extends ChangeNotifier {
     _convertJpgToJpeg = value;
     notifyListeners();
     try {
-      await LocalConfigService.update({_keyConvertJpgToJpeg: value});
+      await _persistAiSection();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -542,10 +402,7 @@ class AiSettingsProvider extends ChangeNotifier {
     _selectedModelId = modelId;
     notifyListeners();
     try {
-      await LocalConfigService.update({
-        _keySelectedPlatformId: platformId,
-        _keySelectedModelId: modelId,
-      });
+      await _persistAiSection();
       return true;
     } catch (e) {
       _error = e.toString();

@@ -114,7 +114,7 @@ void main() {
   group('AiPlatform', () {
     test('默认平台：预置 Pro / Flash / Vision Exp，协议为 Response API 兼容', () {
       final platform = AiPlatforms.defaultPlatform;
-      expect(platform.isBuiltin, isTrue);
+      expect(platform.id, AiPlatforms.defaultPlatformId);
       expect(platform.apiType.id, ApiType.openAiResponses.id);
       expect(platform.supportsResponseChaining, isFalse);
       expect(
@@ -141,6 +141,173 @@ void main() {
         AiPlatforms.defaultPlatform.toJson()..remove('supportsResponseChaining'),
       );
       expect(legacy.supportsResponseChaining, isFalse);
+    });
+
+    test('平台配置不落盘"内置"标记（由预置注册表派生）', () {
+      expect(AiPlatforms.defaultPlatform.toJson().containsKey('isBuiltin'), isFalse);
+    });
+  });
+
+  group('AiPlatforms 内置预置注册表', () {
+    test('预置列表与按 id 查找', () {
+      final presets = AiPlatforms.presetPlatforms;
+      expect(presets.length, 1);
+      expect(presets.single.id, AiPlatforms.deepseekPlatformId);
+      expect(AiPlatforms.presetFor(AiPlatforms.defaultPlatformId), isNotNull);
+      expect(AiPlatforms.isPresetId(AiPlatforms.defaultPlatformId), isTrue);
+      // 自定义平台 id 不是预置。
+      expect(AiPlatforms.presetFor('custom_1'), isNull);
+      expect(AiPlatforms.isPresetId('custom_1'), isFalse);
+      // 每次返回全新实例，避免共享可变引用。
+      expect(
+        identical(AiPlatforms.presetPlatforms.single, AiPlatforms.presetPlatforms.single),
+        isFalse,
+      );
+    });
+
+    test('isPresetUnchanged：未改动为 true，任一字段改动为 false', () {
+      expect(AiPlatforms.isPresetUnchanged(AiPlatforms.defaultPlatform), isTrue);
+      // 非预置 id 一律 false。
+      expect(
+        AiPlatforms.isPresetUnchanged(
+          AiPlatforms.defaultPlatform.copyWith(id: 'custom_1'),
+        ),
+        isFalse,
+      );
+
+      final preset = AiPlatforms.defaultPlatform;
+      final changed = <AiPlatform>[
+        preset.copyWith(displayName: '我的 DeepSeek'),
+        preset.copyWith(baseUrl: 'https://gw.example.com'),
+        preset.copyWith(apiType: ApiType.openAiCompatible),
+        preset.copyWith(supportsResponseChaining: true),
+        // 模型参数 / 能力 / 增删模型。
+        preset.copyWith(
+          models: [
+            preset.models.first.copyWith(temperature: 0.7),
+            ...preset.models.skip(1),
+          ],
+        ),
+        preset.copyWith(
+          models: [
+            preset.models.first.copyWith(shortLabel: 'V4P'),
+            ...preset.models.skip(1),
+          ],
+        ),
+        preset.copyWith(
+          models: [
+            preset.models.first.copyWith(supportsSearch: false),
+            ...preset.models.skip(1),
+          ],
+        ),
+        preset.copyWith(models: [preset.models.first]),
+        preset.copyWith(
+          models: [...preset.models, const AiModel(id: 'extra-model')],
+        ),
+      ];
+      for (final platform in changed) {
+        expect(
+          AiPlatforms.isPresetUnchanged(platform),
+          isFalse,
+          reason: '改动后应判定为已自定义：${platform.toJson()}',
+        );
+      }
+    });
+
+    test('matchesPresets：数量 / 顺序 / 内容任一不同即 false', () {
+      final presets = AiPlatforms.presetPlatforms;
+      expect(AiPlatforms.matchesPresets(presets), isTrue);
+      // 与 toJson 往返后的副本等价（配置读取路径）。
+      expect(
+        AiPlatforms.matchesPresets(
+          [for (final p in presets) AiPlatform.fromJson(p.toJson())],
+        ),
+        isTrue,
+      );
+      expect(AiPlatforms.matchesPresets([]), isFalse);
+      expect(
+        AiPlatforms.matchesPresets([
+          ...presets,
+          const AiPlatform(
+            id: 'custom_1',
+            displayName: '网关',
+            apiType: ApiType.openAiCompatible,
+            baseUrl: 'https://gw.example.com',
+            models: [AiModel(id: 'gpt-4o-mini')],
+          ),
+        ]),
+        isFalse,
+      );
+      expect(
+        AiPlatforms.matchesPresets([presets.single.copyWith(baseUrl: 'x')]),
+        isFalse,
+      );
+    });
+  });
+
+  group('AiPlatforms.resolvePlatforms（用户层 `ai.platforms` 解析）', () {
+    test('缺失 / 非数组 / 空数组 ⇒ 内置预置', () {
+      for (final raw in <Object?>[null, 'ai', 42, const <Object?>[], const {}]) {
+        final resolved = AiPlatforms.resolvePlatforms(raw);
+        expect(AiPlatforms.matchesPresets(resolved), isTrue, reason: '$raw');
+        expect(resolved.single.id, AiPlatforms.defaultPlatformId);
+      }
+    });
+
+    test('合法用户副本（含自定义平台）原样保留', () {
+      final custom = AiPlatform(
+        id: 'custom_1',
+        displayName: 'aliyun',
+        apiType: ApiType.openAiCompatible,
+        baseUrl: 'https://gw.example.com/v1',
+        models: const [
+          AiModel(id: 'qwen-max', shortLabel: 'QW', temperature: 0.5, maxTokens: 2048),
+        ],
+      );
+      final edited = AiPlatforms.defaultPlatform.copyWith(
+        models: [
+          AiPlatforms.defaultPlatform.models.first.copyWith(temperature: 0.7),
+          ...AiPlatforms.defaultPlatform.models.skip(1),
+        ],
+      );
+      final resolved = AiPlatforms.resolvePlatforms([
+        edited.toJson(),
+        custom.toJson(),
+      ]);
+      expect(resolved.length, 2);
+      expect(resolved.first.models.first.temperature, 0.7);
+      expect(resolved.last.id, 'custom_1');
+      expect(resolved.last.displayName, 'aliyun');
+      expect(resolved.last.models.single.shortLabel, 'QW');
+      expect(resolved.last.models.single.maxTokens, 2048);
+    });
+
+    test('非法项被丢弃；全非法 ⇒ 内置预置', () {
+      final resolved = AiPlatforms.resolvePlatforms([
+        // 非法：id 为空
+        {'id': '', 'models': [const AiModel(id: 'm').toJson()]},
+        // 非法：无模型（手改配置常见错误）
+        {'id': 'half', 'displayName': '半成品'},
+        42,
+        // 合法
+        {
+          'id': 'custom_2',
+          'displayName': '网关',
+          'baseUrl': 'https://gw.example.com',
+          'models': [const AiModel(id: 'gpt-4o-mini').toJson()],
+        },
+      ]);
+      expect(resolved.length, 1);
+      expect(resolved.single.id, 'custom_2');
+
+      expect(
+        AiPlatforms.matchesPresets(
+          AiPlatforms.resolvePlatforms([
+            {'id': 'half', 'displayName': '半成品'},
+          ]),
+        ),
+        isTrue,
+      );
     });
   });
 

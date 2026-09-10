@@ -74,6 +74,44 @@
 | 本地数据 | AI / UI 等杂项设置 | 本地 JSON 配置（`local_config/app_settings.json` 等），无需同步 |
 | 令牌 | API Key、WebDAV 密码 | 操作系统密钥库（`flutter_secure_storage`），禁止明文存储、禁止进入云同步 |
 
+### AI 模型配置的分层（`ai` 命名空间）
+
+`local_config/app_settings.json` 里的 `ai` 命名空间是**用户层**，软件本体预置
+（DeepSeek 开放平台及 v4 Pro / v4 Flash / v4 Flash Vision Exp）始终是缺省兜底：
+
+- `ai` 键**缺失 / 为空 / 不可读**（含 JSON 写坏）⇒ 全部遵循软件内置预置，
+  设置页提示「当前为软件内置预置配置」，平台标注「内置默认」；
+- 在「设置 → API 设置」里改动并点「保存」后，`ai.platforms` 会写入**完整副本**
+  （平台、模型、参数齐全），便于直接手工编辑或转移到其它机器；
+- 内置预置平台被改动后可点「重置为内置预置」（二次确认）：只还原该平台，
+  自添加平台不受影响；如果已无任何自定义平台，`platforms` 键会整体消失，
+  文件回到「缺失即默认」的形态；
+- API Key 存于系统密钥库，不随重置变化，也不进入该文件。
+
+```json
+{
+  "ai": {
+    "platforms": [
+      {
+        "id": "__default__",
+        "displayName": "默认（DeepSeek 开放平台）",
+        "apiTypeId": "openai-responses",
+        "baseUrl": "https://api.deepseek.com",
+        "supportsResponseChaining": false,
+        "models": [
+          { "id": "deepseek-v4-pro", "shortLabel": "", "temperature": 1.0,
+            "reasoningEffort": "high", "supportsStreaming": true,
+            "supportsThinking": true, "supportsSearch": true, "supportsVision": false }
+        ]
+      }
+    ],
+    "selectedPlatformId": "__default__",
+    "selectedModelId": "deepseek-v4-pro"
+  },
+  "themeMode": "system"
+}
+```
+
 ## 开发
 
 ### 环境

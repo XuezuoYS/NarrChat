@@ -19,6 +19,11 @@ import '../services/sync/sync_models.dart';
 /// 展开编辑器（`ai_settings_form` 内的 `_ModelSettingsEditor`）就地编辑，并
 /// 通过 [updateModel] 写回工作副本。API Key 单独存于控制器（不进入 [AiPlatform]）。
 ///
+/// 预置分层：软件内置预置平台（`AiPlatforms.presetFor(id) != null`）被改动后
+/// 可整平台重置回预置（[resetPlatform]，二次确认交给 UI），自添加平台不受影响；
+/// 被删除的预置平台可经 [restorePresetPlatform] 恢复。重置只改工作副本，
+/// 仍由右上角「保存」统一落盘。
+///
 /// 本页只做「按平台 + 按模型编辑参数」，**不**在此选择对话所用的模型/平台
 /// （对话目标仍由 [AiSettingsProvider.selectedPlatformId] /
 /// [selectedModelId] 决定，保存时保持不变）。
@@ -47,6 +52,10 @@ class SettingsFormState extends ChangeNotifier {
   // ---------------------------------------------------------------------------
   List<AiPlatform> _working;
 
+  /// 重置计数：每次平台重置 / 恢复自增，供 UI 重建模型编辑器
+  /// （模型编辑器自带文本控制器，需按 key 重建以丢弃旧文本）。
+  int _resetRevision = 0;
+
   // 平台级文本控制器（keyed by platform id）。
   final Map<String, TextEditingController> _platformNameCtrls = {};
   final Map<String, TextEditingController> _baseUrlCtrls = {};
@@ -68,6 +77,22 @@ class SettingsFormState extends ChangeNotifier {
   // 派生：API 设置
   // ---------------------------------------------------------------------------
   List<AiPlatform> get platforms => _working;
+
+  /// 重置计数（供 UI 以 key 重建模型编辑器，见 [_resetRevision]）。
+  int get resetRevision => _resetRevision;
+
+  /// 工作副本的平台列表是否仍与软件内置预置完全一致（未自定义平台）。
+  bool get usesBuiltinPlatforms => AiPlatforms.matchesPresets(_working);
+
+  /// 工作副本里缺失的内置预置平台（可一键恢复，顺序同预置注册表）。
+  List<AiPlatform> get missingPresetPlatforms => [
+        for (final preset in AiPlatforms.presetPlatforms)
+          if (!_working.any((p) => p.id == preset.id)) preset,
+      ];
+
+  /// 该平台是否仍与软件内置预置完全一致（非预置平台 → false，即"自定义"）。
+  bool platformUnchanged(AiPlatform platform) =>
+      AiPlatforms.isPresetUnchanged(platform);
 
   /// 单张图片大小上限（MB，默认 16，可在设置中调整）。
   int get maxImageSizeMB => _ai.maxImageSizeMB;
@@ -126,27 +151,52 @@ class SettingsFormState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 删除平台（内置默认平台与最后一个平台不可删）。
+  /// 删除平台（至少保留一个平台；内置预置平台也可删除，可经
+  /// [restorePresetPlatform] 恢复）。
   void removePlatform(String id) {
     if (_working.length <= 1) return;
-    if (id == AiPlatforms.defaultPlatformId) return;
-    final platform = _working.firstWhere((p) => p.id == id, orElse: () => _working.first);
-    if (platform.isBuiltin) return;
+    if (!_working.any((p) => p.id == id)) return;
     _working = _working.where((p) => p.id != id).toList();
     _disposePlatformControllers(id);
+    notifyListeners();
+  }
+
+  /// 把内置预置平台重置为软件本体预置（仅影响该平台）。
+  ///
+  /// 非预置 id 或平台已不在工作副本中时无操作；API Key 与其它的平台不受影响。
+  /// 重置为**编辑态**改动：由右上角「保存」统一落盘（二次确认由 UI 负责）。
+  void resetPlatform(String id) {
+    final preset = AiPlatforms.presetFor(id);
+    if (preset == null) return;
+    final index = _working.indexWhere((p) => p.id == id);
+    if (index < 0) return;
+    _working = [..._working];
+    _working[index] = preset;
+    _syncPlatformControllers(preset);
+    _resetRevision++;
+    notifyListeners();
+  }
+
+  /// 恢复被删除的内置预置平台（追加到工作副本末尾）。
+  void restorePresetPlatform(String presetId) {
+    final preset = AiPlatforms.presetFor(presetId);
+    if (preset == null) return;
+    if (_working.any((p) => p.id == preset.id)) return;
+    _working = [..._working, preset];
+    _ensurePlatformControllers(preset.id);
+    _resetRevision++;
     notifyListeners();
   }
 
   // ---------------------------------------------------------------------------
   // 模型编辑（每个模型独立展开编辑）
   // ---------------------------------------------------------------------------
-  /// 添加模型（内置默认平台的模型由预置固定，不可新增）。
+  /// 添加模型（任何平台均可添加；重名忽略）。
   void addModel(String platformId, {required String id, String shortLabel = ''}) {
     if (id.trim().isEmpty) return;
     final index = _working.indexWhere((p) => p.id == platformId);
     if (index < 0) return;
     final platform = _working[index];
-    if (platform.isBuiltin) return;
     if (platform.models.any((m) => m.id == id.trim())) return;
     final model = AiModel(id: id.trim(), shortLabel: shortLabel.trim());
     _working = [..._working];
@@ -154,12 +204,11 @@ class SettingsFormState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 删除模型（内置默认平台的模型不可删；每个平台至少保留一个模型）。
+  /// 删除模型（每个平台至少保留一个模型）。
   void removeModel(String platformId, String modelId) {
     final index = _working.indexWhere((p) => p.id == platformId);
     if (index < 0) return;
     final platform = _working[index];
-    if (platform.isBuiltin) return;
     if (platform.models.length <= 1) return;
     _working = [..._working];
     _working[index] = platform.copyWith(
@@ -283,6 +332,12 @@ class SettingsFormState extends ChangeNotifier {
     _platformNameCtrls.remove(id)?.dispose();
     _baseUrlCtrls.remove(id)?.dispose();
     _apiKeyCtrls.remove(id)?.dispose();
+  }
+
+  /// 重置后同步平台级文本控制器（API Key 控制器不动，密钥不参与重置）。
+  void _syncPlatformControllers(AiPlatform platform) {
+    _platformNameCtrls[platform.id]?.text = platform.displayName;
+    _baseUrlCtrls[platform.id]?.text = platform.baseUrl;
   }
 
   void _replacePlatform(

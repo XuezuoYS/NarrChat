@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
@@ -37,8 +38,16 @@ class _NoPersistAiSettingsProvider extends AiSettingsProvider {
   }
 }
 
+/// 展开第一个平台的第一个模型（deepseek-v4-pro）的编辑器。
+Future<void> _expandFirstModel(WidgetTester tester) async {
+  await tester.tap(
+    find.textContaining('deepseek-v4-pro', findRichText: true).first,
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  testWidgets('默认平台自动展开：连接设置 + 模型列表，且无添加/删除模型入口', (tester) async {
+  testWidgets('默认态：提示当前为内置预置，平台标注「内置默认」且无重置入口', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
@@ -52,43 +61,143 @@ void main() {
     // 图片设置 与 模型设置 两个节标题。
     expect(find.text('图片设置'), findsOneWidget);
     expect(find.text('模型设置'), findsOneWidget);
-    // 图片设置：大小上限 + 「jpg→jpeg 自动转换」开关（默认关闭）。
-    expect(find.text('单张图片大小上限（超过将提示文件过大）'), findsOneWidget);
-    expect(find.text('自动将 .jpg 转换为 .jpeg'), findsOneWidget);
-    expect(
-      find.text('由于 Deepseek-V4-Flash-Vision-Exp 不支持 jpg，因此提供此选项进行格式转换'),
-      findsOneWidget,
-    );
-    final toggle = tester.widget<SwitchListTile>(
-      find.widgetWithText(SwitchListTile, '自动将 .jpg 转换为 .jpeg'),
-    );
-    expect(toggle.value, isFalse); // 默认关闭
-    // 默认平台 header（首个平台，自动展开）。
-    expect(find.text('默认（DeepSeek 开放平台）'), findsOneWidget);
-    expect(find.text('内置'), findsOneWidget);
-    // 展开后可看到连接设置与模型列表。
+    // 预置分层提示：默认态明确告知"当前为软件内置预置配置"。
+    expect(find.text('当前为软件内置预置配置（未自定义模型）'), findsOneWidget);
+    expect(find.text('已自定义模型配置：内置预置平台可整平台重置为预置'), findsNothing);
+    // 预置平台标注「内置默认」，未改动时无重置入口。
+    expect(find.text('内置默认'), findsOneWidget);
+    expect(find.text('已自定义'), findsNothing);
+    expect(find.text('重置为内置预置'), findsNothing);
+    // 平台卡片（展开态）：名称可改 + 连接设置。
+    expect(find.text('平台名称'), findsOneWidget);
     expect(find.text('API 类型'), findsOneWidget);
     expect(find.text('OpenAI Response API 兼容'), findsWidgets);
     expect(find.text('模型'), findsOneWidget);
-    expect(
-      find.textContaining('deepseek-v4-pro', findRichText: true),
-      findsWidgets,
+    for (final modelId in const [
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+    ]) {
+      expect(
+        find.textContaining(modelId, findRichText: true),
+        findsWidgets,
+        reason: '预置模型 $modelId 应列出',
+      );
+    }
+    // 限制已放开：预置平台同样有「添加模型」；仅一个平台时删除入口禁用。
+    expect(find.text('添加模型'), findsOneWidget);
+    final deleteButton = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '删除此平台'),
     );
-    expect(
-      find.textContaining('deepseek-v4-flash', findRichText: true),
-      findsWidgets,
-    );
-    expect(
-      find.textContaining('deepseek-v4-flash-vision-exp', findRichText: true),
-      findsWidgets,
-    );
+    expect(deleteButton.onPressed, isNull);
+    expect(find.text('至少需要保留一个平台。'), findsOneWidget);
+    // 图片设置项仍在。
+    expect(find.text('单张图片大小上限（超过将提示文件过大）'), findsOneWidget);
+    expect(find.text('自动将 .jpg 转换为 .jpeg'), findsOneWidget);
     expect(find.text('添加自定义平台'), findsOneWidget);
-    // 内置默认平台无「添加模型」入口。
-    expect(find.text('添加模型'), findsNothing);
-    expect(find.text('删除此平台'), findsNothing);
   });
 
-  testWidgets('添加自定义平台：API 类型可二选一（默认 Response 兼容）', (tester) async {
+  testWidgets('编辑预置模型参数 → 标注「已自定义」并出现重置入口', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+    await _expandFirstModel(tester);
+
+    // 展开后不应出现 Flutter 的 Element 协调断言崩溃；模型编辑器就位。
+    expect(tester.takeException(), isNull);
+    final labelField = find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.hintText == '如 V4F',
+    );
+    expect(labelField, findsOneWidget);
+
+    // 编辑简写标识：写回工作副本，界面切换为"已自定义"。
+    await tester.enterText(labelField, 'V4P');
+    await tester.pump();
+    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
+    expect(find.text('已自定义'), findsOneWidget);
+    expect(find.text('内置默认'), findsNothing);
+    expect(find.text('重置为内置预置'), findsOneWidget);
+    expect(find.text('已自定义模型配置：内置预置平台可整平台重置为预置'), findsOneWidget);
+  });
+
+  testWidgets('重置为内置预置：二次确认，取消不变更、确认后还原（含输入框文本）', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+    await _expandFirstModel(tester);
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '如 V4F',
+      ),
+      'V4P',
+    );
+    await tester.pump();
+
+    // 取消：不还原。
+    await tester.tap(find.text('重置为内置预置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.textContaining('API Key 与其它平台不受影响'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
+    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
+    expect(find.text('已自定义'), findsOneWidget);
+
+    // 确认：还原为预置值，输入框文本同步清空，标注回到「内置默认」。
+    await tester.tap(find.text('重置为内置预置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, '重置'));
+    await tester.pumpAndSettle();
+
+    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, '');
+    final restoredField = tester.widget<TextField>(
+      find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '如 V4F',
+      ),
+    );
+    expect(restoredField.controller!.text, '');
+    expect(find.text('内置默认'), findsOneWidget);
+    expect(find.text('重置为内置预置'), findsNothing);
+    expect(find.text('当前为软件内置预置配置（未自定义模型）'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('预置模型：可调配功能可自由编辑（限制已放开）', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+    await _expandFirstModel(tester);
+
+    expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
+    expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsNothing);
+    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个，且全部可编辑。
+    expect(find.byType(SwitchListTile), findsNWidgets(5));
+    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
+    expect(switches.every((s) => s.onChanged != null), isTrue);
+
+    // 关闭「联网搜索」：写回工作副本。
+    await tester.tap(find.widgetWithText(SwitchListTile, '联网搜索'));
+    await tester.pump();
+    expect(
+      form.platforms.first.modelById('deepseek-v4-pro')!.supportsSearch,
+      isFalse,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('添加自定义平台：标注「自定义」、无重置入口、可增删模型', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
@@ -143,119 +252,64 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 新平台 header（折叠）出现。
+    // 新平台 header（折叠）出现，标注「自定义」。
     expect(find.text('我的网关'), findsOneWidget);
-    // 尚未展开时无删除入口。
-    expect(find.text('删除此平台'), findsNothing);
+    expect(find.text('自定义'), findsOneWidget);
+    // 尚未展开时无删除/重置入口（预置平台未改动也没有重置入口）。
+    expect(find.text('重置为内置预置'), findsNothing);
 
-    // 展开自定义平台后，显示「添加模型」与「删除此平台」。
+    // 展开自定义平台后，显示「添加模型」与「删除此平台」（此时平台多于一个，删除可用）。
     await tester.tap(find.text('我的网关'));
     await tester.pumpAndSettle();
-    expect(find.text('添加模型'), findsOneWidget);
-    expect(find.text('删除此平台'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('展开模型不崩溃，且可编辑该模型参数', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 2600));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
-    addTearDown(form.dispose);
-
-    await tester.pumpWidget(_buildApp(form));
-    await tester.pump();
-
-    // 展开第一个模型（deepseek-v4-pro，默认平台已自动展开）。
-    await tester.tap(
-      find.textContaining('deepseek-v4-pro', findRichText: true).first,
-    );
-    await tester.pumpAndSettle();
-
-    // 展开后不应再出现 Flutter 的 Element 协调断言崩溃。
-    expect(tester.takeException(), isNull);
-    // 该模型的可编辑设置项出现（简写标识输入框的提示文案）。
-    expect(
-      find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '如 V4F',
-      ),
-      findsOneWidget,
-    );
-
-    // 编辑简写标识：写回工作副本。
-    await tester.enterText(
-      find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '如 V4F',
-      ),
-      'V4P',
-    );
-    await tester.pump();
-
-    expect(form.platforms.first.modelById('deepseek-v4-pro')!.shortLabel, 'V4P');
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('预设模型：可调配功能只读，用户不可更改', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 2600));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
-    addTearDown(form.dispose);
-
-    await tester.pumpWidget(_buildApp(form));
-    await tester.pump();
-
-    // 展开默认平台第一个模型（deepseek-v4-pro，内置预设）。
-    await tester.tap(
-      find.textContaining('deepseek-v4-pro', findRichText: true).first,
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
-    expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsOneWidget);
-    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个；其中仅图片开关可编辑，
-    // 4 个能力开关（预设模型）均为禁用只读态。
-    final switches = tester
-        .widgetList<SwitchListTile>(find.byType(SwitchListTile))
+    expect(find.text('添加模型'), findsNWidgets(2));
+    final deleteButtons = tester
+        .widgetList<TextButton>(find.widgetWithText(TextButton, '删除此平台'))
         .toList();
-    expect(switches.length, 5);
-    expect(switches.where((s) => s.onChanged == null).length, 4);
-    expect(switches.where((s) => s.onChanged != null).length, 1);
+    expect(deleteButtons.length, 2);
+    expect(deleteButtons.every((b) => b.onPressed != null), isTrue);
+    // 自定义平台没有重置入口（无预置可回退）。
+    expect(find.text('重置为内置预置'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('自定义模型：可自行设置可调配功能', (tester) async {
+  testWidgets('删除预置平台后：出现「恢复内置平台」入口，确认后卡片回归', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
     addTearDown(form.dispose);
+    // 先加一个自定义平台，使预置平台可被删除（至少保留一个平台）。
     form.addPlatform(
       name: 'gw',
-      baseUrl: 'x',
+      baseUrl: 'https://gw.example.com',
       apiTypeId: ApiType.openAiCompatibleId,
     );
-    form.addModel(form.platforms.last.id, id: 'gpt-4o-mini', shortLabel: 'GPT4O');
 
     await tester.pumpWidget(_buildApp(form));
     await tester.pump();
 
-    // 展开自定义平台。
-    await tester.tap(find.text('gw'));
+    // 展开的预置平台卡片上的删除入口此时可用。
+    await tester.tap(find.text('删除此平台'));
     await tester.pumpAndSettle();
-    // 展开自定义模型。
-    await tester.tap(
-      find.textContaining('gpt-4o-mini', findRichText: true).first,
+    expect(find.text('删除平台'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(form.platforms.length, 1);
+    expect(form.platforms.single.id, isNot(AiPlatforms.defaultPlatformId));
+    expect(find.text('恢复内置平台「默认（DeepSeek 开放平台）」'), findsOneWidget);
+
+    await tester.tap(find.text('恢复内置平台「默认（DeepSeek 开放平台）」'));
+    await tester.pumpAndSettle();
+    expect(find.text('恢复内置平台'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '恢复'));
+    await tester.pumpAndSettle();
+
+    expect(
+      form.platforms.any((p) => p.id == AiPlatforms.defaultPlatformId),
+      isTrue,
     );
-    await tester.pumpAndSettle();
-
-    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个，均可编辑。
-    expect(find.byType(SwitchListTile), findsNWidgets(5));
-    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
-    expect(switches.every((s) => s.onChanged != null), isTrue);
-
-    // 关闭「联网搜索」：写回工作副本。
-    await tester.tap(find.widgetWithText(SwitchListTile, '联网搜索'));
-    await tester.pump();
-
-    expect(form.platforms.last.modelById('gpt-4o-mini')!.supportsSearch, isFalse);
+    expect(find.text('恢复内置平台「默认（DeepSeek 开放平台）」'), findsNothing);
+    expect(find.text('默认（DeepSeek 开放平台）'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 

@@ -107,8 +107,12 @@ class AiModel {
 /// 对应 DeepSeek Harness 的 `providers[].models[]` 组织方式：
 /// 平台持有 baseUrl / API 类型（[apiType]）与列表（[models]），API Key 走系统
 /// 安全存储（见 `AiSettingsProvider`），不在此配置中。
+///
+/// 是否为「软件内置预置平台」由预置注册表派生
+/// （`AiPlatforms.isPresetId(id)`），不随配置落盘——避免手改/迁移导致
+/// 内置标记丢失或被篡改。
 class AiPlatform {
-  /// 平台稳定标识（内置平台为 `__default__`；自定义平台为生成的 id）。
+  /// 平台稳定标识（内置预置平台为 `__default__`；自定义平台为生成的 id）。
   final String id;
 
   /// 展示名称。
@@ -119,9 +123,6 @@ class AiPlatform {
 
   /// 接口地址。
   final String baseUrl;
-
-  /// 是否内置平台（默认 DeepSeek 开放平台）——不可删除。
-  final bool isBuiltin;
 
   /// Response API 协议的「单轮内链式续接」能力（`previous_response_id`）。
   ///
@@ -137,7 +138,6 @@ class AiPlatform {
     required this.displayName,
     required this.apiType,
     required this.baseUrl,
-    this.isBuiltin = false,
     this.supportsResponseChaining = false,
     required this.models,
   });
@@ -164,7 +164,6 @@ class AiPlatform {
     String? displayName,
     ApiType? apiType,
     String? baseUrl,
-    bool? isBuiltin,
     bool? supportsResponseChaining,
     List<AiModel>? models,
   }) {
@@ -173,7 +172,6 @@ class AiPlatform {
       displayName: displayName ?? this.displayName,
       apiType: apiType ?? this.apiType,
       baseUrl: baseUrl ?? this.baseUrl,
-      isBuiltin: isBuiltin ?? this.isBuiltin,
       supportsResponseChaining:
           supportsResponseChaining ?? this.supportsResponseChaining,
       models: models ?? this.models,
@@ -186,7 +184,6 @@ class AiPlatform {
       'displayName': displayName,
       'apiTypeId': apiType.id,
       'baseUrl': baseUrl,
-      'isBuiltin': isBuiltin,
       'supportsResponseChaining': supportsResponseChaining,
       'models': [for (final m in models) m.toJson()],
     };
@@ -205,31 +202,9 @@ class AiPlatform {
         json['apiTypeId'] as String? ?? ApiType.openAiCompatibleId,
       ),
       baseUrl: json['baseUrl'] as String? ?? '',
-      isBuiltin: json['isBuiltin'] as bool? ?? false,
       supportsResponseChaining:
           json['supportsResponseChaining'] as bool? ?? false,
       models: models,
     );
-  }
-}
-
-/// 平台配置集合：平台列表 + 当前选中项（用于持久化 / 迁移）。
-class AiPlatformsConfig {
-  final List<AiPlatform> platforms;
-  final String selectedPlatformId;
-  final String selectedModelId;
-
-  const AiPlatformsConfig({
-    required this.platforms,
-    required this.selectedPlatformId,
-    required this.selectedModelId,
-  });
-
-  Map<String, dynamic> toJson() {
-    return {
-      'platforms': [for (final p in platforms) p.toJson()],
-      'selectedPlatformId': selectedPlatformId,
-      'selectedModelId': selectedModelId,
-    };
   }
 }
