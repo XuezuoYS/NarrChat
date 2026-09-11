@@ -136,10 +136,25 @@ class QuickScrollRail extends StatefulWidget {
   ///
   /// 适用于非虚拟化场景（侧栏等全量布局）：锚点挂 [GlobalObjectKey] 后，
   /// 由 `offsetResolver` 闭包调用此方法懒解析，天然跟随内容的展开/收起。
+  ///
+  /// 三种「不可用」都返回 null（该条目本次解析被跳过，待下次解析补上）：
+  /// - 锚点未挂载（`currentContext` 为 null）；
+  /// - 锚点已随父级卸载（脱离渲染树）；
+  /// - 锚点**当帧刚挂载、尚未完成布局**（[RenderBox.hasSize] 为 false）。
+  ///
+  /// ⚠️ 最后一种必须显式挡住：本组件的偏移解析发生在 [LayoutBuilder] 的**布局
+  /// 回调**里，而锚点通常属于**兄弟子树**（被包裹的滚动视图）。framework 只保证
+  /// 祖先先于子级布局，脏节点按**渲染树深度**排序处理：本回调所在的
+  /// [LayoutBuilder] 位于滚动视图之上（更浅），可能先于滚动视图的 viewport
+  /// 完成布局。此时锚点是本轮新建、`size` 尚未确定，读取其几何（内部取 `size`）
+  /// 会触发 `RenderBox was not laid out` 断言，并被包成错误红框覆盖本组件区域。
+  /// 典型触发：侧栏「角色状态」模块【编辑】→【取消】（视图模式在当帧整体重新
+  /// 挂载，锚点全新）。
   static double? revealOffsetOf(BuildContext? anchorContext) {
     if (anchorContext == null) return null;
     final ro = anchorContext.findRenderObject();
-    if (ro is! RenderBox || !ro.attached) return null;
+    // hasSize = 已过布局，size 可用；未布局时其祖先（pivot）同样不可读，故直接跳过。
+    if (ro is! RenderBox || !ro.attached || !ro.hasSize) return null;
     final vp = RenderAbstractViewport.of(ro);
     return vp.getOffsetToReveal(ro, 0.0).offset;
   }

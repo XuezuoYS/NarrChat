@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/screens/chat_screen.dart';
+import 'package:narrchat/widgets/markdown_collapsible_editor.dart';
 import 'package:narrchat/widgets/quick_scroll_rail.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
 
@@ -41,6 +42,12 @@ String _manyCharState() {
 Finder _overlay() => find.byKey(const Key('quick_scroll_rail_overlay'));
 
 Finder _strip() => find.byKey(const Key('quick_scroll_rail_strip'));
+
+/// 指定子模块的吸顶标题栏（【编辑】/【保存】/【取消】所在处）。
+Finder _sectionHeader(String label) => find.ancestor(
+      of: find.text(label),
+      matching: find.byType(SliverPersistentHeader),
+    );
 
 Finder _inOverlay(String text) =>
     find.descendant(of: _overlay(), matching: find.text(text));
@@ -246,6 +253,51 @@ void main() {
     expect(controller.offset, closeTo(maxExtent, 1));
     await gesture.up();
     await tester.pump();
+  });
+
+  testWidgets('角色状态编辑→取消：锚点当帧尚未布局也不抛 hasSize 断言', (tester) async {
+    final dao = FakeRoundDao();
+    await dao.insertRound(
+      Round(
+        bookUuid: kHarnessBookUuid,
+        roundIndex: 1,
+        userInput: '开始',
+        aiNarrative: '正文。',
+        currentTime: '第一天 午时',
+        // 世界状态保持短：让「角色状态」标题栏留在初始可见带内（可直接点【编辑】）。
+        worldState: '- 地点：青云宗',
+        // 两个一级类别 → 类别节点本身就是目录锚点（分组标题 Column = RenderFlex）。
+        // 取消编辑的当帧，视图模式整体重新挂载：新锚点与导轨的布局回调同帧，
+        // 而导轨（较浅的 LayoutBuilder）先于滚动视图（较深的 viewport）布局。
+        characterState: _manyCharState(),
+        memorySummary: '- 第1轮｜第一天｜开局',
+        createdAt: DateTime.now(),
+      ),
+    );
+    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+
+    await tester.tap(
+      find.descendant(of: _sectionHeader('角色状态'), matching: find.text('编辑')),
+    );
+    await tester.pumpAndSettle();
+    final cancelBtn = find.descendant(
+      of: _sectionHeader('角色状态'),
+      matching: find.text('取消'),
+    );
+    expect(cancelBtn, findsOneWidget);
+    await tester.tap(cancelBtn);
+    await tester.pump();
+    // 关键断言：取消当帧导轨重解析目录偏移不得触发
+    // 「RenderBox was not laid out」断言（否则会在面板内渲染错误红框）。
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    // 视图模式与目录条目恢复。
+    expect(find.byType(MarkdownCollapsibleEditor), findsOneWidget);
+    await _dragSession(tester, body: (gesture) async {
+      expect(_inOverlay('主角'), findsOneWidget);
+      expect(_inOverlay('NPC'), findsOneWidget);
+    });
   });
 
   testWidgets('窄屏（移动抽屉）同样接入导轨', (tester) async {
