@@ -58,6 +58,7 @@ void main() {
     bool chaining = false,
     bool supportsToolChoice = true,
     bool supportsThinkingEffort = true,
+    bool reduceReasoningReplay = true,
     int maxStateFrames = kAgentMaxStateFrames,
   }) {
     final requests = <_Request>[];
@@ -99,6 +100,7 @@ void main() {
       chaining: chaining,
       supportsToolChoice: supportsToolChoice,
       supportsThinkingEffort: supportsThinkingEffort,
+      reduceReasoningReplay: reduceReasoningReplay,
       maxStateFrames: maxStateFrames,
     );
     return (runner: runner, requests: requests, sunk: sunk);
@@ -582,6 +584,68 @@ void main() {
       // 兜底文本非空（本帧无正文 → 占位文本；服务端只校验「非空且紧邻」）。
       expect('${frame2[at - 1]['text']}', isNotEmpty);
     }
+  });
+
+  test('精简思考回传：多段思考只回传首段 + 末段（`\\n\\n` 空行不计段）', () async {
+    final copy = workingCopy();
+    // 多段思考（中间过程整段丢弃；空行只是格式占位，不算段）。
+    const long = '先读世界状态确定地点。\n\n'
+        '再搜索两位角色的资料。\n\n'
+        '最后按五区块写正文，时间沿用上轮格式。';
+    final h = harness(copy: copy, script: [
+      AiCallResult(
+        content: '',
+        reasoningContent: long,
+        reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+        toolCalls: [readCall('r_w', AgentStateSection.worldState)],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_1',
+      ),
+      fullStateTurn('f2', story: '正文'),
+    ]);
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final frame2 = h.requests[1].items;
+    final reasoning = frame2.firstWhere((i) => i['type'] == 'reasoning');
+    expect(
+      reasoning['text'],
+      '先读世界状态确定地点。\n\n最后按五区块写正文，时间沿用上轮格式。',
+    );
+    // 中间段不得出现在回传里。
+    expect('${reasoning['text']}', isNot(contains('再搜索两位角色的资料')));
+  });
+
+  test('精简关闭：逐字节回传思考原文', () async {
+    final copy = workingCopy();
+    const long = '第一段过程。\n\n第二段过程。\n\n第三段结论。';
+    final h = harness(
+      copy: copy,
+      reduceReasoningReplay: false,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: long,
+          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+          toolCalls: [readCall('r_w', AgentStateSection.worldState)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_1',
+        ),
+        fullStateTurn('f2', story: '正文'),
+      ],
+    );
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final reasoning =
+        h.requests[1].items.firstWhere((i) => i['type'] == 'reasoning');
+    expect(reasoning['text'], long);
   });
 
   test('无状态重发：每帧全量 input，状态不预置（模型自取）', () async {

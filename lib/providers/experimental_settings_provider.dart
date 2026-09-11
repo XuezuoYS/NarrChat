@@ -17,11 +17,17 @@ import '../services/local_config_service.dart';
 ///
 /// 两档都属于实验性功能，可能产生错误或不被服务商支持（见「设置 → 通用设置 →
 /// 实验性设置」中的声明）。档位语义的统一映射见 `AgentModeProfile`。
+///
+/// 另含 **Agent 模式下的思考回传策略**（[reduceReasoningReplay]，默认**开** =
+/// 精简）：带 `tools` 的请求逐块校验思考块，整段回传会让输入随帧线性膨胀；
+/// 精简只回传首段 + 末段（规则见 `services/agent/reasoning_replay.dart`）。
 class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 允许测试直接注入初值（不触碰真实配置文件）。
   ExperimentalSettingsProvider({
     AgentModeLevel initialLevel = AgentModeLevel.off,
-  }) : _level = initialLevel;
+    bool initialReduceReasoningReplay = true,
+  })  : _level = initialLevel,
+        _reduceReasoningReplay = initialReduceReasoningReplay;
 
   /// 本地配置文件键名（camelCase）：现行档位键。
   static const String keyAgentModeLevel = 'agentModeLevel';
@@ -29,13 +35,22 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 历史键（**只读迁移用**）：早期版本的布尔开关（true → Lv.2）。
   static const String keyAgentModeEnabled = 'agentModeEnabled';
 
+  /// 本地配置文件键名：Agent 模式思考回传是否精简（默认开）。
+  static const String keyReduceReasoningReplay = 'agentReasoningReplayReduced';
+
   AgentModeLevel _level;
+  bool _reduceReasoningReplay;
 
   /// 当前 Agent 档位（默认关闭）。
   AgentModeLevel get agentModeLevel => _level;
 
   /// Agent 流程是否开启（Lv.1 / Lv.2）。
   bool get agentModeEnabled => _level.isOn;
+
+  /// Agent 模式下的思考回传是否精简（默认**开**）。
+  ///
+  /// 仅影响**回传**（请求体里重放的思考块）：界面展示与历史聚合始终用模型原文。
+  bool get reduceReasoningReplay => _reduceReasoningReplay;
 
   /// 从本地配置读取（读取失败按默认关闭）。
   ///
@@ -55,8 +70,12 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
             ? AgentModeLevel.lv2
             : AgentModeLevel.off;
       }
+      // 缺失 / 类型不符 ⇒ 默认**开启**精简回传。
+      final reduced = config[keyReduceReasoningReplay];
+      _reduceReasoningReplay = reduced is bool ? reduced : true;
     } catch (_) {
       _level = AgentModeLevel.off;
+      _reduceReasoningReplay = true;
     }
     notifyListeners();
   }
@@ -72,6 +91,19 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       debugPrint('Agent 档位保存失败：$e');
+      return false;
+    }
+  }
+
+  /// 切换「精简思考回传」：先乐观生效再异步持久化，保存失败仅记录。
+  Future<bool> setReduceReasoningReplay(bool reduce) async {
+    _reduceReasoningReplay = reduce;
+    notifyListeners();
+    try {
+      await LocalConfigService.update({keyReduceReasoningReplay: reduce});
+      return true;
+    } catch (e) {
+      debugPrint('精简思考回传设置保存失败：$e');
       return false;
     }
   }

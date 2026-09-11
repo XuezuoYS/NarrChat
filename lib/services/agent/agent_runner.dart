@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'agent_activity.dart';
 import '../ai_service.dart';
 import 'narr_agent_tool.dart';
+import 'reasoning_replay.dart';
 import 'wire_adapters.dart';
 
 export 'agent_activity.dart';
@@ -24,6 +25,7 @@ class AgentRunner {
     /// 线路协议定制的工具 schema 列表（如 Responses 顶层形态）；为 null 时
     /// 按 OpenAI Chat 兼容的嵌套形态（`function.function`）由 [tools] 生成。
     this.toolSchemas,
+    this.reduceReasoningReplay = true,
   });
 
   /// 根据当前 messages / tools 构建请求体（由调用方按预设规则实现）。
@@ -46,6 +48,11 @@ class AgentRunner {
 
   /// 定制的工具 schema（协议形状由调用方决定；null = Chat 嵌套形态）。
   final List<Map<String, dynamic>>? toolSchemas;
+
+  /// 回传思考时是否精简（默认开）：多段只回传首段 + 末段，降低每帧重发历史的
+  /// 输入 token；关掉则逐字节回传原文（自定义网关按思考原文做签名时使用）。
+  /// 规则见 `reasoning_replay.dart`。
+  final bool reduceReasoningReplay;
 
   /// 运行 Agent 循环，返回聚合后的最终结果。
   Future<AiCallResult> run({
@@ -103,19 +110,23 @@ class AgentRunner {
       // 其前各有一块非空思考，一帧调两个工具却只回传一块即整次 400
       //（「The `reasoning_text` in the thinking mode must be passed back」）。
       // **绝不省略**：模型没产出思考时回落正文文本，再退化为占位文本。
-      final replayText = result.reasoningContent.trim().isNotEmpty
-          ? result.reasoningContent
-          : (result.content.trim().isNotEmpty
-              ? result.content
-              : 'Continue by calling the requested tool.');
+      // 回传文本按设置精简（[reduceReasoningReplay]；Chat 线路的
+      // `reasoning_content` 与 Responses 线路的 reasoning 条目共用同一份）。
+      final replayed = reasoningTextForReplay(
+        result.reasoningContent.trim().isNotEmpty
+            ? result.reasoningContent
+            : (result.content.trim().isNotEmpty
+                ? result.content
+                : 'Continue by calling the requested tool.'),
+        reduce: reduceReasoningReplay,
+      );
       for (var i = 0; i < result.toolCalls.length; i++) {
-        messages.add(reasoningItemFrom(AiReasoningItem(text: replayText)));
+        messages.add(reasoningItemFrom(AiReasoningItem(text: replayed)));
       }
       messages.add({
         'role': 'assistant',
         'content': result.content.isEmpty ? null : result.content,
-        if (result.reasoningContent.isNotEmpty)
-          'reasoning_content': result.reasoningContent,
+        if (replayed.isNotEmpty) 'reasoning_content': replayed,
         'tool_calls': [
           for (final tc in result.toolCalls)
             {

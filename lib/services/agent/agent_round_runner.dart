@@ -6,6 +6,7 @@ import '../ai_service.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
 import 'narr_agent_tool.dart';
+import 'reasoning_replay.dart';
 import 'state/agent_state_working_copy.dart';
 import 'state/state_coverage.dart';
 import 'state/state_tools.dart';
@@ -264,6 +265,7 @@ class AgentRoundRunner {
     this.supportsThinkingEffort = true,
     this.maxStoryFrames = kAgentMaxStoryFrames,
     this.maxStateFrames = kAgentMaxStateFrames,
+    this.reduceReasoningReplay = true,
     this.onActivity,
     this.onToolStarted,
     this.onToolFinished,
@@ -296,6 +298,11 @@ class AgentRoundRunner {
 
   final int maxStoryFrames;
   final int maxStateFrames;
+
+  /// 回传思考时是否精简（默认开）：多段只回传首段 + 末段，降低每帧重发历史的
+  /// 输入 token；关掉则逐字节回传原文（自定义网关按思考原文做签名时使用）。
+  /// 规则见 `reasoning_replay.dart`；界面展示与历史聚合始终用模型原文。
+  final bool reduceReasoningReplay;
   final void Function(AgentActivity activity)? onActivity;
   final void Function(AgentToolOutcome outcome)? onToolStarted;
   final void Function(AgentToolOutcome outcome)? onToolFinished;
@@ -717,10 +724,18 @@ class AgentRoundRunner {
     _noteTruncation(result, stage);
     // 本帧思考先挂起，**不立即入队**：服务商要求每个 function_call 紧邻其前
     // 各有一个非空思考块（见 [_appendCallItems]），故思考在追加工具条目时
-    // 逐个发出，而不是整帧共用一块。
+    // 逐个发出，而不是整帧共用一块。回传文本按设置精简（界面/聚合仍用原文）。
     _frameReasoning = [
       for (final item in result.reasoningItems)
-        if (item.text.isNotEmpty) item,
+        if (item.text.trim().isNotEmpty)
+          AiReasoningItem(
+            id: item.id,
+            text: reasoningTextForReplay(
+              item.text,
+              reduce: reduceReasoningReplay,
+            ),
+            summary: item.summary,
+          ),
     ];
     // 没有工具调用要发的思考（纯正文帧 / 无工具帧）在这里直接入队——先于正文，
     // 与模型原始输出顺序一致。
@@ -745,7 +760,7 @@ class AgentRoundRunner {
   ///
   /// **永不为空**：没有思考块时回落该帧正文（正文本身就是模型对本回合的说明），
   /// 再没有则给占位文本。服务端对「工具调用缺块」是硬 400，宁可回传一段不完美
-  /// 的文本，也不能让整轮生成失败。
+  /// 的文本，也不能让整轮生成失败。回落文本同样按设置精简。
   String _reasoningTextFor(int index, {required String fallbackContent}) {
     if (_frameReasoning.isNotEmpty) {
       final at = index < _frameReasoning.length ? index : _frameReasoning.length - 1;
@@ -753,7 +768,9 @@ class AgentRoundRunner {
       if (text.isNotEmpty) return text;
     }
     final content = fallbackContent.trim();
-    if (content.isNotEmpty) return content;
+    if (content.isNotEmpty) {
+      return reasoningTextForReplay(content, reduce: reduceReasoningReplay);
+    }
     return 'Continue by calling the requested tool.';
   }
 

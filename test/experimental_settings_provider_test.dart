@@ -118,6 +118,38 @@ void main() {
     expect(weird.agentModeLevel, AgentModeLevel.off);
   });
 
+  test('精简思考回传：默认开、可持久化关闭并回读', () async {
+    final provider = ExperimentalSettingsProvider();
+    expect(provider.reduceReasoningReplay, isTrue, reason: '默认开启精简');
+
+    // 配置缺失时 load 仍为默认开（读取不写盘）。
+    await provider.load();
+    expect(provider.reduceReasoningReplay, isTrue);
+
+    var notified = 0;
+    provider.addListener(() => notified++);
+    expect(await provider.setReduceReasoningReplay(false), isTrue);
+    expect(provider.reduceReasoningReplay, isFalse);
+    expect(notified, 1);
+
+    final reloaded = ExperimentalSettingsProvider();
+    await reloaded.load();
+    expect(reloaded.reduceReasoningReplay, isFalse);
+    final config = await LocalConfigService.read();
+    expect(
+      config[ExperimentalSettingsProvider.keyReduceReasoningReplay],
+      isFalse,
+    );
+
+    // 非布尔值 / 缺失 ⇒ 回退默认开。
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.keyReduceReasoningReplay: 'yes',
+    });
+    final weird = ExperimentalSettingsProvider();
+    await weird.load();
+    expect(weird.reduceReasoningReplay, isTrue);
+  });
+
   test('setAgentModeLevel 乐观生效并持久化（可切回）', () async {
     final provider = ExperimentalSettingsProvider();
     var notified = 0;

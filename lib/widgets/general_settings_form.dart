@@ -220,11 +220,87 @@ class _ExperimentalSettingsSectionState
     context.read<ExperimentalSettingsProvider>().setAgentModeLevel(level);
   }
 
+  void _toggleReduceReasoning(bool reduce) {
+    context
+        .read<ExperimentalSettingsProvider>()
+        .setReduceReasoningReplay(reduce);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
     final experimental = context.watch<ExperimentalSettingsProvider>();
     final current = experimental.agentModeLevel;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildLevelMenu(context, colors, current),
+        const SizedBox(height: 8),
+        _buildReasoningReplaySwitch(context, colors, experimental),
+      ],
+    );
+  }
+
+  /// 「精简思考回传」开关行（Agent 模式专用；默认开）。
+  ///
+  /// 与档位卡片同款外框，但**整行只有开关可点**（不是菜单）：说明文字里写明
+  /// 关闭的用途（自定义网关要求思考原文完整时）。
+  Widget _buildReasoningReplaySwitch(
+    BuildContext context,
+    NarrChatColors colors,
+    ExperimentalSettingsProvider experimental,
+  ) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: colors.divider),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
+        child: Row(
+          children: [
+            Icon(Icons.compress_outlined, size: 18, color: colors.textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '精简思考回传',
+                    style: TextStyle(fontSize: 14, color: colors.textPrimary),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Agent 模式专用：回传模型思考时只保留首段与末段（单段则原样），'
+                    '降低每帧重发历史的输入 token。关掉 = 逐字节回传原文'
+                    '（自定义网关要求思考原文完整时使用）。',
+                    style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Switch(
+              key: const ValueKey('experimental_reduce_reasoning_switch'),
+              value: experimental.reduceReasoningReplay,
+              onChanged: _toggleReduceReasoning,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Agent 档位下拉卡片（整卡可点展开菜单）。
+  Widget _buildLevelMenu(
+    BuildContext context,
+    NarrChatColors colors,
+    AgentModeLevel current,
+  ) {
     return MenuAnchor(
       // 与对话页模型选择器同款动画与圆角；选项带标题 + 一行说明。
       animated: true,

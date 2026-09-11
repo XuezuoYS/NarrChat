@@ -256,8 +256,12 @@ void main() {
       expect(reasonings, hasLength(1));
       expect('${reasonings.single['text']}', isNotEmpty);
       final assistant = messages.firstWhere((m) => m['role'] == 'assistant');
-      // 没有真实思考时不写 `reasoning_content` 键（Chat 线路形态不变）。
-      expect(assistant.containsKey('reasoning_content'), isFalse);
+      // Chat 线路的 `reasoning_content` 与 Responses 线路的 reasoning 条目
+      // 必须回传**同一份**文本，否则两条线路的重放不一致。
+      expect(
+        '${assistant['reasoning_content']}',
+        '${reasonings.single['text']}',
+      );
     });
 
     test('Token 用量聚合：全帧无 usage → 三桶全为 null', () async {

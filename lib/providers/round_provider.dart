@@ -236,6 +236,10 @@ class RoundProvider extends ChangeNotifier {
   AgentModeLevel get _agentLevel =>
       _experimentalSettings?.agentModeLevel ?? AgentModeLevel.off;
 
+  /// 当前「精简思考回传」策略（无设置注入时按默认**开**；仅测试 / 降级路径）。
+  bool get _reduceReasoningReplay =>
+      _experimentalSettings?.reduceReasoningReplay ?? true;
+
   List<Round> get rounds => _roundsView;
 
   /// 当前查看书的运行时生成状态（未加载任何书或从未生成时为 null）。
@@ -1358,6 +1362,7 @@ class RoundProvider extends ChangeNotifier {
       // 搜索 / 抓取过程事件（UI 展示）互不串书；测试注入的工具优先。
       tools: tools,
       toolSchemas: agentToolSchemas(tools, responses: responsesWire),
+      reduceReasoningReplay: _reduceReasoningReplay,
     );
 
     return runner.run(
@@ -1432,6 +1437,7 @@ class RoundProvider extends ChangeNotifier {
       profile: profile,
       chaining: req.agentChaining,
       supportsToolChoice: req.agentToolChoice,
+      reduceReasoningReplay: _reduceReasoningReplay,
       // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
       // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
       // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。
