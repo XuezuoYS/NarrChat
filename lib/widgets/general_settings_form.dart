@@ -273,7 +273,8 @@ class _ExperimentalSettingsSectionState
                   const SizedBox(height: 2),
                   Text(
                     'Agent 模式专用（默认关）：开启后回传思考只保留首段与末段'
-                    '（单段则原样），降低每帧重发历史的输入 token。',
+                    '（单段则原样），降低每帧重发历史的输入 token。'
+                    '⚠ 会改写思考原文——自定义网关要求思考完整时请保持关闭。',
                     style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
                   ),
                 ],

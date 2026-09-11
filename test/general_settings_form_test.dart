@@ -144,10 +144,14 @@ void main() {
     await tester.ensureVisible(toggle);
     await tester.pumpAndSettle();
 
-    // 说明文案点明用途与默认状态。
+    // 说明文案点明用途、默认状态与代价（改写思考原文）。
     expect(find.text('精简思考回传'), findsOneWidget);
     expect(find.textContaining('只保留首段与末段'), findsOneWidget);
     expect(find.textContaining('默认关'), findsOneWidget);
+    expect(
+      find.textContaining('⚠ 会改写思考原文——自定义网关要求思考完整时请保持关闭'),
+      findsOneWidget,
+    );
 
     // 默认关。
     expect(provider.reduceReasoningReplay, isFalse);
