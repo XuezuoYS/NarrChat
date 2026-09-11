@@ -118,36 +118,36 @@ void main() {
     expect(weird.agentModeLevel, AgentModeLevel.off);
   });
 
-  test('精简思考回传：默认开、可持久化关闭并回读', () async {
+  test('精简思考回传：默认关、可持久化开启并回读', () async {
     final provider = ExperimentalSettingsProvider();
-    expect(provider.reduceReasoningReplay, isTrue, reason: '默认开启精简');
+    expect(provider.reduceReasoningReplay, isFalse, reason: '默认不精简');
 
-    // 配置缺失时 load 仍为默认开（读取不写盘）。
+    // 配置缺失时 load 仍为默认关（读取不写盘）。
     await provider.load();
-    expect(provider.reduceReasoningReplay, isTrue);
+    expect(provider.reduceReasoningReplay, isFalse);
 
     var notified = 0;
     provider.addListener(() => notified++);
-    expect(await provider.setReduceReasoningReplay(false), isTrue);
-    expect(provider.reduceReasoningReplay, isFalse);
+    expect(await provider.setReduceReasoningReplay(true), isTrue);
+    expect(provider.reduceReasoningReplay, isTrue);
     expect(notified, 1);
 
     final reloaded = ExperimentalSettingsProvider();
     await reloaded.load();
-    expect(reloaded.reduceReasoningReplay, isFalse);
+    expect(reloaded.reduceReasoningReplay, isTrue);
     final config = await LocalConfigService.read();
     expect(
       config[ExperimentalSettingsProvider.keyReduceReasoningReplay],
-      isFalse,
+      isTrue,
     );
 
-    // 非布尔值 / 缺失 ⇒ 回退默认开。
+    // 非布尔值 / 缺失 ⇒ 回退默认关。
     await LocalConfigService.write({
       ExperimentalSettingsProvider.keyReduceReasoningReplay: 'yes',
     });
     final weird = ExperimentalSettingsProvider();
     await weird.load();
-    expect(weird.reduceReasoningReplay, isTrue);
+    expect(weird.reduceReasoningReplay, isFalse);
   });
 
   test('setAgentModeLevel 乐观生效并持久化（可切回）', () async {

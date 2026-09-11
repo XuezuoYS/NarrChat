@@ -236,9 +236,9 @@ class RoundProvider extends ChangeNotifier {
   AgentModeLevel get _agentLevel =>
       _experimentalSettings?.agentModeLevel ?? AgentModeLevel.off;
 
-  /// 当前「精简思考回传」策略（无设置注入时按默认**开**；仅测试 / 降级路径）。
+  /// 当前「精简思考回传」策略（无设置注入时按默认**关**；仅测试 / 降级路径）。
   bool get _reduceReasoningReplay =>
-      _experimentalSettings?.reduceReasoningReplay ?? true;
+      _experimentalSettings?.reduceReasoningReplay ?? false;
 
   List<Round> get rounds => _roundsView;
 

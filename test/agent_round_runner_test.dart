@@ -58,7 +58,7 @@ void main() {
     bool chaining = false,
     bool supportsToolChoice = true,
     bool supportsThinkingEffort = true,
-    bool reduceReasoningReplay = true,
+    bool reduceReasoningReplay = false,
     int maxStateFrames = kAgentMaxStateFrames,
   }) {
     final requests = <_Request>[];
@@ -586,24 +586,28 @@ void main() {
     }
   });
 
-  test('精简思考回传：多段思考只回传首段 + 末段（`\\n\\n` 空行不计段）', () async {
+  test('精简思考回传（开关开启时）：多段只回传首段 + 末段（`\\n\\n` 空行不计段）', () async {
     final copy = workingCopy();
     // 多段思考（中间过程整段丢弃；空行只是格式占位，不算段）。
     const long = '先读世界状态确定地点。\n\n'
         '再搜索两位角色的资料。\n\n'
         '最后按五区块写正文，时间沿用上轮格式。';
-    final h = harness(copy: copy, script: [
-      AiCallResult(
-        content: '',
-        reasoningContent: long,
-        reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
-        toolCalls: [readCall('r_w', AgentStateSection.worldState)],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      fullStateTurn('f2', story: '正文'),
-    ]);
+    final h = harness(
+      copy: copy,
+      reduceReasoningReplay: true,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: long,
+          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+          toolCalls: [readCall('r_w', AgentStateSection.worldState)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_1',
+        ),
+        fullStateTurn('f2', story: '正文'),
+      ],
+    );
     await h.runner.run(
       initialInputItems: const [{'role': 'user', 'content': 'hi'}],
       stream: true,
@@ -619,12 +623,11 @@ void main() {
     expect('${reasoning['text']}', isNot(contains('再搜索两位角色的资料')));
   });
 
-  test('精简关闭：逐字节回传思考原文', () async {
+  test('精简关闭（默认）：逐字节回传思考原文', () async {
     final copy = workingCopy();
     const long = '第一段过程。\n\n第二段过程。\n\n第三段结论。';
     final h = harness(
       copy: copy,
-      reduceReasoningReplay: false,
       script: [
         AiCallResult(
           content: '',

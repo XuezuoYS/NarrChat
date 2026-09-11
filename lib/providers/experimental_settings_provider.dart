@@ -18,14 +18,13 @@ import '../services/local_config_service.dart';
 /// 两档都属于实验性功能，可能产生错误或不被服务商支持（见「设置 → 通用设置 →
 /// 实验性设置」中的声明）。档位语义的统一映射见 `AgentModeProfile`。
 ///
-/// 另含 **Agent 模式下的思考回传策略**（[reduceReasoningReplay]，默认**开** =
-/// 精简）：带 `tools` 的请求逐块校验思考块，整段回传会让输入随帧线性膨胀；
-/// 精简只回传首段 + 末段（规则见 `services/agent/reasoning_replay.dart`）。
+/// 另含 **Agent 模式下的思考回传策略**（[reduceReasoningReplay]，默认关 =
+/// 逐字节回传原文；开启则精简，规则见 `services/agent/reasoning_replay.dart`）。
 class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 允许测试直接注入初值（不触碰真实配置文件）。
   ExperimentalSettingsProvider({
     AgentModeLevel initialLevel = AgentModeLevel.off,
-    bool initialReduceReasoningReplay = true,
+    bool initialReduceReasoningReplay = false,
   })  : _level = initialLevel,
         _reduceReasoningReplay = initialReduceReasoningReplay;
 
@@ -35,7 +34,7 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 历史键（**只读迁移用**）：早期版本的布尔开关（true → Lv.2）。
   static const String keyAgentModeEnabled = 'agentModeEnabled';
 
-  /// 本地配置文件键名：Agent 模式思考回传是否精简（默认开）。
+  /// 本地配置文件键名：Agent 模式思考回传是否精简（默认关）。
   static const String keyReduceReasoningReplay = 'agentReasoningReplayReduced';
 
   AgentModeLevel _level;
@@ -47,9 +46,7 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// Agent 流程是否开启（Lv.1 / Lv.2）。
   bool get agentModeEnabled => _level.isOn;
 
-  /// Agent 模式下的思考回传是否精简（默认**开**）。
-  ///
-  /// 仅影响**回传**（请求体里重放的思考块）：界面展示与历史聚合始终用模型原文。
+  /// Agent 模式下的思考回传是否精简（默认关 = 逐字节回传原文）。
   bool get reduceReasoningReplay => _reduceReasoningReplay;
 
   /// 从本地配置读取（读取失败按默认关闭）。
@@ -70,12 +67,12 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
             ? AgentModeLevel.lv2
             : AgentModeLevel.off;
       }
-      // 缺失 / 类型不符 ⇒ 默认**开启**精简回传。
+      // 缺失 / 类型不符 ⇒ 默认**关闭**（逐字节回传原文）。
       final reduced = config[keyReduceReasoningReplay];
-      _reduceReasoningReplay = reduced is bool ? reduced : true;
+      _reduceReasoningReplay = reduced is bool ? reduced : false;
     } catch (_) {
       _level = AgentModeLevel.off;
-      _reduceReasoningReplay = true;
+      _reduceReasoningReplay = false;
     }
     notifyListeners();
   }

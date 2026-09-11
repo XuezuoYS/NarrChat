@@ -242,10 +242,7 @@ class _ExperimentalSettingsSectionState
     );
   }
 
-  /// 「精简思考回传」开关行（Agent 模式专用；默认开）。
-  ///
-  /// 与档位卡片同款外框，但**整行只有开关可点**（不是菜单）：说明文字里写明
-  /// 关闭的用途（自定义网关要求思考原文完整时）。
+  /// 「精简思考回传」开关行（Agent 模式专用；默认关）。
   Widget _buildReasoningReplaySwitch(
     BuildContext context,
     NarrChatColors colors,
@@ -275,9 +272,8 @@ class _ExperimentalSettingsSectionState
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'Agent 模式专用：回传模型思考时只保留首段与末段（单段则原样），'
-                    '降低每帧重发历史的输入 token。关掉 = 逐字节回传原文'
-                    '（自定义网关要求思考原文完整时使用）。',
+                    'Agent 模式专用（默认关）：开启后回传思考只保留首段与末段'
+                    '（单段则原样），降低每帧重发历史的输入 token。',
                     style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
                   ),
                 ],

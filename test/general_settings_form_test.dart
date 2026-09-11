@@ -131,7 +131,7 @@ void main() {
     expect(label(), 'Lv.2');
   });
 
-  testWidgets('精简思考回传开关：默认开，点击后关闭并即时生效', (tester) async {
+  testWidgets('精简思考回传开关：默认关，点击后开启并即时生效', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -144,24 +144,24 @@ void main() {
     await tester.ensureVisible(toggle);
     await tester.pumpAndSettle();
 
-    // 说明文案点明用途与关闭场景（自定义网关要求思考原文）。
+    // 说明文案点明用途与默认状态。
     expect(find.text('精简思考回传'), findsOneWidget);
     expect(find.textContaining('只保留首段与末段'), findsOneWidget);
-    expect(find.textContaining('自定义网关'), findsOneWidget);
+    expect(find.textContaining('默认关'), findsOneWidget);
 
-    // 默认开。
-    expect(provider.reduceReasoningReplay, isTrue);
-    expect(tester.widget<Switch>(toggle).value, isTrue);
-
-    await tester.tap(toggle);
-    await tester.pumpAndSettle();
+    // 默认关。
     expect(provider.reduceReasoningReplay, isFalse);
     expect(tester.widget<Switch>(toggle).value, isFalse);
 
-    // 再点回开。
     await tester.tap(toggle);
     await tester.pumpAndSettle();
     expect(provider.reduceReasoningReplay, isTrue);
+    expect(tester.widget<Switch>(toggle).value, isTrue);
+
+    // 再点回关。
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(provider.reduceReasoningReplay, isFalse);
   });
 
   testWidgets('Agent 模式简介简要概括：托管范围、指示器限制与破坏性变更声明', (tester) async {

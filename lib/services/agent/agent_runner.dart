@@ -25,7 +25,7 @@ class AgentRunner {
     /// 线路协议定制的工具 schema 列表（如 Responses 顶层形态）；为 null 时
     /// 按 OpenAI Chat 兼容的嵌套形态（`function.function`）由 [tools] 生成。
     this.toolSchemas,
-    this.reduceReasoningReplay = true,
+    this.reduceReasoningReplay = false,
   });
 
   /// 根据当前 messages / tools 构建请求体（由调用方按预设规则实现）。
@@ -49,9 +49,7 @@ class AgentRunner {
   /// 定制的工具 schema（协议形状由调用方决定；null = Chat 嵌套形态）。
   final List<Map<String, dynamic>>? toolSchemas;
 
-  /// 回传思考时是否精简（默认开）：多段只回传首段 + 末段，降低每帧重发历史的
-  /// 输入 token；关掉则逐字节回传原文（自定义网关按思考原文做签名时使用）。
-  /// 规则见 `reasoning_replay.dart`。
+  /// 回传思考时是否精简（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
   final bool reduceReasoningReplay;
 
   /// 运行 Agent 循环，返回聚合后的最终结果。

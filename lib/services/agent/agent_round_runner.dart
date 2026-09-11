@@ -265,7 +265,7 @@ class AgentRoundRunner {
     this.supportsThinkingEffort = true,
     this.maxStoryFrames = kAgentMaxStoryFrames,
     this.maxStateFrames = kAgentMaxStateFrames,
-    this.reduceReasoningReplay = true,
+    this.reduceReasoningReplay = false,
     this.onActivity,
     this.onToolStarted,
     this.onToolFinished,
@@ -299,9 +299,7 @@ class AgentRoundRunner {
   final int maxStoryFrames;
   final int maxStateFrames;
 
-  /// 回传思考时是否精简（默认开）：多段只回传首段 + 末段，降低每帧重发历史的
-  /// 输入 token；关掉则逐字节回传原文（自定义网关按思考原文做签名时使用）。
-  /// 规则见 `reasoning_replay.dart`；界面展示与历史聚合始终用模型原文。
+  /// 回传思考时是否精简（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
   final bool reduceReasoningReplay;
   final void Function(AgentActivity activity)? onActivity;
   final void Function(AgentToolOutcome outcome)? onToolStarted;
