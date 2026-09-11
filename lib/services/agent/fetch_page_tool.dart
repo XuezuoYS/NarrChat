@@ -56,13 +56,27 @@ class FetchPageTool implements NarrAgentTool {
   @override
   String get name => 'narrchat_webFetchPage';
 
+  /// 工具说明：**英文详细要求在前、简短中文概述在后**（无语言标记分隔）。
+  ///
+  /// 与 `WebSearchTool.description` 组成同一流程的唯一说明来源：搜索 → 打开
+  /// 页面读正文 → 再创作，不再向 system 注入联网指令。
   @override
   String get description =>
+      'Open a web page link and return its main text (the first $_maxChars '
+      'characters). It is the required downstream of narrchat_webSearch: read '
+      'the most relevant pages in depth to obtain accurate details. Before '
+      'writing anything that involves real-world information you MUST open '
+      'the pages and read the main text — the search summaries are not '
+      'enough to support creation, and the research phase must never end '
+      'without opening a single page. Do not call it with links outside the '
+      'search results. If a page refuses access (HTTP 4xx/5xx) or fails to '
+      'open, switch to another result page instead of searching again and '
+      'again. '
       '打开网页链接并返回页面正文（截取前 $_maxChars 字符）。'
       '用于在 narrchat_webSearch 之后深入阅读最相关的页面获取准确细节：'
-      '创作任何涉及真实世界信息的内容前，必须主动打开页面阅读正文后再动笔，'
-      '不要跳过；若页面拒绝访问（HTTP 4xx/5xx），请换用其它结果页面。'
-      'url 需为完整 http(s) 链接（取自搜索结果）。';
+      '创作涉及真实世界信息的内容前必须打开页面阅读正文，不得只凭摘要、'
+      '不得跳过；url 需为取自搜索结果的完整 http(s) 链接；'
+      '页面拒绝访问（HTTP 4xx/5xx）或打开失败时改用其它结果页面继续获取资料。';
 
   @override
   Map<String, dynamic> get parameters => {

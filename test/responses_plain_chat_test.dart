@@ -152,16 +152,22 @@ void main() {
     expect(searchTool.calls, 1);
     expect(bodies, hasLength(2));
 
-    // 第 1 帧：instructions 已从 system 消息 extraction（含联网搜索指令），
-    // 工具为 Responses 顶层形态（name 在顶层，无嵌套 function）。
+    // 第 1 帧：instructions 已从 system 消息 extraction（**不含**联网指令——
+    // 调用指导随工具 description 下发），工具为 Responses 顶层形态
+    //（name 在顶层，无嵌套 function）。
     final body1 = bodies.first;
-    expect(body1['instructions'], contains('【联网搜索】'));
+    expect(body1['instructions'], isNot(contains('【联网搜索】')));
     final tools = (body1['tools'] as List).cast<Map<String, dynamic>>();
     expect(
       tools.map((t) => t['name']),
       contains('narrchat_webSearch'),
     );
     expect(tools.first.containsKey('function'), isFalse, reason: 'Responses 顶层形态');
+    expect(
+      '${tools.firstWhere((t) => t['name'] == 'narrchat_webSearch')['description']}',
+      contains('narrchat_webFetchPage'),
+      reason: '联网调用指导随工具 description 下发',
+    );
     // 第 2 帧 input 累积 function_call + function_call_output items。
     final input2 = (bodies[1]['input'] as List).cast<Map<String, dynamic>>();
     expect(

@@ -450,7 +450,7 @@ void main() {
       expect((messages.last as Map)['content'], contains('你好'));
     });
 
-    test('联网搜索开启：预览含工具 schema 与【联网搜索】指令', () async {
+    test('联网搜索开启：预览含工具 schema，system 不再追加联网指令', () async {
       final provider = RoundProvider(
         dao: FakeRoundDao(),
         bookDao: FakeBookDao(),
@@ -468,8 +468,8 @@ void main() {
       );
       final req = jsonDecode(preview) as Map<String, dynamic>;
       final messages = req['messages'] as List;
-      // system 追加【联网搜索】指令，末条 user 包含输入。
-      expect((messages.first as Map)['content'], contains('【联网搜索】'));
+      // system 只有用户提示词（联网指令不再注入），末条 user 包含输入。
+      expect((messages.first as Map)['content'], isNot(contains('【联网搜索】')));
       expect((messages.last as Map)['content'], contains('查一下青云宗'));
       // 与 Agent 实发首帧一致：注入 narrchat_webSearch / narrchat_webFetchPage 工具。
       final tools = (req['tools'] as List).cast<Map<String, dynamic>>();
@@ -477,6 +477,11 @@ void main() {
       expect(
         tools.map((t) => (t['function'] as Map)['name']),
         containsAll(['narrchat_webSearch', 'narrchat_webFetchPage']),
+      );
+      // 调用指导随工具 description 下发：搜索后必须打开页面读正文。
+      expect(
+        '${tools.firstWhere((t) => (t['function'] as Map)['name'] == 'narrchat_webSearch')['function']['description']}',
+        contains('narrchat_webFetchPage'),
       );
     });
 

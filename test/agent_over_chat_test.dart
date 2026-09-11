@@ -192,10 +192,15 @@ void main() {
         'narrchat_editHistory',
       ]),
     );
-    // 联网在 Agent 期间强制开启 → 搜索 / 打开页工具同批注入。
+    // 联网在 Agent 期间强制开启 → 搜索 / 打开页工具同批注入，
+    // 但 system **不**追加联网指令（调用指导随工具 description 下发）。
     expect(
       tools.map((t) => t['name']),
       containsAll(['narrchat_webSearch', 'narrchat_webFetchPage']),
+    );
+    expect(
+      (messages1.first['content'] as String?),
+      isNot(contains('【联网搜索】')),
     );
     expect((body1['tools'] as List).first.containsKey('name'), isFalse,
         reason: 'Chat 线路为嵌套 function 形态');

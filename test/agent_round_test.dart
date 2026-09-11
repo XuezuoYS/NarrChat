@@ -366,8 +366,13 @@ void main() {
     );
     // DeepSeek 思考模式默认开启（默认 high）；`none` = 关闭。
     expect('${agentBody['reasoning']}', isNot(contains('none')));
-    // 搜索指令随强制开启一并注入。
-    expect('${agentBody['instructions']}', contains('【联网搜索】'));
+    // 联网随 Agent 强制开启：system **不再**追加联网指令，调用指导
+    // （搜索 → 必须打开页面）随工具 description 下发。
+    expect('${agentBody['instructions']}', isNot(contains('【联网搜索】')));
+    final searchSchema = (agentBody['tools'] as List)
+        .cast<Map<String, dynamic>>()
+        .firstWhere((t) => t['name'] == 'narrchat_webSearch');
+    expect('${searchSchema['description']}', contains('narrchat_webFetchPage'));
 
     // Agent 关：用户的 Chat 选项原样生效（思考关闭 + 无搜索工具）。
     final chatBody =

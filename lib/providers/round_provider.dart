@@ -116,21 +116,6 @@ class _BookGenState {
 
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
 class RoundProvider extends ChangeNotifier {
-  /// Agent 路径注入的搜索指令：引导模型在用户要求搜索或需要核实时主动调用工具
-  /// （非思考模式下模型容易把「搜索」当成剧情动作，需显式声明）；
-  /// 搜索后必须主动打开结果页面阅读正文，确保细节准确。
-  static const String _searchInstruction =
-      '【联网搜索】本工具已由用户显式开启，你应主动利用它获取真实世界信息'
-      '（如核实地名、历史、设定、专有名词等，或用户要求搜索/查询/查找资料时），'
-      '不必等用户逐条点名，但也不要无关紧要地频繁调用。必须按以下流程执行：\n'
-      '1. 先调用 narrchat_webSearch 工具搜索，获取结果标题、链接与摘要；\n'
-      '2. 必须随后用 narrchat_webFetchPage 打开最相关的 1~3 个结果页面并阅读正文，'
-      '禁止只依赖摘要就动笔，务必确保细节准确；\n'
-      '3. 若页面拒绝访问（HTTP 4xx/5xx）或打开失败，'
-      '请换用其它结果页面继续获取信息，不要反复搜索而不打开页面；\n'
-      '4. 从打开的页面正文中提炼背景、设定、人物等细节后再继续创作；\n'
-      '5. 禁止在未打开任何页面的情况下直接结束联网环节开始创作。';
-
   /// 网络类失败自动重试的最大次数（灰字提示「错误重连……（x/3）」）。
   static const int _maxAiRetries = 3;
 
@@ -510,7 +495,8 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
   /// - Agent 档位（Lv.1 / Lv.2，实验性功能）：返回正文轮首帧（线路形态由协议决定）；
-  /// - 联网搜索开启：返回工具循环首帧（system 追加【联网搜索】指令 + 工具 schema）；
+  /// - 联网搜索开启：返回工具循环首帧（工具 schema；system 不追加联网指令，
+  ///   调用指导全在工具 `description` 里）；
   /// - 联网搜索关闭：返回直发请求体（无工具）。
   ///
   /// 无任何副作用（不落库 / 不发网络 / 不改生成状态）。
@@ -550,7 +536,7 @@ class RoundProvider extends ChangeNotifier {
       firstBody = runner.previewFirstBody([
         {
           'role': 'system',
-          'content': '${req.systemPrompt}\n\n$_searchInstruction',
+          'content': req.systemPrompt,
         },
         ...req.historyMessages,
         {'role': 'user', 'content': req.userContent},
@@ -665,19 +651,19 @@ class RoundProvider extends ChangeNotifier {
     // - chat 线路：system 消息 + role 消息 + 嵌套 function schema，
     //   执行器帧内追加的 function_call 条目在组装时转 chat 消息形态。
     if (agentMode && settings != null) {
-      final instructions = useSearch
-          ? '${prompts.systemPrompt}\n\n$_searchInstruction'
-          : prompts.systemPrompt;
       // AI 看到的初始 input：历史消息 + 当前用户消息（vision 图片在
       // responses 线路下转换为 input_image 内容块）；状态**不预置**，
       // 由模型主动调用各栏读取器获取（见 AgentRoundRunner 文档）。
+      // 联网工具随档位强制开启时同样**不追加任何 system 指令**：
+      // 何时调用、搜索后必须打开页面等要求全部写在工具 `description` 里
+      //（档位提示词只负责本档位可用的工具与调用纪律）。
       final inputItems = responsesWire
           ? responsesItemsFromChatMessages([
               ...historyMessages,
               {'role': 'user', 'content': userContent},
             ])
           : [
-              {'role': 'system', 'content': instructions},
+              {'role': 'system', 'content': prompts.systemPrompt},
               ...historyMessages,
               {'role': 'user', 'content': userContent},
             ];
@@ -704,7 +690,7 @@ class RoundProvider extends ChangeNotifier {
         maxTokens: maxTokens,
         stream: useStream,
         tools: agentToolSchemas(schemaTools, responses: responsesWire),
-        instructions: responsesWire ? instructions : null,
+        instructions: responsesWire ? prompts.systemPrompt : null,
       );
       // 预览 = 正文轮首帧的**同一条**组装路径（单一真源）。
       final firstBody = responsesWire
@@ -753,9 +739,6 @@ class RoundProvider extends ChangeNotifier {
     // instructions（系统提示词）+ input items（与 Chat 协议同构的消息），
     // **不引入任何 Agent 工具 / 状态机制**——协议只决定线路格式。
     if (responsesWire) {
-      final instructions = useSearch
-          ? '${prompts.systemPrompt}\n\n$_searchInstruction'
-          : prompts.systemPrompt;
       final values = AiRequestValues(
         model: model,
         messages: responsesItemsFromChatMessages([
@@ -768,7 +751,7 @@ class RoundProvider extends ChangeNotifier {
         maxTokens: maxTokens,
         stream: useStream,
         tools: null,
-        instructions: instructions,
+        instructions: prompts.systemPrompt,
       );
       final requestBody = settings == null
           ? AiRequestBodyBuilder.buildPresetBody(
@@ -930,10 +913,7 @@ class RoundProvider extends ChangeNotifier {
                     settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
                 apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
                 initialMessages: [
-                  {
-                    'role': 'system',
-                    'content': '${req.systemPrompt}\n\n$_searchInstruction',
-                  },
+                  {'role': 'system', 'content': req.systemPrompt},
                   ...req.historyMessages,
                   {'role': 'user', 'content': req.userContent},
                 ],
