@@ -11,15 +11,22 @@ import 'package:flutter/material.dart';
 /// 通过 `context.narrColors` 读取，随亮暗主题自动切换；
 /// 品牌色（[primary]/[accent]/[brandGradient]）在两种主题下保持一致。
 ///
-/// 滚动条策略：**使用 Flutter 原生滚动条**（由 MaterialScrollBehavior 为每个
-/// Scrollable 自动添加），仅通过 [ScrollbarThemeData] 统一外观为「细、圆角、
-/// 仅滚动时显示」，避免常显拇指在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
-/// 不使用自定义/显式滚动条。
+/// 滚动条策略：**使用自绘滚动条组件**（`NarrChatScrollbar`，见
+/// `widgets/narr_chat_scrollbar.dart`），由 `NarrChatScrollBehavior` 在桌面端
+/// （Windows/Linux/macOS）为纵向滚动视图自动接入，替换 Flutter 原生
+/// `Scrollbar`；本主题只提供外观常量（[ScrollbarThemeData.thumbColor]）。
+/// 显隐 / 淡入淡出由组件自身负责（滚动时显示、空闲后淡出、悬停保持），
+/// 避免常显拇指在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
 ///
-/// 唯一例外：对话页右侧栏（SidebarPanel）用 QuickScrollRail 快速定位导轨
-/// （WPS 式边缘定位 + 目录浮层）承担滚动定位职责，滚动视图局部通过
-/// `ScrollConfiguration.copyWith(scrollbars: false)` 关闭原生滚动条；
-/// 其它位置的原生滚动条不受影响。
+/// 触屏平台（Android/iOS/Fuchsia）与横向滚动视图保持 Flutter 默认
+/// （不自动加滚动条）；需要横向滚动条处仍显式使用原生 `Scrollbar`
+/// （如数据库调试页的数据表）。
+///
+/// 另一个滚动条组件：对话页右侧栏（SidebarPanel）的 QuickScrollRail 快速定位
+/// 导轨（WPS 式边缘定位 + 目录浮层）——它是同一个 `NarrChatScrollbar` 底座的
+/// 一层皮肤（多一对上下三角箭头、中心圆点与目录浮层），并局部通过
+/// `ScrollConfiguration.copyWith(scrollbars: false)` 关闭通用滚动条；
+/// 其它位置的滚动条不受影响。
 class NarrChatTheme {
   NarrChatTheme._();
 
@@ -257,17 +264,16 @@ class NarrChatTheme {
     );
   }
 
-  /// 滚动条主题：原生实现，仅滚动时显示（细圆角拇指，无轨道），
-  /// 避免常显滚动条在流式输出/内容高度变化时移动造成“乱飞/瞬移”观感。
+  /// 滚动条外观常量：仅提供拇指颜色，供自绘滚动条
+  /// （`NarrChatScrollbar` / `QuickScrollRail`）读取，两者外观天然同源。
+  /// 显隐策略（滚动时显示 + 空闲淡出）由组件自身实现，不在此配置。
   static ScrollbarThemeData _scrollbarTheme(bool isDark) {
     return ScrollbarThemeData(
-      thumbVisibility: const WidgetStatePropertyAll(false),
       thickness: const WidgetStatePropertyAll(6),
       radius: const Radius.circular(3),
       thumbColor: WidgetStatePropertyAll(
         isDark ? const Color(0xFF4A4D54) : const Color(0xFFB9BDC7),
       ),
-      trackVisibility: const WidgetStatePropertyAll(false),
     );
   }
 }

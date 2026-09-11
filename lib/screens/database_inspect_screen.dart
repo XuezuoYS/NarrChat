@@ -247,7 +247,8 @@ class _TableTileState extends State<_TableTile> {
   }
 
   Widget _dataTable(BuildContext context, DebugTablePage table) {
-    // 限制高度以便纵向可滚动；横向用可拖动的 Scrollbar 滚动，避免列数过多溢出。
+    // 限制高度以便纵向可滚动；横向用可拖动的 Scrollbar 滚动，避免列数过多溢出
+    // （纵向滚动条由全局 NarrChatScrollBehavior 提供，横向不受其接管）。
     return SizedBox(
       height: 380,
       child: Scrollbar(

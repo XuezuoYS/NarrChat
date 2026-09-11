@@ -34,6 +34,7 @@ import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
+import 'widgets/narr_chat_scrollbar.dart';
 import 'widgets/sync_hud.dart';
 import 'widgets/sync_result_bubble.dart';
 
@@ -268,6 +269,9 @@ class NarrChatApp extends StatelessWidget {
               ),
               title: 'NarrChat',
               debugShowCheckedModeBanner: false,
+              // 全局默认滚动条：用自绘 NarrChatScrollbar 替换 Flutter 原生
+              // Scrollbar（桌面端 + 纵向；触屏平台与横向保持默认不加）。
+              scrollBehavior: const NarrChatScrollBehavior(),
               // 通知服务通过该 key 在任意位置导航（通知点击进入对应书 chat 页）。
               navigatorKey: navigatorKey,
               // 通知服务观察路由栈，判断用户是否正在查看某本书的 chat 页。

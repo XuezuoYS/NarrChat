@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/widgets/markdown_collapsible_editor.dart';
+import 'package:narrchat/widgets/narr_chat_scrollbar.dart';
 import 'package:narrchat/widgets/quick_scroll_rail.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
 
@@ -116,6 +117,17 @@ void main() {
     );
     expect(
       find.descendant(of: sidebar, matching: find.byType(RawScrollbar)),
+      findsNothing,
+    );
+    // 自绘底座：侧栏内只保留导轨自身（不带额外 key 的实例即通用滚动条），
+    // 确保不会出现「导轨拇指 + 通用滚动条拇指」双拇指。
+    expect(
+      find.descendant(
+        of: sidebar,
+        matching: find.byWidgetPredicate(
+          (w) => w is NarrChatScrollbar && w.stripKey == null,
+        ),
+      ),
       findsNothing,
     );
   });

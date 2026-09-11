@@ -1,9 +1,9 @@
-import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
+
+import 'narr_chat_scrollbar.dart';
 
 /// 快速定位滚动锚点注册器（由宿主 State 持有，随生命周期释放）。
 ///
@@ -58,6 +58,11 @@ class QuickScrollEntry {
 /// )
 /// ```
 ///
+/// 本组件是 [NarrChatScrollbar]（自绘滚动条底座）的一层「皮肤」：拇指显隐
+/// 状态机、拖动定位、拇指几何、右缘命中带全部由底座提供，本文件只负责
+/// 「快速定位」特有的部分——目录条目解析、拖动时的目录浮层（渐变面板 +
+/// 沿轨道滑动的标题行 + 按位置连续渐变的当前条目强调）。
+///
 /// 行为约定（对齐 WPS 手机端体验）：
 /// - 滚动内容时淡入显示圆形阴影拇指（自带上下三角箭头图案），空闲
 ///   [QuickScrollRail.idleDelay] 后淡出；桌面端鼠标悬停右缘时保持显示；
@@ -66,10 +71,10 @@ class QuickScrollEntry {
 ///   的列表：列表随拖动位置连续滑动、**当前条目（对齐拇指）的强调按拖动
 ///   位置在相邻条目间交叉渐变**（无固定时长动画），上下到达边缘的标题
 ///   渐变淡出；
-/// - 拖动过程中连续滚动（jumpTo 跟手）；
-/// - 内容未溢出（maxScrollExtent <= 0）时整体不渲染；
-/// - 内部自动以 [ScrollConfiguration.copyWith] 禁用目标滚动视图的原生
-///   滚动条（本导轨承担滚动定位职责），其它位置的滚动条不受影响。
+/// - 拖动过程中连续滚动（jumpTo 跟手，拇指中心跟随指针）；
+/// - 内容未溢出（`maxScrollExtent <= 0`）时整体不渲染；
+/// - 内部自动以 [ScrollConfiguration.copyWith] 禁用目标滚动视图的**原生/
+///   通用**滚动条（本导轨承担滚动定位职责），其它位置的滚动条不受影响。
 ///
 /// 触控与鼠标拖动两条路径：触控经手势竞技场（与抽屉横滑等横向手势竞争，
 /// 垂直意图由导轨获胜）；鼠标/触控板走原始指针事件（无需滑动手势阈值）。
@@ -89,7 +94,7 @@ class QuickScrollRail extends StatefulWidget {
   /// 目录条目（按文档顺序给出；内部按解析出的偏移排序）。
   final List<QuickScrollEntry> entries;
 
-  /// 被包裹的滚动视图（本组件会禁用其原生滚动条）。
+  /// 被包裹的滚动视图（本组件会禁用其原生/通用滚动条）。
   final Widget scrollable;
 
   /// 浮层渐变底色（左透明 → 右 [panelColor]）。
@@ -103,10 +108,10 @@ class QuickScrollRail extends StatefulWidget {
   static const double hitWidth = 28;
 
   /// 拇指宽度。
-  static const double thumbWidth = 10;
+  static const double thumbWidth = kScrollbarThumbWidth;
 
   /// 拇指与右缘间距。
-  static const double thumbEdgeGap = 4;
+  static const double thumbEdgeGap = kScrollbarThumbEdgeGap;
 
   /// 拇指最小高度。
   static const double thumbMinHeight = 64;
@@ -123,11 +128,11 @@ class QuickScrollRail extends StatefulWidget {
   /// 标题上下边缘淡出高度。
   static const double edgeFadeHeight = 30;
 
-  /// 空闲淡出延时。
-  static const Duration idleDelay = Duration(milliseconds: 700);
+  /// 空闲淡出延时（= 底座默认）。
+  static const Duration idleDelay = kScrollbarIdleDelay;
 
-  /// 拇指显隐动画时长。
-  static const Duration fadeDuration = Duration(milliseconds: 120);
+  /// 拇指显隐动画时长（= 底座默认）。
+  static const Duration fadeDuration = kScrollbarFadeDuration;
 
   /// 目录浮层展开动画时长（右滑入 + 淡入复合；收起为反向动画）。
   static const Duration overlayAnimDuration = Duration(milliseconds: 180);
@@ -164,13 +169,7 @@ class QuickScrollRail extends StatefulWidget {
 }
 
 class _QuickScrollRailState extends State<QuickScrollRail>
-    with TickerProviderStateMixin {
-  late final AnimationController _fade = AnimationController(
-    vsync: this,
-    duration: QuickScrollRail.fadeDuration,
-    value: 0,
-  );
-
+    with SingleTickerProviderStateMixin {
   /// 目录浮层动画控制器（0=收起，1=展开；展开右滑入+淡入，收起反向）。
   late final AnimationController _overlayAnim = AnimationController(
     vsync: this,
@@ -181,169 +180,33 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     parent: _overlayAnim,
     curve: Curves.easeOutCubic,
   );
-  Timer? _idleTimer;
-
-  /// 桌面端鼠标是否悬停在导轨命中区（悬停期间不淡出）。
-  bool _hovered = false;
 
   /// 是否处于拖动定位中（目录浮层随拖动显示）。
   bool _dragging = false;
 
-  /// 当前指针的设备类型（区分鼠标原始事件与触控手势）。
-  PointerDeviceKind? _downKind;
-
-  /// 鼠标/触控板拖动中的原始指针 id。
-  int _pointerId = -1;
-
-  /// 拖动中的指针/手势位置（导轨局部坐标 dy 有效）。
-  Offset? _dragPosition;
-
-  ScrollPosition? get _position =>
-      widget.controller.hasClients ? widget.controller.position : null;
-
   @override
   void dispose() {
-    _idleTimer?.cancel();
-    _fade.dispose();
     _overlayAnim.dispose();
     super.dispose();
   }
 
-  // ---------------------------------------------------------------------------
-  // 显隐状态机
-  // ---------------------------------------------------------------------------
-
-  bool _onScrollNotification(ScrollNotification notification) {
-    // 只响应本导轨直接包裹的滚动视图（depth 0）。
-    if (notification.depth == 0) {
-      _showThumb();
-    }
-    return false;
-  }
-
-  void _showThumb() {
-    _idleTimer?.cancel();
-    if (_fade.value < 1) _fade.forward();
-    _idleTimer = Timer(QuickScrollRail.idleDelay, () {
-      if (mounted && !_dragging && !_hovered) _fade.reverse();
-    });
-  }
-
-  void _onHoverChange(bool hovering) {
-    if (_hovered == hovering) return;
-    setState(() => _hovered = hovering);
-    if (hovering) {
-      _showThumb();
-    } else {
-      _idleTimer?.cancel();
-      _idleTimer = Timer(QuickScrollRail.idleDelay, () {
-        if (mounted && !_dragging && !_hovered) _fade.reverse();
-      });
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // 拖动定位
-  // ---------------------------------------------------------------------------
-
-  /// 仅鼠标/触控板由原始指针拖动（无需等待手势阈值）。
-  void _onPointerDown(PointerDownEvent event) {
-    _downKind = event.kind;
-    if (event.kind != PointerDeviceKind.mouse &&
-        event.kind != PointerDeviceKind.trackpad) {
-      return;
-    }
-    _pointerId = event.pointer;
-    _dragPosition = event.localPosition;
-    // 按下即进入拖动态（浮层随之出现），但未移动前不跳转——
-    // 纯单击（无位移）不改变滚动位置（轨道的定位仅由拖动触发）。
-    _beginDrag(applyPosition: false);
-  }
-
-  void _onPointerMove(PointerMoveEvent event) {
-    if (event.pointer != _pointerId || !_dragging) return;
-    _dragPosition = event.localPosition;
-    _applyDrag();
-  }
-
-  void _onPointerUp(PointerUpEvent event) {
-    if (event.pointer != _pointerId) return;
-    _endDrag();
-  }
-
-  void _onPointerCancel(PointerCancelEvent event) {
-    if (event.pointer != _pointerId) return;
-    _endDrag();
-  }
-
-  /// 触控手势路径：垂直拖动在竞技场中与抽屉横滑等横向手势竞争。
-  void _onTouchDragStart(DragStartDetails details) {
-    if (_downKind != PointerDeviceKind.touch) return;
-    _dragPosition = details.localPosition;
-    // 手势已滑过阈值才开始 → 移动已发生，按下即按位移定位。
-    _beginDrag(applyPosition: true);
-  }
-
-  void _onTouchDragUpdate(DragUpdateDetails details) {
-    if (!_dragging) return;
-    _dragPosition = details.localPosition;
-    _applyDrag();
-  }
-
-  void _beginDrag({required bool applyPosition}) {
+  /// 底座报告拖动开始：展开目录浮层（右滑入 + 淡入）。
+  void _onDragStart() {
     if (_dragging) return;
-    _idleTimer?.cancel();
-    setState(() => _dragging = true);
-    _fade.forward();
+    _dragging = true;
     _overlayAnim.forward();
-    if (applyPosition) _applyDrag();
   }
 
-  void _applyDrag() {
-    final pos = _position;
-    final local = _dragPosition;
-    if (pos == null || local == null) return;
-    final trackH = context.size?.height ?? 0;
-    if (trackH <= 0) return;
-    final thumbH = _thumbHeight(trackH, pos);
-    if (trackH - thumbH <= 0) return;
-    final frac = ((local.dy - thumbH / 2) / (trackH - thumbH)).clamp(0.0, 1.0);
-    final target = (frac * pos.maxScrollExtent)
-        .clamp(pos.minScrollExtent, pos.maxScrollExtent);
-    if ((pos.pixels - target).abs() > 0.5) {
-      pos.jumpTo(target);
-    }
-  }
-
-  void _endDrag() {
+  /// 底座报告拖动结束（松手 / 取消）：反向播放收起目录浮层。
+  void _onDragEnd() {
     if (!_dragging) return;
-    _pointerId = -1;
-    _downKind = null;
-    // 目录浮层收起：反向播放展开动画（右滑出 + 淡出），播完后从树中移除。
+    _dragging = false;
     _overlayAnim.reverse();
-    setState(() {
-      _dragging = false;
-      _dragPosition = null;
-    });
-    _idleTimer?.cancel();
-    _idleTimer = Timer(QuickScrollRail.idleDelay, () {
-      if (mounted && !_dragging && !_hovered) _fade.reverse();
-    });
   }
 
   // ---------------------------------------------------------------------------
-  // 几何
+  // 几何与目录布局
   // ---------------------------------------------------------------------------
-
-  double _thumbHeight(double trackH, ScrollPosition pos) {
-    final content = pos.maxScrollExtent + pos.viewportDimension;
-    if (content <= 0) return 0;
-    final frac = pos.viewportDimension / content;
-    return math
-        .min(math.max(trackH * frac, QuickScrollRail.thumbMinHeight), trackH);
-  }
-
-  /// 计算滚动偏移 → 轨道的比例映射（与原生滚动条同语义：拇指中心 ↔ 偏移）。
 
   /// 解析并排序条目偏移；[offsetResolver] 返回 null 的条目被跳过。
   List<(QuickScrollEntry, double)> _resolveSorted() {
@@ -423,153 +286,94 @@ class _QuickScrollRailState extends State<QuickScrollRail>
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        ScrollConfiguration(
-          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-          child: NotificationListener<ScrollNotification>(
-            onNotification: _onScrollNotification,
-            child: widget.scrollable,
-          ),
-        ),
-        if (widget.entries.isNotEmpty)
-          Positioned.fill(
-            child: AnimatedBuilder(
-              animation: Listenable.merge(
-                [widget.controller, _fade, _overlayAnim],
-              ),
-              builder: (context, _) => LayoutBuilder(
-                builder: (context, constraints) {
-                  final pos = _position;
-                  if (pos == null ||
-                      pos.maxScrollExtent <= 0 ||
-                      constraints.maxHeight <= 0) {
-                    return const SizedBox.shrink();
-                  }
-                  return _buildRailContent(
-                    context,
-                    trackH: constraints.maxHeight,
-                    hostW: constraints.maxWidth,
-                    pos: pos,
-                  );
-                },
-              ),
-            ),
-          ),
-      ],
+    final enabled = widget.entries.isNotEmpty;
+    return NarrChatScrollbar(
+      controller: widget.controller,
+      thumbGlyph: ThumbGlyph.arrowsWithDot,
+      thumbMinHeight: QuickScrollRail.thumbMinHeight,
+      thumbWidth: QuickScrollRail.thumbWidth,
+      thumbEdgeGap: QuickScrollRail.thumbEdgeGap,
+      hitBandWidth: QuickScrollRail.hitWidth,
+      // 触屏：整条右缘可按住拖动；鼠标：按下不跳、拖动跟手（拇指中心跟随）。
+      touchStrip: true,
+      stripKey: const Key('quick_scroll_rail_strip'),
+      dragAnchor: ScrollDragAnchor.center,
+      applyOnDown: false,
+      thumbFadeKey: const Key('quick_scroll_rail_thumb_fade'),
+      idleDelay: QuickScrollRail.idleDelay,
+      fadeDuration: QuickScrollRail.fadeDuration,
+      overlayBuilder: enabled ? _buildOverlay : null,
+      onDragStart: _onDragStart,
+      onDragEnd: _onDragEnd,
+      scrollable: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: widget.scrollable,
+      ),
     );
   }
 
-  Widget _buildRailContent(
-    BuildContext context, {
-    required double trackH,
-    required double hostW,
-    required ScrollPosition pos,
-  }) {
-    final thumbH = _thumbHeight(trackH, pos);
-    // 拇指位置随滚动像素钳制（防御：pixels 可能瞬时越界）。
-    final pixelsFrac = pos.maxScrollExtent > 0
-        ? (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0)
-        : 0.0;
-    final thumbTop = (trackH - thumbH) * pixelsFrac;
-    final resolved = _resolveSorted();
-    final rows = _computeRows(
-      resolved: resolved,
-      trackH: trackH,
-      thumbH: thumbH,
-      maxExtent: pos.maxScrollExtent,
-      pixels: pos.pixels,
-    );
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        // 目录浮层：右缘向左的水平渐变 + 沿轨道的标题堆叠。展开 = 右滑入
-        // + 淡入（[overlayAnimDuration]），收起 = 反向播放后从树中移除。
-        if (_dragging || _overlayAnim.value > 0)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: AnimatedBuilder(
-                key: const Key('quick_scroll_rail_overlay'),
-                animation: _overlayCurve,
-                builder: (context, child) {
-                  final t = _overlayCurve.value;
-                  return Transform.translate(
-                    offset: Offset(24 * (1 - t), 0),
-                    child: Opacity(opacity: t, child: child),
-                  );
-                },
-                child: _buildOverlay(
-                  context,
-                  hostW: hostW,
-                  trackH: trackH,
-                  rows: rows,
-                ),
-              ),
+  /// 拖动期间（展开动画进行时）叠加的目录浮层。
+  Widget _buildOverlay(BuildContext context, double trackExtent) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        widget.controller,
+        _overlayCurve,
+      ]),
+      builder: (context, _) {
+        if (!_dragging && _overlayAnim.isDismissed) {
+          return const SizedBox.shrink();
+        }
+        final pos = widget.controller.hasClients
+            ? widget.controller.position
+            : null;
+        if (pos == null) return const SizedBox.shrink();
+        final thumbH = ScrollThumbGeometry.thumbHeight(
+          trackExtent: trackExtent,
+          viewportDimension: pos.viewportDimension,
+          maxScrollExtent: pos.maxScrollExtent,
+          minHeight: QuickScrollRail.thumbMinHeight,
+        );
+        if (thumbH <= 0) return const SizedBox.shrink();
+        final thumbTop = ScrollThumbGeometry.thumbTop(
+          trackExtent: trackExtent,
+          thumbExtent: thumbH,
+          pixels: pos.pixels,
+          maxScrollExtent: pos.maxScrollExtent,
+        );
+        final rows = _computeRows(
+          resolved: _resolveSorted(),
+          trackH: trackExtent,
+          thumbH: thumbH,
+          maxExtent: pos.maxScrollExtent,
+          pixels: pos.pixels,
+        );
+        return IgnorePointer(
+          child: AnimatedBuilder(
+            key: const Key('quick_scroll_rail_overlay'),
+            animation: _overlayCurve,
+            builder: (context, child) {
+              final t = _overlayCurve.value;
+              return Transform.translate(
+                offset: Offset(24 * (1 - t), 0),
+                child: Opacity(opacity: t, child: child),
+              );
+            },
+            child: _buildOverlayPanel(
+              context,
+              trackExtent: trackExtent,
+              thumbTop: thumbTop,
+              rows: rows,
             ),
           ),
-        // 右缘导轨命中区。
-        Align(
-          alignment: Alignment.centerRight,
-          child: SizedBox(
-            width: QuickScrollRail.hitWidth,
-            height: trackH,
-            child: MouseRegion(
-              onEnter: (_) => _onHoverChange(true),
-              onExit: (_) => _onHoverChange(false),
-              child: Listener(
-                onPointerDown: _onPointerDown,
-                onPointerMove: _onPointerMove,
-                onPointerUp: _onPointerUp,
-                onPointerCancel: _onPointerCancel,
-                child: GestureDetector(
-                  key: const Key('quick_scroll_rail_strip'),
-                  behavior: HitTestBehavior.opaque,
-                  onVerticalDragStart: _onTouchDragStart,
-                  onVerticalDragUpdate: _onTouchDragUpdate,
-                  onVerticalDragEnd: (_) => _endDrag(),
-                  onVerticalDragCancel: _endDrag,
-                  child: Stack(
-                    children: [
-                      // 轨道（仅拖动时）：细竖线。
-                      if (_dragging && rows.isNotEmpty)
-                        Positioned.fill(
-                          child: CustomPaint(
-                            painter: _TrackPainter(
-                              lineColor: Theme.of(context)
-                                  .colorScheme
-                                  .outlineVariant
-                                  .withValues(alpha: 0.5),
-                              trackH: trackH,
-                            ),
-                          ),
-                        ),
-                      // 拇指：圆角胶囊 + 阴影 + 上下三角 + 中心圆点。
-                      Positioned(
-                        top: thumbTop,
-                        right: QuickScrollRail.thumbEdgeGap,
-                        width: QuickScrollRail.thumbWidth,
-                        height: thumbH,
-                        child: FadeTransition(
-                          key: const Key('quick_scroll_rail_thumb_fade'),
-                          opacity: _fade,
-                          child: _RailThumb(dragging: _dragging),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 
-  Widget _buildOverlay(
+  Widget _buildOverlayPanel(
     BuildContext context, {
-    required double hostW,
-    required double trackH,
+    required double trackExtent,
+    required double thumbTop,
     required List<_RowLayout> rows,
   }) {
     final panelColor =
@@ -578,66 +382,59 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     final maxLabelW = screenW * widget.labelMaxWidthRatio;
     // 标题行左边界：文本可用宽度 = min(屏宽×比例, 宿主宽) − 右缘留白，
     // 超出限宽单行省略（限宽默认屏宽 70%）。
-    final rowLeft = math.max(0.0, hostW - maxLabelW);
+    final rowLeft = math.max(0.0, trackExtent - maxLabelW);
     final visibleRows = [
       for (final r in rows)
         if (r.y >= -QuickScrollRail.labelRowHeight &&
-            r.y <= trackH + QuickScrollRail.labelRowHeight)
+            r.y <= trackExtent + QuickScrollRail.labelRowHeight)
           r,
     ];
 
     return ClipRect(
       child: Stack(
         children: [
-            // 右（纯白）→ 左（透明）水平渐变底。
-            Positioned.fill(
-              child: DecoratedBox(
-                key: const Key('quick_scroll_rail_gradient'),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [
-                      panelColor.withValues(alpha: 0),
-                      panelColor.withValues(alpha: 1),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            // 标题行：上下边缘垂直渐隐（到面板边缘淡出）。
-            // ⚠️ 必须用 dstIn：只按蒙版「透明度」调制子内容；srcIn 会把
-            // 子内容整体着色成蒙版颜色（白色）→ 白色面板上文字不可见。
-            Positioned.fill(
-              child: ShaderMask(
-                shaderCallback: (bounds) => const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
+          // 右（纯白）→ 左（透明）水平渐变底。
+          Positioned.fill(
+            child: DecoratedBox(
+              key: const Key('quick_scroll_rail_gradient'),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
                   colors: [
-                    Colors.transparent,
-                    Colors.white,
-                    Colors.white,
-                    Colors.transparent,
-                  ],
-                  stops: [0.0, 0.05, 0.95, 1.0],
-                ).createShader(
-                  Rect.fromLTWH(
-                    0,
-                    0,
-                    bounds.width,
-                    bounds.height,
-                  ),
-                ),
-                blendMode: BlendMode.dstIn,
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    for (final r in visibleRows)
-                      _buildLabelRow(context, r, rowLeft),
+                    panelColor.withValues(alpha: 0),
+                    panelColor.withValues(alpha: 1),
                   ],
                 ),
               ),
             ),
+          ),
+          // 标题行：上下边缘垂直渐隐（到面板边缘淡出）。
+          // ⚠️ 必须用 dstIn：只按蒙版「透明度」调制子内容；srcIn 会把
+          // 子内容整体着色成蒙版颜色（白色）→ 白色面板上文字不可见。
+          Positioned.fill(
+            child: ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.white,
+                  Colors.white,
+                  Colors.transparent,
+                ],
+                stops: [0.0, 0.05, 0.95, 1.0],
+              ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height)),
+              blendMode: BlendMode.dstIn,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  for (final r in visibleRows)
+                    _buildLabelRow(context, r, rowLeft),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -670,8 +467,7 @@ class _QuickScrollRailState extends State<QuickScrollRail>
               style: TextStyle(
                 // 字号统一放大（视图 12px × 1.6），当前条目在此基础上
                 // 随位置渐进放大；不区分层级缩进。
-                fontSize:
-                    QuickScrollRail.labelFontSize +
+                fontSize: QuickScrollRail.labelFontSize +
                     QuickScrollRail.labelFontSizeBoost * w,
                 fontWeight: FontWeight.w600,
                 color: labelColor.withValues(alpha: opacity),
@@ -706,112 +502,13 @@ class _RowLayout {
   });
 
   final QuickScrollEntry entry;
+
   final double offset;
+
   final double y;
 
   /// 「当前」强调权重（0..1）：1 = 行位于拇指，随拖动位置连续渐变。
   final double weight;
+
   final bool isCurrent;
-}
-
-/// 轨道绘制（仅拖动时）：细竖线，衬托行刻度与拇指。
-class _TrackPainter extends CustomPainter {
-  const _TrackPainter({required this.lineColor, required this.trackH});
-
-  final Color lineColor;
-  final double trackH;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2;
-    final line = Paint()
-      ..color = lineColor
-      ..strokeWidth = 2;
-    canvas.drawLine(Offset(cx, 0), Offset(cx, trackH), line);
-  }
-
-  @override
-  bool shouldRepaint(covariant _TrackPainter oldDelegate) {
-    return oldDelegate.lineColor != lineColor || oldDelegate.trackH != trackH;
-  }
-}
-
-/// 拇指：圆角胶囊 + 阴影 + 上下三角箭头 + 中心圆点。
-class _RailThumb extends StatelessWidget {
-  const _RailThumb({required this.dragging});
-
-  final bool dragging;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final color = dragging
-        ? scheme.primary
-        : (Theme.of(context).scrollbarTheme.thumbColor?.resolve({}) ??
-            scheme.onSurfaceVariant);
-    return Container(
-      key: const Key('quick_scroll_rail_thumb'),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(QuickScrollRail.thumbWidth / 2),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.28),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: CustomPaint(
-        painter: _ThumbGlyphPainter(glyphColor: Colors.white),
-      ),
-    );
-  }
-}
-
-/// 拇指内部图案：顶部 ▲、底部 ▼、中心小圆点。
-class _ThumbGlyphPainter extends CustomPainter {
-  const _ThumbGlyphPainter({required this.glyphColor});
-
-  final Color glyphColor;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = glyphColor;
-    final cx = size.width / 2;
-    final w = 4.0;
-
-    // ▲
-    canvas.drawPath(
-      Path()
-        ..moveTo(cx, 2)
-        ..lineTo(cx - w, 6)
-        ..lineTo(cx + w, 6)
-        ..close(),
-      fill,
-    );
-    // ▼
-    canvas.drawPath(
-      Path()
-        ..moveTo(cx - w, size.height - 6)
-        ..lineTo(cx + w, size.height - 6)
-        ..lineTo(cx, size.height - 2)
-        ..close(),
-      fill,
-    );
-    // 中心圆点（描边）。
-    canvas.drawCircle(
-      Offset(cx, size.height / 2),
-      2.4,
-      Paint()
-        ..color = glyphColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _ThumbGlyphPainter oldDelegate) {
-    return oldDelegate.glyphColor != glyphColor;
-  }
 }
