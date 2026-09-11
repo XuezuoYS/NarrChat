@@ -40,7 +40,8 @@ class StateGap {
   /// 角色名展示文本（最多 6 个，避免提示过长）。
   String get namesText => names.take(6).join('、');
 
-  /// 面向模型：英文指令在前（遵循度更高）+ 中文一行摘要。
+  /// 面向模型：英文指令在前（遵循度更高）+ 中文简短概述在后，两者之间**不加
+  /// 语言标记**（与工具 `description` 同一形态，见 `docs/agent_tools.md`）。
   ///
   /// 工具名按栏目取（六个工具按栏目拆分后，「该调哪个编辑器」本身也是信息）。
   String get modelText {
@@ -50,13 +51,13 @@ class StateGap {
         'Section "${section!.tag}" was neither edited nor declared unchanged '
             'this round. Call $editTool for it once (op=noChange '
             '+ reason if truly nothing changed). '
-            '【中】$sectionLabel栏目本轮既未编辑也未声明无变化，'
+            '$sectionLabel栏目本轮既未编辑也未声明无变化，'
             '请对该栏目调用一次 $editTool（确无变化用 op=noChange + reason）。',
       StateGapKind.sectionUnchanged =>
         'Section "${section!.tag}" is byte-identical to last round although '
             'the story moved on. Edit it now with $editTool, '
             'anchored on lines copied from the latest read result. '
-            '【中】$sectionLabel栏目与上一轮逐字节相同（剧情已推进），'
+            '$sectionLabel栏目与上一轮逐字节相同（剧情已推进），'
             '请用 $editTool 按最新读取结果原文锚点做实际编辑。',
       StateGapKind.lazyCharacters =>
         'These characters appear in this round but their blocks are '
@@ -69,7 +70,7 @@ class StateGap {
             'for all of them together, and always with a per-character '
             'reason; a noChange that dodges a visible move is a lazy edit '
             'and will be re-flagged. '
-            '【中】本轮出场角色 $namesText 的角色块与上一轮逐字节相同，'
+            '本轮出场角色 $namesText 的角色块与上一轮逐字节相同，'
             '但正文里他们确有动向：现在必须逐个 `## 角色名` 块实际编辑——'
             '正文改动了几行，就补几条 op=set（当前心理/当前状态/当前位置/'
             '好感度/伤势/物品/关系…，全部合并到同一次 '

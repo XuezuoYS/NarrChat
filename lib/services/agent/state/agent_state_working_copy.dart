@@ -192,10 +192,10 @@ class AgentStateWorkingCopy {
   }) {
     final buf = StringBuffer();
     buf.writeln('<<<NARRCHAT_STATE round=$roundIndex>>>');
-    buf.writeln('[EN] This is the app-side state truth, just read back. Copy '
+    buf.writeln('This is the app-side state truth, just read back. Copy '
         '`before` anchors VERBATIM from it; NEVER echo this block in your '
         'reply (it is input, not an output format).');
-    buf.writeln('【中】这是应用侧状态真值（刚读取回来的）。before 锚点必须从本块'
+    buf.writeln('这是应用侧状态真值（刚读取回来的）。before 锚点必须从本块'
         '逐字复制；**禁止**把本块重复输出到回复里（它是输入，不是输出格式）。');
     for (final s in AgentStateSection.values) {
       if (!sections.containsKey(s)) continue;

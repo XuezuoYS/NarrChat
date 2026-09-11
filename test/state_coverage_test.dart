@@ -63,10 +63,13 @@ void main() {
       sectionsOf(gaps, StateGapKind.sectionUntouched),
       AgentStateSection.values.toSet(),
     );
-    // 面向模型：英文指令行在前 + 中文一行摘要；面向用户：短提示。
+    // 面向模型：英文指令在前 + 中文概述在后（**不加语言标记**）；面向用户：短提示。
     final first = gaps.first;
     expect(first.modelText, startsWith('Section "worldState"'));
-    expect(first.modelText, contains('【中】世界状态栏目'));
+    expect(first.modelText, contains('世界状态栏目本轮既未编辑也未声明无变化'));
+    for (final marker in const ['【中】', '[EN]']) {
+      expect(first.modelText, isNot(contains(marker)), reason: marker);
+    }
     expect(first.uiText, '世界状态本轮未更新');
     // 懒修改点名角色（出场且块未变）：指令以「实际编辑」为主，noChange 仅居末。
     final lazy = gaps.firstWhere((g) => g.kind == StateGapKind.lazyCharacters);
@@ -77,6 +80,11 @@ void main() {
     // noChange 是最后手段：只有「被提及但毫无新信息」才允许，且禁止全队一起声明。
     expect(lazy.modelText, contains('op=noChange'));
     expect(lazy.modelText, contains('只是被提及'));
+    // 本用例同时覆盖 untouched 与 lazy：两类模型文本都不带语言标记。
+    for (final gap in gaps) {
+      expect(gap.modelText, isNot(contains('【中】')), reason: gap.uiText);
+      expect(gap.modelText, isNot(contains('[EN]')), reason: gap.uiText);
+    }
   });
 
   test('全部补齐（三栏目实际编辑）→ 无缺口；时间不触发缺口', () {
@@ -139,11 +147,14 @@ void main() {
       sectionsOf(gaps, StateGapKind.sectionUnchanged),
       {AgentStateSection.worldState},
     );
-    expect(
-      gaps.firstWhere(
-          (g) => g.kind == StateGapKind.sectionUnchanged).modelText,
-      contains('byte-identical'),
-    );
+    final unchangedText = gaps.firstWhere(
+      (g) => g.kind == StateGapKind.sectionUnchanged,
+    ).modelText;
+    expect(unchangedText, contains('byte-identical'));
+    // 中文概述跟在英文要求之后，无【中】/ [EN] 语言标记。
+    expect(unchangedText, contains('世界状态栏目与上一轮逐字节相同'));
+    expect(unchangedText, isNot(contains('【中】')));
+    expect(unchangedText, isNot(contains('[EN]')));
 
     // 记忆栏目不参与 unchanged 判定：本轮条目缺失已被 applyEdits 硬拒，
     // 「改了又改回原值」在它那里根本不可能提交成功（故此处只登记为未触及）。

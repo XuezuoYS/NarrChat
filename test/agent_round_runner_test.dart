@@ -330,6 +330,10 @@ void main() {
     expect('${rs2Output['output']}', contains('Nothing was read again'));
     expect('${rs2Output['output']}', contains(kEditWorldStateToolName));
     expect('${rs2Output['output']}', isNot(contains('NARRCHAT_STATE')));
+    // 回传说明：中文概述在英文要求之后，无 [EN] / 【中】 语言标记。
+    expect('${rs2Output['output']}', contains('已在对话中'));
+    expect('${rs2Output['output']}', isNot(contains('[EN]')));
+    expect('${rs2Output['output']}', isNot(contains('【中】')));
     // 正文回合那一份仍在（护栏不能把模型的唯一锚点来源剔掉）。
     final rs1Output = items.firstWhere(
       (i) =>
@@ -480,6 +484,12 @@ void main() {
     expect('${last['content']}', contains('[State-maintenance turn]'));
     expect('${last['content']}', contains(kReadWorldStateToolName));
     expect('${last['content']}', contains(kEditHistoryToolName));
+    // 指令形态：英文要求在前、中文概述在后，**不加语言标记**。
+    expect('${last['content']}', startsWith('[State-maintenance turn]'));
+    expect('${last['content']}', contains('状态维护轮：正文已在上方完成'));
+    for (final marker in const ['[EN]', '【中】']) {
+      expect('${last['content']}', isNot(contains(marker)), reason: marker);
+    }
   });
 
   test('有状态链式：续接帧只发新增 item + previous_response_id', () async {
@@ -647,17 +657,22 @@ void main() {
     expect(result.outcomes.first.applied, isFalse);
     expect(result.outcomes.first.message, contains('截断'));
     // 截断帧什么都没改（世界状态仍是基座），补齐由维护轮那一帧完成。
-    expect(
-      '${h.requests[1].items.firstWhere((i) =>
-          i['type'] == 'function_call_output' &&
-          i['call_id'] == 'call_1')['output']}',
-      contains('TRUNCATED'),
-    );
+    final truncatedOutput =
+        '${h.requests[1].items.firstWhere((i) =>
+            i['type'] == 'function_call_output' &&
+            i['call_id'] == 'call_1')['output']}';
+    expect(truncatedOutput, contains('TRUNCATED'));
+    // 拒绝回传与维护轮反馈都是「英文要求 + 中文概述」，无语言标记。
+    expect(truncatedOutput, contains('工具参数被截断'));
+    final feedback = '${h.requests[1].items.last['content']}';
+    expect(feedback, contains('TRUNCATED'));
+    expect(feedback, contains('工具参数被截断'));
+    for (final text in [truncatedOutput, feedback]) {
+      for (final marker in const ['[EN]', '【中】']) {
+        expect(text, isNot(contains(marker)), reason: marker);
+      }
+    }
     // 截断项进了维护轮反馈，修复帧完成后无警告。
-    expect(
-      '${h.requests[1].items.last['content']}',
-      contains('TRUNCATED'),
-    );
     expect(result.warnings, isEmpty);
   });
 
@@ -747,7 +762,12 @@ void main() {
     expect(h.requests[1].toolChoice, 'required');
     expect(h.requests[2].toolChoice, 'required');
     expect(h.requests[2].stateThinkingEffort, kAgentStateThinkingEffort);
-    expect('${h.requests[2].items.last['content']}', contains('TRUNCATED'));
+    final capDirective = '${h.requests[2].items.last['content']}';
+    expect(capDirective, contains('TRUNCATED'));
+    // 「拆短调用」提示：中文概述紧跟英文要求之后，无 [EN] / 【中】 语言标记。
+    expect(capDirective, contains('上一帧在输出上限处被截断'));
+    expect(capDirective, isNot(contains('[EN]')));
+    expect(capDirective, isNot(contains('【中】')));
     expect('${h.requests[2].items.last['content']}', contains('拆短'));
     // 末帧未截断 → 不再对用户提示截断。
     expect(result.incomplete, isFalse);
@@ -928,8 +948,13 @@ void main() {
     final refusedOutput = h.requests[1].items.firstWhere(
       (i) => i['type'] == 'function_call_output' && i['call_id'] == 'bad_h',
     );
-    expect('${refusedOutput['output']}', contains('未执行'));
-    expect('${refusedOutput['output']}', contains(kEditHistoryToolName));
+    // 拒绝说明：英文要求在前、中文概述在后，无 [EN] / 【中】 语言标记。
+    final refusedText = '${refusedOutput['output']}';
+    expect(refusedText, contains('History edits belong'));
+    expect(refusedText, contains('未执行'));
+    expect(refusedText, contains(kEditHistoryToolName));
+    expect(refusedText, isNot(contains('[EN]')));
+    expect(refusedText, isNot(contains('【中】')));
     expect(copy.memorySummary, isNot(contains('正文轮抢写')));
 
     // 维护轮照常发起并补齐本轮条目。

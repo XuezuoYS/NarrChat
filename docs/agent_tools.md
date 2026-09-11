@@ -39,16 +39,21 @@
 ### 工具描述文案规范（全部工具统一）
 
 - **形态**：`description` = **英文详细要求在前 + 简短中文概述在后**，两句之间
-  **不加【中】一类语言标记**（旧状态工具用 `\n【中】…` 分隔的写法已废弃）；
+  **不加【中】/ [EN] 一类语言标记**（旧状态工具用 `\n【中】…` 分隔的写法已废弃）；
   英文给模型（长句、约束完整，遵从率更高），中文给用户核对；
+- **同一形态覆盖所有模型面向的双语文本**：除 8 个工具的 `description` 外，还包括
+  状态快照块头两行（`AgentStateWorkingCopy._renderSections`）、缺口指令
+  `StateGap.modelText`、维护轮指令与各类「本次未执行」拒绝说明
+  （`AgentRoundRunner`）——一律英文要求在前、中文概述在后、无语言标记；
 - **单一出处**：联网工具的**全部调用指导只在 `description` 里**
   （`narrchat_webSearch` 点明「调用后必须紧接着用 `narrchat_webFetchPage`
   打开最相关的 1~3 个结果页面读正文」，打开页工具点明「拒绝访问时换用其它
   结果页面」）；`RoundProvider` 的组装路径**不再向 system 追加任何联网指令**
   （Chat 工具循环与 Agent 档位强制开启两条路径都不追加）；
 - **参数 schema 文案**沿用同一「英文 + 中文」写法（如 `before` / `reason`）；
-- 契约由 `test/agent_tool_descriptions_test.dart` 守护（无语言标记、英文在前、
-  中文概述收尾、跨工具引用齐备）。
+- 契约由 `test/agent_tool_descriptions_test.dart`（工具描述）与
+  `test/state_coverage_test.dart` / `test/agent_state_working_copy_test.dart`
+  （缺口指令、快照块无标记）守护。
 
 ### 状态工具（`state/state_tools.dart`，仅 Agent 档位注入）
 
@@ -81,7 +86,8 @@
 
 ```
 <<<NARRCHAT_STATE round=N>>>
-[EN] … copy `before` anchors VERBATIM … /【中】… 禁止把本块重复输出到回复里 …
+… copy `before` anchors VERBATIM …（英文一行）
+… 禁止把本块重复输出到回复里 …（中文一行，无语言标记）
 <worldState>…</worldState>       ← 只有被请求的那一栏
 <<<END_NARRCHAT_STATE>>>
 ```
@@ -109,8 +115,9 @@
 
 `inspectState` 只看应用侧事实（`touchedSections` / `declaredUnchanged` /
 `sectionText` 与 `sectionBaseText` 比对 / 出场角色块是否逐字节未变），产出
-`StateGap` 列表：每个缺口同时给出面向模型的 `modelText`（EN + 【中】，**点名该栏
-对应的编辑器**）与面向用户的 `uiText`。模型说「已更新」不算更新。判定范围由
+`StateGap` 列表：每个缺口同时给出面向模型的 `modelText`（英文指令在前 + 中文
+概述在后、**不加语言标记**，并**点名该栏对应的编辑器**）与面向用户的 `uiText`。
+模型说「已更新」不算更新。判定范围由
 调用方按档位传入：Lv.2 = 三栏 + 角色懒修改检查；Lv.1 = 仅历史且关闭懒修改检查
 （世界 / 角色由正文携带）。当前时间属于正文，不参与判定。
 

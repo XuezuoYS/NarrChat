@@ -537,7 +537,8 @@ class AgentRoundRunner {
   /// 维护轮对这些栏目的重复读取会被拒绝（[_refusedMaintenanceRead]）。
   final Set<AgentStateSection> _sectionsProvided = {};
 
-  /// 维护轮指令（EN 在前、中文一行在后；工具名按档位的栏目清单生成）。
+  /// 维护轮指令（英文详细要求在前、简短中文概述在后，**不加语言标记**；
+  /// 工具名按档位的栏目清单生成）。
   Map<String, dynamic> _stateDirective(
     List<String> problems, {
     required bool first,
@@ -560,7 +561,7 @@ class AgentRoundRunner {
             'Prefer REAL EDITS over noChange: every line the story moved '
             '(a reaction, a thought, a move) is one op=set; noChange is only '
             'for what truly did not change. '
-            '【中】状态维护轮：正文已在上方完成，本回合不产出任何文本，只调工具。'
+            '状态维护轮：正文已在上方完成，本回合不产出任何文本，只调工具。'
             '**读取器（$reads）在本回合已禁用**：正文回合读到的结果**已在对话中**'
             '（写正文不改变状态），不要再读取——直接按清单逐栏目各调用一次对应'
             '编辑器（$edits），`before` 锚点从那些结果（或此前编辑回传的栏目全文）'
@@ -576,8 +577,8 @@ class AgentRoundRunner {
             'located in them, rewrite that whole section with op=reset. Fill in '
             'ALL listed '
             'items (history/memory and character state first if the output '
-            'limit forces a split).'
-            '【中】只修复下列各项，只调工具、不要输出文本。**读取器（$reads）已禁用**'
+            'limit forces a split). '
+            '只修复下列各项，只调工具、不要输出文本。**读取器（$reads）已禁用**'
             '——锚点从对话中已有的结果块与失败回传的栏目全文中复制；'
             '确实定位不到才用 op=reset 整栏重写。**清单必须全部完成**'
             '（装不下时优先历史（记忆）与角色状态）。';
@@ -731,11 +732,11 @@ class AgentRoundRunner {
         ? 'The previous response was TRUNCATED at the output limit. Emit FEWER '
               'and SHORTER tool calls: one editor call per section, the '
               'minimum edits needed, never copy long text. '
-              '【中】上一帧在输出上限处被截断：请减少并拆短工具调用（一个栏目一次调用、'
+              '上一帧在输出上限处被截断：请减少并拆短工具调用（一个栏目一次调用、'
               'edits 尽量少、不要复制长段文本）。'
         : 'The previous response ended early (${result.incompleteReason}). '
               'Re-issue only the missing tool calls. '
-              '【中】上一帧被提前结束（${result.incompleteReason}），只补齐缺失的工具调用。';
+              '上一帧被提前结束（${result.incompleteReason}），只补齐缺失的工具调用。';
     // 状态轮：进本帧反馈通道（下一帧指令）；正文轮：只登记，避免仅因一次
     // 截断就额外触发一帧 `required`（那会逼模型重复调工具）。
     if (stage == AgentStage.state) {
@@ -820,10 +821,10 @@ class AgentRoundRunner {
               applied: false,
               message: '工具参数被截断（JSON 不完整），未执行',
               modelOutput:
-                  '[EN] Your tool-call arguments were TRUNCATED (invalid '
+                  'Your tool-call arguments were TRUNCATED (invalid '
                       'JSON), so nothing was applied. Call again with ONE '
                       'call per section and FEWER edits per call. '
-                      '【中】工具参数被截断（JSON 不完整），本次未执行：'
+                      '工具参数被截断（JSON 不完整），本次未执行：'
                       '请一次只改一个栏目、单次 edits 条数更少。',
               isStateTool: isStateTool,
             )
@@ -896,7 +897,7 @@ class AgentRoundRunner {
       applied: false,
       message: '本轮已提供该栏目全文，维护轮不再重复读取',
       modelOutput:
-          '[EN] You ALREADY have this section\'s full text in this '
+          'You ALREADY have this section\'s full text in this '
               'conversation — it was returned by your own read in the story '
               'turn (writing the story changed nothing), and the section '
               'never changes except through your edits. Nothing was read '
@@ -904,7 +905,7 @@ class AgentRoundRunner {
               '`<${section.tag}>` block already above, then call $editTool '
               'NOW in this same turn ($editTool is the only call accepted '
               'here). '
-              '【中】该栏目的全文**已在对话中**（你正文回合自己读取的结果；'
+              '该栏目的全文**已在对话中**（你正文回合自己读取的结果；'
               '写正文不会改变状态，只有编辑会），本次不再重复读取：'
               '请直接从上面已有的 `<${section.tag}>` 块**逐字复制** `before` 锚点，'
               '并在本回合直接调用 $editTool（维护轮只接受编辑器调用）。',
@@ -937,12 +938,12 @@ class AgentRoundRunner {
         applied: false,
         message: '历史编辑属于维护轮，本次未执行',
         modelOutput:
-            '[EN] History edits belong to the state-maintenance turn, which '
+            'History edits belong to the state-maintenance turn, which '
                 'the app starts right after this turn — nothing was applied. '
                 'Do NOT call $kEditHistoryToolName now: finish the story '
                 'sections instead (history has no edit tool in the story '
                 'turn). '
-                '【中】历史编辑属于紧随本回合之后的「状态维护回合」，本次未执行。'
+                '历史编辑属于紧随本回合之后的「状态维护回合」，本次未执行。'
                 '正文回合不要再调用 $kEditHistoryToolName，'
                 '请专心输出正文各区块（历史会由维护回合补齐）。',
         // 非「状态缺口」：不写入缺项清单（它属于协议违规，不是待修栏目）。
