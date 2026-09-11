@@ -4,6 +4,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/book_mod_panel.dart';
+import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
@@ -77,6 +78,8 @@ void main() {
     expect(find.text('世界书'), findsOneWidget);
     expect(find.widgetWithText(TextField, '文笔润色'), findsOneWidget,
         reason: '预览对话框展示 Mod 名称');
+    // 对话框内统一的 #/## 输入提示（与书籍设置各页同一文案）。
+    expect(find.text(PromptInputHint.text), findsOneWidget);
     expect(find.text('保存'), findsNothing, reason: '预览为只读，无保存按钮');
     expect(find.text('关闭'), findsOneWidget);
   });

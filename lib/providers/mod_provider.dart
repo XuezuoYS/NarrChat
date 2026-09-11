@@ -147,9 +147,9 @@ class ModProvider extends ChangeNotifier {
     final userMods = await _dao.getAllMods();
     final userByUuid = {for (final m in userMods) m.uuid: m};
 
-    final pre = StringBuffer();
-    final post = StringBuffer();
-    final system = StringBuffer();
+    final pre = <String>[];
+    final post = <String>[];
+    final system = <String>[];
     final worldEntries = <ModWorldBookEntry>[];
 
     for (final config in configs) {
@@ -159,13 +159,13 @@ class ModProvider extends ChangeNotifier {
           : userByUuid[config.modUuid];
       if (mod == null) continue;
       if (mod.prePrompt.trim().isNotEmpty) {
-        pre.writeln(mod.prePrompt.trim());
+        pre.add(mod.prePrompt);
       }
       if (mod.postPrompt.trim().isNotEmpty) {
-        post.writeln(mod.postPrompt.trim());
+        post.add(mod.postPrompt);
       }
       if (mod.systemPrompt.trim().isNotEmpty) {
-        system.writeln(mod.systemPrompt.trim());
+        system.add(mod.systemPrompt);
       }
       worldEntries.addAll(
         mod.worldBookEntries.where((e) => e.content.trim().isNotEmpty),
@@ -173,9 +173,9 @@ class ModProvider extends ChangeNotifier {
     }
 
     return ModsBundle(
-      prePrompts: pre.toString().trim(),
-      postPrompts: post.toString().trim(),
-      systemPrompts: system.toString().trim(),
+      prePrompts: _joinBlocks(pre),
+      postPrompts: _joinBlocks(post),
+      systemPrompts: _joinBlocks(system),
       worldBooks: _scanWorldBook(
         entries: worldEntries,
         userInput: userInput,
@@ -183,6 +183,23 @@ class ModProvider extends ChangeNotifier {
       ),
     );
   }
+
+  /// 拼接多个 Mod 的同类文案：逐块归一化后**以空行分隔**。
+  ///
+  /// 拼合端**不信任 Mod 端传来的文本**：每块各自 trim、去掉行尾空白、把 3 个以上
+  /// 连续空行折叠为一个空行，块与块之间强制插入一个空行。若直接逐行拼接，
+  /// 前一个 Mod 的末段会把后一个 Mod 的首行吞进同一段（Markdown 下块边界消失）。
+  /// 空块在这里被丢弃（Mod 文案为空时不留空行）。
+  static String _joinBlocks(List<String> blocks) => blocks
+      .map(_normalizeBlock)
+      .where((block) => block.isNotEmpty)
+      .join('\n\n');
+
+  /// 单个 Mod 文案块归一化（见 [_joinBlocks]）。
+  static String _normalizeBlock(String raw) => raw
+      .replaceAll(RegExp(r'[ \t]+\n'), '\n')
+      .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+      .trim();
 
   /// 扫描 Mod 世界书条目：
   /// - 关键词为空的条目恒定注入；

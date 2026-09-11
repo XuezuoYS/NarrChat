@@ -42,7 +42,10 @@ class ParsedAiResponse {
 /// - 标题前多余空白、`#` 与标题之间缺少空格（如 `##剧情演绎`）、
 ///   标题层级不是严格的 `##`（如 `#` 或 `###`）均可容忍；
 /// - 首个标题之后未匹配的杂散内容将被丢弃；首个标题之前的无标题内容
-///   会被保留，仅在剧情演绎缺失时作为正文兜底。
+///   会被保留，仅在剧情演绎缺失时作为正文兜底；
+/// - `## 角色状态` 的正文允许整体包在 ```markdown 围栏内（输出契约形态，
+///   见 `ChatPromptFormat.characterStateFence`）：提取时剥离该围栏
+///   （无围栏同样兼容），入库 / 编辑器 / 面板一律只面对纯文本。
 ///
 /// 剧情演绎缺失时的正文兜底（应对 AI 幻觉放弃输出 `## 剧情演绎`）：
 /// 1. 存在 `正文` 标题区块时，将其内容视为正文（优先级次之）；
@@ -133,11 +136,36 @@ class AiResponseParser {
     return ParsedAiResponse(
       aiNarrative: aiNarrative,
       worldState: fieldValue('worldState'),
-      characterState: fieldValue('characterState'),
+      // 角色状态按契约可能带 ```markdown 围栏：提取即剥离（无围栏也兼容）。
+      characterState: stripOptionalFence(fieldValue('characterState')),
       memorySummary: fieldValue('memorySummary'),
       currentTime: fieldValue('currentTime'),
       recommendedAction: fieldValue('recommendedAction'),
     );
+  }
+
+  /// ``` 围栏开启行（``` / ```markdown / ```md，允许前后空白）。
+  static final RegExp _fenceOpen = RegExp(r'^```\s*(?:markdown|md)?\s*$');
+
+  /// 剥离可选围栏：**仅当**「首行是围栏开启、末行是围栏关闭」成对出现时剥离，
+  /// 其余情况原样返回（无围栏形态 = 与带围栏形态等效）。
+  static String stripOptionalFence(String text) {
+    final lines = text.split('\n');
+    if (lines.length < 2) return text;
+    if (lines.last.trim() != '```') return text;
+    if (!_fenceOpen.hasMatch(lines.first.trim())) return text;
+    return lines.sublist(1, lines.length - 1).join('\n').trim();
+  }
+
+  /// 按契约给角色状态正文补回 ```markdown 围栏（空字段保持空区块形态）。
+  ///
+  /// 反解析（历史 assistant 消息）与正文契约同形，模型在历史里看到的形状与
+  /// 系统指令要求的一致；[parse] 提取时会再次剥离，故 `parse(serialize(x))`
+  /// 往返不变。
+  static String fenceCharacterState(String value) {
+    final text = stripOptionalFence(value).trim();
+    if (text.isEmpty) return '';
+    return '```markdown\n$text\n```';
   }
 
   /// 反解析：将 [ParsedAiResponse] 还原为「原生返回」格式的 Markdown 文本。
@@ -147,12 +175,13 @@ class AiResponseParser {
   /// 空字段也输出对应的空 `## 标题` 区块，保持 6 区块齐全形态；
   /// 字段值原样写入（[parse] 的产物字段均已 trim），因此
   /// `parse(serialize(x))` 可还原出相同的 [ParsedAiResponse]（round-trip）。
+  /// 角色状态按输出契约补回 ```markdown 围栏（见 [fenceCharacterState]）。
   static String serialize(ParsedAiResponse parsed) => _serializeBlocks([
         ('aiNarrative', parsed.aiNarrative),
         ('recommendedAction', parsed.recommendedAction),
         ('currentTime', parsed.currentTime),
         ('worldState', parsed.worldState),
-        ('characterState', parsed.characterState),
+        ('characterState', fenceCharacterState(parsed.characterState)),
         ('memorySummary', parsed.memorySummary),
       ]);
 
@@ -178,13 +207,14 @@ class AiResponseParser {
   /// 与 [serialize] 的差别只有一处：**不含 `## 记忆总结`**——Lv.1 的历史由
   /// 历史工具读写，历史里出现 `## 记忆总结` 会让模型照抄它（与 Lv.2 中
   /// 状态区块「绝不出现在历史里」是同一原因）。
+  /// 角色状态同样按契约补回 ```markdown 围栏（见 [fenceCharacterState]）。
   static String serializeChatWithoutMemory(ParsedAiResponse parsed) =>
       _serializeBlocks([
         ('aiNarrative', parsed.aiNarrative),
         ('recommendedAction', parsed.recommendedAction),
         ('currentTime', parsed.currentTime),
         ('worldState', parsed.worldState),
-        ('characterState', parsed.characterState),
+        ('characterState', fenceCharacterState(parsed.characterState)),
       ]);
 
   /// [serialize] / [serializeStoryOnly] 的共同实现：按给定字段顺序输出

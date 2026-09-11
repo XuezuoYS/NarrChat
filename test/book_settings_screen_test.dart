@@ -7,6 +7,7 @@ import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/book_settings_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
@@ -104,5 +105,27 @@ void main() {
 
     expect(find.widgetWithText(TextField, '远端标题2'), findsOneWidget);
     expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget);
+  });
+
+  testWidgets('每个子页都带 #/## 输入提示（灰字小字，文案单一真源）', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    const pages = [
+      '书籍概览',
+      '角色类别与描述格式',
+      '基础设定',
+      '世界书',
+      '文笔参考段落',
+      'Mod 管理',
+    ];
+    for (final label in pages) {
+      await tester.tap(find.text(label).first);
+      await tester.pumpAndSettle();
+      expect(
+        find.text(PromptInputHint.text),
+        findsOneWidget,
+        reason: '「$label」页缺少 #/## 输入提示',
+      );
+    }
   });
 }

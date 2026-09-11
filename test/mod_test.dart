@@ -328,6 +328,64 @@ void main() {
     });
   });
 
+  group('ModProvider · 多 Mod 文案拼接（块间空行 + 归一化）', () {
+    test('不同 Mod 的同类文案之间恰好空一行，且不信任 Mod 文本自带的空白', () async {
+      final provider = ModProvider(
+        dao: _MockModDao(
+          mods: const [
+            // 第一个 Mod 故意在行尾留空格、块尾留多余空行（拼合端必须自行归一化）。
+            Mod(
+              uuid: 'm1',
+              name: 'A',
+              prePrompt: '前置 A\n',
+              postPrompt: '后置 A   ',
+              systemPrompt: 'A 段首行\nA 段末行  \n\n\n',
+            ),
+            Mod(
+              uuid: 'm2',
+              name: 'B',
+              prePrompt: '前置 B',
+              postPrompt: '后置 B',
+              systemPrompt: 'B 段首行\nB 段规则',
+            ),
+          ],
+          configs: const [
+            BookModConfig(
+              bookUuid: 'b1',
+              modUuid: 'm1',
+              isEnabled: true,
+              sortOrder: 0,
+            ),
+            BookModConfig(
+              bookUuid: 'b1',
+              modUuid: 'm2',
+              isEnabled: true,
+              sortOrder: 1,
+            ),
+          ],
+        ),
+      );
+      final bundle = await provider.resolveModsBundle(
+        bookUuid: 'b1',
+        userInput: 'x',
+        historyRounds: const [],
+      );
+
+      expect(bundle.prePrompts, '前置 A\n\n前置 B');
+      expect(bundle.postPrompts, '后置 A\n\n后置 B');
+      // 后一个 Mod 的首行不会被前一个 Mod 的末段吞进同一段（单换行拼接会粘连）。
+      expect(bundle.systemPrompts, 'A 段首行\nA 段末行\n\nB 段首行\nB 段规则');
+      for (final text in [
+        bundle.prePrompts,
+        bundle.postPrompts,
+        bundle.systemPrompts,
+      ]) {
+        expect(text, isNot(contains('  ')), reason: '行尾/多余空格已清理');
+        expect(text, isNot(contains('\n\n\n')), reason: '不残留连续空行');
+      }
+    });
+  });
+
   group('PromptBuilder Mod 注入', () {
     const book = Book(
       uuid: 'b1',

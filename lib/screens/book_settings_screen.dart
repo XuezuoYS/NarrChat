@@ -16,6 +16,7 @@ import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/markdown_editing_controller.dart';
+import '../widgets/prompt_input_hint.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/uuid_display.dart';
 import '../widgets/world_book_panel.dart';
@@ -318,21 +319,38 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           case 2:
             return _buildBaseSetting(context);
           case 3:
-            return WorldBookPanel(
-              bookUuid: widget.book?.uuid,
-              pendingEntries: _draftWorldBookEntries,
-              onPendingChanged: (entries) => _draftWorldBookEntries = entries,
+            return _panelPage(
+              WorldBookPanel(
+                bookUuid: widget.book?.uuid,
+                pendingEntries: _draftWorldBookEntries,
+                onPendingChanged: (entries) => _draftWorldBookEntries = entries,
+              ),
             );
           case 4:
             return _buildWritingStyle(context);
           default:
-            return BookModPanel(
-              bookUuid: widget.book?.uuid,
-              pendingConfigs: _draftModConfigs.isEmpty ? null : _draftModConfigs,
-              onPendingChanged: (configs) => _draftModConfigs = configs,
+            return _panelPage(
+              BookModPanel(
+                bookUuid: widget.book?.uuid,
+                pendingConfigs:
+                    _draftModConfigs.isEmpty ? null : _draftModConfigs,
+                onPendingChanged: (configs) => _draftModConfigs = configs,
+              ),
             );
         }
       },
+    );
+  }
+
+  /// 面板页（世界书 / Mod 管理）：面板自带标题与内容，这里只补统一的输入提示。
+  Widget _panelPage(Widget child) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const PromptInputHint(),
+        const SizedBox(height: 12),
+        child,
+      ],
     );
   }
 
@@ -354,6 +372,9 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           subtitle,
           style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
+        const SizedBox(height: 6),
+        // 各页统一提示：本页填写的内容会注入提示词，避免使用 #/##。
+        const PromptInputHint(),
         const SizedBox(height: 20),
       ],
     );

@@ -4,6 +4,7 @@ import '../models/mod.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import 'markdown_editing_controller.dart';
+import 'prompt_input_hint.dart';
 import 'uuid_display.dart';
 
 /// 打开 Mod 详情对话框（新建 / 编辑 / 只读查看共用）。
@@ -162,6 +163,7 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
               length: 5,
               child: Expanded(
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const TabBar(
                       isScrollable: true,
@@ -174,6 +176,10 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
                         Tab(text: '世界书'),
                       ],
                     ),
+                    const SizedBox(height: 8),
+                    // 前置词 / 后置词 / 系统提示词 / 世界书都会注入提示词：
+                    // 与书籍设置各页共用同一条灰字提示。
+                    const PromptInputHint(),
                     const SizedBox(height: 12),
                     Expanded(
                       child: TabBarView(

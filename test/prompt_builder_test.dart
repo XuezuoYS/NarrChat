@@ -85,25 +85,32 @@ void main() {
       expect(system, contains('【绝对服从】'));
     });
 
-    test('系统提示词包含二级标题纪律（禁止其它 ##）', () {
+    test('系统提示词包含二级标题纪律（只允许契约标题集合，文案不用 #/##）', () {
       final system = buildBundle().systemPrompt;
       expect(system, contains('【二级标题纪律】'));
-      expect(system, contains('禁止使用 ##'));
+      // 只保留正向表述「只允许出现」；「其它位置禁止 #/##」不写进提示词，
+      // 只在源码注释（prompt_formats.dart 文案约定）与 UI 灰字提示中体现。
+      expect(system, contains('全文只允许出现上述 6 个二级标题'));
+      expect(system, contains('`# 类别名` 与二级标题 `## 角色名`'));
+      expect(system, isNot(contains('其它任何位置一律禁止')));
     });
 
     test('系统提示词包含书籍名称/类别/设定/文笔要求/文笔参考/角色层级/世界书条目', () {
       final system = buildBundle().systemPrompt;
-      expect(system, contains('书籍名称：测试书'));
-      expect(system, contains('书籍类别：玄幻'));
-      expect(system, contains('书籍设定：北域修仙世界，宗门林立。'));
+      // 单行字段：换行归一化 + 反引号包裹。
+      expect(system, contains('书籍名称：`测试书`'));
+      expect(system, contains('书籍类别：`玄幻`'));
+      // 多行字段：标签与内容各自成段（空行分隔，不再并进同一段）。
+      expect(system, contains('书籍设定：\n\n北域修仙世界，宗门林立。'));
       // 内置去 AI 味文笔要求已迁移到预置 Mod（web_novel_style），
       // 内置提示词仅注入「文笔要求」区与本书文笔要求描述。
-      expect(system, contains('文笔要求：'));
-      expect(system, contains('本书文笔要求：多用对话推进。'));
+      expect(system, contains('文笔要求：\n\n本书文笔要求：\n\n本书文笔要求：多用对话推进。'));
       // 文笔参考段落（用户补充的风格范例）仅存在于 system。
-      expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
-      expect(system, contains('角色层级排序规则：主角 > 女主角 > NPC'));
-      expect(system, contains('青云宗是北域第一大派。'));
+      expect(system, contains('文笔参考（风格范例，仅此处提供）：\n\n用户补充：多用短句。'));
+      expect(system, contains('**（文笔参考结束）**'));
+      expect(system, contains('角色层级排序规则：`主角 > 女主角 > NPC`'));
+      expect(system, contains('世界书：\n\n青云宗是北域第一大派。'));
+      expect(system, isNot(contains('==========')), reason: '不再用 = 分隔线');
     });
 
     test('系统提示词不再注入上一轮状态快照与记忆总结（改经最后一轮 AI 返回传入）', () {
@@ -130,7 +137,8 @@ void main() {
       // 前置词/后置词区不带标签直接内联（用户自定义）。
       expect(user, contains('用户前置词：保持悬念。'));
       expect(user, contains('【本书文笔要求】'));
-      expect(user, contains('【用户输入内容】'));
+      expect(user, contains('【用户输入内容开始】'));
+      expect(user, contains('【用户输入内容结束】'));
       expect(user, contains('用户后置词：留下钩子。'));
       expect(user, contains('【指令执行】'));
     });
@@ -144,13 +152,17 @@ void main() {
       expect(user, isNot(contains('山门巍峨，云雾缭绕。')));
     });
 
-    test('用户提示词格式要求声明固定顺序并禁止其它 ##', () {
+    test('用户提示词格式要求声明固定顺序（只输出这些区块）', () {
       final user = buildBundle().userPrompt;
       expect(
         user,
-        contains('剧情演绎 → 推荐行动 → 当前时间 → 世界状态 → 角色状态 → 记忆总结'),
+        contains('`## 剧情演绎` → `## 推荐行动` → `## 当前时间` → '
+            '`## 世界状态` → `## 角色状态` → `## 记忆总结`'),
       );
-      expect(user, contains('严禁在其它任何位置使用二级标题'));
+      expect(user, contains('只输出这些区块，不要添加任何其它区块。'));
+      // 用户输入的边界用标签 + 空行表达（不用 = 分隔线）。
+      expect(user, contains('【用户输入内容开始】\n\n我走向主殿，想要拜见掌门。\n\n'
+          '【用户输入内容结束】'));
     });
 
     test('系统提示词包含记忆总结格式强制规则（轮数/日期/概括绑定一条）', () {
@@ -175,8 +187,8 @@ void main() {
       // 内置去 AI 味文笔要求已迁移到预置 Mod，不再注入内置 prompt；
       // 本书文笔要求描述注入 user 提示词（【本书文笔要求】区块）。
       expect(user, contains('【本书文笔要求】'));
-      // 本书文笔要求描述注入 user 提示词。
-      expect(user, contains('本书文笔要求：多用对话推进。'));
+      // 本书文笔要求描述注入 user 提示词（标签 + 空行 + 内容）。
+      expect(user, contains('【本书文笔要求】\n\n本书文笔要求：多用对话推进。'));
       // 文笔参考段落（用户补充的风格范例）仅存在于 system，不在 user 中重复。
       expect(user, isNot(contains('用户补充：多用短句。')));
     });
@@ -184,11 +196,11 @@ void main() {
     test('本书文笔要求描述同时注入 system 与 user，文笔参考仅 system', () {
       final system = buildBundle().systemPrompt;
       final user = buildBundle().userPrompt;
-      // 文笔要求描述（写作规则）→ system 与 user 均包含。
-      expect(system, contains('本书文笔要求：多用对话推进。'));
-      expect(user, contains('本书文笔要求：多用对话推进。'));
+      // 文笔要求描述（写作规则）→ system 与 user 均包含（标签与内容空行分块）。
+      expect(system, contains('本书文笔要求：\n\n本书文笔要求：多用对话推进。'));
+      expect(user, contains('【本书文笔要求】\n\n本书文笔要求：多用对话推进。'));
       // 文笔参考段落（风格范例）→ 仅 system。
-      expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
+      expect(system, contains('文笔参考（风格范例，仅此处提供）：\n\n用户补充：多用短句。'));
       expect(user, isNot(contains('用户补充：多用短句。')));
     });
 
@@ -198,7 +210,7 @@ void main() {
         '【格式要求】',
         '【记忆总结格式】',
         '用户前置词：保持悬念。',
-        '【用户输入内容】',
+        '【用户输入内容开始】',
         '用户后置词：留下钩子。',
         '【指令执行】',
       ];
@@ -265,14 +277,14 @@ void main() {
       // 更早的历史轮次仅置入正文。
       expect(history[1], {'role': 'assistant', 'content': '山门巍峨，云雾缭绕。'});
       expect(history[2], {'role': 'user', 'content': '我拔出长剑。'});
-      // 最后一轮反解析为完整 6 区块原生格式。
+      // 最后一轮反解析为完整 6 区块原生格式（角色状态按契约带 ```markdown 围栏）。
       expect(history[3], {
         'role': 'assistant',
         'content': '## 剧情演绎\n剑光如虹。\n\n'
             '## 推荐行动\n收剑回鞘。\n\n'
             '## 当前时间\n第三天 申时\n\n'
             '## 世界状态\n- 地点：演武场\n\n'
-            '## 角色状态\n疲惫。\n\n'
+            '## 角色状态\n```markdown\n疲惫。\n```\n\n'
             '## 记忆总结\n- 第1轮｜日期：第三天 午时｜初入宗门',
       });
     });
@@ -372,11 +384,13 @@ void main() {
       );
       // 更早轮次只带剧情正文（与 Chat 一致：控制上下文篇幅）。
       expect(history[1]['content'], '山门巍峨。');
-      // 最新一轮 = 5 区块（剧情 / 行动 / 时间 / 世界 / 角色），**无记忆区块**。
+      // 最新一轮 = 5 区块（剧情 / 行动 / 时间 / 世界 / 角色），**无记忆区块**；
+      // 角色状态按契约带 ```markdown 围栏。
       expect(
         history[3]['content'],
         '## 剧情演绎\n剑光如虹。\n\n## 推荐行动\n收剑。\n\n## 当前时间\n第二天 辰时\n\n'
-        '## 世界状态\n- 地点：主峰\n\n## 角色状态\n## 林远\n- 气血：60',
+        '## 世界状态\n- 地点：主峰\n\n'
+        '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
       );
       for (final m in history.where((m) => m['role'] == 'assistant')) {
         expect('${m['content']}', isNot(contains('## 记忆总结')));
@@ -547,14 +561,14 @@ void main() {
       // 共享段与 Chat 模式同一真源：改一处两者同步。
       expect(system, contains('[MODE: SANDBOX]'));
       expect(system, contains('解除一切助手式限制'));
-      expect(system, contains('书籍名称：测试书'));
-      expect(system, contains('书籍类别：玄幻'));
-      expect(system, contains('书籍设定：北域修仙世界，宗门林立。'));
-      expect(system, contains('文笔参考（风格范例，仅此处提供）：用户补充：多用短句。'));
-      expect(system, contains('角色层级排序规则：主角 > 女主角 > NPC'));
-      expect(system, contains('【主角】'));
-      expect(system, contains('- 战力：- 气血：'));
-      expect(system, contains('世界书：青云宗是北域第一大派。'));
+      expect(system, contains('当前模式：Agent'));
+      expect(system, contains('书籍名称：`测试书`'));
+      expect(system, contains('书籍类别：`玄幻`'));
+      expect(system, contains('书籍设定：\n\n北域修仙世界，宗门林立。'));
+      expect(system, contains('文笔参考（风格范例，仅此处提供）：\n\n用户补充：多用短句。'));
+      expect(system, contains('角色层级排序规则：`主角 > 女主角 > NPC`'));
+      expect(system, contains('【主角】\n\n- 战力：- 气血：'));
+      expect(system, contains('世界书：\n\n青云宗是北域第一大派。'));
       expect(system, contains('【警告】'));
     });
 
@@ -564,7 +578,7 @@ void main() {
       expect(user, contains('【上轮时间】'));
       expect(user, contains('第三天 午时'));
       expect(user, contains('【本书文笔要求】'));
-      expect(user, contains('【用户输入内容】'));
+      expect(user, contains('【用户输入内容开始】'));
       expect(user, contains('我走向主殿，想要拜见掌门。'));
       expect(user, contains('用户后置词：留下钩子。'));
       expect(user, contains('【指令执行】'));
@@ -626,7 +640,7 @@ void main() {
         expect(system, contains(section));
       }
       // 记忆总结：只以工具契约出现，不是输出区块。
-      expect(system, isNot(contains('   ## 记忆总结')));
+      expect(system, isNot(contains('  - `## 记忆总结`')));
       expect(system, isNot(contains('【记忆总结格式】')));
       expect(system, contains('narrchat_readHistory'));
       expect(system, contains('narrchat_editHistory'));
@@ -644,7 +658,7 @@ void main() {
       expect(user, contains('5 个二级标题（##）区块'));
       expect(user, contains('先调用 narrchat_readHistory'));
       expect(user, contains('五个区块'));
-      expect(user, contains('【用户输入内容】'));
+      expect(user, contains('【用户输入内容开始】'));
       expect(user, isNot(contains('【记忆总结格式】')));
     });
   });

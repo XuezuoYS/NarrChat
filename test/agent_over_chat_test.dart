@@ -243,11 +243,12 @@ void main() {
         final idx = bodies.length;
         if (idx == 1) {
           // 正文轮：5 区块（世界 / 角色随正文携带；正文不含记忆区块）。
+          // 角色状态按新契约带 ```markdown 围栏（提取时剥离，落库为纯文本）。
           return sse(
             chatFrame(
               content: '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n'
                   '## 当前时间\n第二天 辰时\n\n## 世界状态\n- 地点：青云宗主殿\n\n'
-                  '## 角色状态\n## 林远\n- 气血：60',
+                  '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
             ),
           );
         }
@@ -302,7 +303,8 @@ void main() {
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.worldState, '- 地点：青云宗主殿');
-    expect(round.characterState, contains('- 气血：60'));
+    // 围栏在提取时已剥离：落库内容是纯文本（面板/编辑器不再看到围栏）。
+    expect(round.characterState, '## 林远\n- 气血：60');
     expect(round.currentTime, '第二天 辰时');
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
   });

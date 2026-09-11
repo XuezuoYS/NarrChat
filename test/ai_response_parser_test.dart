@@ -181,6 +181,117 @@ void main() {
     });
   });
 
+  group('AiResponseParser 角色状态围栏契约', () {
+    test('带 ```markdown 围栏的角色状态：提取时剥离围栏', () {
+      const raw = '''
+## 剧情演绎
+主角踏入山门。
+
+## 角色状态
+```markdown
+# 主角
+## 张三
+- 体力：100
+```
+''';
+      final result = AiResponseParser.parse(raw);
+      expect(result.characterState, '# 主角\n## 张三\n- 体力：100');
+    });
+
+    test('不带围栏的角色状态：与带围栏形态等效（兼容）', () {
+      const raw = '''
+## 角色状态
+# 主角
+## 张三
+- 体力：100
+''';
+      expect(
+        AiResponseParser.parse(raw).characterState,
+        '# 主角\n## 张三\n- 体力：100',
+      );
+    });
+
+    test('裸围栏（```）同样剥离；围栏内角色名标题不被当成区块', () {
+      const raw = '''
+## 剧情演绎
+正文。
+
+## 角色状态
+```
+## 张三
+- 体力：100
+```
+
+## 记忆总结
+- 第1轮｜日期：第一天｜入门
+''';
+      final result = AiResponseParser.parse(raw);
+      expect(result.characterState, '## 张三\n- 体力：100');
+      expect(result.memorySummary, '- 第1轮｜日期：第一天｜入门');
+    });
+
+    test('只有单侧围栏（未闭合）时原样保留，不做剥离', () {
+      const raw = '''
+## 角色状态
+```markdown
+# 主角
+- 体力：100
+''';
+      expect(
+        AiResponseParser.parse(raw).characterState,
+        '```markdown\n# 主角\n- 体力：100',
+      );
+    });
+
+    test('反解析按契约补回围栏（serialize / serializeChatWithoutMemory）', () {
+      const parsed = ParsedAiResponse(
+        aiNarrative: '正文。',
+        characterState: '# 主角\n## 张三\n- 体力：100',
+        worldState: '晴天。',
+      );
+      expect(
+        AiResponseParser.serialize(parsed),
+        contains('## 角色状态\n```markdown\n# 主角\n## 张三\n- 体力：100\n```'),
+      );
+      expect(
+        AiResponseParser.serializeChatWithoutMemory(parsed),
+        contains('## 角色状态\n```markdown\n# 主角\n## 张三\n- 体力：100\n```'),
+      );
+      // 空角色状态不补围栏，保持空区块形态。
+      expect(
+        AiResponseParser.serialize(const ParsedAiResponse(aiNarrative: '正文。')),
+        contains('## 角色状态\n\n## 记忆总结'),
+      );
+    });
+
+    test('围栏形态 round-trip：解析 → 反解析 → 解析不变', () {
+      const raw = '''
+## 角色状态
+```markdown
+# 主角
+## 张三
+- 体力：100
+```
+''';
+      final once = AiResponseParser.parse(raw);
+      final twice =
+          AiResponseParser.parse(AiResponseParser.serialize(once));
+      expect(twice.characterState, once.characterState);
+    });
+
+    test('stripOptionalFence / fenceCharacterState 直接调用（单一真源）', () {
+      expect(AiResponseParser.stripOptionalFence('```\nA\n```'), 'A');
+      expect(AiResponseParser.stripOptionalFence('```md\nA\n```'), 'A');
+      expect(AiResponseParser.stripOptionalFence('A'), 'A');
+      expect(AiResponseParser.fenceCharacterState('A'), '```markdown\nA\n```');
+      expect(AiResponseParser.fenceCharacterState('  '), isEmpty);
+      expect(
+        AiResponseParser.fenceCharacterState('```markdown\nA\n```'),
+        '```markdown\nA\n```',
+      );
+    });
+  });
+
   group('AiResponseParser serialize 反解析', () {
     test('完整 6 字段反解析为原生 6 标题格式（顺序与 PromptBuilder 一致）', () {
       expect(
@@ -189,7 +300,7 @@ void main() {
         '## 推荐行动\n继续前进。\n\n'
         '## 当前时间\n第三天 午时\n\n'
         '## 世界状态\n晴天。\n\n'
-        '## 角色状态\n疲惫。\n\n'
+        '## 角色状态\n```markdown\n疲惫。\n```\n\n'
         '## 记忆总结\n- 第1轮｜日期：第三天 午时｜已入山门',
       );
     });
