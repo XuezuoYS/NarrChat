@@ -106,16 +106,22 @@ void main() {
       );
     });
 
-    test('systemAfterIdentity 为角色状态输出格式（围栏契约 + 结构说明 + 形态示例）', () {
+    test('systemAfterIdentity 为角色状态输出格式（围栏契约 + 结构说明 + 占位符形态示例）', () {
       final lines = format.systemAfterIdentity;
       expect(lines.first, contains('【角色状态输出格式】'));
       expect(lines.first, contains('```markdown 围栏'));
       expect(lines[2], contains('每个角色类别使用一级标题'));
-      // 形态示例以真实围栏给出（模型照此形状输出）。
+      // 形态示例以真实围栏给出（模型照此形状输出），且**全部是占位符**：
+      // 示例只表达形状，不写具体案例（否则会被模型当成设定照抄）。
       final example = lines.indexOf('```markdown');
       expect(example, greaterThan(0));
-      expect(lines.sublist(example).take(2), ['```markdown', '# 主角']);
-      expect(lines.sublist(example), contains('## 林远'));
+      expect(lines.sublist(example).take(5), [
+        '```markdown',
+        '# {类别名}',
+        '## {角色名}',
+        '- {属性名}：{属性值}',
+        '```',
+      ]);
       expect(lines.last, '');
     });
 
@@ -141,7 +147,8 @@ void main() {
       );
       expect(lines[1], '');
       expect(lines[2], contains('【记忆总结格式】'));
-      expect(lines[2], contains('- 第N轮｜日期：xxx｜概括内容'));
+      // 模板同样只用占位符（`{当前时间}` / `{概括内容}`）。
+      expect(lines[2], contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
     });
 
     test('userExecuteNote 为单行【指令执行】（含模式标记）', () {

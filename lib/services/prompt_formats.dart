@@ -25,6 +25,12 @@
 ///   `- `（bullet 可中断段落，每条都能成为独立列表项）。
 /// - 用户填写的文本（书籍设定 / 文笔参考 / 世界书 / Mod 文案）里的 `#`/`##`
 ///   由 UI 灰字提示（`PromptInputHint`）规避，同样不写进提示词。
+/// - **可填取值一律用占位符，不写具体案例**：模型面向文案里的占位符统一写作
+///   `{中文名}`（`{当前时间}` / `{概括内容}` / `{类别名}` / `{角色名}` /
+///   `{属性名}` / `{属性值}`）——示例只表达**形状**，写死某本书的角色名、
+///   类别名或日期取值会被模型当成设定照抄，也与用户实际设定冲突。
+///   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
+///   `<memorySummary>` 是读取结果的**字面块标签**；`第N轮` 的 `N` 是轮号。
 library;
 
 import 'agent/state/state_tool_names.dart';
@@ -131,7 +137,7 @@ class ChatPromptFormat implements PromptFormatSpec {
       '围栏内严格遵循以下结构：';
 
   static const String characterStateFormatLines =
-      '- 每个角色类别使用一级标题 `# 类别名`（如 `# 主角`），'
+      '- 每个角色类别使用一级标题 `# 类别名`，'
       '类别顺序必须与下方「角色层级排序规则」完全一致；\n'
       '- 类别下的每个角色使用二级标题 `## 角色名`；\n'
       '- 每个角色下列出属性，每行一个，格式为 `- 属性名：属性值`；\n'
@@ -142,14 +148,16 @@ class ChatPromptFormat implements PromptFormatSpec {
       '- 新增登场角色按所属类别格式补全属性项。';
 
   /// 角色状态围栏形态示例（模型照此形状输出；围栏是解析契约的一部分）。
+  ///
+  /// 示例**全部为占位符**（见文件头文案约定）：只表达「类别 → 角色 → 属性行」
+  /// 的形状，取值一律由本书的「角色层级排序规则」与「角色类别描述格式」决定。
   static const List<String> characterStateFormatExample = [
     '形态示例：',
     '',
     '```markdown',
-    '# 主角',
-    '## {name}',
-    '- 姓名：{name}',
-    '- 当前状态：…',
+    '# {类别名}',
+    '## {角色名}',
+    '- {属性名}：{属性值}',
     '```',
     '',
   ];
@@ -159,13 +167,13 @@ class ChatPromptFormat implements PromptFormatSpec {
       '（这是历史记录的核心结构，优先级最高）：';
 
   static const String memoryRuleLines =
-      '- 每条记忆独占一行，格式为：`- 第N轮｜日期：该轮当前时间｜概括内容`；'
+      '- 每条记忆独占一行，格式为：`- 第N轮｜日期：{当前时间}｜{概括内容}`；'
       '「轮数」「日期」「概括内容」三者必须绑定在一条内，'
       '严禁拆行、严禁分块、严禁只写其中一项。\n'
       '- 从第 1 轮到本轮，每一轮都必须保留一条记忆条目，'
       '条目按轮数从小到大顺序排列、不得缺轮。\n'
       '- 每条条目的「日期」必须使用该轮 `## 当前时间` 的内容'
-      '（剧情内时间，如「第三天 午时」），不得使用真实日期。\n'
+      '（剧情内时间），不得使用真实日期。\n'
       '- 「概括内容」用一句话概括该轮发生的核心事件与关键进展；'
       '若该轮无重要事件则写「无重要事件」。\n'
       '- 轮次增多时可压缩、精简旧条目的措辞以控制篇幅，'
@@ -175,7 +183,8 @@ class ChatPromptFormat implements PromptFormatSpec {
       '不得凭空改写、丢失或重排。';
 
   static const String memoryFormatUserNote =
-      '【记忆总结格式】`## 记忆总结` 必须按 `- 第N轮｜日期：xxx｜概括内容` '
+      '【记忆总结格式】`## 记忆总结` 必须按 '
+      '`- 第N轮｜日期：{当前时间}｜{概括内容}` '
       '逐轮输出：每条一行，轮数、日期、概括内容三者绑定在一条内；'
       '从第 1 轮至本轮每轮一条，'
       '日期一律使用该轮 `## 当前时间`（详见系统指令【记忆总结格式】）。';
@@ -297,13 +306,13 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
         '正文回合**不要**调用 $kEditHistoryToolName：历史修改只属于维护回合。',
     '- [Every round · one entry] The maintenance turn must append EXACTLY ONE '
         'memory entry for this round with $kEditHistoryToolName: '
-        '`- 第N轮｜日期：<时间>｜<一句话概括>` (op=append; N = this round; the '
+        '`- 第N轮｜日期：{当前时间}｜{概括内容}` (op=append; N = this round; the '
         'date = the `## 当前时间` value of THIS round\'s story). op=noChange is '
         'NOT accepted for history; a missing entry is a failure. Write that '
         'call DIRECTLY in your first maintenance response — never spend a turn '
         'on reading.',
     '- 【每轮义务】维护回合必须用 $kEditHistoryToolName 追加**恰好一条**本轮记忆条目：'
-        '`- 第N轮｜日期：<时间>｜<一句话概括>`（op=append；N = 本轮；'
+        '`- 第N轮｜日期：{当前时间}｜{概括内容}`（op=append；N = 本轮；'
         '日期 = 本轮正文 `## 当前时间` 的取值）。历史栏**不接受** op=noChange；'
         '漏掉条目即失败。**第一个维护帧就直接写**，不要花一轮去读取。',
     '',
@@ -426,14 +435,14 @@ class AgentLv2PromptFormat implements PromptFormatSpec {
           'op=reset 仅用于空栏目或首次填入。'
           '锚点被拒时会回传该栏目当前全文，一步到位重锚。',
       '- [Every round] Each round must end with exactly ONE memory entry '
-          '`- 第N轮｜日期：<时间>｜<一句话概括>` via $kEditHistoryToolName '
+          '`- 第N轮｜日期：{当前时间}｜{概括内容}` via $kEditHistoryToolName '
           '(op=append, N = this round, the date = the `## 当前时间` value of '
           'THIS round\'s story — keep the entry to ONE short sentence). Time is '
           'part of the story body: there is NO time tool. op=noChange must '
           'carry a `reason` and is NOT accepted for history; silently omitting '
           'a section is a failure, not a no-op.',
       '- 【每轮义务】每轮必须用 $kEditHistoryToolName 写出**恰好一条**本轮记忆条目 '
-          '`- 第N轮｜日期：<时间>｜<一句话概括>`（op=append；N = 本轮；'
+          '`- 第N轮｜日期：{当前时间}｜{概括内容}`（op=append；N = 本轮；'
           '日期 = 本轮正文 `## 当前时间` 的取值；一句话概括，别写长）。'
           '时间只存在于正文里（**没有时间工具**）。op=noChange 必须附 reason，'
           '且历史栏**不接受** op=noChange；直接省略某个栏目算失败。',

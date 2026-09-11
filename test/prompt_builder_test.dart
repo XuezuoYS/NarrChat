@@ -168,7 +168,7 @@ void main() {
     test('系统提示词包含记忆总结格式强制规则（轮数/日期/概括绑定一条）', () {
       final system = buildBundle().systemPrompt;
       expect(system, contains('【记忆总结格式】'));
-      expect(system, contains('- 第N轮｜日期：该轮当前时间｜概括内容'));
+      expect(system, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
       expect(system, contains('绑定在一条内'));
       expect(system, contains('从第 1 轮到本轮'));
       expect(system, contains('不得使用真实日期'));
@@ -178,7 +178,7 @@ void main() {
     test('用户提示词包含记忆总结格式提醒', () {
       final user = buildBundle().userPrompt;
       expect(user, contains('【记忆总结格式】'));
-      expect(user, contains('- 第N轮｜日期：xxx｜概括内容'));
+      expect(user, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
       expect(user, contains('从第 1 轮至本轮每轮一条'));
     });
 

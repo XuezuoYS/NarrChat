@@ -50,10 +50,19 @@
   打开最相关的 1~3 个结果页面读正文」，打开页工具点明「拒绝访问时换用其它
   结果页面」）；`RoundProvider` 的组装路径**不再向 system 追加任何联网指令**
   （Chat 工具循环与 Agent 档位强制开启两条路径都不追加）；
+- **占位符写法统一为 `{中文名}`**：模型面向文案里涉及具体取值的位置一律写作
+  `{当前时间}` / `{概括内容}`（记忆条目模板）与 `{类别名}` / `{角色名}` /
+  `{属性名}` / `{属性值}`（角色状态形态示例），**不写具体案例**
+  （写死的角色名 / 类别名 / 日期取值会被模型当成设定照抄，也与用户实际书籍
+  设定冲突）；旧写法 `<时间>` / `<一句话概括>` / `xxx` / `{name}` 已废弃。
+  例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
+  `<memorySummary>` 是读取结果的**字面块标签**，`第N轮` 的 `N` 是轮号；
+  真源见 `prompt_formats.dart` 文件头「文案约定」（Mod 文案不受此约定约束）；
 - **参数 schema 文案**沿用同一「英文 + 中文」写法（如 `before` / `reason`）；
-- 契约由 `test/agent_tool_descriptions_test.dart`（工具描述）与
+- 契约由 `test/agent_tool_descriptions_test.dart`（工具描述）、
   `test/state_coverage_test.dart` / `test/agent_state_working_copy_test.dart`
-  （缺口指令、快照块无标记）守护。
+  （缺口指令、快照块无标记）与 `test/prompt_placeholders_test.dart`
+  （占位符写法）守护。
 
 ### 状态工具（`state/state_tools.dart`，仅 Agent 档位注入）
 

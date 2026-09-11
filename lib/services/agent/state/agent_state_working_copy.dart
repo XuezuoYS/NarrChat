@@ -231,7 +231,7 @@ class AgentStateWorkingCopy {
         return _fail(
           section,
           '${section.label}每轮必须补充本轮条目，不能声明 noChange；'
-          '请用 op=append 追加 `- 第N轮｜日期：<当前时间>｜<一句话概括>`'
+          '请用 op=append 追加 `- 第N轮｜日期：{当前时间}｜{概括内容}`'
           '（N = $roundIndex）。',
         );
       }
@@ -271,7 +271,7 @@ class AgentStateWorkingCopy {
         return _fail(
           section,
           '${section.label}变更后必须包含本轮（第 $roundIndex 轮）条目，'
-          '格式：`- 第N轮｜日期：<当前时间>｜<一句话概括>`；'
+          '格式：`- 第N轮｜日期：{当前时间}｜{概括内容}`；'
           '追加条目请用 op=append（自动追加到栏目末尾）。',
         );
       }
