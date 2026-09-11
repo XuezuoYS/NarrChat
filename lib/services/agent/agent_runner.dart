@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'agent_activity.dart';
 import '../ai_service.dart';
 import 'narr_agent_tool.dart';
+import 'wire_adapters.dart';
 
 export 'agent_activity.dart';
 
@@ -94,10 +95,27 @@ class AgentRunner {
         );
       }
 
-      // 追加 assistant(tool_calls) 消息（OpenAI 兼容：content 可为 null）。
+      // 追加 assistant(tool_calls) 消息（OpenAI 兼容：content 可为 null），
+      // 思考文本一并挂在同一条消息上（`reasoning_content`，Chat 线路形态）。
+      // 此外**按每个工具调用**各发一条 `reasoning` 条目（Responses 线路形态，
+      // 由 `wire_adapters` 还原成 reasoning item、Chat 线路忽略）：DeepSeek
+      // 思考模式逐块校验——带 `tools` 的请求里每个 `function_call` 都必须紧邻
+      // 其前各有一块非空思考，一帧调两个工具却只回传一块即整次 400
+      //（「The `reasoning_text` in the thinking mode must be passed back」）。
+      // **绝不省略**：模型没产出思考时回落正文文本，再退化为占位文本。
+      final replayText = result.reasoningContent.trim().isNotEmpty
+          ? result.reasoningContent
+          : (result.content.trim().isNotEmpty
+              ? result.content
+              : 'Continue by calling the requested tool.');
+      for (var i = 0; i < result.toolCalls.length; i++) {
+        messages.add(reasoningItemFrom(AiReasoningItem(text: replayText)));
+      }
       messages.add({
         'role': 'assistant',
         'content': result.content.isEmpty ? null : result.content,
+        if (result.reasoningContent.isNotEmpty)
+          'reasoning_content': result.reasoningContent,
         'tool_calls': [
           for (final tc in result.toolCalls)
             {

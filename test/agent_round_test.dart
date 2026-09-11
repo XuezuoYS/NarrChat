@@ -441,6 +441,91 @@ void main() {
     expect(provider.rawExchangesFor(round.id!), hasLength(2));
   });
 
+  test('AGENT 思考块回传：一次调两个工具 → 第 2 帧每调用各配一块（真实 400 复现）', () async {
+    final dao = FakeRoundDao();
+    final capturedBodies = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final idx = capturedBodies.length;
+        if (idx == 1) {
+          // 帧 1：模型先思考，**一帧同时调两个工具**（读取器 + 联网搜索）——
+          // 这正是线上 400 的那一帧（服务端按「每个 function_call 一块思考」
+          // 逐块校验，只回传一块即整次被拒）。
+          return sse([
+            'data: ${jsonEncode({
+                  'type': 'response.output_item.added',
+                  'item': {'type': 'reasoning', 'id': 'rs_r1'},
+                })}',
+            'data: ${jsonEncode({
+                  'type': 'response.reasoning_text.delta',
+                  'item_id': 'rs_r1',
+                  'delta': 'Need the world state and a web lookup first.',
+                })}',
+            callAdded('fc_1', agentReadToolName(AgentStateSection.worldState)),
+            callArgs('fc_1', {'round': 1}),
+            callAdded('fc_2', 'narrchat_webSearch'),
+            callArgs('fc_2', {'query': '青云宗'}),
+            completed('resp_1'),
+            '',
+          ]);
+        }
+        // 帧 2：正文 + 三栏闭环（无缺口 → 不再发维护轮）。
+        return sse([
+          textDelta('## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。\n'
+              '\n## 当前时间\n第三天 卯时'),
+          ...editLines('fc_3', AgentStateSection.worldState, [
+            {'op': 'append', 'newLine': '- 地点：青云宗'},
+          ]),
+          ...editLines('fc_4', AgentStateSection.characterState, [
+            {'op': 'noChange', 'reason': '角色状态本轮未变化'},
+          ]),
+          ...editLines('fc_5', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第1轮｜日期：第三天 卯时｜主角踏门而入'},
+          ]),
+          completed('resp_2', input: 2, output: 2),
+          '',
+        ]);
+      }),
+    );
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(),
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
+      experimentalSettings: AgentModeSettings(),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '继续', book: book), isTrue);
+    expect(capturedBodies, hasLength(2));
+
+    final input1 = (capturedBodies[0]['input'] as List).cast<Map<String, dynamic>>();
+    expect(input1.any((i) => i['type'] == 'reasoning'), isFalse,
+        reason: '首帧还没有思考块');
+
+    // 第 2 帧：每个 function_call 紧邻其前各有一块非空 reasoning
+    //（缺失 → HTTP 400「reasoning_text in the thinking mode must be passed back」）。
+    final input2 = (capturedBodies[1]['input'] as List).cast<Map<String, dynamic>>();
+    final callIndexes = <int>[
+      for (var i = 0; i < input2.length; i++)
+        if (input2[i]['type'] == 'function_call') i,
+    ];
+    expect(callIndexes, hasLength(2));
+    for (final at in callIndexes) {
+      expect(at, greaterThan(0));
+      final block = input2[at - 1];
+      expect(block['type'], 'reasoning');
+      expect(block['content'], [
+        {
+          'type': 'reasoning_text',
+          'text': 'Need the world state and a web lookup first.',
+        },
+      ]);
+    }
+  });
+
   test('AGENT 只写正文不调工具 → 维护轮接管（文本状态区块不再兜底落库）', () async {
     final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];

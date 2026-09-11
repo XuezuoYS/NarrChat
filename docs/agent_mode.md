@@ -199,12 +199,17 @@ Lv.1 的世界状态 / 角色状态随**正文文本**携带（复用 Chat 的�
 - **每栏只保留最新一份**读取结果（按工具名剔除旧份，且只有**真正执行成功**的
   读取才剔除旧份——被拒绝的重复读取不得顶掉模型唯一可用的锚点来源），
   输入不随修复帧膨胀；
+- **思考块**（`reasoning` 条目）不参与上述剔除：它是服务商「带工具请求必须逐块
+  回传」的硬要求（见上文「思考块回传」），每帧按**工具调用数**各发一块、按响应
+  顺序累积（剔除过期读取调用时，其紧邻的那一块随笔随删）；
 - 读取结果只含**被请求的那一栏**块（`<worldState>` / `<characterState>` /
   `<memorySummary>`，空栏目标 `empty="true"`），与 `Round` 字段一一对应；
   时间不在其中（属于正文 `## 当前时间`）。
 - **思考用英文**：`agentReasoningRule`（Lv.1 编号 4 / Lv.2 编号 8）要求
   reasoning 通道一律英文——思考是中英混排噪声与转义问题的高发区，统一英文便于
   直接阅读模型推理；正文与工具参数**不受影响**（字面量与标题名永不翻译）。
+  思考块本身会随帧回传（服务商要求，见「思考块回传」），因此它同样计入输入
+  token 与缓存前缀。
 
 ## 协议兼容降级（就地重发同一帧，不烧帧预算）
 
@@ -218,6 +223,49 @@ Lv.1 的世界状态 / 角色状态随**正文文本**携带（复用 Chat 的�
 | 报错含 `reasoning` / `thinking` / `effort` | 维护帧不再覆盖思考强度（回落用户设置；工具参数的输出预算相应少一截，只能靠「拆短调用」指令与用户调高「最大 token」补救） |
 
 只有**内容校验失败**（锚点未命中、记忆缺本轮条目等）才消耗修复帧。
+
+### 思考块回传（带工具的请求必须**逐块**回传 reasoning）
+
+服务商对**携带 `tools` 的请求**有硬性要求，且校验粒度是**逐个工具调用**的
+（下表为针对 DeepSeek 官方 `/responses` 线路的**实测**结论）：
+
+| 请求形态 | 结果 |
+|---|---|
+| 每个 `function_call` 前各一块非空 `reasoning` | **200** |
+| 一帧调 N 个工具，只回传 1 块思考 | **400** |
+| 某块 `reasoning_text` 为空 | **400** |
+| 只回传 assistant 正文、没有 reasoning | **400** |
+| 完全不回传 reasoning | **400** |
+| 块 id 形态（同 id / 异 id / 无 id） | 均 200（**不校验 id**） |
+
+报错文案：`The reasoning_text in the thinking mode must be passed back to the
+API`（Chat 通道为 `content[].thinking`）。这也解释了历史现象：维护轮 / 状态轮
+一帧通常只调一个工具，一块思考恰好够用；**正文轮一帧并发调两个工具**
+（如 `narrchat_readHistory` + `narrchat_webSearch`）时只发一块 → 必 400。
+
+因此 `AiService` 除聚合文本（`reasoningContent`，界面用）外，还**按条目**捕获
+思考块（`reasoningItems`：id / 文本 / 文本形态）；执行器把它挂在 `_frameReasoning`
+上，**追加每个 `function_call` 时各发一块**（`_appendCallItems` 按 `callIndex`
+取块），无工具调用的帧则在正文前发一块。剔除过期读取结果
+（`_pruneStaleReadState`）时**连同紧邻其前的思考块一起剔除**，避免思考掉到会话
+开头变成「没有归属的孤儿块」。
+
+两种线路由 `wire_adapters` 还原成各自的回传形态：
+
+| 线路 | 回传形态 |
+|---|---|
+| Responses | `{type: 'reasoning', id?, content/summary parts}` input item（顺序：每块 reasoning → 其所属的 function_call → function_call_output） |
+| Chat | assistant 消息上的 `reasoning_content` 字段（纯工具帧会补一条 `content: null` 的 assistant 承载它与 `tool_calls`） |
+
+联网搜索的工具循环（Agent 关档位）走同一份机制：`AgentRunner` 同样按调用数各发
+一块（Responses 线路在展开时还原成 reasoning item；Chat 线路忽略这些条目、改用
+同条消息上的 `reasoning_content`）。
+
+两条实现约定：
+- **文本形态随响应**：`content` 形态与 `summary` 形态各自按其原形态还原
+  （OpenAI 侧 reasoning 的 `content` 是加密形态，纯文本只允许放 `summary`）；
+- **空思考不发**：模型未产出思考时（未开思考 / 服务端没给）不伪造内容——
+  该情形下服务端也不做此校验。
 
 ### 降级重发的成本（不计帧 / 不计失败轮 / 不计 token）
 

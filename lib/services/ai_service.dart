@@ -70,12 +70,45 @@ class AiToolCall {
   });
 }
 
+/// 模型本次输出的一条思考块（**可回传**形态）。
+///
+/// 部分服务商要求「带工具调用的回合」在后续所有请求里**完整回传**思考块，
+/// 否则整次请求被拒（DeepSeek 思考模式：Chat 通道要求 `reasoning_content`、
+/// Responses 通道要求 `reasoning` item，缺失时报
+/// 「The `reasoning_text` in the thinking mode must be passed back to the API」）。
+/// 只回传文本无法满足两种线路形态，故这里同时保留**条目 id 与文本形态**
+///（[summary] = 原响应以 `summary` 承载，回放时按同形态还原）。
+class AiReasoningItem {
+  /// Responses 条目 id（`rs_…`；流式缺 id 时为空，回放省略该键）。
+  final String id;
+
+  /// 思考文本全文。
+  final String text;
+
+  /// 文本是否来自 `summary` parts（Responses 摘要形态）。
+  ///
+  /// 回放必须与响应同形态：OpenAI 侧 reasoning item 的 `content` 是加密形态，
+  /// 纯文本只能放 `summary`。
+  final bool summary;
+
+  const AiReasoningItem({
+    this.id = '',
+    required this.text,
+    this.summary = false,
+  });
+}
+
 /// AI 调用结果。
 class AiCallResult {
   final String content;
 
-  /// 思考内容（思考模式下由 API 返回的 `reasoning_content`）。
+  /// 思考内容（思考模式下由 API 返回的 `reasoning_content`，**聚合文本**）。
   final String reasoningContent;
+
+  /// 本次输出的思考块（**回传用**；顺序与响应一致，空 = 无思考）。
+  ///
+  /// 上层（AGENT / 工具循环）把它追加进会话条目，使下一帧能原样回传。
+  final List<AiReasoningItem> reasoningItems;
 
   /// 模型请求的工具调用（空列表 = 无工具调用，直接返回最终内容）。
   final List<AiToolCall> toolCalls;
@@ -109,6 +142,7 @@ class AiCallResult {
   const AiCallResult({
     required this.content,
     this.reasoningContent = '',
+    this.reasoningItems = const [],
     this.toolCalls = const [],
     required this.promptTokens,
     required this.completionTokens,
@@ -644,16 +678,21 @@ class AiService {
       }
       final contentSb = StringBuffer();
       final reasoningSb = StringBuffer();
+      final reasoningItems = <AiReasoningItem>[];
       final toolCalls = <AiToolCall>[];
       final output = (data['output'] as List<dynamic>?) ?? const [];
       for (final raw in output) {
         if (raw is! Map) continue;
         final item = Map<String, dynamic>.from(raw);
         final type = item['type'] as String?;
-        final text = _extractItemText(item);
         if (type == 'reasoning') {
-          if (text.isNotEmpty) reasoningSb.write(text);
+          final reasoning = _reasoningItemFrom(item);
+          if (reasoning != null) {
+            reasoningItems.add(reasoning);
+            reasoningSb.write(reasoning.text);
+          }
         } else if (type == 'message' || type == 'output_text') {
+          final text = _extractItemText(item);
           if (text.isNotEmpty) contentSb.write(text);
         } else if (type == 'function_call') {
           toolCalls.add(_parseFunctionCallItem(item));
@@ -664,6 +703,7 @@ class AiService {
       return AiCallResult(
         content: contentSb.toString(),
         reasoningContent: reasoningSb.toString(),
+        reasoningItems: reasoningItems,
         toolCalls: toolCalls,
         promptTokens: _usageCount(usage ?? const {}, 'input_tokens'),
         completionTokens: _usageCount(usage ?? const {}, 'output_tokens'),
@@ -711,6 +751,10 @@ class AiService {
 
     final contentSb = StringBuffer();
     final reasoningSb = StringBuffer();
+    // 思考块**按条目**累积（key = Responses item_id）：流式的文本增量按 item_id
+    // 到达，回传时必须还原成条目，故与纯文本聚合并行记录。
+    final reasoningAcc = <String, AiReasoningItem>{};
+    final reasoningOrder = <String>[];
     // 工具调用按 output item 累积（OpenAI 事件流中 function_call 参数按
     // `response.function_call_arguments.delta` 分块到达，按 item_id 聚合）。
     final toolAcc = <String, _ToolCallAccumulator>{};
@@ -773,13 +817,29 @@ class AiService {
                 final rd = json['delta'] as String? ?? '';
                 if (rd.isNotEmpty) {
                   reasoningSb.write(rd);
+                  _accumulateReasoning(
+                    reasoningAcc,
+                    reasoningOrder,
+                    itemId: json['item_id'] as String? ?? '',
+                    delta: rd,
+                    summary: type == 'response.reasoning_summary_text.delta',
+                  );
                   onChunk?.call(AiStreamChunk(reasoningDelta: rd));
                 }
                 break;
               case 'response.output_item.added':
                 final item = json['item'] as Map<String, dynamic>?;
                 final type2 = item?['type'] as String?;
-                if (type2 == 'function_call') {
+                if (type2 == 'reasoning') {
+                  // 先登记条目（id 供后续文本增量归位），文本可能全部由
+                  // `reasoning_text.delta` 提供，也可能只在 done 里给出。
+                  _ensureReasoningItem(
+                    reasoningAcc,
+                    reasoningOrder,
+                    itemId: (item?['id'] as String?) ??
+                        (json['item_id'] as String? ?? ''),
+                  );
+                } else if (type2 == 'function_call') {
                   final itemId = (item?['id'] as String?) ??
                       (json['item_id'] as String? ?? '');
                   final acc = toolAcc.putIfAbsent(
@@ -816,7 +876,9 @@ class AiService {
                 );
                 break;
               case 'response.output_item.done':
-                _absorbFunctionCallDone(toolAcc, toolOrder, json['item']);
+                final doneItem = json['item'];
+                _absorbFunctionCallDone(toolAcc, toolOrder, doneItem);
+                _absorbReasoningDone(reasoningAcc, reasoningOrder, doneItem);
                 break;
               case 'response.function_call_arguments.done':
               case 'response.output_text.done':
@@ -902,6 +964,10 @@ class AiService {
     return AiCallResult(
       content: contentSb.toString(),
       reasoningContent: reasoningSb.toString(),
+      reasoningItems: [
+        for (final id in reasoningOrder)
+          if (reasoningAcc[id]!.text.isNotEmpty) reasoningAcc[id]!,
+      ],
       toolCalls: [
         for (final id in toolOrder)
           _toolCallFrom(id, toolAcc),
@@ -947,6 +1013,118 @@ class AiService {
     if (details is String && details.trim().isNotEmpty) return details.trim();
     final status = response['status'];
     return status is String && status.isNotEmpty ? status : 'unknown';
+  }
+
+  /// 非流式 reasoning item → 可回传思考块（无可回传文本 → null）。
+  ///
+  /// 文本形态判定：`content` 优先（纯文本内容形态），否则取 `summary` parts
+  /// （摘要形态）；`encrypted_content` 形态不支持，忽略。
+  static AiReasoningItem? _reasoningItemFrom(Map<String, dynamic> item) {
+    final text = _extractReasoningText(item);
+    if (text.isEmpty) return null;
+    return AiReasoningItem(
+      id: _publicReasoningId((item['id'] as String?) ?? ''),
+      text: text,
+      summary: !_reasoningHasContent(item),
+    );
+  }
+
+  /// reasoning item 抽取思考文本（`content` 优先，回退 `summary`）。
+  ///
+  /// 兼容三种 part 形态：裸字符串、`{text}`、`{type: reasoning_text|summary_text}`。
+  static String _extractReasoningText(Map<String, dynamic> raw) {
+    final content = _reasoningPartText(raw['content']);
+    if (content.isNotEmpty) return content;
+    return _reasoningPartText(raw['summary']);
+  }
+
+  static String _reasoningPartText(Object? raw) {
+    if (raw is String) return raw;
+    if (raw is! List) return '';
+    final sb = StringBuffer();
+    for (final part in raw) {
+      if (part is String) {
+        sb.write(part);
+      } else if (part is Map) {
+        final text = part['text'];
+        if (text is String && text.isNotEmpty) sb.write(text);
+      }
+    }
+    return sb.toString();
+  }
+
+  static bool _reasoningHasContent(Map<String, dynamic> item) =>
+      _reasoningPartText(item['content']).isNotEmpty;
+
+  /// 回放用的条目 id：剥掉 OpenAI 的 `rs_` 命名空间前缀（`rs_abc` → `abc`）。
+  ///
+  /// OpenAI 客户端把 reasoning item 的 `id` 映射为 `rs_${item_id}`，回传时若
+  /// 原样送回 `rs_` 会让服务端看到双重前缀。
+  static String _publicReasoningId(String id) =>
+      id.startsWith('rs_') ? id.substring(3) : id;
+
+  /// 思考条目的**流式归位键**：事件里的 `item_id` 与
+  /// `output_item.added.item.id` 可能一个带 `rs_` 前缀、一个不带（两种形态都会
+  /// 出现在事件流里），故统一按去掉前缀后的 id 归位，避免同一思考块被拆两条。
+  static String _reasoningAliasKey(String itemId) => _publicReasoningId(itemId);
+
+  /// 流式：登记（或取回）一个思考块累积条目。
+  static AiReasoningItem _ensureReasoningItem(
+    Map<String, AiReasoningItem> acc,
+    List<String> order, {
+    required String itemId,
+  }) {
+    final key = _reasoningAliasKey(itemId);
+    final existing = acc[key];
+    if (existing != null) return existing;
+    final created = AiReasoningItem(id: _publicReasoningId(itemId), text: '');
+    acc[key] = created;
+    order.add(key);
+    return created;
+  }
+
+  /// 流式：把一段思考文本增量并入对应条目（新建时按摘要事件形态登记）。
+  static void _accumulateReasoning(
+    Map<String, AiReasoningItem> acc,
+    List<String> order, {
+    required String itemId,
+    required String delta,
+    required bool summary,
+  }) {
+    final key = _reasoningAliasKey(itemId);
+    final item = _ensureReasoningItem(acc, order, itemId: itemId);
+    acc[key] = AiReasoningItem(
+      id: item.id,
+      text: item.text + delta,
+      summary: item.text.isEmpty ? summary : item.summary,
+    );
+  }
+
+  /// `response.output_item.done`：部分实现只在 done 里给出完整思考文本
+  /// （增量事件缺失），此时以 done 补齐；带 id 时顺带补条目 id。
+  static void _absorbReasoningDone(
+    Map<String, AiReasoningItem> acc,
+    List<String> order,
+    Object? rawItem,
+  ) {
+    if (rawItem is! Map) return;
+    final item = Map<String, dynamic>.from(rawItem);
+    if (item['type'] != 'reasoning') return;
+    final itemId = (item['id'] as String?) ?? '';
+    final key = itemId.isNotEmpty
+        ? _reasoningAliasKey(itemId)
+        : (order.isEmpty ? '' : order.last);
+    final current = key.isEmpty ? null : acc[key];
+    final text = _extractReasoningText(item);
+    if (text.isEmpty && current == null) return;
+    final merged = AiReasoningItem(
+      id: _publicReasoningId(itemId.isNotEmpty ? itemId : (current?.id ?? '')),
+      text: text.isNotEmpty ? text : (current?.text ?? ''),
+      // 文本非空时以本次响应形态为准；增量已定形态（current）则沿用。
+      summary: text.isNotEmpty ? !_reasoningHasContent(item) : (current?.summary ?? true),
+    );
+    if (current == null && key.isNotEmpty) order.add(key);
+    if (key.isNotEmpty) acc[key] = merged;
   }
 
   /// 从事件中合并 usage（`response.completed` 的 `response.usage` 或顶层 `usage`）。

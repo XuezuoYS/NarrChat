@@ -147,6 +147,10 @@ void main() {
       expect(chunks.join(), '## 剧情演绎\n正' '文');
       expect(result.content, '## 剧情演绎\n正' '文');
       expect(result.reasoningContent, '先看状态');
+      // 思考块同时按**条目**累积（回传用；无 item_id 时归入匿名条目）。
+      expect(result.reasoningItems, hasLength(1));
+      expect(result.reasoningItems.single.text, '先看状态');
+      expect(result.reasoningItems.single.summary, isTrue);
       expect(result.toolCalls.single.name, 'narrchat_setLine');
       expect(
         result.toolCalls.single.arguments,
@@ -212,6 +216,98 @@ void main() {
       expect(result.toolCalls[0].arguments['content'], contains('主峰'));
       expect(result.toolCalls[1].arguments['time'], '第一天 申时');
       expect(result.toolCalls[2].arguments['content'], contains('第2轮'));
+    });
+  });
+
+  group('responses 思考块回传（reasoning items）', () {
+    test('非流式：content 形态与 summary 形态各归其位', () async {
+      final ai = AiService(
+        client: MockClient((request) async => jsonResponse('''
+{
+  "id": "resp_1",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_abc",
+      "content": [{"type": "reasoning_text", "text": "先读世界状态"}]
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_def",
+      "summary": [{"type": "summary_text", "text": "再改角色"}]
+    },
+    {"type": "message", "content": [{"type": "output_text", "text": "正文"}]}
+  ],
+  "usage": {"input_tokens": 1, "output_tokens": 1}
+}
+''')),
+      );
+
+      final result = await ai.responses(
+        apiBaseUrl: 'https://api.deepseek.com',
+        apiKey: 'key',
+        requestBody: const {'model': 'm', 'input': []},
+      );
+
+      expect(result.reasoningContent, '先读世界状态再改角色');
+      expect(result.reasoningItems, hasLength(2));
+      // `rs_` 命名空间前缀剥离（回传时不得双重前缀）。
+      expect(result.reasoningItems[0].id, 'abc');
+      expect(result.reasoningItems[0].text, '先读世界状态');
+      expect(result.reasoningItems[0].summary, isFalse);
+      expect(result.reasoningItems[1].id, 'def');
+      expect(result.reasoningItems[1].text, '再改角色');
+      expect(result.reasoningItems[1].summary, isTrue);
+    });
+
+    test('流式：按 item_id 归位、id 去 ns 前缀、done 事件回填全文', () async {
+      final ai = AiService(
+        client: MockClient((request) async => sseResponse([
+          'data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_r1"}}',
+          'data: {"type":"response.reasoning_text.delta","item_id":"rs_r1","delta":"先读"}',
+          'data: {"type":"response.reasoning_text.delta","item_id":"rs_r1","delta":"状态"}',
+          'data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_r2"}}',
+          'data: {"type":"response.reasoning_text.delta","item_id":"rs_r2","delta":"再写正文"}',
+          'data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_r1","content":[{"type":"reasoning_text","text":"先读状态（终稿）"}]}}',
+          'data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}',
+          '',
+        ])),
+      );
+
+      final result = await ai.responses(
+        apiBaseUrl: 'https://api.deepseek.com',
+        apiKey: 'key',
+        requestBody: const {'model': 'm', 'input': []},
+        stream: true,
+      );
+
+      expect(result.reasoningItems, hasLength(2));
+      expect(result.reasoningItems[0].id, 'r1');
+      // done 事件带回完整文本 → 覆盖增量累计（去重按 id）。
+      expect(result.reasoningItems[0].text, '先读状态（终稿）');
+      expect(result.reasoningItems[1].id, 'r2');
+      expect(result.reasoningItems[1].text, '再写正文');
+      expect(result.reasoningItems[1].summary, isFalse);
+    });
+
+    test('无思考输出 → reasoningItems 为空（不得伪造空条目）', () async {
+      final ai = AiService(
+        client: MockClient((request) async => sseResponse([
+          'data: {"type":"response.output_text.delta","delta":"正文"}',
+          'data: {"type":"response.completed","response":{"id":"r1"}}',
+          '',
+        ])),
+      );
+
+      final result = await ai.responses(
+        apiBaseUrl: 'https://api.deepseek.com',
+        apiKey: 'key',
+        requestBody: const {'model': 'm', 'input': []},
+        stream: true,
+      );
+
+      expect(result.reasoningItems, isEmpty);
+      expect(result.reasoningContent, isEmpty);
     });
   });
 

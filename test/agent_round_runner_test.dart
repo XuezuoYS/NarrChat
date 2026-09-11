@@ -461,6 +461,129 @@ void main() {
     expect(sunk.where((c) => c.narrativeReset), hasLength(1));
   });
 
+  test('思考块按**每个工具调用**各回传一块（服务端逐块校验）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      // 帧 1：一次思考 + **两个**工具调用（读取器 → 必然继续下一帧）。
+      AiCallResult(
+        content: '## 剧情演绎\n写了一半\n\n## 推荐行动\n行动',
+        reasoningContent: '先读世界状态',
+        reasoningItems: const [
+          AiReasoningItem(id: 'r1', text: '先读世界状态'),
+        ],
+        toolCalls: [
+          readCall('r_w', AgentStateSection.worldState),
+          readCall('r_c', AgentStateSection.characterState),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_1',
+      ),
+      // 帧 2：补齐三栏（正文轮闭环；缺口已无 → 不发维护轮，脚本刚好用尽）。
+      fullStateTurn('f2'),
+    ]);
+    final result = await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    expect(result.content, contains('写了一半'));
+    expect(h.requests, hasLength(2));
+    final frame2 = h.requests[1].items;
+    // 服务端实测规则：带 tools 的请求里**每个 function_call 都必须紧邻其前**
+    // 各有一块非空 reasoning（一帧两个调用只回一块 → 400
+    //「The reasoning_text in the thinking mode must be passed back」）。
+    final calls = <int>[
+      for (var i = 0; i < frame2.length; i++)
+        if (frame2[i]['type'] == 'function_call') i,
+    ];
+    expect(calls, hasLength(2));
+    for (final callAt in calls) {
+      expect(
+        callAt,
+        greaterThan(0),
+        reason: 'function_call 前必须有紧邻的思考块',
+      );
+      expect(frame2[callAt - 1]['type'], 'reasoning');
+      expect(frame2[callAt - 1]['text'], isNotEmpty);
+    }
+    // 正文帧的 assistant 消息在（思考块不会被正文顶替）。
+    expect(
+      frame2.any((i) => i['role'] == 'assistant' && '${i['content']}'.contains('写了一半')),
+      isTrue,
+    );
+  });
+
+  test('无工具调用的帧：思考块照常回传（先于正文，单块）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      // 帧 1：只有正文（无工具）→ 正文轮直接结束；缺口 → 维护轮。
+      AiCallResult(
+        content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
+        reasoningContent: '想了一下剧情',
+        reasoningItems: const [
+          AiReasoningItem(id: 'r1', text: '想了一下剧情'),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_1',
+      ),
+      fullStateTurn('f2'),
+    ]);
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    // 维护轮首帧请求体里：思考块恰一块，且先于正文消息。
+    final frame2 = h.requests[1].items;
+    final reasonings = [
+      for (final i in frame2)
+        if (i['type'] == 'reasoning') i,
+    ];
+    expect(reasonings, hasLength(1));
+    expect(reasonings.single['text'], '想了一下剧情');
+    expect(
+      frame2.indexOf(reasonings.single),
+      lessThan(frame2.indexWhere((i) => i['role'] == 'assistant')),
+    );
+  });
+
+  test('模型未产出思考时仍逐块兜底（工具帧绝不缺块）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      // 帧 1：无 reasoningItems / reasoningContent，但有两个工具调用。
+      AiCallResult(
+        content: '',
+        toolCalls: [
+          readCall('r_w', AgentStateSection.worldState),
+          readCall('r_c', AgentStateSection.characterState),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_1',
+      ),
+      // 帧 2：正文 + 三栏闭环（正文轮退出，缺口已无 → 不再发维护轮）。
+      fullStateTurn('f2', story: '正文'),
+    ]);
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final frame2 = h.requests[1].items;
+    final calls = <int>[
+      for (var i = 0; i < frame2.length; i++)
+        if (frame2[i]['type'] == 'function_call') i,
+    ];
+    expect(calls, hasLength(2));
+    for (final at in calls) {
+      expect(frame2[at - 1]['type'], 'reasoning');
+      // 兜底文本非空（本帧无正文 → 占位文本；服务端只校验「非空且紧邻」）。
+      expect('${frame2[at - 1]['text']}', isNotEmpty);
+    }
+  });
+
   test('无状态重发：每帧全量 input，状态不预置（模型自取）', () async {
     final copy = workingCopy();
     final h = harness(copy: copy, script: [storyOnly(), fullStateTurn('s')]);

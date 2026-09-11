@@ -654,19 +654,17 @@ class RoundProvider extends ChangeNotifier {
       // AI 看到的初始 input：历史消息 + 当前用户消息（vision 图片在
       // responses 线路下转换为 input_image 内容块）；状态**不预置**，
       // 由模型主动调用各栏读取器获取（见 AgentRoundRunner 文档）。
+      // 形态与执行器内部一致：Chat 线路 = Chat messages，Responses 线路 =
+      // Responses 条目——两种线路随后都经 `_agentBody` / `_agentChatBody`
+      // 的同一条转换路径出帧（首帧与续接帧不再各转一次）。
       // 联网工具随档位强制开启时同样**不追加任何 system 指令**：
       // 何时调用、搜索后必须打开页面等要求全部写在工具 `description` 里
       //（档位提示词只负责本档位可用的工具与调用纪律）。
-      final inputItems = responsesWire
-          ? responsesItemsFromChatMessages([
-              ...historyMessages,
-              {'role': 'user', 'content': userContent},
-            ])
-          : [
-              {'role': 'system', 'content': prompts.systemPrompt},
-              ...historyMessages,
-              {'role': 'user', 'content': userContent},
-            ];
+      final inputItems = <Map<String, dynamic>>[
+        if (!responsesWire) {'role': 'system', 'content': prompts.systemPrompt},
+        ...historyMessages,
+        {'role': 'user', 'content': userContent},
+      ];
       // 工具 schema 超集（档位对应的状态工具 + 可选搜索工具），
       // **两阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
       // 使服务商的上下文缓存整段失效。
@@ -1535,7 +1533,15 @@ class RoundProvider extends ChangeNotifier {
     final previousResponseId = t.previousResponseId;
     final chained =
         previousResponseId != null && previousResponseId.isNotEmpty;
-    final values = _frameValues(base, t, chained: chained);
+    // 执行器累积的 items 已是「Responses 形状」→ 按条目类型还原 input
+    //（**不能**再走 `responsesItemsFromChatMessages`：思考条目会被当成无 role
+    // 的普通消息，产出坏条目）。首帧与后续帧因此共用同一条转换路径。
+    final values = _frameValues(
+      base,
+      t,
+      chained: chained,
+      items: responsesItemsFromAgentItems(t.items),
+    );
     final body = settings == null
         ? AiRequestBodyBuilder.buildPresetBody(
             rules: AiPlatforms.defaultRules,
@@ -1558,20 +1564,7 @@ class RoundProvider extends ChangeNotifier {
     required AiRequestValues base,
     required AgentTurnRequest t,
   }) {
-    final frame = _frameValues(base, t, chained: false);
-    final values = AiRequestValues(
-      model: frame.model,
-      messages: chatItemsFromAgentItems(t.items),
-      temperature: frame.temperature,
-      thinking: frame.thinking,
-      reasoningEffort: frame.reasoningEffort,
-      maxTokens: frame.maxTokens,
-      stream: frame.stream,
-      tools: frame.tools,
-      // Chat 线路无 instructions 字段：系统提示词已是首帧第一条 system 消息。
-      instructions: null,
-      toolChoice: frame.toolChoice,
-    );
+    final values = _chatFrameValues(base, t, chatItemsFromAgentItems(t.items));
     return settings == null
         ? AiRequestBodyBuilder.buildPresetBody(
             rules: AiPlatforms.defaultRules,
@@ -1587,13 +1580,14 @@ class RoundProvider extends ChangeNotifier {
     AiRequestValues base,
     AgentTurnRequest t, {
     bool chained = false,
+    List<Map<String, dynamic>>? items,
   }) {
     final stateEffort = (t.stateThinkingEffort != null && base.thinking)
         ? t.stateThinkingEffort!
         : null;
     return AiRequestValues(
       model: base.model,
-      messages: t.items,
+      messages: items ?? t.items,
       temperature: base.temperature,
       thinking: stateEffort != null ? true : base.thinking,
       reasoningEffort: stateEffort ?? base.reasoningEffort,
@@ -1602,6 +1596,29 @@ class RoundProvider extends ChangeNotifier {
       tools: chained ? null : base.tools,
       instructions: chained ? null : base.instructions,
       toolChoice: t.toolChoice,
+    );
+  }
+
+  /// [_frameValues] 的 Chat 线路变体：messages 换成 Chat 形态，
+  /// `instructions` 置 null（Chat 协议没有该字段，系统提示词已是首帧第一条
+  /// system 消息）。
+  static AiRequestValues _chatFrameValues(
+    AiRequestValues base,
+    AgentTurnRequest t,
+    List<Map<String, dynamic>> messages,
+  ) {
+    final frame = _frameValues(base, t, chained: false, items: messages);
+    return AiRequestValues(
+      model: frame.model,
+      messages: frame.messages,
+      temperature: frame.temperature,
+      thinking: frame.thinking,
+      reasoningEffort: frame.reasoningEffort,
+      maxTokens: frame.maxTokens,
+      stream: frame.stream,
+      tools: frame.tools,
+      instructions: null,
+      toolChoice: frame.toolChoice,
     );
   }
 

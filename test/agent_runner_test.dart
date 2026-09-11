@@ -106,14 +106,18 @@ void main() {
       // 两次调用都携带 tools 描述。
       expect((seenBodies[0]['tools'] as List), hasLength(1));
       expect((seenBodies[1]['tools'] as List), hasLength(1));
-      // 第二次调用的消息包含 assistant(tool_calls) + tool 消息。
+      // 第二次调用的消息包含 reasoning + assistant(tool_calls) + tool 消息。
       final messages = (seenBodies[1]['messages'] as List).cast<Map>();
-      expect(messages, hasLength(4)); // system + user + assistant + tool
-      expect(messages[2]['role'], 'assistant');
-      expect((messages[2]['tool_calls'] as List).first['id'], 'call_1');
-      expect(messages[3]['role'], 'tool');
-      expect(messages[3]['tool_call_id'], 'call_1');
-      expect((messages[3]['content'] as String), contains('青云宗是北域大派'));
+      expect(messages, hasLength(5)); // system + user + reasoning + assistant + tool
+      // 首个工具调用前必有一块非空思考（服务端硬校验：带 tools 的请求里每个
+      // function_call 都要紧邻其前的非空 reasoning，缺失即整次 400）。
+      expect(messages[2]['type'], 'reasoning');
+      expect('${messages[2]['text']}', isNotEmpty);
+      expect(messages[3]['role'], 'assistant');
+      expect((messages[3]['tool_calls'] as List).first['id'], 'call_1');
+      expect(messages[4]['role'], 'tool');
+      expect(messages[4]['tool_call_id'], 'call_1');
+      expect((messages[4]['content'] as String), contains('青云宗是北域大派'));
 
       // 工具确实被调用。
       expect(tool.calls, hasLength(1));
@@ -161,6 +165,99 @@ void main() {
       expect(result.promptTokens, 100);
       expect(result.cachedTokensIn, 64);
       expect(result.completionTokens, isNull, reason: '两帧都没返回输出用量');
+    });
+
+    test('思考内容随 assistant(tool_calls) 消息回传（reasoning_content）', () async {
+      final tool = _FakeTool(
+        result: const AgentToolResult(success: true, content: '搜索结果'),
+      );
+      final seenBodies = <Map<String, dynamic>>[];
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) {
+          seenBodies.add({'messages': messages, 'tools': tools});
+          return {'messages': messages, 'tools': tools};
+        },
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex++ == 0) {
+            return AiCallResult(
+              content: '',
+              reasoningContent: '先搜索再写',
+              toolCalls: [_toolCall({'query': '青云宗'})],
+              promptTokens: 0,
+              completionTokens: 0,
+            );
+          }
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 0,
+            completionTokens: 0,
+          );
+        },
+        tools: [tool],
+      );
+
+      await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      final messages = (seenBodies[1]['messages'] as List).cast<Map>();
+      // 每个工具调用各配一块 Responses 形状的思考（服务端逐块校验：
+      // 带 tools 时每个 function_call 都必须紧邻其前有非空思考，否则 400）。
+      final reasonings =
+          messages.where((m) => m['type'] == 'reasoning').toList();
+      expect(reasonings, hasLength(1), reason: '单工具 → 一块思考');
+      expect('${reasonings.single['text']}', '先搜索再写');
+      final assistant = messages.firstWhere((m) => m['role'] == 'assistant');
+      // Chat 线路形态：同一条 assistant 消息带 `reasoning_content`。
+      expect(assistant['reasoning_content'], '先搜索再写');
+      expect((assistant['tool_calls'] as List), hasLength(1));
+    });
+
+    test('无思考输出时仍补思考块（正文/占位兜底，不得让工具帧缺块）', () async {
+      final tool = _FakeTool(
+        result: const AgentToolResult(success: true, content: '搜索结果'),
+      );
+      final seenBodies = <Map<String, dynamic>>[];
+      var callIndex = 0;
+      final runner = AgentRunner(
+        buildBody: (messages, tools) {
+          seenBodies.add({'messages': messages, 'tools': tools});
+          return {'messages': messages, 'tools': tools};
+        },
+        call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
+          if (callIndex++ == 0) {
+            return AiCallResult(
+              content: '',
+              toolCalls: [_toolCall({'query': '青云宗'})],
+              promptTokens: 0,
+              completionTokens: 0,
+            );
+          }
+          return const AiCallResult(
+            content: '正文',
+            promptTokens: 0,
+            completionTokens: 0,
+          );
+        },
+        tools: [tool],
+      );
+
+      await runner.run(
+        initialMessages: [const {'role': 'user', 'content': 'hi'}],
+        stream: false,
+      );
+
+      final messages = (seenBodies[1]['messages'] as List).cast<Map>();
+      final reasonings =
+          messages.where((m) => m['type'] == 'reasoning').toList();
+      // 服务端对「工具调用缺块」是硬 400 → 宁可回传兜底文本，也不能不发。
+      expect(reasonings, hasLength(1));
+      expect('${reasonings.single['text']}', isNotEmpty);
+      final assistant = messages.firstWhere((m) => m['role'] == 'assistant');
+      // 没有真实思考时不写 `reasoning_content` 键（Chat 线路形态不变）。
+      expect(assistant.containsKey('reasoning_content'), isFalse);
     });
 
     test('Token 用量聚合：全帧无 usage → 三桶全为 null', () async {

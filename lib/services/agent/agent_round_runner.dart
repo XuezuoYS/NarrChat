@@ -9,6 +9,7 @@ import 'narr_agent_tool.dart';
 import 'state/agent_state_working_copy.dart';
 import 'state/state_coverage.dart';
 import 'state/state_tools.dart';
+import 'wire_adapters.dart';
 
 /// 维护轮（代码旧称「状态轮」，含其修复帧）的最大帧数：1 主帧 + 3 修复帧。
 const int kAgentMaxStateFrames = 4;
@@ -219,9 +220,14 @@ class AgentRoundResult {
 ///
 /// ## 会话累积（修复帧不再「失忆」）
 ///
-/// 每帧结束后把 `assistant(正文)` + `function_call` + `function_call_output`
-/// 追加进 `_items`：续接帧因此看得见自己刚写过的正文——这是旧版多份正文的
-/// 直接病根（只重放 function_call）。
+/// 每帧结束后把 `reasoning`（思考块）+ `assistant(正文)` + `function_call` +
+/// `function_call_output` 追加进 `_items`：续接帧因此看得见自己刚写过的正文
+/// ——这是旧版多份正文的直接病根（只重放 function_call）。
+///
+/// 思考块按**每个工具调用各一块**回传（[_appendCallItems]）：请求携带 `tools`
+/// 时服务商逐块校验，任何 `function_call` 少了紧邻其前的非空 `reasoning` 即
+/// 整次 400（DeepSeek 思考模式返回「The `reasoning_text` in the thinking mode
+/// must be passed back to the API」）。
 ///
 /// ## 前缀一致性（成本）
 ///
@@ -318,6 +324,9 @@ class AgentRoundRunner {
   /// 重复调工具）。
   final List<String> _truncationNotes = [];
 
+  /// 本帧已产出、尚未随工具调用发出的思考块（见 [_appendCallItems]）。
+  List<AiReasoningItem> _frameReasoning = const [];
+
   /// 最后一帧是否被服务端提前结束（决定要不要给用户一条可操作提示）。
   bool _lastFrameTruncated = false;
   String _truncateReason = '';
@@ -353,6 +362,7 @@ class AgentRoundRunner {
     _truncationNotes.clear();
     _lastFrameTruncated = false;
     _truncateReason = '';
+    _frameReasoning = const [];
     _sectionsProvided.clear();
 
     await _runStoryStage(stream, onRequestBody, isCancelled);
@@ -689,8 +699,8 @@ class AgentRoundRunner {
           ? _items.sublist(_sentCursor)
           : _items;
 
-  /// 吸收一帧：聚合用量 / 思考、按帧分类采纳正文、把 assistant 消息追加进
-  /// 会话累积（工具条目在 [_executeTools] 中紧随其后追加）。
+  /// 吸收一帧：聚合用量 / 思考、按帧分类采纳正文、把思考条目与 assistant 消息
+  /// 追加进会话累积（工具条目在 [_executeTools] 中紧随其后追加）。
   void _absorbFrame(AiCallResult result, AgentStage stage) {
     // null = 该帧未带该用量字段（跳过）；全 null 时结果保持 null → 界面「（无）」。
     _promptTokens = addTokenUsage(_promptTokens, result.promptTokens);
@@ -705,9 +715,46 @@ class AgentRoundRunner {
     }
     if (stage == AgentStage.story) _classifyStoryFrame(result);
     _noteTruncation(result, stage);
+    // 本帧思考先挂起，**不立即入队**：服务商要求每个 function_call 紧邻其前
+    // 各有一个非空思考块（见 [_appendCallItems]），故思考在追加工具条目时
+    // 逐个发出，而不是整帧共用一块。
+    _frameReasoning = [
+      for (final item in result.reasoningItems)
+        if (item.text.isNotEmpty) item,
+    ];
+    // 没有工具调用要发的思考（纯正文帧 / 无工具帧）在这里直接入队——先于正文，
+    // 与模型原始输出顺序一致。
+    if (result.toolCalls.isEmpty) {
+      _flushReasoningItems();
+    }
     if (result.content.trim().isNotEmpty) {
       _items.add({'role': 'assistant', 'content': result.content});
     }
+  }
+
+  /// 把挂起的思考条目追加进会话（[reasoningItemFrom] 形态）。
+  void _flushReasoningItems() {
+    for (final item in _frameReasoning) {
+      _items.add(reasoningItemFrom(item));
+    }
+    _frameReasoning = const [];
+  }
+
+  /// 取本帧第 [index] 个工具调用的思考文本：优先用模型本帧产出的第 index 块
+  /// （块数不足时回落最后一块——服务端只要求「非空且紧邻」，不校验内容归属）。
+  ///
+  /// **永不为空**：没有思考块时回落该帧正文（正文本身就是模型对本回合的说明），
+  /// 再没有则给占位文本。服务端对「工具调用缺块」是硬 400，宁可回传一段不完美
+  /// 的文本，也不能让整轮生成失败。
+  String _reasoningTextFor(int index, {required String fallbackContent}) {
+    if (_frameReasoning.isNotEmpty) {
+      final at = index < _frameReasoning.length ? index : _frameReasoning.length - 1;
+      final text = _frameReasoning[at].text.trim();
+      if (text.isNotEmpty) return text;
+    }
+    final content = fallbackContent.trim();
+    if (content.isNotEmpty) return content;
+    return 'Continue by calling the requested tool.';
   }
 
   /// 帧被服务端提前结束（Responses `response.incomplete`）：记下原因并把
@@ -803,7 +850,8 @@ class AgentRoundRunner {
     bool Function()? isCancelled,
     AgentStage stage,
   ) async {
-    for (final tc in result.toolCalls) {
+    for (var callIndex = 0; callIndex < result.toolCalls.length; callIndex++) {
+      final tc = result.toolCalls[callIndex];
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
       final tool = _byName(tc.name);
       final summary = _argsSummary(tc.name, tc.arguments);
@@ -843,7 +891,12 @@ class AgentRoundRunner {
       // 本次调用带给模型的栏目全文（读取成功 / 编辑回传）：登记后，维护轮
       // 对这些栏目的重复读取会被拒绝（[_refusedMaintenanceRead]）。
       _noteSectionsProvided(tc, outcome, executed: !refusedStoryEdit && !refusedRead);
-      _appendCallItems(tc, outcome);
+      _appendCallItems(
+        tc,
+        outcome,
+        callIndex: callIndex,
+        frameContent: result.content,
+      );
     }
   }
 
@@ -1000,7 +1053,29 @@ class AgentRoundRunner {
   }
 
   /// 追加 `function_call` + `function_call_output` 条目（重放必须用 `call_id`）。
-  void _appendCallItems(AiToolCall tc, AgentToolOutcome outcome) {
+  ///
+  /// **每个工具调用前各发一块思考**（[callIndex] 为本帧内的第几个调用）：
+  /// DeepSeek 思考模式对带 `tools` 的请求逐块校验——一个 `function_call` 少了
+  /// 紧邻其前的非空 `reasoning` 块即整次 400（「The `reasoning_text` in the
+  /// thinking mode must be passed back to the API」）。实测（官方 `/responses`）：
+  /// 一帧调两个工具、只回传一块思考 → 400；每个调用各一块（块间内容异同、
+  /// id 异同）→ 200；`assistant` 正文**不能**顶替思考块。故这里**绝不省略**：
+  /// 模型没产出思考时回落该帧正文，再退化为占位文本。
+  void _appendCallItems(
+    AiToolCall tc,
+    AgentToolOutcome outcome, {
+    required int callIndex,
+    required String frameContent,
+  }) {
+    _items.add(
+      reasoningItemFrom(
+        AiReasoningItem(
+          id: '',
+          text: _reasoningTextFor(callIndex, fallbackContent: frameContent),
+          summary: false,
+        ),
+      ),
+    );
     _items.add({
       'type': 'function_call',
       'call_id': tc.id,
@@ -1026,6 +1101,9 @@ class AgentRoundRunner {
   /// 按**工具名**逐栏剔除（每个栏目一个读取器，互不干扰）；读取结果条目成对
   /// 出现（`function_call` + `function_call_output`），且只可能存在于 `_history`
   /// 之后（历史消息不含工具结果），逐个剔除即可。
+  ///
+  /// 该调用**紧邻其前**的思考块一并剔除：否则思考会掉到会话最前面变成孤儿，
+  /// 而它本该归属的那个 `function_call` 已不在会话里（服务端按相邻关系校验）。
   void _pruneStaleReadState(String toolName, String currentCallId) {
     final kept = <Map<String, dynamic>>[];
     for (var i = 0; i < _items.length; i++) {
@@ -1033,8 +1111,11 @@ class AgentRoundRunner {
       if (item['type'] == 'function_call' &&
           item['name'] == toolName &&
           item['call_id'] != currentCallId) {
-        // 跳过紧随其后的 function_call_output 条目。
+        // 紧随其后的 function_call_output 条目。
         i++;
+        if (kept.isNotEmpty && kept.last['type'] == 'reasoning') {
+          kept.removeLast();
+        }
         continue;
       }
       kept.add(item);
