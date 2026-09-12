@@ -9,6 +9,10 @@ import '../theme/app_theme.dart';
 /// 横幅最大宽度：与对话内容区宽度一致，宽屏下居中不贴边（首页受外层 720 约束自动收窄）。
 const double _kContentMaxWidth = 760;
 
+/// 「正在生成的书」uuid 的串接分隔符（用于把列表降为可按值比较的字符串；
+/// uuid 为 36 位十六进制 + 连字符，不会与其冲突）。
+const String _kUuidSeparator = '|';
+
 /// 跨书进程提示栏：其他书籍正在生成时置顶展示计数横幅（x本书正在生成……），
 /// 点击弹出「正在生成的书」对话框，选择对应书籍后回调 [onOpenBook] 跳转。
 ///
@@ -32,11 +36,15 @@ class GenerationBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final roundProvider = context.watch<RoundProvider>();
-    final activeUuids = roundProvider.activeGenerationBookUuids
-        .where((uuid) => uuid != excludeBookUuid)
-        .toList();
-    if (activeUuids.isEmpty) return const SizedBox.shrink();
+    // 只订阅「正在生成的书」这一低频信号（以 uuid 串参与值比较，避免返回
+    // 新建 List 的 getter 让比较恒不相等）：流式增量不再重建横幅。
+    final activeKeys = context.select<RoundProvider, String>(
+      (p) => p.activeGenerationBookUuids
+          .where((uuid) => uuid != excludeBookUuid)
+          .join(_kUuidSeparator),
+    );
+    if (activeKeys.isEmpty) return const SizedBox.shrink();
+    final activeUuids = activeKeys.split(_kUuidSeparator);
 
     // 圆角悬浮卡片：水平居中限宽 + 四周留白，宽屏下不与窗口/容器边缘齐平（不被截断）；
     // 无阴影（Material 零高程），仅圆角背景 + 水波纹点击反馈。

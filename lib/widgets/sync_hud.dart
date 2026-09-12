@@ -46,8 +46,11 @@ class _SyncHudState extends State<SyncHud> {
       return const SizedBox.shrink();
     }
 
-    final bannerVisible =
-        context.watch<RoundProvider>().activeGenerationBookUuids.isNotEmpty;
+    // 只订阅「是否有书在生成」这一布尔信号（生成起止才变化）：
+    // 流式增量不再重建 HUD。
+    final bannerVisible = context.select<RoundProvider, bool>(
+      (p) => p.activeGenerationBookUuids.isNotEmpty,
+    );
     final media = MediaQuery.of(context);
     final safeTop = media.padding.top;
     // 默认位：标题栏（AppBar）下方 + 8；拖动偏移附加；GenerationBanner 可见时再下移一排。

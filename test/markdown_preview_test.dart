@@ -123,6 +123,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('正文'), findsOneWidget);
     expect(find.byType(SelectionArea), findsNothing);
+
+    // 内容变化后展示文本随之更新（归一化缓存须失效）。
+    await tester.pumpWidget(
+      _wrap(const PlainTextPreview(data: '换了内容\r\n第二行')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('换了内容\n第二行'), findsOneWidget);
+    expect(find.text('正文'), findsNothing);
   });
 
   testWidgets('GitHub Alerts 渲染彩色提示块', (tester) async {

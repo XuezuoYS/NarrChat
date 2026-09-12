@@ -101,6 +101,34 @@ const double _kSwipeVelocityThreshold = 200;
 /// 滑动手势触发距离阈值（px）：慢速长距离横向拖动超过该值同样视为有效滑动。
 const double _kSwipeMinDistance = 80;
 
+/// 对话页外壳订阅的 [RoundProvider] **低频信号**。
+///
+/// 流式字段（正文 / 思考事件 / 正文边界 / 常驻警告 / 重试进度）**刻意不在
+/// 此列**：它们由生成中的气泡插槽（[_StreamingSlot]）自行订阅，使每个流式增量
+/// 只重建那一小块，而不是整页（顶栏 / 侧栏 / 输入面板 / 整个消息列）——
+/// 后者是移动端生成期间卡顿的主因（整页重建含侧栏面板与全部可见气泡）。
+///
+/// 记录类型按字段值比较：下列取值都只在「轮次增删 / 生成起止 / 换书 / 警告
+/// 变化」时改变，因此流式期间外壳不再重建。**勿加入每次访问都新建实例的
+/// getter**（如返回 `List.unmodifiable` / 新建 List 的那些），否则比较恒不相等，
+/// 隔离失效。
+typedef _ChatShellSignals = ({
+  /// 已加载轮次（不可变视图，仅在轮次增删 / 换书时变化）。
+  List<Round> rounds,
+  /// 当前书是否正在生成。
+  bool isSending,
+  /// 是否处于块时间线展示模式（流式传输 / 非流式回放）。
+  bool showTimeline,
+  /// 生成中尚未落库的用户输入。
+  String pendingInput,
+  /// 是否存在失败条目（未完成的生成尝试）。
+  bool hasFailure,
+  /// 下一轮轮号（失败条目「本该产生的那一轮」）。
+  int nextRoundIndex,
+  /// 常驻警告版本号（列表项高度缓存失效依据）。
+  int warningsVersion,
+});
+
 /// 对话界面（独立页面，由书籍列表点击进入）。
 ///
 /// - 自带顶栏：返回按钮 + 书名 + 书籍设置 / 全局设置入口；
@@ -156,6 +184,10 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
+
+  /// 已注册「贴底跟随」监听的轮次 provider（换实例时迁移监听，见
+  /// [_onRoundTick]）。流式增量不再重建外壳，跟随判定改由该监听驱动。
+  RoundProvider? _tickProvider;
 
   /// 打开书籍后「加载轮次 → 跳转到底部」的初始化标记（同一本书只执行一次）。
   /// 防止首帧建造时当前书尚未就绪（异步加载 / 冷启动）而错过跳底。
@@ -316,8 +348,22 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  /// 订阅轮次 provider 的通知（用于生成期间的贴底跟随，见 [_onRoundTick]）。
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 订阅「provider 通知」而非「重建」：流式增量不重建外壳，但必须继续驱动
+    // 贴底跟随（见 [_onRoundTick] / [_autoFollowIfNeeded]）。
+    final rp = context.read<RoundProvider>();
+    if (!identical(rp, _tickProvider)) {
+      _tickProvider?.removeListener(_onRoundTick);
+      _tickProvider = rp..addListener(_onRoundTick);
+    }
+  }
+
   @override
   void dispose() {
+    _tickProvider?.removeListener(_onRoundTick);
     _sidebarController.dispose();
     _inputController.dispose();
     _scrollController.dispose();
@@ -458,6 +504,45 @@ class _ChatScreenState extends State<ChatScreen>
     if (!_scrollController.hasClients) return true;
     final pos = _scrollController.position;
     return pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold;
+  }
+
+  /// 生成期间若用户停在底部附近（未主动上翻阅读历史），帧末把消息列贴到底。
+  ///
+  /// 由两条路径驱动，覆盖「内容增长」与「布局变化」两类原因：
+  /// - [_onRoundTick]：provider 每次通知（含每个流式增量）——外壳已不随增量
+  ///   重建，跟随判定因此不能再依赖「重建顺带触发」；
+  /// - 外壳重建（[_buildChatArea]）：改窗口宽度 / 侧栏宽度 / 输入面板高度等
+  ///   重排场景（此前同样依赖重建触发）。
+  ///
+  /// 仅在帧末执行 `jumpTo`（非动画），不会与用户手动滚动/动画滚动冲突；
+  /// [_autoFollowPending] 保证同一帧内多次触发只注册一次回调。
+  void _autoFollowIfNeeded() {
+    if (_autoFollowPending || !_scrollController.hasClients) return;
+    final rp = context.read<RoundProvider>();
+    if (!(rp.isSending || rp.showTimeline)) return;
+    final pos = _scrollController.position;
+    // 用户正在主动拖拽/惯性滚动，或已手动上翻阅读历史时，不强制拉回底部
+    // （避免流式输出期间触屏滑动被 jumpTo 一直拽回底部）。
+    if (pos.isScrollingNotifier.value || _userScrolledAway) return;
+    if (pos.pixels < pos.maxScrollExtent - _kAutoScrollThreshold) return;
+    _autoFollowPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoFollowPending = false;
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
+    // 该回调由「provider 通知」而非「重建」触发：显式请求一帧，避免通知未引起
+    // 任何重建时回调被搁置、_autoFollowPending 卡住（与 _settleScrollToBottom 同理）。
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// provider 每次通知（含每个流式增量）调用：驱动贴底跟随。
+  ///
+  /// 流式增量不再重建外壳（见 [_ChatShellSignals]），故跟随判定必须与重建解耦；
+  /// 非生成期的通知由 [_autoFollowIfNeeded] 内的开关直接短路。
+  void _onRoundTick() {
+    if (!mounted) return;
+    _autoFollowIfNeeded();
   }
 
   // ---------------------------------------------------------------------------
@@ -1690,17 +1775,31 @@ class _ChatScreenState extends State<ChatScreen>
   /// [chatWidth]：聊天区实际宽度（宽屏 = 窗口宽 - 侧栏槽位宽；窄屏 = 全宽）。
   /// 楼层跳转实测数据据此失效（拖拽改侧栏宽时聊天区行高会变化）。
   Widget _buildChatArea(BuildContext context, double chatWidth) {
-    final roundProvider = context.watch<RoundProvider>();
+    // 外壳只订阅低频信号（见 [_ChatShellSignals]）：流式增量由 [_StreamingSlot]
+    // 自行订阅，因此生成期间整页不再逐增量重建。
+    final shell = context.select<RoundProvider, _ChatShellSignals>(
+      (p) => (
+        rounds: p.rounds,
+        isSending: p.isSending,
+        showTimeline: p.showTimeline,
+        pendingInput: p.pendingUserInput,
+        hasFailure: p.hasFailureEntry,
+        nextRoundIndex: p.nextRoundIndex,
+        warningsVersion: p.roundWarningsVersion,
+      ),
+    );
+    // 非订阅读取：历史条目的 RAW / 警告等按需取用（是否展示由上面的信号决定）。
+    final roundProvider = context.read<RoundProvider>();
     final bookProvider = context.watch<BookProvider>();
     // 首帧建造时当前书可能尚未就绪（异步加载）：书就绪并触发重建后，
     // 补执行「打开书籍 → 跳转到底部」初始化（幂等，见 _ensureInitialScroll）。
     _ensureInitialScroll();
-    final rounds = roundProvider.rounds;
+    final rounds = shell.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
     // 楼层跳转：轮次来源（引用+长度）、常驻警告变化或聊天区宽度变化时
     // 清空实测数据缓存（警告框出现 / 关闭会改变条目高度）。
-    final warningsVersion = roundProvider.roundWarningsVersion;
+    final warningsVersion = shell.warningsVersion;
     if (!identical(rounds, _lastRoundsSource) ||
         rounds.length != _lastRoundsCount ||
         warningsVersion != _lastWarningsVersion ||
@@ -1712,41 +1811,19 @@ class _ChatScreenState extends State<ChatScreen>
       _lastWarningsVersion = warningsVersion;
       _lastChatLayoutWidth = chatWidth;
     }
-    final isSending = roundProvider.isSending;
+    final isSending = shell.isSending;
     // 展示模式：流式传输或非流式回放（AGENT / 联网搜索多轮）都渲染
     // 块时间线气泡；纯等结果的非流式直发仍显示转圈提示。
-    final showTimeline = roundProvider.showTimeline;
+    final showTimeline = shell.showTimeline;
     final showPending = isSending || showTimeline;
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
-    final pendingInput = roundProvider.pendingUserInput;
+    final pendingInput = shell.pendingInput;
     final showPendingUser = showPending && pendingInput.isNotEmpty;
     // 失败条目：空闲且存在未完成的生成尝试时展示（发送新消息时会先清空）。
-    final failureAttempt = roundProvider.failedAttempt;
-    final showFailure = !showPending && !failureAttempt.isEmpty;
+    final showFailure = !showPending && shell.hasFailure;
 
-    // 流式输出时若用户位于底部附近（未主动上翻阅读历史），自动跟随新内容，
-    // 避免内容不断增长造成视口漂移、滚动条位置飘忽的“不稳定滚动”观感。
-    // 仅在帧末执行 jumpTo（非动画），不会与用户手动滚动/动画滚动冲突；
-    // _autoFollowPending 保证同一帧内多次 rebuild 只注册一次回调。
-    if (showPending && !_autoFollowPending && _scrollController.hasClients) {
-      final pos = _scrollController.position;
-      // 用户正在主动拖拽/惯性滚动，或已手动上翻阅读历史时，不强制拉回底部
-      // （避免流式输出期间触屏滑动被 jumpTo 一直拽回底部）。
-      final userScrolling = pos.isScrollingNotifier.value;
-      if (!userScrolling &&
-          !_userScrolledAway &&
-          pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
-        _autoFollowPending = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _autoFollowPending = false;
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(
-              _scrollController.position.maxScrollExtent,
-            );
-          }
-        });
-      }
-    }
+    // 流式输出期间贴底跟随（增量路径由 provider 监听驱动，见 [_onRoundTick]）。
+    _autoFollowIfNeeded();
 
     // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
@@ -1770,7 +1847,7 @@ class _ChatScreenState extends State<ChatScreen>
           if (showFailure && index == chatRounds.length * 2) {
             // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 空正文轮：
             // 说明状态改动已作废，与红色错误框语义不同）。
-            final pendingIndex = roundProvider.nextRoundIndex;
+            final pendingIndex = shell.nextRoundIndex;
             final notes = roundProvider.roundWarningsFor(pendingIndex);
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -1779,7 +1856,7 @@ class _ChatScreenState extends State<ChatScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   FailedAttemptBubble(
-                    attempt: failureAttempt,
+                    attempt: roundProvider.failedAttempt,
                     onRetry: _retryFailure,
                     onEditAndRetry: _editAndRetryFailure,
                     onClear: _clearFailure,
@@ -1811,19 +1888,12 @@ class _ChatScreenState extends State<ChatScreen>
             );
           } else if (showPending &&
               index == virtualBase + (showPendingUser ? 1 : 0)) {
-            item = showTimeline
-                ? _StreamingBubble(
-                    content: roundProvider.streamingContent,
-                    agentEvents: roundProvider.agentEvents,
-                    contentBoundaryIndex: roundProvider.contentBoundaryIndex,
-                    agentWarnings: roundProvider.agentWarnings,
-                    retryStatus: roundProvider.retryStatus,
-                    roundIndex: roundProvider.nextRoundIndex,
-                  )
-                : _TypingBubble(
-                    retryStatus: roundProvider.retryStatus,
-                    roundIndex: roundProvider.nextRoundIndex,
-                  );
+            // 生成中的气泡插槽：**自身**订阅流式字段，使每个增量只重建这一块
+            // （见 [_StreamingSlot]）。
+            item = _StreamingSlot(
+              showTimeline: showTimeline,
+              roundIndex: shell.nextRoundIndex,
+            );
           } else {
             final round = chatRounds[index ~/ 2];
             final isAi = index.isOdd;
@@ -2094,14 +2164,15 @@ class _ChatScreenState extends State<ChatScreen>
   /// 宽屏右侧栏常驻（展开）时隐藏「打开右侧栏」按钮，仅保留滚动到底部按钮；
   /// 按钮行始终右对齐（自动贴右，避免观感奇怪）。
   Widget _buildComposer(BuildContext context) {
-    final roundProvider = context.watch<RoundProvider>();
-    final isSending = roundProvider.isSending;
+    // 只订阅低频信号：流式增量不重建输入面板（生成中/是否有轮次只在起止与
+    // 轮次增删时变化）。
+    final (isSending, hasRounds) = context.select<RoundProvider, (bool, bool)>(
+      (p) => (p.isSending, p.rounds.any((r) => r.roundIndex > 0)),
+    );
     // 宽屏侧栏常驻时无需「打开右侧栏」；窄屏/侧栏收起时保留。
     final showSidebarButton = !(_isWide && _sidebarOpen);
     // 楼层跳转：无聊天轮次（仅第零轮）时隐藏入口。
-    final chatRoundsNow = roundProvider.rounds
-        .where((r) => r.roundIndex > 0)
-        .toList();
+    final showFloorJump = hasRounds;
 
     return Container(
       key: _composerKey,
@@ -2130,7 +2201,7 @@ class _ChatScreenState extends State<ChatScreen>
                         : _previewRequestBody,
                   ),
                   const SizedBox(width: 8),
-                  if (chatRoundsNow.isNotEmpty) ...[
+                  if (showFloorJump) ...[
                     _ComposerSquareButton(
                       key: _floorJumpButtonKey,
                       icon: Icons.layers_outlined,
@@ -2162,7 +2233,7 @@ class _ChatScreenState extends State<ChatScreen>
                 color: context.narrColors.surface,
                 padding: const EdgeInsets.only(bottom: 12),
                 child: _dropTargetWrap(
-                  _buildComposerCard(context, roundProvider, isSending),
+                  _buildComposerCard(context, isSending),
                 ),
               ),
             ],
@@ -2207,7 +2278,6 @@ class _ChatScreenState extends State<ChatScreen>
   /// 是在控件原有高度预算内让出的呼吸空间，不会整体抬高输入卡的默认高度。
   Widget _buildComposerCard(
     BuildContext context,
-    RoundProvider roundProvider,
     bool isSending,
   ) {
     final aiSettings = context.watch<AiSettingsProvider>();
@@ -2396,7 +2466,7 @@ class _ChatScreenState extends State<ChatScreen>
                             // 生成中：点击中断（仍显示加载图标）；空闲有输入：发送；
                             // 空闲无输入：禁用（置灰）。
                             onPressed: isSending
-                                ? roundProvider.cancelGeneration
+                                ? context.read<RoundProvider>().cancelGeneration
                                 : hasInput
                                 ? _send
                                 : null,
@@ -3905,6 +3975,44 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
   }
 }
 
+/// 生成中的气泡插槽（消息列里的最后一格）。
+///
+/// **自身**订阅 [RoundProvider] 的流式字段（正文 / 思考事件 / 正文边界 /
+/// 常驻警告 / 重试进度），把每个流式增量的重建范围限制在这一小块：
+/// 顶栏 / 侧栏 / 输入面板 / 整个消息列（含全部历史气泡）都不再随增量重建——
+/// 整页重建是移动端生成期间卡顿的主因。
+///
+/// [showTimeline] / [roundIndex] 来自外壳的低频信号（见 [_ChatShellSignals]），
+/// 使本插槽无需自行判定展示模式。
+class _StreamingSlot extends StatelessWidget {
+  /// 是否处于块时间线展示模式（流式传输 / 非流式回放）。
+  final bool showTimeline;
+
+  /// 本轮序号（生成中的轮次）。
+  final int roundIndex;
+
+  const _StreamingSlot({required this.showTimeline, required this.roundIndex});
+
+  @override
+  Widget build(BuildContext context) {
+    final rp = context.watch<RoundProvider>();
+    if (!showTimeline) {
+      return _TypingBubble(
+        retryStatus: rp.retryStatus,
+        roundIndex: roundIndex,
+      );
+    }
+    return _StreamingBubble(
+      content: rp.streamingContent,
+      agentEvents: rp.agentEvents,
+      contentBoundaryIndex: rp.contentBoundaryIndex,
+      agentWarnings: rp.agentWarnings,
+      retryStatus: rp.retryStatus,
+      roundIndex: roundIndex,
+    );
+  }
+}
+
 /// AI 流式输出气泡：实时显示剧情正文。
 ///
 /// - 思考：每轮一个独立思考框（折叠 4~5 行自动滚动 / 展开全量内联）；
@@ -4085,10 +4193,14 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
       switch (e.type) {
         case AgentEventType.thinking:
           blocks.add(
-            _ThinkingBox(
-              key: ValueKey('think_$i'),
-              content: e.content,
-              done: e.done,
+            // 独立重绘边界：块内容在流式结束后即冻结，正文增长只应重绘正文本身，
+            // 不该让已完成的长思考链随每个增量重新记录绘制指令（移动端明显）。
+            RepaintBoundary(
+              child: _ThinkingBox(
+                key: ValueKey('think_$i'),
+                content: e.content,
+                done: e.done,
+              ),
             ),
           );
         case AgentEventType.search:
@@ -4096,18 +4208,21 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
         case AgentEventType.tool:
           // 统一工具块：搜索 / 打开页面 / 状态工具同一形态——执行中
           // 展示当前明细（约 3~4 行状态栏），结束自动收起为一行可展开。
+          // 重绘边界同思考块（结果 / 跳转明细可能很长）。
           blocks.add(
-            _ToolEventBox(
-              key: ValueKey('tool_$i'),
-              type: e.type,
-              toolName: e.toolName,
-              summary: e.content,
-              searching: e.searching,
-              failed: e.failed,
-              refused: e.refused,
-              results: e.results,
-              hops: e.hops,
-              detail: e.toolDetail,
+            RepaintBoundary(
+              child: _ToolEventBox(
+                key: ValueKey('tool_$i'),
+                type: e.type,
+                toolName: e.toolName,
+                summary: e.content,
+                searching: e.searching,
+                failed: e.failed,
+                refused: e.refused,
+                results: e.results,
+                hops: e.hops,
+                detail: e.toolDetail,
+              ),
             ),
           );
       }

@@ -552,8 +552,10 @@ class _SelectableTextArea extends StatelessWidget {
 /// Markdown 解析与 widget 构树是纯开销；且 Markdown 的「段内单换行折叠为空格」
 /// 规则会破坏原始分行。行为：
 /// - 保留 `\n` 硬换行（不套用 Markdown 软换行规则）；
-/// - 归一化 CRLF 并去掉末尾空行（末尾回车不占出一行高度，见 [_plainDisplayText]）。
-class PlainTextPreview extends StatelessWidget {
+/// - 归一化 CRLF 并去掉末尾空行（末尾回车不占出一行高度，见 [_plainDisplayText]）；
+/// - 归一化结果按内容缓存：父级每帧重建而内容不变时（如已完成的思考框在后续
+///   流式增量中反复重建），不再重复付出 O(全文) 的归一化开销。
+class PlainTextPreview extends StatefulWidget {
   /// 纯文本源内容。
   final String data;
 
@@ -571,12 +573,28 @@ class PlainTextPreview extends StatelessWidget {
   });
 
   @override
+  State<PlainTextPreview> createState() => _PlainTextPreviewState();
+}
+
+class _PlainTextPreviewState extends State<PlainTextPreview> {
+  /// 归一化后的展示文本（随 [PlainTextPreview.data] 变化重算）。
+  late String _text = _plainDisplayText(widget.data);
+
+  @override
+  void didUpdateWidget(covariant PlainTextPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.data != widget.data) {
+      _text = _plainDisplayText(widget.data);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final text = Text(
-      _plainDisplayText(data),
-      style: base ?? Theme.of(context).textTheme.bodyMedium,
+      _text,
+      style: widget.base ?? Theme.of(context).textTheme.bodyMedium,
     );
-    return selectable ? _SelectableTextArea(child: text) : text;
+    return widget.selectable ? _SelectableTextArea(child: text) : text;
   }
 }
 
