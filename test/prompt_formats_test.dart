@@ -383,7 +383,7 @@ void main() {
       ]);
     });
 
-    test('系统指令：推荐行动格式为共享输出契约（三模式逐字一致）', () {
+    test('系统指令：推荐行动格式为共享输出契约（含历史兼容提示，三模式逐字一致）', () {
       String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
             book: book,
             worldBookEntries: '',
@@ -402,6 +402,23 @@ void main() {
         expect(system, contains('必须严格使用 Markdown 序号列表'), reason: reason);
         expect(system, contains('整块共 2~5 条'), reason: reason);
         expect(system, contains('最后一条固定为「自定义行动」'), reason: reason);
+        // 历史兼容提示：历史里的旧写法（`- ` / `* ` 等）不得继承，只认上面的契约。
+        expect(
+          system,
+          contains('【历史兼容】历史轮次的 `## 推荐行动` 若写成 `- `、`* ` 或其它格式，'
+              '一律不得继承，只按上述【推荐行动格式】输出。'),
+          reason: reason,
+        );
+        expect(
+          system.indexOf('【推荐行动格式】'),
+          lessThan(system.indexOf('【历史兼容】')),
+          reason: '历史兼容提示应在格式契约之后',
+        );
+        expect(
+          system.indexOf('【历史兼容】'),
+          lessThan(system.indexOf('形态示例：')),
+          reason: '历史兼容提示应在形态示例之前（示例是最后读到的正面形状）',
+        );
         // 形态示例用真实序号给出（未包围栏，模型不会照抄围栏标记）。
         expect(
           system,
@@ -416,6 +433,21 @@ void main() {
           system,
           isNot(contains('```markdown\n1. {推荐下一步选项1}')),
           reason: '示例不得包在围栏里，否则模型可能连围栏一起输出',
+        );
+        // 兼容提示只覆盖 `## 推荐行动`，不波及其它区块的格式契约。
+        final hintStart = system.indexOf('【历史兼容】');
+        final hint = system.substring(
+          hintStart,
+          system.indexOf('\n', hintStart),
+        );
+        expect(hint, contains('`## 推荐行动`'), reason: reason);
+        for (final other in ['世界状态', '角色状态', '记忆总结']) {
+          expect(hint, isNot(contains(other)), reason: '兼容提示不涉及其它区块：$other');
+        }
+        expect(
+          '【历史兼容】'.allMatches(system).length,
+          1,
+          reason: '共享段只注入一次',
         );
       }
     });
