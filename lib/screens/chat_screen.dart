@@ -29,6 +29,7 @@ import '../services/image_store.dart';
 import '../services/sync/image_revival.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import '../utils/thinking_window.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/brand_logo.dart';
@@ -3733,9 +3734,20 @@ class _HopLine extends StatelessWidget {
 
 /// 思考框：每个框独立展开/折叠状态（多思考框互不影响）。
 ///
-/// - 折叠：4~5 行固定高度、内容增长时自动向下滚动；
+/// - 折叠：4~5 行固定高度、内容增长时自动向下滚动；**生成中只渲染末尾窗口**
+///   （[thinkingTailWindow]）——折叠区仅 4~5 行可见，而全文排版成本随思考链
+///   长度线性上升，是「思考链越长越卡」的主因；
 /// - 展开：全部内容内联展示（自动跟随交由聊天区全局滚动）；
 /// - 思考进行中显示转圈，完成后显示 ✓。
+///
+/// 正文按**纯文本**渲染（[PlainTextPreview]），不走 Markdown：
+/// - 性能：思考内容每个流式增量都会重建，全量 Markdown 解析 + widget 构树
+///   + 多段落排版在其中占比很高（代码块还会触发逐字符正则着色）；
+/// - 观感：Markdown 的「段内单换行折叠为空格」规则会把模型的原始分行合成一堵
+///   文字墙，纯文本更忠实。
+///
+/// ⚠️ 展开态渲染全文（用户显式操作，代价可预期）：生成中展开时每个增量仍会
+/// 重排全文，生成结束后内容冻结则不再重排。
 class _ThinkingBox extends StatefulWidget {
   final String content;
   final bool done;
@@ -3751,16 +3763,33 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
   String? _lastContent;
   bool _expanded = false;
 
+  /// `done` 之后思考内容是否仍在增长。
+  ///
+  /// 正常线路下 done ⇒ 内容冻结（此时才渲染全文，全文排版只付一次成本）；
+  /// 少数线路会边出正文边续吐思考增量（追加到同一思考块）。一旦观察到
+  /// 「已 done 的框又变长」就锁定为生成中：宁可只显示末尾窗口，也不退化为
+  /// 每个增量重排全文——内容还在变时渲染全文没有任何收益。
+  bool _stillGrowing = false;
+
   @override
   void didUpdateWidget(covariant _ThinkingBox oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 仅当上一帧已 done 时才判定「done 后继续增长」（同一帧内 done 与内容
+    // 同时更新属正常收尾，不计入）。
+    if (oldWidget.done &&
+        widget.done &&
+        oldWidget.content != widget.content) {
+      _stillGrowing = true;
+    }
     // 折叠态：思考内容增长时自动滚动到底部。
     if (widget.content != _lastContent && !_expanded) {
       _lastContent = widget.content;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_collapsedController.hasClients) return;
         final pos = _collapsedController.position;
-        if (pos.maxScrollExtent > 0) {
+        // 已在底部（或内容尚不足一屏）时无需跳转：省掉一次滚动活动与
+        // 随之而来的选择几何刷新。
+        if (pos.maxScrollExtent > 0 && pos.pixels != pos.maxScrollExtent) {
           _collapsedController.jumpTo(pos.maxScrollExtent);
         }
       });
@@ -3772,6 +3801,23 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
     _collapsedController.dispose();
     super.dispose();
   }
+
+  /// 折叠态展示文案。
+  ///
+  /// 生成中只保留末尾窗口：内容持续增长且折叠区只露 4~5 行，全文渲染意味着
+  /// 每个增量都要整段重新排版（见 [thinkingTailWindow]）；思考结束且内容冻结
+  /// （[widget.done] 且未再增长）后恢复全文，折叠框内可继续上翻阅读。
+  String get _collapsedData =>
+      widget.done && !_stillGrowing
+          ? widget.content
+          : (thinkingTailWindow(widget.content) ?? widget.content);
+
+  /// 思考正文样式（13px / 1.5 行高 / 次要文本色，与既有一致）。
+  TextStyle _baseStyle(BuildContext context) => TextStyle(
+        fontSize: 13,
+        height: 1.5,
+        color: context.narrColors.textSecondary,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -3831,18 +3877,14 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
               ),
             ),
           ),
-          // 折叠：4~5 行固定高度、内部自动滚动；展开：全部内容内联。
-          // 思考内容同样调用统一 Markdown 渲染模块实时渲染。
+          // 折叠：4~5 行固定高度、内部自动滚动（生成中只渲染末尾窗口）；
+          // 展开：全部内容内联。两态均为纯文本渲染（见类文档）。
           if (_expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-              child: MarkdownPreview(
+              child: PlainTextPreview(
                 data: widget.content,
-                base: TextStyle(
-                  fontSize: 13,
-                  height: 1.5,
-                  color: context.narrColors.textSecondary,
-                ),
+                base: _baseStyle(context),
               ),
             )
           else
@@ -3851,13 +3893,9 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
               child: SingleChildScrollView(
                 controller: _collapsedController,
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                child: MarkdownPreview(
-                  data: widget.content,
-                  base: TextStyle(
-                    fontSize: 13,
-                    height: 1.5,
-                    color: context.narrColors.textSecondary,
-                  ),
+                child: PlainTextPreview(
+                  data: _collapsedData,
+                  base: _baseStyle(context),
                 ),
               ),
             ),

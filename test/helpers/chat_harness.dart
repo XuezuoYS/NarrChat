@@ -302,3 +302,17 @@ Future<void> waitSendDone(
   }
   await tester.pumpAndSettle();
 }
+
+/// 结束 [FakeStreamingAiService] 的流式并等待本轮收尾，返回生成是否成功。
+///
+/// 与 [waitSendDone] 的分工：先放行流式（`complete()`），再等收尾。
+Future<bool> finishStream(
+  WidgetTester tester,
+  FakeStreamingAiService ai,
+  RoundProvider provider,
+  Future<bool> sendFuture,
+) async {
+  ai.complete();
+  await waitSendDone(tester, provider);
+  return await sendFuture;
+}

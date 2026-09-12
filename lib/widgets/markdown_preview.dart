@@ -272,28 +272,32 @@ class GitHubMarkdownStyle {
   /// 统一的 Markdown 扩展集：gitHubWeb + `==高亮==` 内联语法。
   ///
   /// 供需要自行驱动 [MarkdownBody] 的调用点（如折叠编辑器）复用。
-  static md.ExtensionSet get extensionSet => md.ExtensionSet(
-        md.ExtensionSet.gitHubWeb.blockSyntaxes,
-        [
-          _HighlightSyntax(),
-          ...md.ExtensionSet.gitHubWeb.inlineSyntaxes,
-        ],
-      );
+  /// 语法对象无状态（[md.Document] 只读取传入列表，不写入），可安全全局共享，
+  /// 避免每次构建都重新分配。
+  static final md.ExtensionSet extensionSet = md.ExtensionSet(
+    md.ExtensionSet.gitHubWeb.blockSyntaxes,
+    [
+      _HighlightSyntax(),
+      ...md.ExtensionSet.gitHubWeb.inlineSyntaxes,
+    ],
+  );
 
-  /// 统一的元素构建器集合（alerts 容器 / 行内代码）。
+  /// 统一的元素构建器集合（alerts 容器 / 行内代码 / 高亮）。
   ///
   /// ⚠️ 不在此注册 `pre`/`h1~h6` 块级 builder：自定义块级 builder 返回
   /// 非 null 时会破坏 flutter_markdown 的 `_inlines` 栈不变量
   /// （`_inlines.isEmpty` 断言崩溃），标题底边框改由样式表
   /// `decoration: underline` 近似实现；围栏代码块走默认 `pre` 渲染路径 +
   /// [syntaxHighlighter] 着色，行内 code 由 [_InlineCodeBuilder] 绘制圆角底。
-  static Map<String, MarkdownElementBuilder> builders(BuildContext context) {
-    return {
-      'div': _AlertBlockBuilder(),
-      'code': _InlineCodeBuilder(),
-      'mark': _HighlightBuilder(),
-    };
-  }
+  ///
+  /// 构建器本身无状态（`visit*` 时按 [BuildContext] 现取配色），共享同一实例
+  /// 即可；以不可变 Map 暴露，避免调用点误改全局状态。
+  static final Map<String, MarkdownElementBuilder> builders =
+      Map<String, MarkdownElementBuilder>.unmodifiable({
+    'div': _AlertBlockBuilder(),
+    'code': _InlineCodeBuilder(),
+    'mark': _HighlightBuilder(),
+  });
 
   /// 代码块语法高亮器（GitHub 配色）。
   static SyntaxHighlighter syntaxHighlighter(BuildContext context) =>
@@ -376,8 +380,11 @@ bool isMarkdownFormatted(String data) {
 ///
 /// - 默认即可选中文本（使用 [SelectionArea]，跨块连续选择），
 ///   右键/长按默认菜单被抑制，避免与业务侧自定义气泡菜单冲突；
-/// - [base] 用于调整预览正文字号/行高（默认跟随主题 `bodyMedium`）。
-class MarkdownPreview extends StatelessWidget {
+/// - [base] 用于调整预览正文字号/行高（默认跟随主题 `bodyMedium`）；
+/// - 样式表 / 语法高亮器按主题与 [base] 缓存，父级重建时不重复推导
+///   （流式生成期间整页会持续重建，历史内容不变的预览不应有增量开销）；
+/// - 明确不需要 Markdown 语义的调用点改用 [PlainTextPreview]（零解析开销）。
+class MarkdownPreview extends StatefulWidget {
   /// Markdown 源文本。
   final String data;
 
@@ -404,51 +411,6 @@ class MarkdownPreview extends StatelessWidget {
     this.onTapLink,
     this.plainTextWhenNotMarkdown = false,
   });
-
-  @override
-  Widget build(BuildContext context) {
-    final body = plainTextWhenNotMarkdown && !isMarkdownFormatted(data)
-        ? _plainTextBody(context)
-        : _markdownBody(context);
-
-    if (!selectable) return body;
-
-    return SelectionArea(
-      contextMenuBuilder: (context, selectableRegionState) =>
-          const SizedBox.shrink(),
-      child: body,
-    );
-  }
-
-  /// 纯文本正文：沿用 [base] 观感，`\n` 按字面换行，不做任何 Markdown 解析。
-  Widget _plainTextBody(BuildContext context) {
-    return Text(
-      _plainDisplayText(data),
-      style: base ?? Theme.of(context).textTheme.bodyMedium,
-    );
-  }
-
-  /// Markdown 正文（GitHub 风格样式表 + 统一扩展集 / builders）。
-  Widget _markdownBody(BuildContext context) {
-    final styleSheet = GitHubMarkdownStyle.of(context, base: base);
-    final git = GitHubPalette.of(context);
-    // ⚠️ 不传 selectable 给 MarkdownBody（保持默认 false，内部用普通 Text 渲染），
-    // 由外层 [SelectionArea] 统一处理选中——若 MarkdownBody.selectable=true
-    // 或 builder 返回 SelectableText，会与外层 SelectionArea 冲突导致
-    // 文本无法选中（已用官方 selection_area_compatibility_test 逻辑验证）。
-    return MarkdownBody(
-      data: data,
-      styleSheet: styleSheet,
-      onTapLink: onTapLink,
-      fitContent: true,
-      extensionSet: GitHubMarkdownStyle.extensionSet,
-      syntaxHighlighter: GitHubMarkdownStyle.syntaxHighlighter(context),
-      builders: GitHubMarkdownStyle.builders(context),
-      checkboxBuilder: _buildCheckbox,
-      bulletBuilder: (params) => _buildBullet(params, git),
-      listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
-    );
-  }
 
   /// GitHub 风格任务列表复选框。
   static Widget _buildCheckbox(bool checked) {
@@ -494,6 +456,127 @@ class MarkdownPreview extends StatelessWidget {
         style: TextStyle(color: git.muted, fontSize: 14),
       ),
     );
+  }
+
+  @override
+  State<MarkdownPreview> createState() => _MarkdownPreviewState();
+}
+
+class _MarkdownPreviewState extends State<MarkdownPreview> {
+  /// 样式表与语法高亮器缓存。
+  ///
+  /// 二者只随主题（亮暗 / [NarrChatColors]）与 [MarkdownPreview.base] 变化，
+  /// 而 [build] 会在父级每次重建时重跑（如流式生成期间整页重建）。此前每次
+  /// 构建都重新推导（约 15 个 [TextStyle] 与一份完整样式表），历史消息等
+  /// 「内容不变」的预览因此持续付出无谓开销。
+  MarkdownStyleSheet? _styleSheet;
+  SyntaxHighlighter? _syntaxHighlighter;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 主题（亮暗 / NarrChatColors）变化 → 依赖变更 → 重新推导。
+    _resolveStyle();
+  }
+
+  @override
+  void didUpdateWidget(covariant MarkdownPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // base 由调用点按当前主题现算：值变化（含主题切换后重算）才需重新推导。
+    if (oldWidget.base != widget.base) _resolveStyle();
+  }
+
+  /// 按当前主题与 [MarkdownPreview.base] 推导样式表 / 语法高亮器。
+  void _resolveStyle() {
+    _styleSheet = GitHubMarkdownStyle.of(context, base: widget.base);
+    _syntaxHighlighter = GitHubMarkdownStyle.syntaxHighlighter(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 无 Markdown 结构特征时按纯文本渲染（保留换行，见 plainTextWhenNotMarkdown）。
+    if (widget.plainTextWhenNotMarkdown && !isMarkdownFormatted(widget.data)) {
+      return PlainTextPreview(
+        data: widget.data,
+        base: widget.base,
+        selectable: widget.selectable,
+      );
+    }
+    return _markdownBody(context);
+  }
+
+  /// Markdown 正文（GitHub 风格样式表 + 统一扩展集 / builders）。
+  Widget _markdownBody(BuildContext context) {
+    final git = GitHubPalette.of(context);
+    // ⚠️ 不传 selectable 给 MarkdownBody（保持默认 false，内部用普通 Text 渲染），
+    // 由外层 [SelectionArea] 统一处理选中——若 MarkdownBody.selectable=true
+    // 或 builder 返回 SelectableText，会与外层 SelectionArea 冲突导致
+    // 文本无法选中（已用官方 selection_area_compatibility_test 逻辑验证）。
+    final body = MarkdownBody(
+      data: widget.data,
+      styleSheet: _styleSheet!,
+      onTapLink: widget.onTapLink,
+      fitContent: true,
+      extensionSet: GitHubMarkdownStyle.extensionSet,
+      syntaxHighlighter: _syntaxHighlighter!,
+      builders: GitHubMarkdownStyle.builders,
+      checkboxBuilder: MarkdownPreview._buildCheckbox,
+      bulletBuilder: (params) => MarkdownPreview._buildBullet(params, git),
+      listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
+    );
+    return widget.selectable ? _SelectableTextArea(child: body) : body;
+  }
+}
+
+/// 统一选中容器：外层 [SelectionArea] 负责跨块连续选中，并抑制默认右键 /
+/// 长按菜单，避免与业务侧自定义气泡菜单冲突。
+///
+/// [MarkdownPreview] 与 [PlainTextPreview] 共用，保证两种渲染的选中行为一致。
+class _SelectableTextArea extends StatelessWidget {
+  const _SelectableTextArea({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SelectionArea(
+        contextMenuBuilder: (context, selectableRegionState) =>
+            const SizedBox.shrink(),
+        child: child,
+      );
+}
+
+/// 纯文本预览：与 [MarkdownPreview] 共用同一套选中约定，但**不做任何 Markdown
+/// 解析**。
+///
+/// 用于「按纯文本渲染」的调用点。内容高频增长时（如生成中的思考框），全量
+/// Markdown 解析与 widget 构树是纯开销；且 Markdown 的「段内单换行折叠为空格」
+/// 规则会破坏原始分行。行为：
+/// - 保留 `\n` 硬换行（不套用 Markdown 软换行规则）；
+/// - 归一化 CRLF 并去掉末尾空行（末尾回车不占出一行高度，见 [_plainDisplayText]）。
+class PlainTextPreview extends StatelessWidget {
+  /// 纯文本源内容。
+  final String data;
+
+  /// 正文基样式（默认主题 `bodyMedium`，可覆盖字号/行高）。
+  final TextStyle? base;
+
+  /// 是否允许文本选中。默认 true（启用 [SelectionArea]）。
+  final bool selectable;
+
+  const PlainTextPreview({
+    super.key,
+    required this.data,
+    this.base,
+    this.selectable = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Text(
+      _plainDisplayText(data),
+      style: base ?? Theme.of(context).textTheme.bodyMedium,
+    );
+    return selectable ? _SelectableTextArea(child: text) : text;
   }
 }
 

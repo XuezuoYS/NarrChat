@@ -85,6 +85,46 @@ void main() {
     );
   });
 
+  testWidgets('base 样式变化：样式表缓存随之失效', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(data: '# 标题', base: TextStyle(fontSize: 14)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(_spanStyle(tester, '标题')?.fontSize, 28, reason: 'h1 = 2×base');
+
+    await tester.pumpWidget(
+      _wrap(
+        const MarkdownPreview(data: '# 标题', base: TextStyle(fontSize: 20)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      _spanStyle(tester, '标题')?.fontSize,
+      40,
+      reason: 'base 变化后须重算（缓存未失效会停留在 28）',
+    );
+  });
+
+  testWidgets('PlainTextPreview：纯文本渲染、换行与选中开关', (tester) async {
+    await tester.pumpWidget(
+      _wrap(const PlainTextPreview(data: '第一行\r\n第二行\r\n\r\n')),
+    );
+    await tester.pumpAndSettle();
+    // 不走 Markdown 解析；CRLF 归一化且末尾空行不占位。
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.text('第一行\n第二行'), findsOneWidget);
+    expect(find.byType(SelectionArea), findsOneWidget);
+
+    await tester.pumpWidget(
+      _wrap(const PlainTextPreview(data: '正文', selectable: false)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('正文'), findsOneWidget);
+    expect(find.byType(SelectionArea), findsNothing);
+  });
+
   testWidgets('GitHub Alerts 渲染彩色提示块', (tester) async {
     await tester.pumpWidget(
       _wrap(

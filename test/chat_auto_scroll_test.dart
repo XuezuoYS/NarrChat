@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
-import 'package:narrchat/providers/round_provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -39,22 +38,10 @@ Future<void> scrollChatToBottom(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 400));
 }
 
-/// 结束流式并等待 sendRound 完成（期间 isSending 为 true 时发送按钮
-/// 有无限转圈动画，不能用 pumpAndSettle，须等 isSending 变 false）。
-Future<void> finishStream(
-  WidgetTester tester,
-  FakeStreamingAiService ai,
-  RoundProvider provider,
-  Future<bool> sendFuture,
-) async {
-  ai.complete();
-  for (var i = 0; i < 20 && provider.isSending; i++) {
-    await tester.pump();
-  }
-  await tester.pumpAndSettle();
-  expect(await sendFuture, isTrue);
-}
-
+/// 自动跟随滚动：流式生成期间内容增长不得把正在上翻阅读的用户拉回底部。
+///
+/// 「结束流式并等待 sendRound 完成」用 `helpers/chat_harness.dart` 的
+/// [finishStream]（发送按钮的无限转圈动画使 pumpAndSettle 无法直接使用）。
 void main() {
   const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
@@ -92,7 +79,7 @@ void main() {
     // 松手，结束流式。
     await gesture.up();
     await tester.pump();
-    await finishStream(tester, ai, roundProvider, sendFuture);
+    expect(await finishStream(tester, ai, roundProvider, sendFuture), isTrue);
   });
 
   testWidgets('上翻暂停自动跟随，回到底部后恢复跟随', (tester) async {
@@ -131,7 +118,7 @@ void main() {
     await tester.pump();
     expect(chatOffset(tester), closeTo(chatMax(tester), 1));
 
-    await finishStream(tester, ai, roundProvider, sendFuture);
+    expect(await finishStream(tester, ai, roundProvider, sendFuture), isTrue);
   });
 
   /// 驱动「打开书籍 → 跳转到底部 → 帧末收敛」的 postFrame 帧链。
@@ -210,10 +197,7 @@ void main() {
 
     // 结束流式（isSending 期间不能 pumpAndSettle：发送按钮有无限转圈动画）。
     ai.complete();
-    for (var i = 0; i < 20 && roundProvider.isSending; i++) {
-      await tester.pump();
-    }
-    await tester.pumpAndSettle();
+    await waitSendDone(tester, roundProvider);
     await pumpScrollBottomChain(tester);
 
     expect(
