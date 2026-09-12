@@ -255,6 +255,8 @@ class _TrackPainter extends CustomPainter {
 /// ```
 ///
 /// 承担职责（两个滚动条完全一致的部分）：
+/// - **纯叠加层**：不改变被包裹滚动视图的尺寸与位置（叠加层填满滚动视图自身的
+///   区域，父级约束原样透传），因此「是否溢出 / 是否显示滚动条」不影响页面布局；
 /// - 滚动内容时淡入显示圆形阴影拇指，空闲 [idleDelay] 后淡出；鼠标悬停
 ///   右缘命中带时保持显示；按住拇指拖动时保持显示；
 /// - 按住拖动 = 连续定位（jumpTo 跟手，无固定时长动画）；
@@ -531,18 +533,31 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
 
   @override
   Widget build(BuildContext context) {
+    // ⚠️ 本组件对外必须是**纯叠加层**：不改变被包裹滚动视图的尺寸与位置（原生
+    // `Scrollbar` 用 `CustomPaint(foregroundPainter:)` 包住滚动视图，同理）。
+    // - 叠加层用 [Positioned.fill]：它不再参与 Stack 尺寸计算。否则
+    //   `_buildThumbLayer` 那个「只有定位子项」的 Stack 会取 `constraints.biggest`，
+    //   一旦内容溢出（滚动条激活）就把外层 Stack 撑到整个可用区域，而收缩包裹的
+    //   滚动视图会被 Stack 按 `topStart` 摆到左边——宽屏居中页面（如设置页
+    //   `Align(topCenter) → SingleChildScrollView → ConstrainedBox`）在出现滚动条
+    //   的瞬间整块「跳」到左侧，未溢出时又回到居中（真机/桌面 bug）。
+    // - [StackFit.passthrough]：父级约束原样交给滚动视图，等于本组件不存在。
     return Stack(
+      fit: StackFit.passthrough,
       children: [
         NotificationListener<ScrollNotification>(
           onNotification: _onScrollNotification,
           child: widget.scrollable,
         ),
         // 拇指与命中层按滚动位置重建（只重建叠加层，不重建滚动视图子树）。
-        AnimatedBuilder(
-          animation: widget.controller,
-          builder: (context, _) => LayoutBuilder(
-            builder: (context, constraints) =>
-                _buildOverlayLayers(context, constraints),
+        // 填满的即滚动视图自身的区域：轨道几何与滚动视图严格重合。
+        Positioned.fill(
+          child: AnimatedBuilder(
+            animation: widget.controller,
+            builder: (context, _) => LayoutBuilder(
+              builder: (context, constraints) =>
+                  _buildOverlayLayers(context, constraints),
+            ),
           ),
         ),
       ],
@@ -553,7 +568,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
     final pos = _position;
     if (pos == null) return const SizedBox.shrink();
 
-    // 轨道高：Stack 中非定位子项（滚动视图）即为轨道尺寸，故取外层约束高度。
+    // 轨道高 = 叠加层高 = 滚动视图高（[Positioned.fill] 给出紧约束）。
     final trackExtent = constraints.maxHeight;
     final thumbExtent = ScrollThumbGeometry.thumbHeight(
       trackExtent: trackExtent,

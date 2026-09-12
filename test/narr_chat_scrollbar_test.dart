@@ -7,8 +7,9 @@ import 'package:narrchat/widgets/narr_chat_scrollbar.dart';
 
 /// NarrChatScrollbar（自绘通用滚动条 / 底座）隔离层测试。
 ///
-/// 覆盖：拇指几何与拖动数学（纯计算）/ 无溢出不渲染 / 滚动显隐与空闲淡出 /
-/// 鼠标拖动增量定位（不跳变）/ 全局行为接线（桌面纵向接管，触屏与横向不接管）。
+/// 覆盖：拇指几何与拖动数学（纯计算）/ 纯叠加层（不改变被包裹视图的布局）/
+/// 无溢出不渲染 / 滚动显隐与空闲淡出 / 鼠标拖动增量定位（不跳变）/
+/// 全局行为接线（桌面纵向接管，触屏与横向不接管）。
 ///
 /// 快速定位导轨（QuickScrollRail）自身的用例见 `quick_scroll_rail_test.dart`
 /// 与 `sidebar_toc_test.dart`：两者共用同一底座，这里只测底座与通用皮肤。
@@ -337,6 +338,61 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('纯叠加层：出现滚动条前后，被包裹视图的尺寸与位置不变', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      // 「限宽 + 居中」页面形态（设置页/日志页）：外层 Align 居中，滚动视图在
+      // loose 约束下收缩包裹到内容宽度。
+      const windowW = 1000.0;
+      Future<Rect> pumpAt(double windowH) async {
+        tester.view.physicalSize = Size(windowW, windowH);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: NarrChatTheme.light,
+            scrollBehavior: const NarrChatScrollBehavior(),
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.topCenter,
+                child: SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 260),
+                    child: const SizedBox(width: 260, height: 1200),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        return tester.getRect(find.byType(SingleChildScrollView));
+      }
+
+      // 内容不溢出：底座整体不渲染（叠加层为空）。
+      final noOverflow = await pumpAt(1400);
+      expect(find.byType(NarrChatScrollThumb), findsNothing);
+
+      // 内容溢出：滚动条激活，但被包裹视图的宽度与水平位置必须原样不变
+      // （回归：叠加层曾参与 Stack 尺寸计算，把 Stack 撑到整个可用区域，
+      // 收缩包裹的滚动视图随即被按 topStart 摆到左边 → 内容「跳」到靠左）。
+      final overflow = await pumpAt(600);
+      expect(find.byType(NarrChatScrollThumb), findsOneWidget);
+      expect(overflow.width, noOverflow.width);
+      expect(overflow.center.dx, closeTo(noOverflow.center.dx, 0.5));
+      expect(overflow.center.dx, closeTo(windowW / 2, 0.5));
+
+      // 叠加层与滚动视图严格重合：拇指贴被包裹视图右缘（而非外层可用区域右缘）。
+      expect(
+        tester.getRect(find.byType(NarrChatScrollThumb)).right,
+        closeTo(overflow.right - kScrollbarThumbEdgeGap, 0.5),
+      );
+
+      debugDefaultTargetPlatformOverride = null;
+      await tester.pumpAndSettle();
     });
 
     testWidgets('鼠标悬停右缘命中带：拇指显示且不抛「无尺寸命中测试」异常', (tester) async {

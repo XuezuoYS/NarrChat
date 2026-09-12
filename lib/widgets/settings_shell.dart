@@ -13,7 +13,8 @@ class SettingsNavItem {
 
 /// 全窗口设置页通用外壳：
 /// - 顶栏：品牌图标 + 标题 + 自定义操作（如统一「保存」）+ 关闭按钮；
-/// - 宽屏（≥760）：左侧竖向导航 + 右侧内容区；
+/// - 宽屏（≥760）：左侧竖向导航 + 右侧内容区（内容**靠左**、限宽 860；有左侧
+///   导航栏的页面靠左，无左侧导航栏的页面保持居中）；
 /// - 窄屏：顶部横向标签 + 内容区 PageView（左右滑动切换子页面）。
 class SettingsShell extends StatefulWidget {
   final String title;
@@ -192,12 +193,20 @@ class _SettingsShellState extends State<SettingsShell> {
     // 用 Material（不透明 surface 色）承载内容区，而非 Container 的 ColoredBox，
     // 避免区内 SwitchListTile/ListTile 的墨迹与选中背景被 ColoredBox 遮挡而触发
     // 「ListTile background color or ink splashes may be invisible」断言。
+    //
+    // 布局约定（宽屏有左侧导航栏 → 内容**靠左**，与导航栏同属一个左对齐骨架；
+    // 无左侧导航栏的页面仍居中）：
+    // - 滚动视图自身铺满整个内容区（高度/宽度均取满），滚动条因此贴内容区右缘
+    //   而不是内容列右缘；
+    // - 限宽 860 的内容列在滚动视图内靠左排布（[Align] 必须放在滚动视图**内部**：
+    //   放在外层时滚动视图在 loose 约束下收缩包裹，内容列宽度会写成内容自身的
+    //   固有宽度）。
     return Material(
       color: context.narrColors.surface,
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Align(
+          alignment: Alignment.topLeft,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 860),
             child: widget.contentBuilder(context, index),
