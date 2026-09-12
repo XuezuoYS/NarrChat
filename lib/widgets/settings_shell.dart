@@ -218,7 +218,9 @@ class _SettingsShellState extends State<SettingsShell> {
 }
 
 /// 窄屏 PageView 的滚动行为：
-/// - 鼠标也可拖拽翻页（Windows 桌面上同样支持左右滑动切换子页面）；
+/// - 鼠标也可拖拽翻页（Windows 桌面上同样支持左右滑动切换子页面）；但按下命中
+///   内容区纵向滚动条的拇指拾取区时，本次拖动由滚动条独占、不参与翻页
+///   （见 `narr_chat_scrollbar.dart` 的 `_ThumbPointerClaimRecognizer`）；
 /// - 不显示滚动条（分页切换控件，滚动条无意义）。
 class _NarrowPageSwipeBehavior extends MaterialScrollBehavior {
   const _NarrowPageSwipeBehavior();

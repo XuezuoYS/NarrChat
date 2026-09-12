@@ -65,10 +65,79 @@ Future<void> pumpHost(
   await tester.pumpAndSettle();
 }
 
+/// 窄屏设置页形态的宿主：横向翻页的 [PageView]（**鼠标也可拖拽翻页**）内嵌
+/// [_ScrollbarHost]。用于回归「拖动滚动条时同一次拖动被横向翻页抢走」。
+Future<PageController> pumpPagedHost(WidgetTester tester) async {
+  final pageController = PageController();
+  addTearDown(pageController.dispose);
+  tester.view.physicalSize = const Size(500, 500);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: NarrChatTheme.light,
+      home: Scaffold(
+        body: PageView(
+          controller: pageController,
+          // 与设置页窄屏布局的 `_NarrowPageSwipeBehavior` 等价：显式允许鼠标拖拽。
+          scrollBehavior: const MaterialScrollBehavior().copyWith(
+            dragDevices: const {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.mouse,
+              PointerDeviceKind.stylus,
+              PointerDeviceKind.trackpad,
+            },
+          ),
+          children: const [
+            _ScrollbarHost(),
+            Center(child: Text('第二页')),
+          ],
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return pageController;
+}
+
 ScrollController hostController(WidgetTester tester) =>
     tester.state<_ScrollbarHostState>(find.byType(_ScrollbarHost)).controller;
 
 Finder thumbFinder() => find.byType(NarrChatScrollThumb);
+
+/// 拇指几何（轨道高 / 拇指高 / 拇指顶）：供「拇指位置」与「拖动目标偏移」断言
+/// 复用，换算与生产侧 [ScrollThumbGeometry] 同源。
+({double trackH, double thumbH, double thumbTop}) thumbGeometry(
+  WidgetTester tester, {
+  double minHeight = 40,
+}) {
+  final trackH = tester.getSize(find.byType(NarrChatScrollbar)).height;
+  final pos = hostController(tester).position;
+  final thumbH = ScrollThumbGeometry.thumbHeight(
+    trackExtent: trackH,
+    viewportDimension: pos.viewportDimension,
+    maxScrollExtent: pos.maxScrollExtent,
+    minHeight: minHeight,
+  );
+  return (
+    trackH: trackH,
+    thumbH: thumbH,
+    thumbTop: ScrollThumbGeometry.thumbTop(
+      trackExtent: trackH,
+      thumbExtent: thumbH,
+      pixels: pos.pixels,
+      maxScrollExtent: pos.maxScrollExtent,
+    ),
+  );
+}
+
+/// 鼠标按住拇指纵向拖动 [dy] 后的目标偏移（grab 锚点：位移 × 内容/轨道比例）。
+double grabbedTarget(WidgetTester tester, double startOffset, double dy) {
+  final geometry = thumbGeometry(tester);
+  final maxScrollExtent = hostController(tester).position.maxScrollExtent;
+  final travel = geometry.trackH - geometry.thumbH;
+  return startOffset + dy * (maxScrollExtent / travel);
+}
 
 Finder fadeFinder() => find.descendant(
       of: find.byType(NarrChatScrollbar),
@@ -260,14 +329,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 150));
 
-      final trackH = tester.getSize(find.byType(NarrChatScrollbar)).height;
-      final pos = controller.position;
-      final content = pos.maxScrollExtent + pos.viewportDimension;
-      final thumbH = trackH * pos.viewportDimension / content;
-      final thumbTop = pos.pixels / pos.maxScrollExtent * (trackH - thumbH);
+      final geometry = thumbGeometry(tester);
       final thumbCenter = tester.getCenter(thumbFinder());
       // 命中矩形与拇指同心（宽度外扩不影响中心）。
-      expect(thumbCenter.dy, closeTo(thumbTop + thumbH / 2, 0.5));
+      expect(
+        thumbCenter.dy,
+        closeTo(geometry.thumbTop + geometry.thumbH / 2, 0.5),
+      );
 
       final startOffset = controller.offset;
       final gesture = await tester.startGesture(
@@ -280,11 +348,60 @@ void main() {
 
       await gesture.moveBy(const Offset(0, 60));
       await tester.pump();
-      final expected = startOffset + 60 * (pos.maxScrollExtent / (trackH - thumbH));
-      expect(controller.offset, closeTo(expected, 0.5));
+      expect(
+        controller.offset,
+        closeTo(grabbedTarget(tester, startOffset, 60), 0.5),
+      );
 
       await gesture.up();
       await tester.pump();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('鼠标按住拖动拇指：横向位移不触发祖先的横向翻页（窄屏设置页回归）', (tester) async {
+      final pageController = await pumpPagedHost(tester);
+      final controller = hostController(tester);
+      // 先滚到中部：拇指远离两端（命中矩形不被轨道边界钳制），并让拇指显示。
+      controller.jumpTo(1000);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
+
+      final startOffset = controller.offset;
+      final gesture = await tester.startGesture(
+        tester.getCenter(thumbFinder()),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+
+      // 纵向拖动（滚动条方向）→ 纵向定位照常生效。
+      await gesture.moveBy(const Offset(0, 60));
+      await tester.pump();
+      expect(
+        controller.offset,
+        closeTo(grabbedTarget(tester, startOffset, 60), 0.5),
+      );
+
+      // 横向抖 2px：已越过鼠标的拖拽阈值（kPrecisePointerHitSlop = 1px），修复前
+      // PageView 正是在这一步抢走手势（跨阈值那一帧的位移被
+      // DragStartBehavior.start 吞掉，故此处页面还不显形）。
+      await gesture.moveBy(const Offset(2, 0));
+      await tester.pump();
+      expect(pageController.offset, 0);
+
+      // 抢走后的后续横向位移会被 PageView 1:1 跟随（「杂糅拖动」）：按下命中拇指
+      // 拾取区后，本次指针序列应整体锁定给滚动条——横向分量既不动页、也不翻页，
+      // 纵向定位仍按 grab 锚点（只吃 dy）走。
+      await gesture.moveBy(const Offset(-300, 40));
+      await tester.pump();
+      expect(pageController.offset, 0);
+      expect(
+        controller.offset,
+        closeTo(grabbedTarget(tester, startOffset, 100), 0.5),
+      );
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(pageController.page, 0);
       expect(tester.takeException(), isNull);
     });
 

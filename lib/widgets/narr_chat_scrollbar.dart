@@ -112,6 +112,67 @@ const double kScrollbarHitBandWidth = 16;
 /// 拇指拾取宽度（比拇指本体宽，便于点中拖动）。
 const double kScrollbarThumbHitWidth = 16;
 
+/// 拇指拾取区的「指针独占」识别器（仅鼠标；只挂在[通用滚动条]的拇指拾取区，
+/// 注册见 [_thumbClaimGestures]）。
+///
+/// 为什么需要：拇指拖动走**原始指针事件**（[Listener]，见
+/// [_NarrChatScrollbarState._onPointerDown]），不参与手势竞技场；而鼠标的拖拽
+/// 判定阈值只有 `kPrecisePointerHitSlop` = 1px（见 [computeHitSlop]）。于是
+/// 「内容区套横向翻页 PageView」的页面（如窄屏设置页）里，鼠标按住拇指纵向拖动
+/// 时只要横向抖 2px，PageView 的横向拖拽识别器就抢先赢得竞技场 → 同一次拖动被
+/// 纵向滚动与横向翻页**同时**驱动（真机 PC 端 bug：拖滚动条会连带左右翻页）。
+///
+/// 本识别器在鼠标按下的当帧宣告胜出：竞技场此刻仍开放，因而被记为 eager
+/// winner，关闭时直接判胜（见 `GestureArenaManager`），把这次指针序列整体锁定给
+/// 滚动条。拇指的实际定位仍由原始 [Listener] 处理——原始监听不受竞技场裁决
+/// 影响，拖动手感与 [ScrollThumbGeometry] 的数学完全不变。
+///
+/// 只吃鼠标：1px 阈值只存在于鼠标这类「精密指针」；触屏 / 触控板的阈值是
+/// `kTouchSlop`（18px），且触屏拖动本来就走竞技场内的垂直拖拽路径
+/// （[NarrChatScrollbar.touchStrip] 的 `onVerticalDragStart`），无需本识别器介入。
+/// 导轨（`touchStrip`）的整宽定位带同理不挂本识别器（理由见
+/// [_NarrChatScrollbarState._buildThumbLayer] 中 `stripHitArea` 处）。
+///
+/// ⚠️ 不能直接继承 `VerticalDragGestureRecognizer`：`DragGestureRecognizer`
+/// 会拒绝「一个回调都没设」的指针（见其 `isPointerAllowed`），而本识别器只抢占
+/// 归属、不消费任何位移，没有任何回调用得着。
+class _ThumbPointerClaimRecognizer extends OneSequenceGestureRecognizer {
+  _ThumbPointerClaimRecognizer()
+    : super(supportedDevices: const {PointerDeviceKind.mouse});
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    // super：开始跟踪该指针，并把它登记进竞技场（startTrackingPointer）。
+    super.addAllowedPointer(event);
+    resolve(GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    // 只负责抢占归属，不消费位移：跟踪到抬起 / 取消即结束。
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'scrollbar thumb claim';
+}
+
+/// 拇指拾取区的识别器注册表（[RawGestureDetector] 每个实例各建一个识别器实例，
+/// 这里只声明「用哪种识别器、怎么初始化」）。
+final Map<Type, GestureRecognizerFactory> _thumbClaimGestures =
+    <Type, GestureRecognizerFactory>{
+      _ThumbPointerClaimRecognizer:
+          GestureRecognizerFactoryWithHandlers<_ThumbPointerClaimRecognizer>(
+            _ThumbPointerClaimRecognizer.new,
+            (recognizer) {},
+          ),
+    };
+
 /// 自绘滚动条拇指内图案（无 / 上下三角 + 中心圆点）。
 enum ThumbGlyph {
   /// 无图案（通用滚动条默认）。
@@ -623,6 +684,51 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
       context,
     ).colorScheme.outlineVariant.withValues(alpha: 0.5);
 
+    // 拇指拾取矩形的内容：原始指针拖动（[Listener]）+ 悬停显隐 +（导轨的）触屏手势路径。
+    //
+    // [NarrChatScrollbar.stripKey] 必须落在命中矩形的**最外层**（测试按几何拖动）：
+    // 导轨分支里本层即最外层；通用滚动条分支的最外层是下面的 [RawGestureDetector]。
+    final Widget stripChild = Listener(
+      key: widget.touchStrip ? widget.stripKey : null,
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
+      child: MouseRegion(
+        onEnter: (_) => _onHoverChange(true),
+        onHover: (_) => _onHoverChange(true),
+        onExit: (_) => _onHoverChange(false),
+        child: widget.touchStrip
+            ? GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onVerticalDragStart: _onTouchDragStart,
+                onVerticalDragUpdate: _onTouchDragUpdate,
+                onVerticalDragEnd: (_) => _endDrag(),
+                onVerticalDragCancel: _endDrag,
+              )
+            : const SizedBox.expand(),
+      ),
+    );
+
+    // 通用滚动条的拇指拾取区：鼠标按下即把本次指针序列锁定给滚动条
+    // （见 [_ThumbPointerClaimRecognizer]），避免同一次拖动被祖先的横向拖拽
+    // （PageView 翻页）抢走。behavior 保持 deferToChild：命中语义与只包一层
+    // [Listener] 时一致。
+    //
+    // ⚠️ 导轨（[NarrChatScrollbar.touchStrip]）不加这层：那条整宽右缘定位带自带
+    // **参与竞技场的**垂直拖拽识别器，一旦被本识别器判负，就会走
+    // `DragGestureRecognizer.didStopTrackingLastPointer → onVerticalDragCancel`，
+    // 触发 `_endDrag` 把原始指针路径的拖动状态一并清掉（导轨鼠标拖动整条失效）。
+    // 导轨的垂直意图本就靠竞技场裁决（见 `quick_scroll_rail.dart`），无需介入。
+    final Widget stripHitArea = widget.touchStrip
+        ? stripChild
+        : RawGestureDetector(
+            key: widget.stripKey,
+            gestures: _thumbClaimGestures,
+            child: stripChild,
+          );
+
     // ⚠️ 五个子项都必须带**稳定 key**：层序会随 `_dragging` 增删「轨道细竖线」，
     // 无 key 时 framework 按位置复用元素 → 拖动命中层的元素会被挪去顶替别的
     // 角色，其中的 [GestureDetector] 一并重建、识别器被 dispose。识别器在拖动
@@ -696,28 +802,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
               (kScrollbarThumbHitWidth - widget.thumbWidth) / 2,
           width: kScrollbarThumbHitWidth,
           height: hitHeight,
-          child: Listener(
-            key: widget.stripKey,
-            behavior: HitTestBehavior.opaque,
-            onPointerDown: _onPointerDown,
-            onPointerMove: _onPointerMove,
-            onPointerUp: _onPointerUp,
-            onPointerCancel: _onPointerCancel,
-            child: MouseRegion(
-              onEnter: (_) => _onHoverChange(true),
-              onHover: (_) => _onHoverChange(true),
-              onExit: (_) => _onHoverChange(false),
-              child: widget.touchStrip
-                  ? GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onVerticalDragStart: _onTouchDragStart,
-                      onVerticalDragUpdate: _onTouchDragUpdate,
-                      onVerticalDragEnd: (_) => _endDrag(),
-                      onVerticalDragCancel: _endDrag,
-                    )
-                  : const SizedBox.expand(),
-            ),
-          ),
+          child: stripHitArea,
         ),
       ],
     );
