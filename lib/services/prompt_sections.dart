@@ -15,9 +15,10 @@ import 'prompt_formats.dart';
 ///   角色状态格式 / 记忆格式；Agent 各档位的工具契约）**不放在本文件**，
 ///   一律收敛于 `prompt_formats.dart` 的 `ChatPromptFormat` /
 ///   `AgentLv1PromptFormat` / `AgentLv2PromptFormat`；
-/// - **跨模式共享的区块输出契约留在本文件**（目前 = `[Markdown 兼容]` 与
-///   【推荐行动格式】）：三个模式的正文都含 `## 推荐行动`，契约逐字一致，
-///   故写在共享组装里一处维护、全局生效（见 [buildSystemPrompt]）；
+/// - **跨模式共享的输出契约留在本文件**（`[Markdown 兼容]`、【推荐行动格式】、
+///   【角色状态完整性】）：三个模式的正文都含 `## 推荐行动`，角色状态也都按同一份
+///   「角色类别描述格式」组织（Chat / Lv.1 由正文携带、Lv.2 由编辑工具维护），
+///   契约逐字一致，故写在共享组装里一处维护、全局生效（见 [buildSystemPrompt]）；
 /// - 各模式的最终 Prompt 由 `PromptBuilder` + `PromptMode` 统一入口组装
 ///   （调用共享组装并传入对应格式规格）。
 ///
@@ -114,8 +115,8 @@ class PromptSections {
   /// 顺序：引擎身份 → [PromptFormatSpec.systemHead]（首行为模式标记）→
   /// Markdown 兼容 → 推荐行动格式（共享输出契约）→
   /// [PromptFormatSpec.systemAfterIdentity] → Mod 系统提示词 →
-  /// 书籍 / 文笔 / 角色 / 世界书（含 Mod 世界书）→
-  /// [PromptFormatSpec.systemTail] → 共性收尾 [endPrompt]。
+  /// 书籍 / 角色层级与角色类别（含【角色状态完整性】）/ 世界书（含 Mod 世界书）/
+  /// 文笔 → [PromptFormatSpec.systemTail] → 共性收尾 [endPrompt]。
   String buildSystemPrompt({
     required Book book,
     required String worldBookEntries,
@@ -194,6 +195,23 @@ class PromptSections {
       }
     }
 
+    // 角色状态完整性（紧接其引用的「角色类别描述格式」）
+    // 措辞刻意不提「标注未登场（本轮未出现）」这类正文专属细节：Lv.2 的角色状态
+    // 由 `narrchat_editCharacterState` 维护，未出场角色本就无需改动（改动即噪声），
+    // 三条约束（保留 / 补全 / 不删）对「正文携带」与「工具维护」两种机制同样成立。
+    buf.writeln('- [Character-state completeness] Keep the character state COMPLETE: '
+        'a missing entry is a failure, an extra entry is not. Every character '
+        'that has appeared stays in the character state with the FULL attribute '
+        'set its category format requires (see the category formats above): when '
+        'a character or an attribute line is added, fill in ALL attributes of '
+        'that category — never a partial subset. NEVER omit or delete a main '
+        'character, not even one that has not appeared for many rounds. Entries '
+        'beyond the category format (extra characters or attribute lines added '
+        'earlier) are kept as well.');
+    buf.writeln('- 【角色状态完整性】角色状态必须完整：已登场的角色一个都不能少'
+        '（主要角色即使连续多轮未出场也不例外），新增条目按所属类别格式'
+        '补全**全部**属性项，类别格式之外的额外条目同样保留，一律不得删除。');
+    buf.writeln();
     // —— 世界书（含 Mod 世界书注入：与用户自行填写效果一致，恒定生效、无需关键词命中）——
     _writeBlock(buf, '世界书：', worldBookEntries, emptyText: '（无）');
     if (mods != null && mods.worldBooks.trim().isNotEmpty) {

@@ -344,6 +344,14 @@ void main() {
     const sections = PromptSections();
     const book = Book(title: '测试书');
 
+    /// 以 [format] 组装系统指令（共享骨架 + 该模式槽位）。
+    String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
+          book: book,
+          worldBookEntries: '',
+          mods: null,
+          format: format,
+        );
+
     /// 断言 [markers] 依序出现在 [text] 中。
     void expectOrdered(String text, List<String> markers) {
       final positions = markers.map((m) => text.indexOf(m)).toList();
@@ -384,12 +392,6 @@ void main() {
     });
 
     test('系统指令：推荐行动格式为共享输出契约（含历史兼容提示，三模式逐字一致）', () {
-      String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
-            book: book,
-            worldBookEntries: '',
-            mods: null,
-            format: format,
-          );
       for (final format in <PromptFormatSpec>[
         const ChatPromptFormat(),
         const AgentLv1PromptFormat(),
@@ -452,6 +454,63 @@ void main() {
       }
     });
 
+    test('系统指令：角色状态完整性为共享段（英详细 + 中概括，三模式逐字一致）', () {
+      // 英详细：缺项即失败 / 新增必须补全 / 不删旧条目与主要角色。
+      const en = '- [Character-state completeness] Keep the character state COMPLETE: '
+          'a missing entry is a failure, an extra entry is not. Every character '
+          'that has appeared stays in the character state with the FULL attribute '
+          'set its category format requires (see the category formats above): when '
+          'a character or an attribute line is added, fill in ALL attributes of '
+          'that category — never a partial subset. NEVER omit or delete a main '
+          'character, not even one that has not appeared for many rounds. Entries '
+          'beyond the category format (extra characters or attribute lines added '
+          'earlier) are kept as well.';
+      // 中概括：一行摘要（与 Agent 档位双语规则同一格式）。
+      const zh = '- 【角色状态完整性】角色状态必须完整：已登场的角色一个都不能少'
+          '（主要角色即使连续多轮未出场也不例外），新增条目按所属类别格式'
+          '补全**全部**属性项，类别格式之外的额外条目同样保留，一律不得删除。';
+
+      for (final format in <PromptFormatSpec>[
+        const ChatPromptFormat(),
+        const AgentLv1PromptFormat(),
+        const AgentLv2PromptFormat(),
+      ]) {
+        final system = systemOf(format);
+        final reason = '${format.modeLabel} 缺少共享的角色状态完整性契约';
+        expect(system, contains(en), reason: reason);
+        expect(system, contains(zh), reason: reason);
+        // 英详细在前、中概括在后（既有双语格式）。
+        expect(
+          system.indexOf(en),
+          lessThan(system.indexOf(zh)),
+          reason: '英文详细应在中文概括之前',
+        );
+        // 紧接其引用的「角色类别描述格式」，且在三模式的同一位置。
+        expect(
+          system.indexOf('角色类别描述格式'),
+          lessThan(system.indexOf(zh)),
+          reason: '完整性契约应在角色类别格式之后',
+        );
+        expect(
+          system.indexOf(zh),
+          lessThan(system.indexOf('世界书：')),
+          reason: '完整性契约仍属角色段，应早于世界书',
+        );
+        expect(
+          '- 【角色状态完整性】'.allMatches(system).length,
+          1,
+          reason: '共享段只注入一次',
+        );
+        // 措辞不提正文专属的「未登场」标注：Chat / Lv.1 的正文格式段仍保留它，
+        // 而 Lv.2 的角色状态由工具维护（未出场角色本就无需改动、不该被要求标注）。
+        if (format is AgentLv2PromptFormat) {
+          expect(system, isNot(contains('未登场')), reason: 'Lv.2 不应收到正文专属标注要求');
+        } else {
+          expect(system, contains('未登场（本轮未出现）'), reason: '正文携带模式仍保留登场标注');
+        }
+      }
+    });
+
     test('系统指令：所有空槽位不注入任何内容且空行节奏不变', () {
       const stub = _StubFormat();
       final system = sections.buildSystemPrompt(
@@ -511,12 +570,6 @@ void main() {
     });
 
     test('三种格式组装结果相互排除', () {
-      String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
-            book: book,
-            worldBookEntries: '',
-            mods: null,
-            format: format,
-          );
       final chat = systemOf(const ChatPromptFormat());
       final lv1 = systemOf(const AgentLv1PromptFormat());
       final lv2 = systemOf(const AgentLv2PromptFormat());
