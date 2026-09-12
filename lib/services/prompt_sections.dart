@@ -15,6 +15,9 @@ import 'prompt_formats.dart';
 ///   角色状态格式 / 记忆格式；Agent 各档位的工具契约）**不放在本文件**，
 ///   一律收敛于 `prompt_formats.dart` 的 `ChatPromptFormat` /
 ///   `AgentLv1PromptFormat` / `AgentLv2PromptFormat`；
+/// - **跨模式共享的区块输出契约留在本文件**（目前 = `[Markdown 兼容]` 与
+///   【推荐行动格式】）：三个模式的正文都含 `## 推荐行动`，契约逐字一致，
+///   故写在共享组装里一处维护、全局生效（见 [buildSystemPrompt]）；
 /// - 各模式的最终 Prompt 由 `PromptBuilder` + `PromptMode` 统一入口组装
 ///   （调用共享组装并传入对应格式规格）。
 ///
@@ -26,6 +29,11 @@ import 'prompt_formats.dart';
 /// - **分块一律空行分隔**：Markdown 会把连续非空行并进同一段，单换行在渲染后
 ///   分不出块边界；因此每个「标签 / 字段 / 列表」之间都输出一个空行
 ///   （由 [_writeSlot] / [_writeField] / [_writeBlock] 统一保证）。
+/// - **数字序号只出现在输出契约的形态示例中**（目前仅【推荐行动格式】）：
+///   该区块的输出契约本身就是 Markdown 有序列表，示例必须给出真实序号，
+///   才能表达「整块 2~5 条、末条固定为自定义行动」的顺序语义；
+///   其余文案分条一律用 `- `（有序列表在渲染时会重新编号，「规则 N」的
+///   中英对照会因此错位，见 `prompt_formats.dart` 的同名约定）。
 /// - **不使用 `=`/`-` 分隔线**：单独成行的 `====` 是 setext 一级标题下划线，
 ///   会把上一段变成标题；块边界只用标签与空行表达。
 class PromptSections {
@@ -104,7 +112,8 @@ class PromptSections {
   /// 组装系统指令（AGENT 模式即 instructions）。
   ///
   /// 顺序：引擎身份 → [PromptFormatSpec.systemHead]（首行为模式标记）→
-  /// Markdown 兼容 → [PromptFormatSpec.systemAfterIdentity] → Mod 系统提示词 →
+  /// Markdown 兼容 → 推荐行动格式（共享输出契约）→
+  /// [PromptFormatSpec.systemAfterIdentity] → Mod 系统提示词 →
   /// 书籍 / 文笔 / 角色 / 世界书（含 Mod 世界书）→
   /// [PromptFormatSpec.systemTail] → 共性收尾 [endPrompt]。
   String buildSystemPrompt({
@@ -131,6 +140,22 @@ class PromptSections {
     // —— 共享段：Markdown 波浪线转义 ——
     buf.writeln('[Markdown 兼容] 在每个波浪线 `~` 前添加反斜杠 `\\` 转义，'
         '使 Markdown 不会把相邻波浪线解析为删除线格式。');
+    buf.writeln();
+
+    // —— 共享段：推荐行动输出格式（三个模式的正文都含 `## 推荐行动`）——
+    // 契约本身即 Markdown 序号列表，故示例给出真实序号（见文件头文案约定的
+    // 数字序号例外）；条数含末条「自定义行动」（整块 2~5 条）。
+    buf.writeln('【推荐行动格式】`## 推荐行动` 区块必须严格使用 Markdown 序号列表'
+        '（`1. ` `2. ` `3. ` …）逐条给出推荐行动：整块共 2~5 条，'
+        '最后一条固定为「自定义行动」，其余各条为具体的下一步选项；'
+        '每条独占一行、只写行动本身，不复述剧情、不添加其它内容。');
+    buf.writeln();
+    buf.writeln('形态示例：');
+    buf.writeln();
+    buf.writeln('1. {推荐下一步选项1}');
+    buf.writeln('2. {推荐下一步选项2}');
+    buf.writeln('3. {推荐下一步选项3}');
+    buf.writeln('4. 自定义行动');
     buf.writeln();
 
     // —— Chat or Agent 槽位 2：Markdown 规则之后、Mod 系统提示词之前 ——

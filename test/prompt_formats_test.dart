@@ -10,6 +10,8 @@ import 'package:narrchat/services/prompt_sections.dart';
 /// 验证点：
 /// - 各格式规格集中持有模式特有文案（槽位内容、契约常量）；
 /// - 空槽位不注入任何内容，非空槽位按固定位置插入共享骨架；
+/// - 共享输出契约（`[Markdown 兼容]` / 【推荐行动格式】）与槽位无关，
+///   对三个模式逐字一致；
 /// - 组装结果只含对应模式的格式段（互斥断言）。
 class _StubFormat implements PromptFormatSpec {
   const _StubFormat({
@@ -373,11 +375,49 @@ void main() {
         '[MODE: SANDBOX]',
         '<HEAD>',
         '[Markdown 兼容]',
+        '【推荐行动格式】',
         '<AFTER_IDENTITY>',
         '书籍名称：',
         '<TAIL>',
         '【警告】',
       ]);
+    });
+
+    test('系统指令：推荐行动格式为共享输出契约（三模式逐字一致）', () {
+      String systemOf(PromptFormatSpec format) => sections.buildSystemPrompt(
+            book: book,
+            worldBookEntries: '',
+            mods: null,
+            format: format,
+          );
+      for (final format in <PromptFormatSpec>[
+        const ChatPromptFormat(),
+        const AgentLv1PromptFormat(),
+        const AgentLv2PromptFormat(),
+      ]) {
+        final system = systemOf(format);
+        final reason = '${format.modeLabel} 缺少共享的推荐行动契约';
+        expect(system, contains('【推荐行动格式】'), reason: reason);
+        // 条数口径：整块 2~5 条，含末条「自定义行动」。
+        expect(system, contains('必须严格使用 Markdown 序号列表'), reason: reason);
+        expect(system, contains('整块共 2~5 条'), reason: reason);
+        expect(system, contains('最后一条固定为「自定义行动」'), reason: reason);
+        // 形态示例用真实序号给出（未包围栏，模型不会照抄围栏标记）。
+        expect(
+          system,
+          contains('形态示例：\n\n'
+              '1. {推荐下一步选项1}\n'
+              '2. {推荐下一步选项2}\n'
+              '3. {推荐下一步选项3}\n'
+              '4. 自定义行动\n'),
+          reason: reason,
+        );
+        expect(
+          system,
+          isNot(contains('```markdown\n1. {推荐下一步选项1}')),
+          reason: '示例不得包在围栏里，否则模型可能连围栏一起输出',
+        );
+      }
     });
 
     test('系统指令：所有空槽位不注入任何内容且空行节奏不变', () {
@@ -391,10 +431,16 @@ void main() {
       expect(system, isNot(contains('<HEAD>')));
       expect(system, isNot(contains('<AFTER_IDENTITY>')));
       expect(system, isNot(contains('<TAIL>')));
-      // 空槽位下：Markdown 规则行 →（空行）→ 书籍名称；块之间恰好一个空行。
+      // 空槽位下：共享段（Markdown 规则 / 推荐行动契约）→（空行）→ 书籍名称；
+      // 块之间恰好一个空行。
       expect(
         system,
-        contains('删除线格式。\n\n书籍名称：'),
+        contains('删除线格式。\n\n【推荐行动格式】'),
+        reason: '共享段不依赖任何槽位',
+      );
+      expect(
+        system,
+        contains('4. 自定义行动\n\n书籍名称：'),
         reason: '空槽位不得改变共享骨架的空行节奏',
       );
       expect(system, isNot(contains('\n\n\n')), reason: '不出现连续空行');

@@ -95,6 +95,26 @@ void main() {
       expect(system, isNot(contains('其它任何位置一律禁止')));
     });
 
+    test('系统提示词包含共享【推荐行动格式】（序号列表 2~5 条，末条固定自定义行动）', () {
+      final bundle = buildBundle();
+      final system = bundle.systemPrompt;
+      expect(system, contains('【推荐行动格式】'));
+      expect(system, contains('`## 推荐行动` 区块必须严格使用 Markdown 序号列表'));
+      expect(system, contains('整块共 2~5 条'));
+      expect(system, contains('最后一条固定为「自定义行动」'));
+      // 形态示例：真实序号 + 占位符（只表达形状），末条为自定义行动。
+      expect(
+        system,
+        contains('形态示例：\n\n'
+            '1. {推荐下一步选项1}\n'
+            '2. {推荐下一步选项2}\n'
+            '3. {推荐下一步选项3}\n'
+            '4. 自定义行动\n'),
+      );
+      // 该契约只注入 system（用户消息已有【格式要求】区块清单，不重复）。
+      expect(bundle.userPrompt, isNot(contains('【推荐行动格式】')));
+    });
+
     test('系统提示词包含书籍名称/类别/设定/文笔要求/文笔参考/角色层级/世界书条目', () {
       final system = buildBundle().systemPrompt;
       // 单行字段：换行归一化 + 反引号包裹。
