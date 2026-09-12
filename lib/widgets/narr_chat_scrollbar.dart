@@ -608,6 +608,12 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
       context,
     ).colorScheme.outlineVariant.withValues(alpha: 0.5);
 
+    // ⚠️ 五个子项都必须带**稳定 key**：层序会随 `_dragging` 增删「轨道细竖线」，
+    // 无 key 时 framework 按位置复用元素 → 拖动命中层的元素会被挪去顶替别的
+    // 角色，其中的 [GestureDetector] 一并重建、识别器被 dispose。识别器在拖动
+    // 中被 dispose 不会回调 onEnd/onCancel（`dispose` 内部的 reject 在竞技场
+    // 已判定归属后是空操作）→ 触屏拖动只跳一次就卡在「按住态」，要再滑一次
+    // 才解除（真机 Android bug）。
     return Stack(
       children: [
         // 右缘命中带：悬停显隐。
@@ -616,6 +622,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
         // 「Cannot hit test a render box with no size」异常。
         // 命中带自身不阻挡下层内容的指针事件（Listener/MouseRegion 不消费命中）。
         Positioned(
+          key: const Key('narr_chat_scrollbar_hit_band_slot'),
           top: 0,
           bottom: 0,
           right: 0,
@@ -631,6 +638,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
         // 拖动中的轨道细竖线（贴右缘命中带中线）。
         if (_dragging)
           Positioned(
+            key: const Key('narr_chat_scrollbar_track_slot'),
             top: 0,
             bottom: 0,
             right: widget.hitBandWidth / 2 - 1,
@@ -643,10 +651,12 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
         // 拇指位置，也无法继续拖动）。
         if (widget.overlayBuilder != null)
           Positioned.fill(
+            key: const Key('narr_chat_scrollbar_overlay_slot'),
             child: widget.overlayBuilder!(context, trackExtent),
           ),
         // 拇指：淡入淡出 + 命中态保持显示。
         Positioned(
+          key: const Key('narr_chat_scrollbar_thumb_slot'),
           top: thumbTop,
           right: widget.thumbEdgeGap,
           width: widget.thumbWidth,
@@ -664,6 +674,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
         ),
         // 拇指拖动命中矩形（透明，仅捕获指针）。
         Positioned(
+          key: const Key('narr_chat_scrollbar_strip_slot'),
           top: hitTop,
           right:
               widget.thumbEdgeGap -

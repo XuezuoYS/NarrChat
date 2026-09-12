@@ -5,6 +5,9 @@ import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 
 import 'narr_chat_scrollbar.dart';
 
+/// 目录标题行右边界（相对面板右缘）：让开轨道命中带中线并留出内侧间距。
+const double _labelRowRightInset = QuickScrollRail.hitWidth / 2 + 6;
+
 /// 快速定位滚动锚点注册器（由宿主 State 持有，随生命周期释放）。
 ///
 /// 为每个唯一路径生成**同一实例**的 [GlobalKey]，目录条目与内容锚点
@@ -334,12 +337,6 @@ class _QuickScrollRailState extends State<QuickScrollRail>
           minHeight: QuickScrollRail.thumbMinHeight,
         );
         if (thumbH <= 0) return const SizedBox.shrink();
-        final thumbTop = ScrollThumbGeometry.thumbTop(
-          trackExtent: trackExtent,
-          thumbExtent: thumbH,
-          pixels: pos.pixels,
-          maxScrollExtent: pos.maxScrollExtent,
-        );
         final rows = _computeRows(
           resolved: _resolveSorted(),
           trackH: trackExtent,
@@ -361,7 +358,6 @@ class _QuickScrollRailState extends State<QuickScrollRail>
             child: _buildOverlayPanel(
               context,
               trackExtent: trackExtent,
-              thumbTop: thumbTop,
               rows: rows,
             ),
           ),
@@ -373,16 +369,10 @@ class _QuickScrollRailState extends State<QuickScrollRail>
   Widget _buildOverlayPanel(
     BuildContext context, {
     required double trackExtent,
-    required double thumbTop,
     required List<_RowLayout> rows,
   }) {
     final panelColor =
         widget.panelColor ?? Theme.of(context).colorScheme.surface;
-    final screenW = MediaQuery.sizeOf(context).width;
-    final maxLabelW = screenW * widget.labelMaxWidthRatio;
-    // 标题行左边界：文本可用宽度 = min(屏宽×比例, 宿主宽) − 右缘留白，
-    // 超出限宽单行省略（限宽默认屏宽 70%）。
-    final rowLeft = math.max(0.0, trackExtent - maxLabelW);
     final visibleRows = [
       for (final r in rows)
         if (r.y >= -QuickScrollRail.labelRowHeight &&
@@ -426,18 +416,41 @@ class _QuickScrollRailState extends State<QuickScrollRail>
                 stops: [0.0, 0.05, 0.95, 1.0],
               ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height)),
               blendMode: BlendMode.dstIn,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  for (final r in visibleRows)
-                    _buildLabelRow(context, r, rowLeft),
-                ],
+              // 标题行左边界由面板**实际宽度**决定，故在此读取布局约束。
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final rowLeft = _labelRowLeft(
+                    context,
+                    panelWidth: constraints.maxWidth,
+                  );
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      for (final r in visibleRows)
+                        _buildLabelRow(context, r, rowLeft),
+                    ],
+                  );
+                },
               ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  /// 标题行左边界：文本可用宽度 = min(屏宽×比例, 面板宽 − 右缘留白)，超出限宽
+  /// 单行省略（限宽默认屏宽 70%）。
+  ///
+  /// ⚠️ 只能由面板**实际宽度**算出：曾误用轨道高（`trackExtent`），竖屏手机的
+  /// 面板高远超屏宽 → 左边界被推到面板右缘之外 → 标题行宽 0，目录整层只剩渐变
+  /// 底色（真机 Android bug）。宽度经 [LayoutBuilder] 取，宿主窄于屏幕时仍正确。
+  double _labelRowLeft(BuildContext context, {required double panelWidth}) {
+    final maxLabelW = math.min(
+      MediaQuery.sizeOf(context).width * widget.labelMaxWidthRatio,
+      math.max(0.0, panelWidth - _labelRowRightInset),
+    );
+    return math.max(0.0, panelWidth - _labelRowRightInset - maxLabelW);
   }
 
   Widget _buildLabelRow(BuildContext context, _RowLayout row, double rowLeft) {
@@ -449,11 +462,10 @@ class _QuickScrollRailState extends State<QuickScrollRail>
         ? Theme.of(context).colorScheme.onSurface
         : Theme.of(context).colorScheme.onSurfaceVariant;
     final opacity = 0.45 + 0.55 * w;
-    final rowRight = QuickScrollRail.hitWidth / 2 + 6;
 
     return Positioned(
       top: row.y - QuickScrollRail.labelRowHeight / 2,
-      right: rowRight,
+      right: _labelRowRightInset,
       left: rowLeft,
       height: QuickScrollRail.labelRowHeight,
       child: Row(

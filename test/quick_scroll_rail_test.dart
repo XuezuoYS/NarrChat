@@ -6,9 +6,9 @@ import 'package:narrchat/widgets/quick_scroll_rail.dart';
 
 /// QuickScrollRail 隔离层测试（自建 ListView 夹具，不触碰业务页面）。
 ///
-/// 覆盖：无溢出隐藏 / 滚动显隐与空闲淡出 / 鼠标拖动线性定位 / 鼠标拖动浮层
-/// 与当前标题对齐 / 松手浮层立即消失 / 单行长标题省略 / 暗色渐变底色 /
-/// null 偏移条目跳过 / 标签行数上限。
+/// 覆盖：无溢出隐藏 / 滚动显隐与空闲淡出 / 鼠标拖动线性定位 / 触屏按住拖动
+/// 全程跟手 / 鼠标拖动浮层与当前标题对齐 / 松手浮层立即消失 / 单行长标题省略 /
+/// 竖屏窄屏标题可见 / 暗色渐变底色 / null 偏移条目跳过 / 标签行数上限。
 class _RailHost extends StatefulWidget {
   const _RailHost({
     required this.entries,
@@ -193,6 +193,46 @@ void main() {
     expect(overlayFinder(), findsNothing);
   });
 
+  testWidgets('触屏按住拖动：整段拖动持续跟手，松手结束按住态', (tester) async {
+    await pumpHost(tester, entries: buildEntries(6, gap: 400));
+    final strip = find.byKey(const Key('quick_scroll_rail_strip'));
+    final size = tester.getSize(strip);
+    final topLeft = tester.getTopLeft(strip);
+    final maxExtent = _maxExtentOf(tester);
+    const viewport = 600.0;
+    final thumbH = (size.height * viewport / (maxExtent + viewport))
+        .clamp(64.0, size.height);
+    // 拇指中心跟随指针（ScrollDragAnchor.center）→ 每步的目标偏移。
+    double expectedOffset(double fingerY) =>
+        ((fingerY - thumbH / 2) * (maxExtent / (size.height - thumbH)))
+            .clamp(0.0, maxExtent);
+
+    final gesture = await tester.startGesture(
+      topLeft + Offset(size.width / 2, 120),
+    );
+    await tester.pump();
+    // 越过 touch slop → 触屏拖动开始（按住即按指针位置定位）。
+    await gesture.moveBy(const Offset(0, 40));
+    await tester.pump();
+    expect(_offsetOf(tester), closeTo(expectedOffset(160), 1));
+
+    // 回归：拖动开始那一帧会重排叠加层，拖动命中层元素不得被重建——否则其中的
+    // 识别器被 dispose 后 onEnd/onCancel 都不再回调，后续滑动全部丢失（真机表现
+    // 为「只滑一小段就驻留、要再滑一次才解除按住态」）。
+    await gesture.moveBy(const Offset(0, 200));
+    await tester.pump();
+    expect(_offsetOf(tester), closeTo(expectedOffset(360), 1));
+    await gesture.moveBy(const Offset(0, 60));
+    await tester.pump();
+    expect(_offsetOf(tester), closeTo(expectedOffset(420), 1));
+
+    // 松手：按住态结束，目录浮层收起动画播完即移出树。
+    await gesture.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(overlayFinder(), findsNothing);
+  });
+
   testWidgets('拖到轨道底 → 滚动到 maxScrollExtent，当前条目为最后一个', (tester) async {
     await pumpHost(tester, entries: buildEntries(6, gap: 400));
     final strip = find.byKey(const Key('quick_scroll_rail_strip'));
@@ -245,6 +285,42 @@ void main() {
     expect(text.overflow, TextOverflow.ellipsis);
     // 宽度不超过 70% 屏宽（600 × 0.7 = 420）。
     expect(tester.getSize(find.text(long)).width, lessThanOrEqualTo(420));
+    await gesture.up();
+  });
+
+  testWidgets('竖屏窄屏（手机）拖动：目录标题全部落在面板可见宽度内', (tester) async {
+    // 竖屏手机：面板高（914）> 屏宽（411）——标题左边界必须由面板**宽**算出。
+    await pumpHost(
+      tester,
+      entries: buildEntries(6, gap: 400),
+      size: const Size(411, 914),
+    );
+    final strip = find.byKey(const Key('quick_scroll_rail_strip'));
+    final size = tester.getSize(strip);
+    final topLeft = tester.getTopLeft(strip);
+    final gesture = await tester.startGesture(
+      topLeft + Offset(size.width / 2, 120),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveTo(topLeft + Offset(size.width / 2, 400));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200)); // 展开动画完成
+
+    final railRect = tester.getRect(find.byType(QuickScrollRail));
+    final labels = find.descendant(
+      of: overlayFinder(),
+      matching: find.byType(Text),
+    );
+    expect(labels, findsWidgets);
+    for (var i = 0; i < labels.evaluate().length; i++) {
+      final rect = tester.getRect(labels.at(i));
+      // 回归：曾用面板高当左边界 → 标题行宽 0、被挤出右缘，只剩渐变底色。
+      expect(rect.width, greaterThan(0), reason: '第 $i 行标题宽度为 0');
+      expect(rect.left, greaterThanOrEqualTo(railRect.left));
+      expect(rect.right, lessThanOrEqualTo(railRect.right));
+      // 限宽仍生效：≤ 屏宽 × 70%。
+      expect(rect.width, lessThanOrEqualTo(411 * 0.7 + 0.01));
+    }
     await gesture.up();
   });
 
