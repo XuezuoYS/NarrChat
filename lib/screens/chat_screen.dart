@@ -29,6 +29,7 @@ import '../services/image_store.dart';
 import '../services/sync/image_revival.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import '../utils/text_insert_utils.dart';
 import '../utils/thinking_window.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
@@ -147,6 +148,11 @@ class _ChatScreenState extends State<ChatScreen>
     with SingleTickerProviderStateMixin {
   /// 主输入框控制器：支持 Markdown 语法高亮（继承 TextEditingController）。
   final MarkdownEditingController _inputController = MarkdownEditingController();
+
+  /// 主输入框焦点：双击「推荐下一步」选项写入后把焦点交回输入框
+  /// （双击「自定义行动」则只聚焦、不写入）。
+  final FocusNode _inputFocus = FocusNode();
+
   final ScrollController _scrollController = ScrollController();
 
   /// 当前待发送的用户消息附件（图片，相对路径 `img/<hash>.<ext>`）。
@@ -366,6 +372,7 @@ class _ChatScreenState extends State<ChatScreen>
     _tickProvider?.removeListener(_onRoundTick);
     _sidebarController.dispose();
     _inputController.dispose();
+    _inputFocus.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -891,6 +898,17 @@ class _ChatScreenState extends State<ChatScreen>
   void _endGeneration() {
     if (mounted) setState(() => _sendingImages.clear());
     _onGenerationFinished();
+  }
+
+  /// 双击「推荐下一步」选项：把条目内容写入主输入框（**不发送**，仅便于用户
+  /// 继续编辑）。
+  ///
+  /// 落点规则见 [insertTextIntoValue]：空输入直接置入 / 无光标追加到末尾 /
+  /// 有光标在光标处插入；写入后聚焦输入框，光标落在插入内容之后。
+  void _insertRecommendedAction(String text) {
+    if (text.isEmpty) return;
+    _inputController.value = insertTextIntoValue(_inputController.value, text);
+    _inputFocus.requestFocus();
   }
 
   Future<void> _send() async {
@@ -1920,6 +1938,8 @@ class _ChatScreenState extends State<ChatScreen>
                       : round.aiNarrative,
                   images: round.aiImages,
                   recommendedAction: round.recommendedAction,
+                  onRecommendedActionInsert: _insertRecommendedAction,
+                  onRecommendedActionCustomTap: _inputFocus.requestFocus,
                   roundIndex: round.roundIndex,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
@@ -2358,6 +2378,7 @@ class _ChatScreenState extends State<ChatScreen>
             },
             child: TextField(
               controller: _inputController,
+              focusNode: _inputFocus,
               onTapOutside: unfocusOnTapOutside,
               minLines: 2,
               maxLines: 8,

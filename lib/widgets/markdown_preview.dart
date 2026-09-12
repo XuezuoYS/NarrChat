@@ -148,6 +148,22 @@ class GitHubPalette {
 class GitHubMarkdownStyle {
   GitHubMarkdownStyle._();
 
+  /// 列表符号列宽度（[of] 的 `listIndent`）。
+  static const double listIndent = 24;
+
+  /// 列表符号右侧间距（[of] 的 `listBulletPadding` 右值）。
+  static const double listBulletRightPadding = 8;
+
+  /// 列表符号右侧内边距。
+  static const EdgeInsets listBulletPadding =
+      EdgeInsets.only(right: listBulletRightPadding);
+
+  /// 列表项「符号 + 内容」布局中符号占位的总宽度。
+  ///
+  /// 与 `MarkdownBuilder` 内部算式（`listIndent + listBulletPadding.horizontal`）
+  /// 一致；单独渲染列表项（如推荐行动选项行）时按此宽度对齐符号列。
+  static const double listBulletWidth = listIndent + listBulletRightPadding;
+
   /// 依据当前主题亮度返回 GitHub 风格的样式表。
   ///
   /// [base] 为正文基样式（默认主题 `bodyMedium`）；h1/h2 底部边框线由
@@ -235,9 +251,9 @@ class GitHubMarkdownStyle {
         ),
       ),
       blockSpacing: 12,
-      listIndent: 24,
+      listIndent: listIndent,
       listBullet: p.copyWith(color: colors.textSecondary),
-      listBulletPadding: const EdgeInsets.only(right: 8),
+      listBulletPadding: listBulletPadding,
       // 表格：GitHub 全格细边框、左对齐、浅表头背景。
       tableHead: p.copyWith(fontWeight: FontWeight.w600),
       tableBody: p,
@@ -412,6 +428,18 @@ class MarkdownPreview extends StatefulWidget {
     this.plainTextWhenNotMarkdown = false,
   });
 
+  /// 列表项符号：有序列表渲染数字序号（`1.`），无序列表按嵌套层级切换
+  /// `•` → `○` → `▪`（GitHub 顺序）。
+  ///
+  /// [MarkdownBody.bulletBuilder] 的单一真源。需要单独渲染列表项并绑定手势的
+  /// 调用点（如推荐行动选项行）复用它 + [GitHubMarkdownStyle.listBulletWidth]
+  /// 对齐符号列，无需重复一份列表外观。
+  static Widget buildListBullet(
+    BuildContext context,
+    MarkdownBulletParameters parameters,
+  ) =>
+      _buildBullet(parameters, GitHubPalette.of(context));
+
   /// GitHub 风格任务列表复选框。
   static Widget _buildCheckbox(bool checked) {
     return Padding(
@@ -524,16 +552,19 @@ class _MarkdownPreviewState extends State<MarkdownPreview> {
       bulletBuilder: (params) => MarkdownPreview._buildBullet(params, git),
       listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
     );
-    return widget.selectable ? _SelectableTextArea(child: body) : body;
+    return widget.selectable ? SelectableTextArea(child: body) : body;
   }
 }
 
 /// 统一选中容器：外层 [SelectionArea] 负责跨块连续选中，并抑制默认右键 /
 /// 长按菜单，避免与业务侧自定义气泡菜单冲突。
 ///
-/// [MarkdownPreview] 与 [PlainTextPreview] 共用，保证两种渲染的选中行为一致。
-class _SelectableTextArea extends StatelessWidget {
-  const _SelectableTextArea({required this.child});
+/// [MarkdownPreview] 与 [PlainTextPreview] 共用，保证两种渲染的选中行为一致；
+/// 自定义组装的内容（如推荐行动选项列表）需要同样的选中/复制语义时复用它：
+/// 内部文本以 `selectable: false` 交给本容器统一处理，即可保持「长按选择 /
+/// 拖动框选 + 复制」与整体一致（触屏同样生效）。
+class SelectableTextArea extends StatelessWidget {
+  const SelectableTextArea({super.key, required this.child});
 
   final Widget child;
 
@@ -594,7 +625,7 @@ class _PlainTextPreviewState extends State<PlainTextPreview> {
       _text,
       style: widget.base ?? Theme.of(context).textTheme.bodyMedium,
     );
-    return widget.selectable ? _SelectableTextArea(child: text) : text;
+    return widget.selectable ? SelectableTextArea(child: text) : text;
   }
 }
 

@@ -7,6 +7,7 @@ import 'brand_logo.dart';
 import 'bubble_pointer_listener.dart';
 import 'image_preview.dart';
 import 'markdown_preview.dart';
+import 'recommended_action_view.dart';
 import 'responsive_builder.dart';
 
 /// 消息正文列（气泡）的宽度上限：宽屏受阅读列宽约束。
@@ -34,7 +35,9 @@ const double kUserBubbleNarrowRatio = 0.9;
 /// - [roundIndex]：AI 气泡窄屏头部的「第 n 轮」标注；为空时不显示。
 /// - [images]：本轮附带的图片（相对路径），展示于正文**上方**的预览条，
 ///   点击打开全屏查看；文件缺失以灰色占位图提示。
-/// - [recommendedAction]：AI 气泡正文下方的「推荐下一步」，位于气泡内部且可复制。
+/// - [recommendedAction]：AI 气泡正文下方的「推荐下一步」，位于气泡内部且可复制；
+///   其中的列表项（`- ` / `* ` / `1. `）是**可双击的选项**，双击把条目内容写入
+///   输入框（不发送）——见 [onRecommendedActionInsert] / [onRecommendedActionCustomTap]。
 /// - [footer]：气泡下方操作区（Token 用量、查看侧边栏、刷新、调试、删除等）。
 /// - [onContextMenu]：右键（桌面）或长按（触屏）时回调，传入全局坐标用于弹出菜单。
 class ChatBubble extends StatelessWidget {
@@ -42,6 +45,14 @@ class ChatBubble extends StatelessWidget {
   final String text;
   final List<String> images;
   final String? recommendedAction;
+
+  /// 双击「推荐下一步」的普通选项：把选项内容交给调用方写入输入框（不发送）。
+  /// 为空时不绑定双击（选项仅按 Markdown 文本呈现）。
+  final ValueChanged<String>? onRecommendedActionInsert;
+
+  /// 双击「推荐下一步」末条「自定义行动」：仅聚焦输入框，不写入任何文本。
+  final VoidCallback? onRecommendedActionCustomTap;
+
   final Widget? footer;
   final int? roundIndex;
   final void Function(Offset globalPosition)? onContextMenu;
@@ -52,6 +63,8 @@ class ChatBubble extends StatelessWidget {
     required this.text,
     this.images = const [],
     this.recommendedAction,
+    this.onRecommendedActionInsert,
+    this.onRecommendedActionCustomTap,
     this.footer,
     this.roundIndex,
     this.onContextMenu,
@@ -258,24 +271,29 @@ class ChatBubble extends StatelessWidget {
                       color: NarrChatTheme.primary,
                     ),
                     const SizedBox(width: 4),
-                    Text(
-                      '推荐下一步',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: NarrChatTheme.primary,
+                    Flexible(
+                      child: Text(
+                        '推荐下一步（双击选项插入输入框）',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: NarrChatTheme.primary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 4),
-                MarkdownPreview(
+                RecommendedActionView(
                   data: recommendedAction!,
                   base: TextStyle(
                     fontSize: 13,
                     height: 1.5,
                     color: context.narrColors.textSecondary,
                   ),
+                  onInsert: onRecommendedActionInsert,
+                  onCustomAction: onRecommendedActionCustomTap,
                 ),
               ],
             ),

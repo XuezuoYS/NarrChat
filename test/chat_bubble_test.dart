@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -7,6 +8,7 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/brand_logo.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
 import 'package:narrchat/widgets/markdown_preview.dart';
+import 'package:narrchat/widgets/recommended_action_view.dart';
 
 /// 足够长的正文：在 320px 宽的正文列上必然换行（用于「填满可用宽度」断言）。
 /// 重复次数兼顾默认 600 高的测试视口（12 次 ≈ 13 行，不会垂直溢出）。
@@ -314,5 +316,208 @@ void main() {
     await pumpBubble(tester, isUser: false, text: '第一行\n第二行');
 
     expect(find.byType(MarkdownBody), findsOneWidget);
+  });
+
+  group('推荐下一步：双击选项插入输入框', () {
+    const action = '1. 上前行礼\n2. 询问掌门\n3. 自定义行动';
+
+    Widget buildAction({
+      String data = action,
+      ValueChanged<String>? onInsert,
+      VoidCallback? onCustom,
+    }) {
+      return MaterialApp(
+        theme: NarrChatTheme.light,
+        home: Scaffold(
+          body: Center(
+            child: ChatBubble(
+              isUser: false,
+              text: '测试正文',
+              recommendedAction: data,
+              onRecommendedActionInsert: onInsert,
+              onRecommendedActionCustomTap: onCustom,
+            ),
+          ),
+        ),
+      );
+    }
+
+    /// 推荐行动区块内的文本（Markdown 渲染为 RichText，需 `findRichText`）。
+    Finder actionText(String text) => find.descendant(
+          of: find.byType(RecommendedActionView),
+          matching: find.text(text, findRichText: true),
+        );
+
+    /// 鼠标双击（同一位置两次点击，间隔在双击窗口内）。
+    Future<void> doubleTap(WidgetTester tester, Finder finder) async {
+      await tester.tap(finder, kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(finder, kind: PointerDeviceKind.mouse);
+      // 越过后一个双击判定窗口：让识别器计时器收敛（测试结束不得残留计时器）。
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('标签提示双击用法；列表项按 Markdown 列表外观渲染（符号 + 内容）', (tester) async {
+      await tester.pumpWidget(buildAction());
+
+      expect(find.text('推荐下一步（双击选项插入输入框）'), findsOneWidget);
+      // 序号由 bullet 渲染（源标记 `1. ` 不按字面显示），条目内容各自成块。
+      expect(actionText('上前行礼'), findsOneWidget);
+      expect(actionText('询问掌门'), findsOneWidget);
+      expect(actionText('自定义行动'), findsOneWidget);
+      expect(actionText('1. 上前行礼'), findsNothing);
+      expect(find.text('1.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('双击普通选项：回调收到剥掉列表标记的条目内容', (tester) async {
+      final inserted = <String>[];
+      await tester.pumpWidget(buildAction(onInsert: inserted.add));
+
+      await doubleTap(tester, actionText('询问掌门'));
+
+      expect(inserted, ['询问掌门']);
+    });
+
+    testWidgets('双击末条「自定义行动」：只走聚焦回调，不写入文本', (tester) async {
+      final inserted = <String>[];
+      var customCount = 0;
+      await tester.pumpWidget(
+        buildAction(onInsert: inserted.add, onCustom: () => customCount++),
+      );
+
+      await doubleTap(tester, actionText('自定义行动'));
+
+      expect(customCount, 1);
+      expect(inserted, isEmpty, reason: '「自定义行动」不写入任何文本');
+    });
+
+    testWidgets('单击不插入（仅双击生效）', (tester) async {
+      final inserted = <String>[];
+      await tester.pumpWidget(buildAction(onInsert: inserted.add));
+
+      await tester.tap(actionText('上前行礼'), kind: PointerDeviceKind.mouse);
+      // 越过双击判定窗口（> 300ms），确认单击不会被当成双击。
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(inserted, isEmpty);
+    });
+
+    testWidgets('非列表文本：双击不触发任何回调', (tester) async {
+      final inserted = <String>[];
+      var customCount = 0;
+      await tester.pumpWidget(
+        buildAction(
+          data: '继续前进，保持警惕。',
+          onInsert: inserted.add,
+          onCustom: () => customCount++,
+        ),
+      );
+
+      await doubleTap(tester, actionText('继续前进，保持警惕。'));
+
+      expect(inserted, isEmpty);
+      expect(customCount, 0);
+    });
+
+    testWidgets('未接线回调时不绑定双击手势（保持纯 Markdown 文本）', (tester) async {
+      await tester.pumpWidget(buildAction());
+
+      expect(
+        find.descendant(
+          of: find.byType(RecommendedActionView),
+          matching: find.byType(GestureDetector),
+        ),
+        findsNothing,
+      );
+      await doubleTap(tester, actionText('上前行礼'));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('窄屏（360）：选项同样渲染、双击生效，无布局异常', (tester) async {
+      final inserted = <String>[];
+      await tester.pumpWidget(
+        buildInWidth(
+          width: 360,
+          bubble: ChatBubble(
+            isUser: false,
+            text: '测试正文',
+            recommendedAction: action,
+            onRecommendedActionInsert: inserted.add,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('推荐下一步（双击选项插入输入框）'), findsOneWidget);
+      await doubleTap(tester, actionText('上前行礼'));
+
+      expect(inserted, ['上前行礼']);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('选项仍可长按拖动选择并复制（触屏，与双击手势共存）', (tester) async {
+      // 复制走系统剪贴板：拦截 Clipboard.setData 读取被复制的文本。
+      final copied = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied.add('${(call.arguments as Map)['text']}');
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+
+      await tester.pumpWidget(buildAction(onInsert: (_) {}));
+
+      final region = find.descendant(
+        of: find.byType(RecommendedActionView),
+        matching: find.byType(SelectableRegion),
+      );
+      expect(region, findsOneWidget, reason: '整个区块共用一个选中容器');
+
+      // 触屏长按（超过 500ms 阈值）开始选择，随后拖动框选到末条。
+      final gesture = await tester.startGesture(
+        tester.getCenter(actionText('上前行礼')),
+        kind: PointerDeviceKind.touch,
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await gesture.moveTo(tester.getCenter(actionText('自定义行动')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      // 复制当前选中内容（选择工具条 / Ctrl+C 的底层动作）；须从
+      // SelectableRegion 内部取 context，其 Actions 注册在子树上。
+      Actions.invoke(
+        tester.element(actionText('上前行礼')),
+        CopySelectionTextIntent.copy,
+      );
+      await tester.pump();
+
+      expect(copied, hasLength(1), reason: '长按拖动产生了可复制的选中内容');
+      // 跨选项框选：选中内容覆盖了后续多条选项（长按落点可能落在首条文字内部，
+      // 故以被完整包含的条目为锚点）。
+      expect(copied.single, contains('询问掌门'));
+      expect(copied.single, contains('自定义'));
+    });
+
+    testWidgets('触屏双击同样插入（双击与长按选择互不干扰）', (tester) async {
+      final inserted = <String>[];
+      await tester.pumpWidget(buildAction(onInsert: inserted.add));
+
+      final option = actionText('上前行礼');
+      await tester.tap(option, kind: PointerDeviceKind.touch);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(option, kind: PointerDeviceKind.touch);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(inserted, ['上前行礼']);
+    });
   });
 }
