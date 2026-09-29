@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/database_merge_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_merge_preview.dart';
 
 /// 数据库合并冲突决策页面。
@@ -227,24 +228,19 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _applying = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('合并失败：$e')),
-      );
+      context.notices.error('合并失败：$e', copyable: true);
     }
   }
 
   void _showResultAndPop(DatabaseMergeResult result) {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(
-          '合并完成：导入书籍 ${result.booksAdded}、'
-          '替换书籍 ${result.booksReplaced}、跳过 ${result.booksSkipped}、'
-          '轮次 ${result.roundsAdded}、世界书 ${result.worldBookAdded}、'
-          '导入 Mod ${result.modsAdded}、替换 Mod ${result.modsReplaced}、'
-          '重命名 Mod ${result.modsRenamed}',
-        ),
-      ),
+    final notices = context.notices;
+    notices.success(
+      '合并完成：导入书籍 ${result.booksAdded}、'
+      '替换书籍 ${result.booksReplaced}、跳过 ${result.booksSkipped}、'
+      '轮次 ${result.roundsAdded}、世界书 ${result.worldBookAdded}、'
+      '导入 Mod ${result.modsAdded}、替换 Mod ${result.modsReplaced}、'
+      '重命名 Mod ${result.modsRenamed}',
+      copyable: true,
     );
     Navigator.of(context).pop();
   }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/failed_attempt.dart';
 import 'action_button.dart';
 import 'app_menu.dart';
+import 'app_notice_overlay.dart';
 import 'bubble_pointer_listener.dart';
 import 'chat_bubble.dart';
 
@@ -70,12 +71,7 @@ class FailedAttemptBubble extends StatelessWidget {
         case 'copy':
           Clipboard.setData(ClipboardData(text: attempt.userInput));
           if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('已复制'),
-                duration: Duration(seconds: 1),
-              ),
-            );
+            context.notices.success('已复制', dwell: const Duration(seconds: 1));
           }
         case 'raw':
           onViewRaw?.call();

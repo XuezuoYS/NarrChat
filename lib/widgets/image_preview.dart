@@ -10,11 +10,13 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../services/clipboard_image_service.dart';
 import '../services/image_store.dart';
 import '../services/sync/image_deletion.dart';
 import '../services/sync/sync_models.dart';
+import 'app_notice_overlay.dart';
 import 'image_viewer_window.dart';
 
 /// 图片缩略图：解析相对路径 → 显示图片；文件缺失显示灰色占位块
@@ -304,9 +306,7 @@ Future<void> saveImageFile(
   final file = File(absPath);
   if (!file.existsSync()) {
     if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('图片文件已丢失，无法保存')));
+      _showViewerSnack(context, '图片文件已丢失，无法保存', kind: NoticeKind.error);
     }
     return;
   }
@@ -321,13 +321,17 @@ Future<void> saveImageFile(
     if (outPath == null || !context.mounted) return; // 用户取消（不提示）。
     if (bytes != null) {
       // 原生 SAF 已完成写入：outPath 只是插件拼装的展示路径，不再复制。
-      _showViewerSnack(context, '图片已保存');
+      _showViewerSnack(context, '图片已保存', kind: NoticeKind.success);
       return;
     }
     await file.copy(outPath);
-    if (context.mounted) _showViewerSnack(context, '已保存到 $outPath');
+    if (context.mounted) {
+      _showViewerSnack(context, '已保存到 $outPath', kind: NoticeKind.success);
+    }
   } catch (_) {
-    if (context.mounted) _showViewerSnack(context, '保存失败，请重试');
+    if (context.mounted) {
+      _showViewerSnack(context, '保存失败，请重试', kind: NoticeKind.error);
+    }
   }
 }
 
@@ -340,14 +344,18 @@ Future<void> copyImageFile(
 }) async {
   final file = File(absPath);
   if (!file.existsSync()) {
-    _showViewerSnack(context, '图片文件已丢失，无法复制');
+    _showViewerSnack(context, '图片文件已丢失，无法复制', kind: NoticeKind.error);
     return;
   }
   try {
     await writer.writeImage(absPath: absPath, bytes: await file.readAsBytes());
-    if (context.mounted) _showViewerSnack(context, '图片已复制到剪贴板');
+    if (context.mounted) {
+      _showViewerSnack(context, '图片已复制到剪贴板', kind: NoticeKind.success);
+    }
   } catch (_) {
-    if (context.mounted) _showViewerSnack(context, '复制失败，请重试');
+    if (context.mounted) {
+      _showViewerSnack(context, '复制失败，请重试', kind: NoticeKind.error);
+    }
   }
 }
 
@@ -393,7 +401,9 @@ Future<bool> deleteImageFile(
   try {
     await service.delete(relPath);
   } catch (_) {
-    if (context.mounted) _showViewerSnack(context, '删除失败，请重试');
+    if (context.mounted) {
+      _showViewerSnack(context, '删除失败，请重试', kind: NoticeKind.error);
+    }
     return false;
   }
   if (!context.mounted) return true;
@@ -401,7 +411,7 @@ Future<bool> deleteImageFile(
     // 删除意图尽快推送到云端（仅图片平面；未配置 / 手动模式内部忽略）。
     context.read<CloudSyncProvider?>()?.triggerSync(kind: SyncKind.images);
   }
-  _showViewerSnack(context, '已删除');
+  _showViewerSnack(context, '已删除', kind: NoticeKind.success);
   onDeleted?.call();
   return true;
 }
@@ -479,7 +489,7 @@ Future<void> showImageViewerMenu(
       saveImageFile(context, relPath: relPath, absPath: abs ?? '');
     case ImageViewerAction.copy:
       if (abs == null || abs.isEmpty) {
-        _showViewerSnack(context, '图片文件已丢失，无法复制');
+        _showViewerSnack(context, '图片文件已丢失，无法复制', kind: NoticeKind.error);
       } else {
         await copyImageFile(context, relPath: relPath, absPath: abs);
       }
@@ -493,9 +503,14 @@ Future<void> showImageViewerMenu(
   }
 }
 
-void _showViewerSnack(BuildContext context, String message) {
+/// 查看器共享提示入口：统一走应用级悬浮通知渠道。
+void _showViewerSnack(
+  BuildContext context,
+  String message, {
+  NoticeKind kind = NoticeKind.info,
+}) {
   if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  context.notices.show(message, kind: kind);
 }
 
 /// 是否展示「复制图片」菜单项：Android 剪贴板图片为 PNG 重编码（原格式不保留），

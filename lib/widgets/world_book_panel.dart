@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_notice.dart';
 import '../models/world_book_entry.dart';
 import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import 'app_empty_hint.dart';
+import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
 
 /// 世界书管理面板（作为书籍设置的一个子模块）。
@@ -76,7 +78,7 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     final keyword = _keywordController.text.trim();
     final content = _contentController.text.trim();
     if (keyword.isEmpty || content.isEmpty) {
-      _showMessage('关键词与内容不能为空');
+      _showMessage('关键词与内容不能为空', kind: NoticeKind.warning);
       return;
     }
     if (_isDraft) {
@@ -104,7 +106,10 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       _keywordController.clear();
       _contentController.clear();
     } else if (mounted) {
-      _showMessage('添加失败：${context.read<WorldBookProvider>().error}');
+      _showMessage(
+        '添加失败：${context.read<WorldBookProvider>().error}',
+        kind: NoticeKind.error,
+      );
     }
   }
 
@@ -135,7 +140,10 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
           ),
         );
     if (!ok && mounted) {
-      _showMessage('保存失败：${context.read<WorldBookProvider>().error}');
+      _showMessage(
+        '保存失败：${context.read<WorldBookProvider>().error}',
+        kind: NoticeKind.error,
+      );
     }
   }
 
@@ -172,10 +180,8 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     await context.read<WorldBookProvider>().removeEntry(entry.id!);
   }
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+  void _showMessage(String message, {NoticeKind kind = NoticeKind.info}) {
+    context.notices.show(message, kind: kind);
   }
 
   @override
@@ -385,9 +391,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
     final keyword = _keyword.text.trim();
     final content = _content.text.trim();
     if (keyword.isEmpty || content.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('关键词与内容不能为空')),
-      );
+      context.notices.warning('关键词与内容不能为空');
       return;
     }
     Navigator.of(context).pop(

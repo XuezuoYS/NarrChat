@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../screens/database_merge_screen.dart';
 import '../services/database_merge_service.dart';
@@ -10,6 +11,7 @@ import '../services/sync/sync_models.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import 'app_notice_overlay.dart';
 import 'keep_versions_dialog.dart';
 import 'settings_form_state.dart';
 import 'sync_restore_dialog.dart';
@@ -80,7 +82,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     await provider.disconnect();
     if (!mounted) return;
     if (provider.error != null) {
-      _showSnack('删除失败：${provider.error}');
+      _showSnack('删除失败：${provider.error}', kind: NoticeKind.error);
       return;
     }
     setState(() {
@@ -90,11 +92,11 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       _form.webdavFolder.text = CloudSyncProvider.defaultFolder;
       _form.syncMode = SyncMode.auto;
     });
-    _showSnack('已删除连接');
+    _showSnack('已删除连接', kind: NoticeKind.success);
   }
 
   Future<void> _sync() async {
-    // 结果提示（完成 / 失败 / 取消）统一由 provider 的应用级悬浮气泡展示。
+    // 结果提示（完成 / 失败 / 取消）统一由驻场岛结果段展示。
     await context.read<CloudSyncProvider>().sync();
   }
 
@@ -103,7 +105,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     await provider.refreshBackups();
     if (!mounted) return;
     if (provider.error != null) {
-      _showSnack('刷新失败：${provider.error}');
+      _showSnack('刷新失败：${provider.error}', kind: NoticeKind.error);
     }
   }
 
@@ -116,19 +118,22 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       folder: _form.webdavFolder.text,
     );
     if (!mounted) return;
-    _showSnack(result == null ? '连接成功：WebDAV 服务器可用' : '连接失败：$result');
+    _showSnack(
+      result == null ? '连接成功：WebDAV 服务器可用' : '连接失败：$result',
+      kind: result == null ? NoticeKind.success : NoticeKind.error,
+    );
   }
 
   Future<void> _editKeepVersions() async {
     final provider = context.read<CloudSyncProvider>();
     if (!provider.isConfigured) {
       // 未连接：不联网，仅提示（与展示框「—」一致）。
-      _showSnack('请先保存 WebDAV 连接配置后再修改');
+      _showSnack('请先保存 WebDAV 连接配置后再修改', kind: NoticeKind.warning);
       return;
     }
     final saved = await showKeepVersionsDialog(context, provider: provider);
     if (saved != null && mounted) {
-      _showSnack('保存成功：云端保留 $saved 份历史版本');
+      _showSnack('保存成功：云端保留 $saved 份历史版本', kind: NoticeKind.success);
     }
   }
 
@@ -137,7 +142,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     final tempPath = await provider.downloadBackup(file.name);
     if (!mounted) return;
     if (tempPath == null) {
-      _showSnack('下载失败：${provider.error ?? '未知错误'}');
+      _showSnack('下载失败：${provider.error ?? '未知错误'}', kind: NoticeKind.error);
       return;
     }
     final mode = await showSyncRestoreDialog(context, file: file);
@@ -149,7 +154,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       final ok = await provider.applyReplace(tempPath);
       _cleanupTemp(tempPath);
       if (!mounted) return;
-      _showSnack(ok ? '已用所选备份替换本地数据' : '处理失败：${provider.error ?? '未知错误'}');
+      _showSnack(
+        ok ? '已用所选备份替换本地数据' : '处理失败：${provider.error ?? '未知错误'}',
+        kind: ok ? NoticeKind.success : NoticeKind.error,
+      );
       return;
     }
     final DatabaseMergePlan plan;
@@ -158,7 +166,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     } catch (e) {
       _cleanupTemp(tempPath);
       if (!mounted) return;
-      _showSnack('解析备份失败：$e');
+      _showSnack('解析备份失败：$e', kind: NoticeKind.error);
       return;
     }
     _cleanupTemp(tempPath);
@@ -178,9 +186,8 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     }
   }
 
-  void _showSnack(String message) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+  void _showSnack(String message, {NoticeKind kind = NoticeKind.info}) {
+    context.notices.show(message, kind: kind);
   }
 
   @override

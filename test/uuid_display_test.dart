@@ -3,9 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/widgets/uuid_display.dart';
 
+import 'helpers/notice_harness.dart';
+
 /// `UuidDisplay` 展示组件测试：显示值 / 复制到剪贴板 / 空值提示。
 void main() {
   Widget wrap(Widget child) => MaterialApp(
+        builder: floatingNoticeBuilder(),
         home: Scaffold(body: Center(child: child)),
       );
 
@@ -34,6 +37,9 @@ void main() {
     await tester.tap(find.byTooltip('复制 UUID'));
     await tester.pump();
     expect(values, ['u-1234-5678']);
+    // 悬浮通知渠道提示「已复制 UUID」。
+    expect(find.text('已复制 UUID'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('uuid 为空：显示提示文本，不渲染复制按钮', (tester) async {

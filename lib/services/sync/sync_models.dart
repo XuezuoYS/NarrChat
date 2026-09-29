@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../../models/app_notice.dart';
+
 /// 云同步模式。
 ///
 /// - [auto]：登录 WebDAV 后默认全自动（启动/恢复时拉取远端非冲突变更、有变更时推送）；
@@ -312,17 +314,11 @@ class SyncConfig {
   }
 }
 
-/// 云同步结果提示的类型（决定应用级悬浮气泡的图标与关闭语义）。
+/// 云同步结果提示条目（驻场岛结果段的渲染数据源）。
 ///
-/// - [success]：成功（如「数据已同步到云端」）：短暂悬浮后自动消失；
-/// - [error]：失败（含完整错误原因）：驻留等待用户手动关闭；
-/// - [info]：取消 / 中止等中性结果：短暂悬浮后自动消失。
-enum SyncToastKind { success, error, info }
-
-/// 云同步结果提示条目（应用级悬浮气泡 [SyncResultBubble] 的渲染数据源）。
-///
-/// 由 [CloudSyncProvider.showSyncResult] 入队、[SyncResultBubble] 消费；
-/// 计时（成功 / 取消类 2 秒自动消失）由气泡组件负责，驻留关闭由用户触发。
+/// 由 `CloudSyncProvider.showSyncResult` 入队、`PinnedNoticeIsland` 消费；
+/// 类型复用全局 [NoticeKind]（图标 / 颜色 / 驻留时长同源），
+/// 自动撤销时长见 [NoticeKind.dwell]（失败类另提供「已读」提前收起）。
 class SyncResultToast {
   const SyncResultToast({
     required this.id,
@@ -330,15 +326,15 @@ class SyncResultToast {
     required this.kind,
   });
 
-  /// 队列内唯一标识（关闭 / 自动到点移除时定位）。
+  /// 队列内唯一标识（「已读」/ 自动到点移除时定位）。
   final int id;
 
   /// 提示文案（可为多行，含报错详情）。
   final String message;
 
-  /// 提示类型（成功 / 失败 / 取消等）。
-  final SyncToastKind kind;
+  /// 提示类型（成功 / 失败 / 中性）。
+  final NoticeKind kind;
 
-  /// 失败类提示驻留，等待用户关闭；其余悬浮 2 秒后自动消失。
-  bool get persistent => kind == SyncToastKind.error;
+  /// 本条在驻场岛上的自动撤销时长。
+  Duration get dwell => kind.dwell;
 }

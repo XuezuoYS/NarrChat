@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/widgets/update_available_dialog.dart';
 
+import 'helpers/notice_harness.dart';
+
 const GitHubRelease _release = GitHubRelease(
   tagVersion: 'v1.4.0',
   displayName: 'NarrChat 1.4.0',
@@ -21,6 +23,7 @@ Future<_DialogHarness> _pumpOpenDialog(WidgetTester tester) async {
   final harness = _DialogHarness();
   await tester.pumpWidget(
     MaterialApp(
+      builder: floatingNoticeBuilder(),
       home: Scaffold(
         body: Builder(
           builder: (context) => Center(
@@ -91,6 +94,7 @@ void main() {
       _release.pageUrl,
     );
     expect(find.text('下载链接已复制，请在浏览器中打开'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('跳过此版本：返回 skipVersion', (tester) async {

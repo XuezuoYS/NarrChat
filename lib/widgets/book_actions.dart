@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/book.dart';
 import '../providers/book_provider.dart';
+import 'app_notice_overlay.dart';
 import 'round_action_dialogs.dart';
 
 /// 删除书籍统一入口：二次确认 → 删除 → 失败提示。
@@ -14,8 +15,6 @@ Future<void> deleteBookWithConfirm(BuildContext context, Book book) async {
   final provider = context.read<BookProvider>();
   final result = await provider.deleteBook(book);
   if (!result && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('删除失败：${provider.error}')),
-    );
+    context.notices.error('删除失败：${provider.error}');
   }
 }

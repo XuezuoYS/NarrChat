@@ -10,6 +10,7 @@ import '../services/storage_service.dart';
 import '../services/sync/image_deletion.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/image_viewer_window.dart' show ImageViewerDeletedEvents;
 
@@ -156,15 +157,11 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
         final message = count == relPaths.length
             ? '已导出 $count 张到 $dirPath'
             : '已导出 $count/${relPaths.length} 张到 $dirPath（部分图片缺失或失败）';
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        context.notices.success(message, copyable: true);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导出失败：$e')));
+        context.notices.error('导出失败：$e', copyable: true);
       }
     } finally {
       if (mounted) setState(() => _exporting = false);
@@ -233,10 +230,13 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
     context.read<CloudSyncProvider?>()?.triggerSync(kind: SyncKind.images);
     await _load();
     if (mounted) {
-      final messenger = ScaffoldMessenger.of(context);
-      messenger.showSnackBar(
-        SnackBar(content: Text(failed == 0 ? '已删除' : '已删除，$failed 张删除失败')),
-      );
+      final notices = context.notices;
+      final message = failed == 0 ? '已删除' : '已删除，$failed 张删除失败';
+      if (failed == 0) {
+        notices.success(message);
+      } else {
+        notices.warning(message);
+      }
     }
   }
 

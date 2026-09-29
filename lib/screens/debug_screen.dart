@@ -4,6 +4,7 @@ import '../services/debug_database_service.dart';
 import '../services/update_check_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/update_available_dialog.dart';
 import 'database_inspect_screen.dart';
 
@@ -39,7 +40,7 @@ class DebugScreen extends StatelessWidget {
   }
 
   /// 展示当前数据库版本：代码期望的 schema 版本 + 库文件实际 `user_version`；
-  /// 读取失败（库被占用 / 损坏等）时以 SnackBar 提示。
+  /// 读取失败（库被占用 / 损坏等）时以悬浮通知提示。
   Future<void> _showDatabaseVersion(BuildContext context) async {
     final service = databaseService ?? SqliteDebugDatabaseService();
     try {
@@ -63,14 +64,12 @@ class DebugScreen extends StatelessWidget {
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('读取数据库版本失败：$e')),
-      );
+      context.notices.error('读取数据库版本失败：$e', copyable: true);
     }
   }
 
   /// 触发「发现新版本」提示框（调试用）：不管开关与版本比较，绕过 24h 节流，
-  /// 仅演示远端最新 Release 的提示框；检查失败 / 无发布时以 SnackBar 提示。
+  /// 仅演示远端最新 Release 的提示框；检查失败 / 无发布时以悬浮通知提示。
   /// 返回值（跳过版本等）不落盘，避免污染真实的启动检查状态。
   Future<void> _probeUpdateDialog(BuildContext context) async {
     final currentVersion = await ReleaseInfo.version();
@@ -87,15 +86,11 @@ class DebugScreen extends StatelessWidget {
           currentVersion: currentVersion,
         );
       case CheckFailed(:final reason):
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('检查更新失败：$reason')),
-        );
+        context.notices.error('检查更新失败：$reason');
       case UpToDate() || NoRelease():
         // forceShow 下正常不会走到这里（仓库有发布即返回 UpdateAvailable）；
         // 保留分支仅为穷尽枚举并给出可读反馈。
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('未获取到 GitHub 发布信息')),
-        );
+        context.notices.warning('未获取到 GitHub 发布信息');
     }
   }
 

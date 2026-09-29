@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/ui_settings_provider.dart';
 import '../services/system_fonts_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/font_picker_dialog.dart';
 
 /// 「字体设置」二级页（由「通用设置 → UI 设置 → 字体设置」进入）。
@@ -79,21 +80,19 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
   /// 成功返回 true（字体样式与档位都已落盘）。
   Future<bool> _save() async {
     final ui = context.read<UiSettingsProvider>();
-    final messenger = ScaffoldMessenger.of(context);
+    final notices = context.notices;
     setState(() => _isSaving = true);
     final fontOk = await ui.setFontFamily(_draftFamily);
     if (!mounted) return false;
     if (!fontOk) {
       setState(() => _isSaving = false);
-      messenger.showSnackBar(
-        const SnackBar(content: Text('字体加载失败，已保持原设置')),
-      );
+      notices.error('字体加载失败，已保持原设置');
       return false;
     }
     await ui.setFontScaleIndex(_draftScaleIndex);
     if (!mounted) return false;
     setState(() => _isSaving = false);
-    messenger.showSnackBar(const SnackBar(content: Text('已保存')));
+    notices.success('已保存');
     return true;
   }
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
+import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../screens/database_merge_screen.dart';
 import '../screens/image_gallery_page.dart';
@@ -12,6 +13,7 @@ import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../utils/formats.dart';
+import 'app_notice_overlay.dart';
 
 /// 设置页「存储管理」面板。
 ///
@@ -117,6 +119,7 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     if (name == null || !mounted) return;
     setState(() => _exporting = true);
     String message;
+    var ok = true;
     try {
       final target = await _service.exportDatabase(
         targetDirPath: dirPath,
@@ -124,11 +127,12 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
       );
       message = '数据库已导出到 $target';
     } catch (e) {
+      ok = false;
       message = '数据库导出失败：$e';
     }
     if (mounted) {
       setState(() => _exporting = false);
-      _snack(message);
+      _snack(message, kind: ok ? NoticeKind.success : NoticeKind.error);
     }
   }
 
@@ -136,9 +140,8 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     _loadImages();
   }
 
-  void _snack(String message) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+  void _snack(String message, {NoticeKind kind = NoticeKind.info}) {
+    context.notices.show(message, kind: kind);
   }
 
   Future<String?> _pickDatabaseFile() {
@@ -165,19 +168,19 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
       path = await _pickDatabaseFile();
     } catch (e) {
       if (!mounted) return;
-      _snack('选择数据库文件失败：$e');
+      _snack('选择数据库文件失败：$e', kind: NoticeKind.error);
       return;
     }
     if (path == null || !mounted) return;
     if (!_isDbPath(path)) {
-      _snack('请选择 .db 数据库备份文件。');
+      _snack('请选择 .db 数据库备份文件。', kind: NoticeKind.warning);
       return;
     }
     // 防止选择当前本地库本身（只会产生「全一致」且无意义的自我合并）。
     final localPath = await AppPaths.userDatabasePath();
     if (!mounted) return;
     if (_samePath(path, localPath)) {
-      _snack('请选择备份文件，而非当前数据库。');
+      _snack('请选择备份文件，而非当前数据库。', kind: NoticeKind.warning);
       return;
     }
     setState(() => _importing = true);
@@ -187,7 +190,7 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _importing = false);
-      _snack('解析导入文件失败：$e');
+      _snack('解析导入文件失败：$e', kind: NoticeKind.error);
       return;
     }
     if (!mounted) return;

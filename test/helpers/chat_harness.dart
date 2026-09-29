@@ -27,6 +27,7 @@ import 'package:narrchat/widgets/sidebar_panel.dart';
 import 'package:provider/provider.dart';
 
 import 'fakes.dart';
+import 'notice_harness.dart';
 
 /// 公共 widget 测试脚手架（harness）。
 ///
@@ -59,7 +60,9 @@ const String kHarnessBookUuid = 'book-1';
 /// - [theme]：应用主题（默认浅色主题；深色置灰等外观用例可传 dark）；
 /// - [warningsStore]：常驻黄框警告的本地存储（默认新建内存替身，
 ///   冷启动恢复场景可预置数据）；
-/// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）。
+/// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）；
+/// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作，
+///   需要断言跳转的用例注入自己的实现）。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
   AiService? ai,
@@ -83,6 +86,7 @@ Future<RoundProvider> pumpChatScreen(
   ThemeData? theme,
   Size size = const Size(1400, 900),
   double textScale = 1.0,
+  void Function(String bookUuid)? onOpenBook,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -153,14 +157,12 @@ Future<RoundProvider> pumpChatScreen(
       ],
       child: MaterialApp(
         theme: theme ?? NarrChatTheme.light,
-        // 全局字体缩放：等价于生产 `main.dart` 的 MediaQuery.withClampedTextScaling。
-        builder: textScale == 1.0
-            ? null
-            : (context, child) => MediaQuery.withClampedTextScaling(
-                  minScaleFactor: textScale,
-                  maxScaleFactor: textScale,
-                  child: child ?? const SizedBox.shrink(),
-                ),
+        // 应用内通知宿主（悬浮 + 驻场岛），等价于生产 main.dart 的接线；
+        // 全局字体缩放同样等价（见生产 builder）。
+        builder: noticeHostBuilder(
+          onOpenBook: onOpenBook,
+          textScale: textScale,
+        ),
         home: Scaffold(body: const ChatScreen()),
       ),
     ),
@@ -176,7 +178,8 @@ Future<RoundProvider> pumpChatScreen(
 /// 避免默认走真实 flutter_local_notifications 插件）；
 /// [notificationSettings] 注入预先构建（已 refresh）的通知设置 Provider，
 /// 用于「未开启通知提示条」等需要预置开关状态的用例；
-/// [textScale]：全局文字缩放倍率（默认 1.0 不缩放）。
+/// [textScale]：全局文字缩放倍率（默认 1.0 不缩放）；
+/// [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作）。
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
   required List<Book> books,
@@ -185,6 +188,7 @@ Future<BookProvider> pumpHomeScreen(
   NotificationSettingsProvider? notificationSettings,
   Size size = const Size(1400, 900),
   double textScale = 1.0,
+  void Function(String bookUuid)? onOpenBook,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -233,14 +237,11 @@ Future<BookProvider> pumpHomeScreen(
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
-        // 全局字体缩放：等价于生产 `main.dart` 的 MediaQuery.withClampedTextScaling。
-        builder: textScale == 1.0
-            ? null
-            : (context, child) => MediaQuery.withClampedTextScaling(
-                  minScaleFactor: textScale,
-                  maxScaleFactor: textScale,
-                  child: child ?? const SizedBox.shrink(),
-                ),
+        // 应用内通知宿主（悬浮 + 驻场岛）；全局字体缩放等价生产 main.dart。
+        builder: noticeHostBuilder(
+          onOpenBook: onOpenBook,
+          textScale: textScale,
+        ),
         home: const HomeScreen(),
       ),
     ),
@@ -307,6 +308,8 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
         theme: NarrChatTheme.light,
         navigatorKey: service.navigatorKey,
         navigatorObservers: [service.routeObserver],
+        // 通知宿主（悬浮 + 驻场岛）：等价生产 main.dart 的接线。
+        builder: noticeHostBuilder(),
         home: const Scaffold(body: Center(child: Text('首页'))),
       ),
     ),

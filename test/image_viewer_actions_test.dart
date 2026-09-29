@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 /// 查看器共享动作测试：复制图片（剪贴板写入）、另存为（路径选择 + 跨平台落盘分支）、
 /// 删除（二次确认 + 删除服务 + 回调）、操作菜单（右键/长按入口的菜单项与动作路由）。
@@ -40,6 +41,7 @@ void main() {
         ChangeNotifierProvider.value(value: CloudSyncProvider()),
       ],
       child: MaterialApp(
+        builder: floatingNoticeBuilder(),
         home: Scaffold(
           body: Builder(
             builder: (ctx) => Center(
@@ -77,6 +79,7 @@ void main() {
     expect(writer.writtenPath, file.path); // 原始文件路径透传（供 CF_HDROP）
     expect(writer.written?.toList(), [1, 2, 3]);
     expect(find.text('图片已复制到剪贴板'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('复制图片：文件缺失提示且不写剪贴板', (tester) async {
@@ -93,6 +96,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(writer.written, isNull);
     expect(find.text('图片文件已丢失，无法复制'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('复制图片：剪贴板写入失败提示重试', (tester) async {
@@ -113,6 +117,7 @@ void main() {
     });
     await tester.pumpAndSettle();
     expect(find.text('复制失败，请重试'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('另存为图片：Windows 选择路径后复制原文件并提示路径', (tester) async {
@@ -139,6 +144,7 @@ void main() {
     expect(picker.requestedBytes, isNull); // Windows 不传字节（原生不落盘）。
     expect(File(target).readAsBytesSync().toList(), [1, 2, 3]); // Dart 侧复制到目标。
     expect(find.text('已保存到 $target'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('另存为图片：Android 传字节由原生 SAF 写入并提示成功', (tester) async {
@@ -165,6 +171,7 @@ void main() {
     expect(picker.requestedBytes?.toList(), [1, 2, 3]); // 字节交给原生 SAF 写入。
     expect(File(displayPath).existsSync(), isFalse); // Dart 侧不再复制。
     expect(find.text('图片已保存'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('另存为图片：用户取消对话框不提示且不复制', (tester) async {
@@ -204,6 +211,7 @@ void main() {
     await tester.tap(find.text('go'));
     await tester.pumpAndSettle();
     expect(find.text('保存失败，请重试'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('另存为图片：Windows 复制失败提示保存失败', (tester) async {
@@ -228,6 +236,7 @@ void main() {
     });
     await tester.pumpAndSettle();
     expect(find.text('保存失败，请重试'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('另存为图片：文件缺失提示无法保存', (tester) async {
@@ -244,6 +253,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(picker.requestedFileName, isNull); // 未进入保存对话框。
     expect(find.text('图片文件已丢失，无法保存'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('删除图片：取消确认则不删除', (tester) async {
@@ -279,6 +289,7 @@ void main() {
     expect(deletion.deleted, ['img/a.png']);
     expect(onDeletedCall, 1);
     expect(find.text('已删除'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('删除图片：删除服务失败提示且不回调', (tester) async {
@@ -291,6 +302,7 @@ void main() {
     await tester.tap(find.text('删除').last);
     await tester.pumpAndSettle();
     expect(find.text('删除失败，请重试'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('菜单：展示三个动作，选中删除进入二次确认', (tester) async {

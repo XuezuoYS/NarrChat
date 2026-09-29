@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../services/update_check_service.dart';
 import '../theme/app_theme.dart';
+import 'app_notice_overlay.dart';
 import 'markdown_preview.dart';
 
 /// 用户对「发现新版本」对话框的选择。
@@ -20,7 +21,7 @@ enum UpdateDialogChoice {
 /// 弹出「发现新版本」对话框，返回用户选择。
 ///
 /// - 选择「复制链接」时对话框内已执行 [Clipboard.setData]，关闭后追加
-///   SnackBar 提示（[context] 需位于 MaterialApp 下）；
+///   悬浮通知提示（[context] 需位于应用通知作用域内）；
 /// - 点遮罩 / 按 Esc 关闭返回 `null`（等同「以后再说」）。
 Future<UpdateDialogChoice?> showUpdateAvailableDialog(
   BuildContext context, {
@@ -35,9 +36,7 @@ Future<UpdateDialogChoice?> showUpdateAvailableDialog(
     ),
   );
   if (choice == UpdateDialogChoice.copyLink && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('下载链接已复制，请在浏览器中打开')),
-    );
+    context.notices.success('下载链接已复制，请在浏览器中打开');
   }
   return choice;
 }

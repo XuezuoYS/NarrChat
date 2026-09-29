@@ -242,7 +242,7 @@ void main() {
       expect(find.text('触发失败'), findsOneWidget);
       expect(find.text('生成失败'), findsOneWidget);
       expect(find.text('模拟失败'), findsOneWidget);
-      // 无 SnackBar 消息提示。
+      // 无悬浮通知兜底提示（失败已由「失败条目」气泡表达）。
       expect(find.textContaining('请求失败：'), findsNothing);
     });
 

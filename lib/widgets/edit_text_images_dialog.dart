@@ -5,6 +5,7 @@ import '../services/clipboard_paste_service.dart';
 import '../services/image_import_service.dart';
 import '../services/sync/image_revival.dart';
 import '../utils/focus_utils.dart';
+import 'app_notice_overlay.dart';
 import 'image_preview.dart';
 import 'markdown_editing_controller.dart';
 import 'text_field_context_menu.dart';
@@ -115,16 +116,12 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
       });
       _reviveImages(result.paths);
       if (result.warnings.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.warnings.join('\n'))),
-        );
+        context.notices.warning(result.warnings.join('\n'), copyable: true);
       }
     } catch (e) {
       if (!mounted) return;
       setState(() => _importing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('图片导入失败：$e')),
-      );
+      context.notices.error('图片导入失败：$e', copyable: true);
     }
   }
 
@@ -134,8 +131,8 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
   /// 统一走 [pasteIntoTextInput] 处理文本 / 图片与超限 / 非识图提示。
   Future<void> _pasteFromClipboard() async {
     final service = context.read<ClipboardPasteService>();
-    // 先取 messenger，避免异步后使用失效的 context。
-    final messenger = ScaffoldMessenger.of(context);
+    // 先取通知中心，避免异步后使用失效的 context。
+    final notices = context.notices;
     await pasteIntoTextInput(
       service: service,
       controller: _controller,
@@ -146,9 +143,8 @@ class _EditTextImagesDialogState extends State<_EditTextImagesDialog> {
         if (mounted) setState(() => _images.add(rel));
         _reviveImages([rel]);
       },
-      onNotice: (msg) => messenger.showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-      ),
+      onNotice: (msg) =>
+          notices.info(msg, dwell: const Duration(seconds: 2)),
     );
   }
 

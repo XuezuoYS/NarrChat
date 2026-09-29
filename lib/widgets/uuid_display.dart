@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
+import 'app_notice_overlay.dart';
 
 /// 只读 UUID 展示行（标签 + 等宽值 + 一键复制）。
 ///
@@ -25,9 +26,8 @@ class UuidDisplay extends StatelessWidget {
   Future<void> _copy(BuildContext context) async {
     await Clipboard.setData(ClipboardData(text: uuid));
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('已复制 UUID')));
+    // 单槽位渠道天然去重：连点复制只刷新同一条提示，不叠加。
+    context.notices.success('已复制 UUID');
   }
 
   @override

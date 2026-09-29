@@ -12,6 +12,7 @@ import 'package:narrchat/widgets/image_viewer_window.dart'
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 /// 测试图片库二级页（小米相册式）：网格渲染、长按/按钮进入选择、多选删除、批量导出、
 /// 查看器窗口内删除的事件同步（缩略图即时移除且不回到滚动首部）。
@@ -32,6 +33,7 @@ void main() {
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
+        builder: floatingNoticeBuilder(),
         home: ImageGalleryPage(directoryPicker: pick),
       ),
     );
@@ -139,6 +141,7 @@ void main() {
     expect(deletion.calls, 2);
     expect(deletion.deleted, containsAll(['img/a.png', 'img/b.png']));
     expect(find.text('暂无本地图片'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('批量导出：选择 → 导出到文件夹', (tester) async {
@@ -180,6 +183,7 @@ void main() {
     expect(service.exportedImages, containsAll(['img/a.png', 'img/b.png']));
     expect(service.exportedImagesTo, outDir.path);
     expect(find.textContaining('已导出'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('查看器窗口内删除：事件同步移除缩略图且停留在浏览位置（不回到首部）', (tester) async {

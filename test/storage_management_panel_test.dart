@@ -11,6 +11,7 @@ import 'package:narrchat/widgets/storage_management_panel.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 void main() {
   Widget wrap(
@@ -27,6 +28,7 @@ void main() {
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
+        builder: floatingNoticeBuilder(),
         home: Scaffold(
           body: SingleChildScrollView(
             child: StorageManagementPanel(
@@ -126,6 +128,7 @@ void main() {
     expect(service.exportedTo, outDir.path);
     expect(service.exportedName, 'backup.db'); // 自动补全 .db
     expect(find.textContaining('已导出'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('本地数据库导出/导入：渲染入口', (tester) async {
@@ -186,6 +189,7 @@ void main() {
     // 吞掉异常并给出提示，仍在存储管理页。
     expect(find.textContaining('选择数据库文件失败'), findsOneWidget);
     expect(find.text('数据库合并'), findsNothing);
+    await flushNotices(tester);
   });
 
   testWidgets('本地数据库导入：选择非 .db 文件时提示且不导航', (tester) async {
@@ -206,5 +210,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('请选择 .db 数据库备份文件。'), findsOneWidget);
     expect(find.text('数据库合并'), findsNothing);
+    await flushNotices(tester);
   });
 }

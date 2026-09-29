@@ -6,6 +6,7 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/utils/formats.dart';
 
 import 'helpers/merge_db.dart';
+import 'helpers/notice_harness.dart';
 
 void main() {
   late DatabaseMergePlan plan;
@@ -159,9 +160,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
     await tester.pumpAndSettle();
-    // 走完 SnackBar 计时，避免测试结束残留悬挂计时器。
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpAndSettle();
+    // 收尾：清空悬浮通知的驻留计时，避免测试结束残留悬挂计时器。
+    await flushNotices(tester);
 
     expect(called, isTrue);
     expect(decisions['A']!.allLocal, isTrue);
@@ -186,8 +186,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '确认合并'));
     await tester.pumpAndSettle();
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpAndSettle();
+    await flushNotices(tester);
 
     expect(decisions['B']!.allImport, isTrue);
   });
@@ -507,6 +506,7 @@ Future<void> _pumpScreen(
   await tester.pumpWidget(
     MaterialApp(
       theme: NarrChatTheme.light,
+      builder: floatingNoticeBuilder(),
       home: Builder(
         builder: (context) => Scaffold(
           body: TextButton(

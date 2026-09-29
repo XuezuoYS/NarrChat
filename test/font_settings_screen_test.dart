@@ -9,6 +9,8 @@ import 'package:narrchat/screens/font_settings_screen.dart';
 import 'package:narrchat/services/local_config_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 
+import 'helpers/notice_harness.dart';
+
 /// 「字体设置」二级页：结构、草稿态隔离、重置、保存落盘与未保存返回提示。
 void main() {
   late Directory tempRoot;
@@ -39,6 +41,7 @@ void main() {
         child: MaterialApp(
           navigatorKey: navigator,
           theme: NarrChatTheme.light,
+          builder: floatingNoticeBuilder(),
           home: const Scaffold(body: SizedBox()),
         ),
       ),
@@ -189,6 +192,7 @@ void main() {
     );
     // 保存后返回上一级。
     expect(find.byKey(const ValueKey('font_settings_save')), findsNothing);
+    await flushNotices(tester);
   });
 
   testWidgets('重置：字体样式回系统默认、大小回 0%', (tester) async {
@@ -285,6 +289,7 @@ void main() {
     });
     expect(provider.fontScaleIndex, FontScaleLevel.plus45.offset);
     expect(find.byKey(const ValueKey('font_settings_save')), findsNothing);
+    await flushNotices(tester);
   });
 
   testWidgets('窄窗口下拖到最大档后刻度标签与预览不溢出', (tester) async {

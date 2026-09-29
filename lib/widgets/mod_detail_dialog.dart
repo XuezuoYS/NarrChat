@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/mod.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
 import 'prompt_input_hint.dart';
 import 'uuid_display.dart';
@@ -95,9 +96,7 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
 
   void _save() {
     if (_name.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('名称不能为空')),
-      );
+      context.notices.warning('名称不能为空');
       return;
     }
     Navigator.of(context).pop(
@@ -443,9 +442,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
 
   void _save() {
     if (_content.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('内容不能为空')),
-      );
+      context.notices.warning('内容不能为空');
       return;
     }
     Navigator.of(context).pop(

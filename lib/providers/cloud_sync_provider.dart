@@ -11,6 +11,7 @@ import '../database/database_helper.dart';
 import '../database/book_dao.dart';
 import '../database/mod_dao.dart';
 import '../database/sync_dao.dart';
+import '../models/app_notice.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/database_merge_service.dart';
 import '../services/image_store.dart';
@@ -181,27 +182,29 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<SyncResultToast> _resultToasts = [];
   int _nextToastId = 0;
 
-  /// 云同步结果提示（应用级悬浮气泡 [SyncResultBubble] 的数据源；
-  /// 成功 / 取消类悬浮约 2 秒后自动消失，失败类驻留等待用户关闭）。
+  /// 云同步结果提示（驻场岛结果段 `PinnedNoticeIsland` 的数据源）。
+  ///
+  /// 成功 / 中性条目 3 秒后自动收起，失败条目 15 秒后无条件收起，
+  /// 或由用户在驻场岛点「已读」提前收起（见 [NoticeKind.dwell]）。
   List<SyncResultToast> get resultToasts => List.unmodifiable(_resultToasts);
 
-  /// 展示一条云同步结果提示（由 [SyncResultBubble] 跨页面渲染）。
+  /// 展示一条云同步结果提示（由驻场岛跨页面渲染）。
   ///
-  /// - [kind]：成功 / 取消等（短暂悬浮后自动消失）；错误（驻留 + 关闭按钮）；
-  /// - 内容以可选中的 [SelectableText] 呈现（用户可长按选择复制，含报错详情）；
+  /// - [kind]：成功 / 中性（短暂驻留后自动收起）；错误（驻留更久 + 「已读」）；
+  /// - 内容在驻场岛展开区以可选中的 [SelectableText] 呈现（可长按复制报错详情）；
   /// - 相同文案去重（连续同步结果相同时不叠加）。
   void showSyncResult(
     String message, {
-    SyncToastKind kind = SyncToastKind.success,
+    NoticeKind kind = NoticeKind.success,
   }) {
     if (_resultToasts.any((t) => t.message == message)) return;
     _resultToasts.add(
       SyncResultToast(id: _nextToastId++, message: message, kind: kind),
     );
     if (_resultToasts.length > maxResultToasts) {
-      // 优先挤掉已自动消失的临时提示；全是驻留错误时丢弃最早一条。
+      // 优先挤掉成功 / 中性类提示；全是失败提示时丢弃最早一条。
       final oldestTransient =
-          _resultToasts.indexWhere((t) => !t.persistent);
+          _resultToasts.indexWhere((t) => t.kind != NoticeKind.error);
       _resultToasts.removeAt(oldestTransient >= 0 ? oldestTransient : 0);
     }
     notifyListeners();
@@ -211,7 +214,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   static String _recordMessage(int? generation, String body) =>
       generation == null ? body : '云端记录 #$generation：$body';
 
-  /// 关闭一条结果提示（气泡「关闭」按钮 / 成功类到点自动移除的回调）。
+  /// 关闭一条结果提示（驻场岛「已读」按钮 / 到点自动移除的回调）。
   void dismissSyncResult(int id) {
     final before = _resultToasts.length;
     _resultToasts.removeWhere((t) => t.id == id);
@@ -672,7 +675,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
   }
 
-  /// 协调层回调：分平面结果 → 应用级悬浮气泡提示 + 分平面错误记录。
+  /// 协调层回调：分平面结果 → 驻场岛结果段提示 + 分平面错误记录。
   void _onPlaneResult(
     SyncPlane plane,
     SyncTaskOutcome outcome,
@@ -690,10 +693,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       showSyncResult(
         outcome.message!,
         kind: outcome.persistent
-            ? SyncToastKind.error
+            ? NoticeKind.error
             : outcome.state == SyncState.idle
-                ? SyncToastKind.info
-                : SyncToastKind.success,
+                ? NoticeKind.info
+                : NoticeKind.success,
       );
     }
     notifyListeners();

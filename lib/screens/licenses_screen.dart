@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../theme/app_theme.dart';
 import '../utils/license_meta.dart';
 import '../widgets/app_empty_hint.dart';
+import '../widgets/app_notice_overlay.dart';
 
 /// 单个包的可展示许可证数据。
 class _PackageLicense {
@@ -299,9 +300,7 @@ class _LicenseDialog extends StatelessWidget {
                         ClipboardData(text: license.text),
                       );
                       if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已复制许可证全文')),
-                      );
+                      context.notices.success('已复制许可证全文');
                     },
                     child: const Text('复制全文'),
                   ),

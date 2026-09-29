@@ -10,6 +10,7 @@ import 'package:narrchat/widgets/image_preview.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 void main() {
   testWidgets('识图：显示初始图片，可删除 / 添加，保存返回文本与图片', (tester) async {
@@ -28,6 +29,7 @@ void main() {
           ),
         ],
         child: MaterialApp(
+          builder: floatingNoticeBuilder(),
           home: Scaffold(
             body: Builder(
               builder: (ctx) => Center(
@@ -96,6 +98,7 @@ void main() {
           ),
         ],
         child: MaterialApp(
+          builder: floatingNoticeBuilder(),
           home: Scaffold(
             body: Builder(
               builder: (ctx) => Center(
@@ -145,6 +148,7 @@ void main() {
           ),
         ],
         child: MaterialApp(
+          builder: floatingNoticeBuilder(),
           home: Scaffold(
             body: Builder(
               builder: (ctx) => Center(
@@ -177,5 +181,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ImageThumbnail), findsOneWidget);
+    await flushNotices(tester);
   });
 }

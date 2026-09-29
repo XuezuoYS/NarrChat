@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/role_category.dart';
 import '../utils/focus_utils.dart';
+import 'app_notice_overlay.dart';
 
 /// 可拖拽排序的角色类别列表。
 ///
@@ -198,9 +199,7 @@ class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
   void _save() {
     final name = _name.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('类别名称不能为空')),
-      );
+      context.notices.warning('类别名称不能为空');
       return;
     }
     Navigator.of(context).pop(

@@ -17,9 +17,11 @@ import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/pinned_notice_island.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 /// 合法 6 区块正文。
 const _fullContent = '## 剧情演绎\n正文内容\n'
@@ -248,12 +250,21 @@ void main() {
     });
   });
 
-  group('跨书进程提示栏', () {
+  group('跨书进程驻场岛', () {
+    /// 展开驻场岛并等形变完成（岛上常驻转圈动画，不能用 pumpAndSettle）。
+    Future<void> expandIsland(WidgetTester tester) async {
+      await tester.tap(find.byIcon(Icons.expand_more));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
     Future<void> pumpChat(
       WidgetTester tester, {
       required BookProvider bookProvider,
       required RoundProvider roundProvider,
       required WorldBookProvider worldBookProvider,
+      void Function(String bookUuid)? onOpenBook,
     }) async {
       tester.view.physicalSize = const Size(1400, 900);
       tester.view.devicePixelRatio = 1.0;
@@ -277,6 +288,7 @@ void main() {
           ],
           child: MaterialApp(
             theme: NarrChatTheme.light,
+            builder: noticeHostBuilder(onOpenBook: onOpenBook),
             home: Scaffold(body: const ChatScreen()),
           ),
         ),
@@ -284,7 +296,7 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('其他书生成中：顶部显示计数横幅，点击弹窗后进入该书', (tester) async {
+    testWidgets('其他书生成中：驻场岛显示计数，展开后点该书跳转', (tester) async {
       final bookDao = FakeBookDao(books: [bookA, bookB]);
       final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
@@ -300,37 +312,39 @@ void main() {
       );
       await roundProvider.loadRounds('b2');
       final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+      final opened = <String>[];
 
       await pumpChat(
         tester,
         bookProvider: bookProvider,
         roundProvider: roundProvider,
         worldBookProvider: worldBookProvider,
+        onOpenBook: opened.add,
       );
 
-      // 无其他书生成时：无横幅。
+      // 无其他书生成时：驻场岛不占位。
       expect(find.text('1本书正在生成……'), findsNothing);
+      expect(find.byIcon(Icons.expand_more), findsNothing);
 
       // 书 A 开始生成（保持挂起）。
       final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
       await tester.pump();
 
-      // 横幅出现：显示计数（当前书 B 自身不计入）。
+      // 驻场岛出现：显示计数。
       expect(find.text('1本书正在生成……'), findsOneWidget);
 
-      // 点击横幅 → 弹出「正在生成的书」对话框。
-      await tester.tap(find.text('1本书正在生成……'));
-      await tester.pump();
-      expect(find.text('正在生成的书'), findsOneWidget);
-      expect(find.text('书A'), findsOneWidget);
+      // 点击胶囊展开 → 列出正在生成的书。
+      await expandIsland(tester);
+      final islandBookA = find.descendant(
+        of: find.byType(PinnedNoticeIsland),
+        matching: find.text('书A'),
+      );
+      expect(islandBookA, findsOneWidget);
 
-      // 点击对话框中的书 A → 跳转到书 A 对话页。
-      await tester.tap(find.text('书A'));
+      // 点击该书 → 回调跳转（真实导航由 main.dart 接到通知服务）。
+      await tester.tap(islandBookA);
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-
-      // 新页面 AppBar 标题为书 A。
-      expect(find.text('书A'), findsWidgets);
+      expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成，避免悬空。
       for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
@@ -347,7 +361,7 @@ void main() {
       await fA;
     });
 
-    testWidgets('多本书生成：横幅计数，弹窗列出全部并可选跳转', (tester) async {
+    testWidgets('多本书生成：驻场岛计数，展开列出全部并可选跳转', (tester) async {
       const bookC = Book(uuid: 'b3', title: '书C');
       final bookDao = FakeBookDao(books: [bookA, bookB, bookC]);
       final dao = FakeRoundDao();
@@ -364,12 +378,14 @@ void main() {
       );
       await roundProvider.loadRounds('b2');
       final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+      final opened = <String>[];
 
       await pumpChat(
         tester,
         bookProvider: bookProvider,
         roundProvider: roundProvider,
         worldBookProvider: worldBookProvider,
+        onOpenBook: opened.add,
       );
 
       // 书 A 与书 C 同时生成。
@@ -377,21 +393,26 @@ void main() {
       final fC = roundProvider.sendRound(userInput: '书C请求', book: bookC);
       await tester.pump();
 
-      // 横幅显示 2 本书（当前书 B 不计入）。
+      // 驻场岛显示 2 本书。
       expect(find.text('2本书正在生成……'), findsOneWidget);
 
-      // 点击横幅 → 弹窗列出书 A 与书 C。
-      await tester.tap(find.text('2本书正在生成……'));
-      await tester.pump();
-      expect(find.text('正在生成的书'), findsOneWidget);
-      expect(find.text('书A'), findsOneWidget);
-      expect(find.text('书C'), findsOneWidget);
+      // 展开 → 列出书 A 与书 C，点击跳转。
+      await expandIsland(tester);
+      final island = find.byType(PinnedNoticeIsland);
+      expect(
+        find.descendant(of: island, matching: find.text('书A')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: island, matching: find.text('书C')),
+        findsOneWidget,
+      );
 
-      // 点击书 C → 跳转到书 C。
-      await tester.tap(find.text('书C'));
+      await tester.tap(
+        find.descendant(of: island, matching: find.text('书C')),
+      );
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('书C'), findsWidgets);
+      expect(opened, ['b3']);
 
       // 收尾：完成两本书生成。
       for (var i = 0; i < 20 && ai.sessions.length < 2; i++) {
@@ -411,7 +432,7 @@ void main() {
       await fC;
     });
 
-    testWidgets('首页（书籍列表）也展示生成横幅并可进入对应书', (tester) async {
+    testWidgets('首页（书籍列表）也展示驻场岛并可进入对应书', (tester) async {
       tester.view.physicalSize = const Size(1400, 900);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
@@ -429,6 +450,7 @@ void main() {
         retryDelay: Duration.zero,
       );
       final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+      final opened = <String>[];
 
       await tester.pumpWidget(
         MultiProvider(
@@ -455,37 +477,34 @@ void main() {
           ],
           child: MaterialApp(
             theme: NarrChatTheme.light,
+            builder: noticeHostBuilder(onOpenBook: opened.add),
             home: const HomeScreen(),
           ),
         ),
       );
       await tester.pumpAndSettle();
 
-      // 无生成时：无横幅。
+      // 无生成时：驻场岛不占位。
       expect(find.text('1本书正在生成……'), findsNothing);
 
       // 书 A 开始生成（保持挂起）。
       final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
       await tester.pump();
 
-      // 首页（无当前查看书）展示横幅，计数含书 A。
+      // 首页同样展示驻场岛（不依赖当前查看书）。
       expect(find.text('1本书正在生成……'), findsOneWidget);
 
-      // 点击横幅 → 弹窗（首页书籍列表本身也有「书A」条目，需限定在弹窗内）。
-      await tester.tap(find.text('1本书正在生成……'));
-      await tester.pump();
-      expect(find.text('正在生成的书'), findsOneWidget);
-      final dialogBookA = find.descendant(
-        of: find.byType(AlertDialog),
+      // 展开 → 首页书籍列表本身也有「书A」条目，需限定在驻场岛内点击。
+      await expandIsland(tester);
+      final islandBookA = find.descendant(
+        of: find.byType(PinnedNoticeIsland),
         matching: find.text('书A'),
       );
-      expect(dialogBookA, findsOneWidget);
+      expect(islandBookA, findsOneWidget);
 
-      // 点击弹窗中的书 A → 进入书 A 对话页。
-      await tester.tap(dialogBookA);
+      await tester.tap(islandBookA);
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(find.text('书A'), findsWidgets);
+      expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成。
       for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {

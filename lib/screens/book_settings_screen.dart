@@ -12,6 +12,7 @@ import '../providers/world_book_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/constants.dart';
 import '../utils/focus_utils.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
@@ -203,9 +204,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   Future<void> _save() async {
     final title = _title.text.trim();
     if (title.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('书籍标题不能为空')),
-      );
+      context.notices.warning('书籍标题不能为空');
       return;
     }
     setState(() => _isSaving = true);
@@ -240,14 +239,13 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(true);
       if (errors.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('部分数据保存失败：${errors.join('；')}')),
+        context.notices.error(
+          '部分数据保存失败：${errors.join('；')}',
+          copyable: true,
         );
       }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败：${provider.error ?? '未知错误'}')),
-      );
+      context.notices.error('保存失败：${provider.error ?? '未知错误'}');
     }
   }
   /// 新建书籍成功后，将草稿阶段配置的世界书条目与 Mod 配置落库到新书。

@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../utils/triple_tap_detector.dart';
 import '../widgets/ai_settings_form.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/general_settings_form.dart';
@@ -68,21 +69,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 全局保存：统一校验并落库 API 设置 + 云同步，成功后不退出页面。
   Future<void> _saveAll() async {
-    final messenger = ScaffoldMessenger.of(context);
+    final notices = context.notices;
     setState(() => _isSaving = true);
     final result = await _form.saveAll();
     if (!mounted) return;
     setState(() => _isSaving = false);
     final notes = result.notes;
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(
-          result.ok
-              ? (notes.isEmpty ? '已保存' : '已保存；${notes.join('；')}')
-              : '保存失败：${result.errors.join('；')}',
-        ),
-      ),
-    );
+    if (result.ok) {
+      notices.success(notes.isEmpty ? '已保存' : '已保存；${notes.join('；')}');
+    } else {
+      notices.error('保存失败：${result.errors.join('；')}', copyable: true);
+    }
   }
 
   @override

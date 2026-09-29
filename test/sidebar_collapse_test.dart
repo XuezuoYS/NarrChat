@@ -8,6 +8,8 @@ import 'package:narrchat/widgets/memory_summary_editor.dart';
 import 'package:narrchat/widgets/plain_text_field_editor.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
 
+import 'helpers/notice_harness.dart';
+
 void main() {
   /// 保存记录（field, value），用于断言「仅显式保存才写库」。
   final saves = <(String, String)>[];
@@ -20,6 +22,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: NarrChatTheme.light,
+        builder: floatingNoticeBuilder(),
         home: Scaffold(
           body: SizedBox(
             width: 380,
@@ -148,7 +151,7 @@ void main() {
     expect(worldField, findsNothing);
   });
 
-  testWidgets('编辑后不自动保存，点击【保存】才写库并以 SnackBar 提示', (tester) async {
+  testWidgets('编辑后不自动保存，点击【保存】才写库并以悬浮通知提示', (tester) async {
     await pumpSidebar(tester);
     expect(find.textContaining('自动保存'), findsNothing);
     // 进入「世界状态」编辑并修改内容。
@@ -164,7 +167,7 @@ void main() {
     // 等待超过旧防抖时长：仍不应有自动保存。
     await tester.pump(const Duration(milliseconds: 900));
     expect(saves, isEmpty);
-    // 点击【保存】→ 写库一次 + SnackBar「已保存」。
+    // 点击【保存】→ 写库一次 + 悬浮通知「已保存」。
     await tester.tap(
       find.descendant(of: sectionHeader('世界状态'), matching: find.text('保存')),
     );
@@ -172,7 +175,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(saves, [('world_state', '- 地点：青云宗\n- 掌门：苏清月')]);
     expect(find.text('已保存'), findsOneWidget);
-    await tester.pumpAndSettle();
+    await flushNotices(tester);
   });
 
   testWidgets('点击【取消】放弃修改：不写库且还原为已保存内容', (tester) async {
@@ -226,7 +229,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(saves, [('current_time', '第四天 子时')]);
     expect(find.text('已保存'), findsOneWidget);
-    await tester.pumpAndSettle();
+    await flushNotices(tester);
     expect(find.text('第四天 子时'), findsOneWidget);
     // 再次编辑后取消：还原为已保存内容，不写库。
     await tester.tap(
@@ -242,7 +245,7 @@ void main() {
     expect(find.text('第四天 子时'), findsOneWidget);
   });
 
-  testWidgets('保存失败时以 SnackBar 提示「保存失败」', (tester) async {
+  testWidgets('保存失败时以悬浮通知提示「保存失败」', (tester) async {
     await pumpSidebar(tester, onSaveField: (f, v) async => false);
     await tester.tap(
       find.descendant(of: sectionHeader('当前时间'), matching: find.text('编辑')),
@@ -254,7 +257,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('保存失败'), findsOneWidget);
-    await tester.pumpAndSettle();
+    await flushNotices(tester);
   });
 
   testWidgets('历史轮次视图下同样支持编辑/保存/取消', (tester) async {
@@ -262,6 +265,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: NarrChatTheme.light,
+        builder: floatingNoticeBuilder(),
         home: Scaffold(
           body: SizedBox(
             width: 380,
@@ -299,6 +303,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(historySaves, [('current_time', '第四天 子时')]);
+    await flushNotices(tester);
   });
 
   testWidgets('长内容滚动到底后，前面的标题栏随组滚出视口、不叠层', (tester) async {

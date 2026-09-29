@@ -7,7 +7,6 @@ import 'package:flutter/rendering.dart' show RenderAbstractViewport, ScrollDirec
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../config/chat_route.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
@@ -33,13 +32,13 @@ import '../utils/text_insert_utils.dart';
 import '../utils/thinking_window.dart';
 import '../widgets/ai_bubble_actions.dart';
 import '../widgets/app_menu.dart';
+import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/edit_text_images_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/floor_jump_bar.dart';
-import '../widgets/generation_banner.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
@@ -936,11 +935,9 @@ class _ChatScreenState extends State<ChatScreen>
       // 请求失败已以「失败条目」气泡落库（用户输入 + 红框），不再弹消息提示；
       // 仅当失败条目落库也失败时才恢复输入并提示错误兜底。
       _inputController.text = input;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('请求失败：${roundProvider.error ?? '未知错误'}'),
-          duration: const Duration(seconds: 4),
-        ),
+      context.notices.error(
+        '请求失败：${roundProvider.error ?? '未知错误'}',
+        dwell: const Duration(seconds: 4),
       );
     }
     _endGeneration();
@@ -976,9 +973,7 @@ class _ChatScreenState extends State<ChatScreen>
         _reviveImages(result.paths);
       }
       if (result.warnings.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.warnings.join('\n'))),
-        );
+        context.notices.warning(result.warnings.join('\n'), copyable: true);
       }
     } finally {
       if (mounted) {
@@ -1013,8 +1008,8 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _pasteFromClipboard() async {
     final service = context.read<ClipboardPasteService>();
     final ai = context.read<AiSettingsProvider>();
-    // 先取 messenger，避免异步后使用失效的 context。
-    final messenger = ScaffoldMessenger.of(context);
+    // 先取通知中心，避免异步后使用失效的 context。
+    final notices = context.notices;
     await pasteIntoTextInput(
       service: service,
       controller: _inputController,
@@ -1025,9 +1020,8 @@ class _ChatScreenState extends State<ChatScreen>
         if (mounted) setState(() => _pendingImages.add(rel));
         _reviveImages([rel]);
       },
-      onNotice: (msg) => messenger.showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-      ),
+      onNotice: (msg) =>
+          notices.info(msg, dwell: const Duration(seconds: 2)),
     );
   }
 
@@ -1089,9 +1083,7 @@ class _ChatScreenState extends State<ChatScreen>
       _isImportingImages = false;
     });
     if (warnings.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(warnings.join('\n'))),
-      );
+      context.notices.warning(warnings.join('\n'), copyable: true);
     }
   }
 
@@ -1200,9 +1192,7 @@ class _ChatScreenState extends State<ChatScreen>
     if (_isPreviewing) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('尚未选择书籍')),
-      );
+      context.notices.warning('尚未选择书籍');
       return;
     }
     final input = _inputController.text.trim();
@@ -1223,9 +1213,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('预览失败：$e')),
-      );
+      context.notices.error('预览失败：$e');
     } finally {
       if (mounted) setState(() => _isPreviewing = false);
     }
@@ -1357,9 +1345,7 @@ class _ChatScreenState extends State<ChatScreen>
     final text = isAi ? round.aiNarrative : round.userInput;
     Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已复制'), duration: Duration(seconds: 1)),
-      );
+      context.notices.success('已复制', dwell: const Duration(seconds: 1));
     }
   }
 
@@ -1563,25 +1549,11 @@ class _ChatScreenState extends State<ChatScreen>
               context,
               onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
             );
-            // 悬浮进程提示：盖在对话区上方（不占位、不遮挡右侧栏），宽窄屏一致。
-            final chatWithBanner = Stack(
-              children: [
-                Positioned.fill(child: chat),
-                Positioned(
-                  top: 8,
-                  left: 0,
-                  right: 0,
-                  child: GenerationBanner(
-                    excludeBookUuid:
-                        context.watch<BookProvider>().currentBook?.uuid,
-                    onOpenBook: _jumpToBook,
-                  ),
-                ),
-              ],
-            );
+            // 其他书正在生成 / 同步进度统一由应用级驻场岛展示
+            // （见 PinnedNoticeIsland），对话页不再内嵌生成计数横幅。
             return wide
-                ? _buildWideLayout(context, chatWithBanner, sidebar, slotWidth)
-                : _buildMobileLayout(context, chatWithBanner, sidebar);
+                ? _buildWideLayout(context, chat, sidebar, slotWidth)
+                : _buildMobileLayout(context, chat, sidebar);
           },
         ),
       ),
@@ -1636,17 +1608,6 @@ class _ChatScreenState extends State<ChatScreen>
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  /// 跳转到指定书对话页（替换当前对话页，展示该书的生成状态）。
-  void _jumpToBook(Book book) {
-    context.read<BookProvider>().selectBook(book);
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => const ChatScreen(),
-        settings: RouteSettings(name: chatRouteName, arguments: book.uuid),
       ),
     );
   }

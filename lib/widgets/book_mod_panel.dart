@@ -8,6 +8,7 @@ import '../utils/focus_utils.dart';
 import '../utils/pinyin_sort.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
+import 'app_notice_overlay.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -186,7 +187,7 @@ class _BookModPanelState extends State<BookModPanel> {
     final provider = context.read<ModProvider>();
     final ok = await provider.saveBookModConfigs(bookUuid, configs);
     if (!ok && mounted) {
-      _showMessage('保存失败：${provider.error ?? '未知错误'}');
+      context.notices.error('保存失败：${provider.error ?? '未知错误'}');
     }
   }
 
@@ -217,10 +218,6 @@ class _BookModPanelState extends State<BookModPanel> {
       _enabled.insert(newIndex, item);
     });
     _save();
-  }
-
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override

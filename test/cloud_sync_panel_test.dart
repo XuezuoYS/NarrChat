@@ -9,6 +9,8 @@ import 'package:narrchat/widgets/cloud_sync_panel.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/notice_harness.dart';
+
 /// 云同步面板（重新设计版）widget 测试。
 ///
 /// 重点：窄屏（360）下不溢出、亮/暗主题均可渲染、滑动式同步模式分段可选、
@@ -38,6 +40,7 @@ void main() {
         ],
         child: MaterialApp(
           theme: theme,
+          builder: floatingNoticeBuilder(),
           home: Scaffold(
             body: SingleChildScrollView(
               child: CloudSyncPanel(form: form),
@@ -150,7 +153,7 @@ void main() {
     expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
   });
 
-  testWidgets('未连接点击展示框：只弹提示，不打开弹窗也不联网', (tester) async {
+  testWidgets('未连接点击展示框：只弹悬浮通知，不打开弹窗也不联网', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
     await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
@@ -159,8 +162,8 @@ void main() {
     await tester.pump();
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(find.byType(SnackBar), findsOneWidget);
     expect(find.text('请先保存 WebDAV 连接配置后再修改'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('已连接且已读到云端值：展示框显示该数字，点击打开弹窗', (tester) async {

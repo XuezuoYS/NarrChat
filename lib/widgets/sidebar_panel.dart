@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../theme/app_theme.dart';
+import 'app_notice_overlay.dart';
 import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
 import 'markdown_field.dart';
@@ -24,7 +25,7 @@ import 'quick_scroll_rail.dart';
 /// - 手动保存：编辑时**不自动写库**；每个子模块通过标题栏【编辑】进入编辑、
 ///   【保存】（或编辑模式内「完成」）退出编辑并调用 [onSaveField] 持久化，
 ///   【取消】放弃本次修改（还原为已保存内容）。
-///   保存结果通过 ScaffoldMessenger 的 SnackBar（Flutter 默认通知渠道）提示。
+///   保存结果通过应用内悬浮通知渠道（`context.notices`）提示。
 ///   历史轮次的修改绝不自动影响后续轮次，仅作为快照存档。
 ///
 /// 父子约定：父级切换 [round] 时**不更换本组件 key**（State 复用），
@@ -143,20 +144,17 @@ class _SidebarPanelState extends State<SidebarPanel> {
     setState(() => _editing[field] = editing);
   }
 
-  /// 保存并写回数据库；保存结果通过 SnackBar（Flutter 默认通知渠道）提示。
+  /// 保存并写回数据库；保存结果通过应用内悬浮通知渠道提示。
   Future<void> _saveFieldNow(String field, String value) async {
     final round = widget.round;
     if (round == null) return;
     final ok = await widget.onSaveField(round, field, value);
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(ok ? '已保存' : '保存失败'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+    if (ok) {
+      context.notices.success('已保存', dwell: const Duration(seconds: 2));
+    } else {
+      context.notices.error('保存失败', dwell: const Duration(seconds: 2));
+    }
   }
 
   /// 标题栏【编辑】：若模块已折叠则先展开，再让对应编辑器进入编辑模式。

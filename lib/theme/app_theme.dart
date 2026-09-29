@@ -128,7 +128,6 @@ class NarrChatTheme {
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-      snackBarTheme: _snackBarTheme(isDark),
       // —— 分割线 ——
       dividerTheme: DividerThemeData(thickness: 1, color: colors.divider),
       // —— 列表 ——
@@ -251,16 +250,6 @@ class NarrChatTheme {
         borderRadius: BorderRadius.circular(12),
         borderSide: const BorderSide(color: primary, width: 1.4),
       ),
-    );
-  }
-
-  /// SnackBar 主题。
-  static SnackBarThemeData _snackBarTheme(bool isDark) {
-    return SnackBarThemeData(
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: isDark ? const Color(0xFF3A3C42) : const Color(0xFF2A2A2A),
-      contentTextStyle: const TextStyle(color: Colors.white),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     );
   }
 

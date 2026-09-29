@@ -7,6 +7,7 @@ import 'package:photo_view/photo_view.dart' show PhotoViewScaleState;
 import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 /// [ImageViewerPage]（photo_view 全屏查看器）测试。
 ///
@@ -39,6 +40,7 @@ void main() {
         ChangeNotifierProvider.value(value: CloudSyncProvider()),
       ],
       child: MaterialApp(
+        builder: floatingNoticeBuilder(),
         home: Scaffold(
           body: Builder(
             builder: (ctx) => Center(
@@ -121,6 +123,7 @@ void main() {
     expect(deletion.calls, 1);
     expect(find.text('1/1'), findsOneWidget);
     expect(find.text('已删除'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('查看器：删除成功回调 onDeleted 通知调用方（列表移除该项）', (tester) async {
@@ -137,6 +140,7 @@ void main() {
     await tester.tap(find.text('删除').last);
     await tester.pumpAndSettle();
     expect(deleted, ['img/a.png']);
+    await flushNotices(tester);
   });
 
   testWidgets('查看器：删除最后一张后关闭查看器', (tester) async {
@@ -153,6 +157,7 @@ void main() {
     expect(deletion.deleted, ['img/a.png']);
     // 变更为关闭查看器。
     expect(find.byType(ImageViewerPage), findsNothing);
+    await flushNotices(tester);
   });
 
   testWidgets('查看器：触屏下滑（未放大）超阈值滑出关闭', (tester) async {

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../models/raw_exchange.dart';
 import '../utils/focus_utils.dart';
+import 'app_notice_overlay.dart';
 
 /// 从文本中提取一个 base64 图片 data URL（用于 RAW 请求体中折叠长图）。
 class RawImageData {
@@ -930,7 +931,7 @@ class _ImageListBlockState extends State<_ImageListBlock> {
   Future<void> _copy(BuildContext context, String data) async {
     await Clipboard.setData(ClipboardData(text: data));
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制完整 data URL')));
+    context.notices.success('已复制完整 data URL');
   }
 
   @override

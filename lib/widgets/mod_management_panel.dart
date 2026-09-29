@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../models/app_notice.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
+import 'app_notice_overlay.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -52,8 +54,8 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     super.dispose();
   }
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  void _showMessage(String message, {NoticeKind kind = NoticeKind.info}) {
+    context.notices.show(message, kind: kind);
   }
 
   /// 查看（只读）对话框，预置与自定义共用。
@@ -92,9 +94,9 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
           );
     if (!mounted) return;
     if (ok) {
-      _showMessage(isEdit ? '已保存 Mod' : '已创建 Mod');
+      _showMessage(isEdit ? '已保存 Mod' : '已创建 Mod', kind: NoticeKind.success);
     } else {
-      _showMessage('操作失败：${provider.error ?? '未知错误'}');
+      _showMessage('操作失败：${provider.error ?? '未知错误'}', kind: NoticeKind.error);
     }
   }
 
@@ -122,7 +124,10 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     final provider = context.read<ModProvider>();
     final ok = await provider.deleteMod(mod.uuid);
     if (!mounted) return;
-    _showMessage(ok ? '已删除' : '删除失败：${provider.error ?? '未知错误'}');
+    _showMessage(
+      ok ? '已删除' : '删除失败：${provider.error ?? '未知错误'}',
+      kind: ok ? NoticeKind.success : NoticeKind.error,
+    );
   }
 
   /// 导出为 JSON 文本（可复制分享）。
@@ -179,9 +184,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: jsonText));
               if (ctx.mounted) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(content: Text('已复制到剪贴板')),
-                );
+                ctx.notices.success('已复制到剪贴板');
                 Navigator.of(ctx).pop();
               }
             },
@@ -230,7 +233,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     try {
       decoded = jsonDecode(text);
     } catch (_) {
-      _showMessage('JSON 解析失败，请检查格式');
+      _showMessage('JSON 解析失败，请检查格式', kind: NoticeKind.warning);
       return;
     }
 
@@ -242,12 +245,12 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     } else if (decoded is Map<String, dynamic>) {
       items.add(decoded);
     } else {
-      _showMessage('JSON 格式不正确：需要对象或对象数组');
+      _showMessage('JSON 格式不正确：需要对象或对象数组', kind: NoticeKind.warning);
       return;
     }
 
     if (items.isEmpty) {
-      _showMessage('未找到可导入的 Mod');
+      _showMessage('未找到可导入的 Mod', kind: NoticeKind.warning);
       return;
     }
 
@@ -285,6 +288,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
       imported > 0
           ? '成功导入 $imported 个 Mod${skipped > 0 ? '，跳过 $skipped 个' : ''}'
           : '导入失败：${provider.error ?? '未知错误'}',
+      kind: imported > 0 ? NoticeKind.success : NoticeKind.error,
     );
   }
 

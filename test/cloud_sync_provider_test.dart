@@ -1,6 +1,7 @@
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
@@ -12,7 +13,7 @@ import 'package:narrchat/services/webdav_service.dart';
 /// - 取消只作用于目标平面（另一平面排队保留）；
 /// - 生命周期：空闲不产生任何定时轮询；回前台触发 + 2 分钟节流窗口；
 /// - 结果提示队列：同文案去重、上限挤掉最早提示、按 id 关闭移除
-///   （气泡渲染与自动消失 / 驻留关闭语义见 sync_result_bubble_test.dart）。
+///   （驻场岛的渲染、自动撤销与「已读」语义见 pinned_notice_island_test.dart）。
 void main() {
   test('triggerSync：未配置时忽略（全部 kind）', () {
     final provider = CloudSyncProvider()..debugSetConfigured(value: false);
@@ -79,7 +80,7 @@ void main() {
     expect(provider.debugCancelRequested(SyncPlane.images), isFalse);
   });
 
-  /// 构造「已配置 + 自动模式 + 执行道被占用」的 provider：
+  /// 构造「已配置 + 自动模式 + 执行道被占用」的 provider。
   /// 触发只排队、不触碰真实网络，便于断言触发本身。
   CloudSyncProvider laneBusyProvider({DateTime Function()? now}) {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -91,7 +92,7 @@ void main() {
     return provider;
   }
 
-  /// 撤销排队位（把"已触发"复位成"空闲"，不引入真实任务执行）。
+  /// 撤销排队位（把「已触发」复位成「空闲」，不引入真实任务执行）。
   void clearQueue(CloudSyncProvider provider) {
     provider.cancelSync(SyncPlane.data);
     provider.cancelSync(SyncPlane.images);
@@ -178,7 +179,7 @@ void main() {
         reason: '手动模式下回前台同样静默忽略，不占用节流窗口');
   });
 
-  test('compareSnapshots：按代际新 → 旧，同代按文件名（内嵌时间）倒序', () {
+  test('compareSnapshots：按代际新→旧，同代按文件名（内嵌时间）倒序', () {
     final files = [
       const WebDavFile(name: 'narrchat_snapshot_g2_20260816_100000.db'),
       const WebDavFile(name: 'narrchat_snapshot_g7_20260816_120000.db'),
@@ -223,18 +224,18 @@ void main() {
     // 全是驻留错误时丢弃最早一条。
     final allError = CloudSyncProvider();
     for (final m in ['E1', 'E2', 'E3', 'E4']) {
-      allError.showSyncResult(m, kind: SyncToastKind.error);
+      allError.showSyncResult(m, kind: NoticeKind.error);
     }
     expect(allError.resultToasts.map((t) => t.message).toList(), ['E2', 'E3', 'E4']);
   });
 
   test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
     final provider = CloudSyncProvider();
-    provider.showSyncResult('已取消数据同步', kind: SyncToastKind.info);
-    provider.showSyncResult('图片同步：连接超时（HTTP 408）', kind: SyncToastKind.error);
+    provider.showSyncResult('已取消数据同步', kind: NoticeKind.info);
+    provider.showSyncResult('图片同步：连接超时（HTTP 408）', kind: NoticeKind.error);
 
     final error = provider.resultToasts
-        .firstWhere((t) => t.kind == SyncToastKind.error);
+        .firstWhere((t) => t.kind == NoticeKind.error);
     provider.dismissSyncResult(error.id);
 
     expect(
@@ -245,6 +246,17 @@ void main() {
     // 重复关闭：无副作用（不再通知）。
     provider.dismissSyncResult(error.id);
     expect(provider.resultToasts, hasLength(1));
+  });
+
+  test('结果条目驻留时长：成功 3 秒、失败 15 秒（驻场岛据此自动撤销）', () {
+    final provider = CloudSyncProvider();
+    provider.showSyncResult('数据已同步');
+    provider.showSyncResult('数据同步失败：超时', kind: NoticeKind.error);
+    final dwells = {
+      for (final t in provider.resultToasts) t.message: t.dwell,
+    };
+    expect(dwells['数据已同步'], const Duration(seconds: 3));
+    expect(dwells['数据同步失败：超时'], const Duration(seconds: 15));
   });
 
   // ---------------------------------------------------------------------------

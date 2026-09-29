@@ -10,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../services/image_store.dart';
 import '../services/sync/image_deletion.dart';
+import 'app_notice_overlay.dart';
 import 'bubble_pointer_listener.dart';
 import 'image_preview.dart';
 
@@ -265,6 +266,12 @@ class _WarmImageViewerWindowAppState extends State<WarmImageViewerWindowApp> {
       debugShowCheckedModeBanner: false,
       title: 'NarrChat - 图片查看',
       theme: ThemeData(brightness: Brightness.dark),
+      // 悬浮通知渠道：查看器的「图片已保存 / 已复制 / 已删除」等提示。
+      // 子窗口没有云同步 / 生成相关 Provider，故不挂驻场岛。
+      builder: (context, child) => AppNoticeOverlay(
+        pinnedIsland: false,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: _images.isEmpty
           ? const ColoredBox(color: Colors.black)
           : DesktopImageViewer(
@@ -395,6 +402,11 @@ class ImageViewerWindowApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'NarrChat - 图片查看',
       theme: ThemeData(brightness: Brightness.dark),
+      // 悬浮通知渠道（子窗口无云同步 / 生成 Provider，不挂驻场岛）。
+      builder: (context, child) => AppNoticeOverlay(
+        pinnedIsland: false,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: DesktopImageViewer(images: args.images, initialIndex: args.index),
     );
   }

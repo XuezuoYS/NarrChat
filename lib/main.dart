@@ -32,11 +32,10 @@ import 'services/update_check_flow.dart';
 import 'services/update_check_service.dart';
 import 'services/windows_paste_fix.dart';
 import 'theme/app_theme.dart';
+import 'widgets/app_notice_overlay.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
 import 'widgets/narr_chat_scrollbar.dart';
-import 'widgets/sync_hud.dart';
-import 'widgets/sync_result_bubble.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -138,6 +137,8 @@ Future<void> main() async {
       notificationSettingsProvider: notificationSettingsProvider,
       navigatorKey: notificationService.navigatorKey,
       navigatorObservers: [notificationService.routeObserver],
+      // 驻场岛展开区里点「正在生成的书」→ 复用通知服务的跳转。
+      onOpenBook: (uuid) => unawaited(notificationService.openChatBook(uuid)),
     ),
   );
   // 冷启动点通知：首帧后跳转到对应书的 chat 页。
@@ -196,6 +197,9 @@ class NarrChatApp extends StatelessWidget {
   final GlobalKey<NavigatorState> navigatorKey;
   final List<NavigatorObserver> navigatorObservers;
 
+  /// 驻场岛「正在生成的书」跳转回调（由 main 接到通知服务的 openChatBook）。
+  final void Function(String bookUuid) onOpenBook;
+
   const NarrChatApp({
     super.key,
     required this.aiSettingsProvider,
@@ -209,6 +213,7 @@ class NarrChatApp extends StatelessWidget {
     required this.notificationSettingsProvider,
     required this.navigatorKey,
     required this.navigatorObservers,
+    required this.onOpenBook,
   });
 
   @override
@@ -246,31 +251,19 @@ class NarrChatApp extends StatelessWidget {
           // 输入法候选窗跑偏（不跟随光标）的问题（见 ImeCaretSync）。
           // 同步流程也复用同一 Navigator（弹首连分支对话框用）。
           CloudSyncProvider.navigatorKey = navigatorKey;
-          // HUD 在 MaterialApp.builder 中位于 Navigator 之上（无 Overlay 可挂
-          // Tooltip），因此为「子内容 + 同步 HUD」包一层专属 Overlay。
-          // 同时在此应用**全局字体缩放**（字体设置二级页的 6 档）：builder 的
-          // child 即 Navigator 子树，故所有页面与对话框的文字一致缩放。
+          // 应用内通知（悬浮渠道 + 驻场岛）挂在 MaterialApp.builder 中，
+          // 位于 Navigator 之上：通知恒显示在页面与对话框之上，且不受
+          // ScaffoldMessenger 的 Scaffold 生命周期约束。同时在此应用
+          // **全局字体缩放**（字体设置二级页的 6 档）：builder 的 child 即
+          // Navigator 子树，故所有页面与对话框的文字一致缩放。
           return ImeCaretSync(
             child: MaterialApp(
               builder: (context, child) => MediaQuery.withClampedTextScaling(
                 minScaleFactor: ui.fontScaleMultiplier,
                 maxScaleFactor: ui.fontScaleMultiplier,
-                child: Overlay(
-                  initialEntries: [
-                    OverlayEntry(
-                      builder: (_) => Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          child ?? const SizedBox.shrink(),
-                          // 应用级同步悬浮 HUD：仅同步进行时出现。
-                          const SyncHud(),
-                          // 应用级同步结果悬浮气泡：成功 2 秒自动消失，
-                          // 失败驻留待关闭（内容可复制）。
-                          const SyncResultBubble(),
-                        ],
-                      ),
-                    ),
-                  ],
+                child: AppNoticeOverlay(
+                  onOpenBook: onOpenBook,
+                  child: child ?? const SizedBox.shrink(),
                 ),
               ),
               title: 'NarrChat',

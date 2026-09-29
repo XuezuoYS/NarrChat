@@ -6,6 +6,7 @@ import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 const GitHubRelease _release = GitHubRelease(
   tagVersion: 'v1.4.0',
@@ -27,6 +28,7 @@ Future<void> _pumpDebugScreen(
   await tester.pumpWidget(
     MaterialApp(
       theme: NarrChatTheme.light,
+      builder: floatingNoticeBuilder(),
       home: DebugScreen(
         updateService: service,
         databaseService: dbService ?? FakeDebugDatabaseService(),
@@ -68,7 +70,7 @@ void main() {
     expect(find.textContaining('当前版本'), findsOneWidget);
   });
 
-  testWidgets('检查失败：SnackBar 提示原因，不弹对话框', (tester) async {
+  testWidgets('检查失败：悬浮通知提示原因，不弹对话框', (tester) async {
     final service =
         FakeUpdateCheckService([const CheckFailed('网络请求失败：boom')]);
     await _pumpDebugScreen(tester, service);
@@ -78,9 +80,10 @@ void main() {
     expect(service.forceShowValues, [true]);
     expect(find.text('发现新版本'), findsNothing);
     expect(find.text('检查更新失败：网络请求失败：boom'), findsOneWidget);
+    await flushNotices(tester);
   });
 
-  testWidgets('仓库无发布：SnackBar 提示未获取到发布信息', (tester) async {
+  testWidgets('仓库无发布：悬浮通知提示未获取到发布信息', (tester) async {
     final service = FakeUpdateCheckService([const NoRelease()]);
     await _pumpDebugScreen(tester, service);
 
@@ -89,6 +92,7 @@ void main() {
     expect(service.forceShowValues, [true]);
     expect(find.text('发现新版本'), findsNothing);
     expect(find.text('未获取到 GitHub 发布信息'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('查看数据库版本：对话框展示代码版本与文件版本', (tester) async {
@@ -105,7 +109,7 @@ void main() {
     expect(find.textContaining('数据库文件版本（user_version）：14'), findsOneWidget);
   });
 
-  testWidgets('读取数据库版本失败：SnackBar 提示，不弹对话框', (tester) async {
+  testWidgets('读取数据库版本失败：悬浮通知提示，不弹对话框', (tester) async {
     final service = FakeUpdateCheckService([const NoRelease()]);
     final dbService = FakeDebugDatabaseService()
       ..versionError = StateError('数据库已被占用');
@@ -118,5 +122,6 @@ void main() {
       find.text('读取数据库版本失败：Bad state: 数据库已被占用'),
       findsOneWidget,
     );
+    await flushNotices(tester);
   });
 }
