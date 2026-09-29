@@ -398,6 +398,45 @@ class RoundProvider extends ChangeNotifier {
   List<String> get activeGenerationBookUuids =>
       [for (final g in _gens.values) if (g.isSending) g.bookUuid];
 
+  /// 当前**可见**的对话页所属书籍（用户正停留在该书的对话页上；否则为 null）。
+  ///
+  /// 跨书生成提示必须排除它：停留在某书页面时不该提示「这本书正在生成」，
+  /// 在应用内离开该页面（回首页 / 进设置 / 切到别的书）后才提示，
+  /// 回到该书页面后提示再次消失——与改动前对话页内嵌横幅的行为一致
+  /// （旧横幅在对话页里传 `excludeBookUuid: 当前查看书`，首页则展示全部）。
+  String? get visibleChatBookUuid => _visibleChatBookUuid;
+  String? _visibleChatBookUuid;
+
+  /// 汇报「当前可见的对话页书籍」（由 `ChatScreen` 依路由可见性维护）。
+  ///
+  /// 只传值、不做归属校验：路由被覆盖时页面会汇报 null；切换页面时同一帧内的
+  /// 帧后回调按登记顺序执行，新页面的汇报最后生效。
+  void setVisibleChatBook(String? bookUuid) {
+    // 已销毁（测试 teardown / 应用退出时页面被拆掉的帧后回调）直接忽略。
+    if (_disposed || _visibleChatBookUuid == bookUuid) return;
+    _visibleChatBookUuid = bookUuid;
+    notifyListeners();
+  }
+
+  /// 清空可见对话页书籍，但**仅当它仍是 [bookUuid]**（页面销毁时的归属校验：
+  /// 通知跳转用 `pushReplacement` 时新页面可能已经接管）。
+  ///
+  /// 路由被*弹出*时 `isCurrent` 不会先变 false 再通知，因此由 `ChatScreen.dispose`
+  /// 在**帧后**调用本方法（dispose 期间整棵树锁定，直接通知会触发
+  /// 「setState() or markNeedsBuild() called when widget tree was locked」）。
+  void clearVisibleChatBook(String bookUuid) {
+    if (_visibleChatBookUuid != bookUuid) return;
+    setVisibleChatBook(null);
+  }
+
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 

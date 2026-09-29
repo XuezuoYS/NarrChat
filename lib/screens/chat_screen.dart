@@ -196,6 +196,13 @@ class _ChatScreenState extends State<ChatScreen>
   /// [_onRoundTick]）。流式增量不再重建外壳，跟随判定改由该监听驱动。
   RoundProvider? _tickProvider;
 
+  /// 用于汇报「本页可见性」的轮次 provider（dispose 时不能再用 context 取）。
+  RoundProvider? _roundProvider;
+
+  /// 本页最近一次汇报给 [RoundProvider.setVisibleChatBook] 的书 uuid
+  /// （null = 本页当前不可见）。dispose 时按其归属决定是否清空。
+  String? _reportedBookUuid;
+
   /// 打开书籍后「加载轮次 → 跳转到底部」的初始化标记（同一本书只执行一次）。
   /// 防止首帧建造时当前书尚未就绪（异步加载 / 冷启动）而错过跳底。
   String? _initialScrollBookUuid;
@@ -366,11 +373,45 @@ class _ChatScreenState extends State<ChatScreen>
       _tickProvider?.removeListener(_onRoundTick);
       _tickProvider = rp..addListener(_onRoundTick);
     }
+    _reportVisibleBook();
+  }
+
+  /// 汇报「本页（当前可见的对话页）所属书籍」，供跨书生成提示排除。
+  ///
+  /// 判据是**路由是否当前可见**（`ModalRoute.isCurrent`，挂在 `ModalRoute` 的
+  /// 继承依赖上，被其它页面覆盖 / 返回时会重新触发本方法）：
+  /// - 停留在本页 → 汇报本书 uuid：不提示「这本书正在生成」；
+  /// - 进入设置 / 回首页 / 切到别的书 → 汇报 null：提示出现；
+  /// - 返回本页 → 再次汇报本书 uuid：提示消失（与改动前的内嵌横幅一致）。
+  ///
+  /// 汇报会通知监听者（驻场岛等），因此值变化时**帧后**下发，
+  /// 避免在 build 期间（本方法由依赖变化触发）markNeedsBuild。
+  void _reportVisibleBook() {
+    final bookUuid = context.read<BookProvider>().currentBook?.uuid;
+    final isCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    final wanted = isCurrent ? bookUuid : null;
+    if (wanted == _reportedBookUuid) return;
+    _reportedBookUuid = wanted;
+    _roundProvider ??= context.read<RoundProvider>();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _roundProvider?.setVisibleChatBook(wanted);
+    });
   }
 
   @override
   void dispose() {
     _tickProvider?.removeListener(_onRoundTick);
+    // 路由被*弹出*时不会先收到 isCurrent=false（与「被覆盖」不同），因此这里补一次
+    // 清空；必须帧后执行：dispose 期间整棵树锁定，直接通知会触发
+    // 「setState() or markNeedsBuild() called when widget tree was locked」。
+    final reported = _reportedBookUuid;
+    final round = _roundProvider;
+    if (reported != null && round != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        round.clearVisibleChatBook(reported);
+      });
+    }
     _sidebarController.dispose();
     _inputController.dispose();
     _inputFocus.dispose();

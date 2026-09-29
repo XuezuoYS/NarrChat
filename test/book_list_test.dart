@@ -3,7 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
+import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/screens/chat_screen.dart';
+import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -89,6 +93,31 @@ void main() {
     await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
     expect(find.text('新建书籍'), findsOneWidget, reason: '应已返回首页书籍列表');
+  });
+
+  testWidgets('对话页返回首页后：可见书籍汇报被清空（生成提示能再次出现）', (tester) async {
+    // 回归：驻场提示排除「当前可见对话页的那本书」；若返回首页后仍残留该书，
+    // 就会变成「生成中的书回到主页反而不提示，进别的页才提示」。
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    final round = Provider.of<RoundProvider>(
+      tester.element(find.byType(HomeScreen)),
+      listen: false,
+    );
+    expect(round.visibleChatBookUuid, isNull, reason: '首页没有可见的对话页');
+
+    await tester.tap(find.text('测试书'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatScreen), findsOneWidget);
+    expect(round.visibleChatBookUuid, 'b1', reason: '停留对话页：汇报本书');
+
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatScreen), findsNothing);
+    expect(
+      round.visibleChatBookUuid,
+      isNull,
+      reason: '回到首页必须清空，否则该书正在生成时首页不提示',
+    );
   });
 
   testWidgets('对话页点击顶栏书名直接进入书籍设置', (tester) async {

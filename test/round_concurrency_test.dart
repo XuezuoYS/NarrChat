@@ -439,6 +439,80 @@ void main() {
       await fA;
     });
 
+    testWidgets('当前书生成中：岛不提示；应用内离开该页才提示，返回后不再提示', (tester) async {
+      final bookDao = FakeBookDao(books: [bookA, bookB]);
+      final dao = FakeRoundDao();
+      final ai = _ConcurrentAiService();
+      final bookProvider = BookProvider(dao: bookDao);
+      await bookProvider.loadBooks();
+      bookProvider.selectBook(bookA); // 当前查看的就是书 A，且它自己开始生成
+
+      final roundProvider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        retryDelay: Duration.zero,
+      );
+      await roundProvider.loadRounds('b1');
+      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+
+      await pumpChat(
+        tester,
+        bookProvider: bookProvider,
+        roundProvider: roundProvider,
+        worldBookProvider: worldBookProvider,
+      );
+
+      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('1本书正在生成……'),
+        findsNothing,
+        reason: '正停留在书 A 的对话页，不该提示它自己在生成',
+      );
+
+      // 应用内离开该页面（进入设置 / 回首页 / 切到别的书）。
+      final navigator = tester.state<NavigatorState>(
+        find.byType(Navigator).first,
+      );
+      navigator.push(
+        MaterialPageRoute<void>(builder: (_) => const Scaffold(body: SizedBox.expand())),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('1本书正在生成……'),
+        findsOneWidget,
+        reason: '离开该页面后出现提示',
+      );
+
+      // 返回该书页面：提示消失。
+      navigator.pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        find.text('1本书正在生成……'),
+        findsNothing,
+        reason: '回到该书页面后不再提示',
+      );
+
+      // 收尾：完成书 A 生成，避免悬空。
+      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
+        await tester.pump();
+      }
+      ai.sessions.first.completer.complete(
+        const AiCallResult(
+          content: _fullContent,
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      );
+      await tester.pump();
+      await fA;
+    });
+
     testWidgets('多本书生成：驻场岛计数，展开列出全部并可选跳转', (tester) async {
       const bookC = Book(uuid: 'b3', title: '书C');
       final bookDao = FakeBookDao(books: [bookA, bookB, bookC]);

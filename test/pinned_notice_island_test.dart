@@ -14,7 +14,7 @@ import 'package:provider/provider.dart';
 
 import 'helpers/fakes.dart';
 
-/// 可预置「正在生成的书」的 RoundProvider 替身。
+/// 可预置「正在生成的书」与「当前可见对话页」的 RoundProvider 替身。
 class _FakeRoundProvider extends RoundProvider {
   _FakeRoundProvider(this.uuids)
       : super(
@@ -27,6 +27,18 @@ class _FakeRoundProvider extends RoundProvider {
 
   @override
   List<String> get activeGenerationBookUuids => uuids;
+
+  String? _visible;
+
+  @override
+  String? get visibleChatBookUuid => _visible;
+
+  @override
+  void setVisibleChatBook(String? bookUuid) {
+    if (_visible == bookUuid) return;
+    _visible = bookUuid;
+    notifyListeners();
+  }
 }
 
 /// 驻场岛（[PinnedNoticeIsland]）测试：
@@ -278,6 +290,35 @@ void main() {
     expect(opened, ['b1']);
     // 跳转后岛回到收起态。
     expect(find.byIcon(Icons.expand_more), findsOneWidget);
+  });
+
+  testWidgets('正在生成：正在查看的那本书不提示，离开页面才提示、返回后不再提示', (tester) async {
+    // 停留在该书对话页：`visibleChatBookUuid` = 该书 → 不提示（改动前内嵌横幅
+    // 也是传 excludeBookUuid 排除当前查看书）。
+    final round = _FakeRoundProvider(const ['b1'])..setVisibleChatBook('b1');
+    await pumpIsland(tester, roundProvider: round);
+    await tester.pump();
+    expect(find.text('1本书正在生成……'), findsNothing,
+        reason: '正在看这本书，不该提示它自己在生成');
+
+    // 在应用内离开该页面（回首页 / 进设置 / 切到别的书）。
+    round.setVisibleChatBook(null);
+    await settlePresence(tester);
+    expect(find.text('1本书正在生成……'), findsOneWidget);
+
+    // 回到该书页面：提示消失。
+    round.setVisibleChatBook('b1');
+    await settlePresence(tester);
+    expect(find.text('1本书正在生成……'), findsNothing);
+    expect(find.byIcon(Icons.expand_more), findsNothing, reason: '岛整体撤下');
+  });
+
+  testWidgets('正在生成：切到别的书时，正在生成的那本书仍然提示', (tester) async {
+    final round = _FakeRoundProvider(const ['b1'])..setVisibleChatBook('b2');
+    await pumpIsland(tester, roundProvider: round);
+    await settlePresence(tester);
+    expect(find.text('1本书正在生成……'), findsOneWidget,
+        reason: '当前看的是别的书，b1 在生成 → 提示');
   });
 
   testWidgets('结果成功：3 秒后自动收起（收起态也计时，含 200ms 淡出）', (tester) async {

@@ -302,9 +302,15 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     ];
     // 只订阅「正在生成的书」这一低频信号（uuid 串接参与值比较）：
     // 流式增量不会重建本组件。
-    final activeKeys = context.select<RoundProvider, String>(
-      (p) => p.activeGenerationBookUuids.join('|'),
-    );
+    //
+    // 排除**当前可见的对话页那本书**：正在看某书时不该提示「它正在生成」，
+    // 离开该页面后才提示（与改动前对话页内嵌横幅一致）。
+    final activeKeys = context.select<RoundProvider, String>((p) {
+      final visible = p.visibleChatBookUuid;
+      return p.activeGenerationBookUuids
+          .where((uuid) => uuid != visible)
+          .join('|');
+    });
     final generatingUuids = activeKeys.isEmpty
         ? const <String>[]
         : activeKeys.split('|');
