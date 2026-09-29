@@ -105,6 +105,24 @@ void main() {
     for (final level in FontScaleLevel.values) {
       expect(find.text(level.label), findsWidgets, reason: level.label);
     }
+    // 档位刻度标签一律单行、不折行（曾因固定过窄宽度导致文字竖排）。
+    // 限定在等宽刻度行内（分区头部的当前值不在此列）。
+    final tickLabels = tester.widgetList<Text>(
+      find.descendant(
+        of: find
+            .ancestor(
+              of: find.text(FontScaleLevel.values.first.label),
+              matching: find.byType(Row),
+            )
+            .last,
+        matching: find.byType(Text),
+      ),
+    );
+    expect(tickLabels.length, FontScaleLevel.values.length);
+    for (final label in tickLabels) {
+      expect(label.softWrap ?? true, isFalse, reason: label.data);
+      expect(label.maxLines ?? 1, 1, reason: label.data);
+    }
     expect(tester.takeException(), isNull);
   });
 
@@ -117,20 +135,28 @@ void main() {
     String label() => tester
         .widget<Text>(find.byKey(const ValueKey('font_settings_scale_label')))
         .data!;
+    // 预览块实际生效的文字缩放倍率（取预览中文文本自身的 MediaQuery）。
+    double previewScale() => MediaQuery.textScalerOf(
+      tester.element(find.byKey(const ValueKey('font_settings_preview_cn'))),
+    ).scale(1.0);
 
     expect(label(), '0%');
     expect(provider.fontScaleIndex, 0);
+    // 预览以草稿倍率（初始 1.0）渲染。
+    expect(previewScale(), 1.0);
 
     // 最右档 = +45%。
     await tester.drag(slider, const Offset(600, 0));
     await tester.pumpAndSettle();
     expect(label(), '+45%');
+    expect(previewScale(), closeTo(1.45, 0.001), reason: '预览随档位实时缩放');
     expect(provider.fontScaleIndex, 0, reason: '保存前不得写入全局设置');
 
     // 最左档 = -30%。
     await tester.drag(slider, const Offset(-900, 0));
     await tester.pumpAndSettle();
     expect(label(), '-30%');
+    expect(previewScale(), closeTo(0.70, 0.001), reason: '预览随档位实时缩放');
     expect(provider.fontScaleIndex, 0, reason: '保存前不得写入全局设置');
   });
 

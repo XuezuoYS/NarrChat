@@ -63,6 +63,10 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
   /// 草稿档位的展示标签（如 `0%` / `+15%`）。
   String get _draftLabel => FontScaleLevel.fromOffset(_draftScaleIndex).label;
 
+  /// 草稿档位的文字缩放倍率（预览块按它实时缩放）。
+  double get _draftMultiplier =>
+      FontScaleLevel.fromOffset(_draftScaleIndex).scale;
+
   /// 草稿字体的展示名（当前所选字体已加载时优先中文名）。
   String get _draftFontDisplay {
     if (_draftFamily.isEmpty) return '系统默认';
@@ -156,7 +160,10 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     }
   }
 
-  /// 选择字体样式：草稿态生效（不即时落盘，保存时才应用）。
+  /// 选择字体样式：草稿态生效（不即时落盘，保存时才应用全局）。
+  ///
+  /// 选中后立即注册字体到引擎，使预览块能立刻以该字体渲染；
+  /// 加载失败不阻断选择（预览临时回退默认字体）。
   Future<void> _pickFont() async {
     final selected = await showDialog<String>(
       context: context,
@@ -164,6 +171,9 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     );
     if (selected == null || !mounted) return;
     setState(() => _draftFamily = selected);
+    if (selected.isNotEmpty) {
+      await SystemFontsService.instance.loadFont(selected);
+    }
   }
 
   @override
@@ -187,12 +197,15 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
           ),
           title: const Text('字体设置'),
           actions: [
-            TextButton(
+            // 与「保存」等尺寸的白底按钮（AppBar 的 FilledButton 前景色
+            // 由 appBarTheme 的 foregroundColor 提供），便于识别为操作按钮。
+            FilledButton.icon(
               key: const ValueKey('font_settings_reset'),
               onPressed: _isSaving ? null : _reset,
-              child: const Text('重置'),
+              icon: const Icon(Icons.restart_alt, size: 18),
+              label: const Text('重置'),
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 8),
             FilledButton.icon(
               key: const ValueKey('font_settings_save'),
               onPressed: _isSaving ? null : _saveAndExit,
@@ -225,7 +238,7 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     );
   }
 
-  /// 预览块：以草稿字体渲染样例文本（缩放差异来自全局 `textScaler`）。
+  /// 预览块：按**草稿**字体与档位实时渲染样例文本。
   Widget _buildPreview(NarrChatColors colors) {
     final fontFamily = _draftFamily.isEmpty ? null : _draftFamily;
     return _SectionCard(
@@ -233,44 +246,50 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(
-                Icons.visibility_outlined,
-                size: 16,
-                color: colors.textSecondary,
+          _SectionHeader(
+            icon: Icons.visibility_outlined,
+            title: '预览',
+            colors: colors,
+            trailing: Text(
+              _draftLabel,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.primary,
               ),
-              const SizedBox(width: 6),
-              Text(
-                '预览',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: colors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            '风起于青萍之末，浪成于微澜之间。',
-            key: const ValueKey('font_settings_preview_cn'),
-            style: TextStyle(
-              fontSize: 15,
-              height: 1.5,
-              fontFamily: fontFamily,
-              color: colors.textPrimary,
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            'The quick brown fox jumps over the lazy dog. 0123456789',
-            key: const ValueKey('font_settings_preview_en'),
-            style: TextStyle(
-              fontSize: 13,
-              height: 1.5,
-              fontFamily: fontFamily,
-              color: colors.textSecondary,
+          const SizedBox(height: 12),
+          // 用草稿倍率覆盖全局 textScaler：拖动滑杆时预览即时变化
+          // （预览不叠加两重缩放）。
+          MediaQuery.withClampedTextScaling(
+            minScaleFactor: _draftMultiplier,
+            maxScaleFactor: _draftMultiplier,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _previewCn,
+                  key: const ValueKey('font_settings_preview_cn'),
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.6,
+                    fontFamily: fontFamily,
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _previewEn,
+                  key: const ValueKey('font_settings_preview_en'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.6,
+                    fontFamily: fontFamily,
+                    color: colors.textSecondary,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -278,14 +297,14 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     );
   }
 
-  /// 字体选择区：当前字体行（点按弹出字体对话框）。
+  /// 字体选择区：点按整行弹出字体对话框（与预览块同一套头部样式）。
   Widget _buildFontSection(NarrChatColors colors) {
     return _SectionCard(
       colors: colors,
       padding: EdgeInsets.zero,
       child: Stack(
         children: [
-          // 整行可点：点击热区覆盖标题与副标题（不必对准行尾箭头）。
+          // 整行可点：点击热区覆盖标题与当前字体值。
           Positioned.fill(
             child: Material(
               color: Colors.transparent,
@@ -296,43 +315,29 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  Icons.font_download_outlined,
-                  size: 20,
-                  color: colors.textSecondary,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '字体样式',
-                        style: TextStyle(fontSize: 15, color: colors.textPrimary),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _draftFontDisplay,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontFamily: _draftFamily.isEmpty
-                              ? null
-                              : _draftFamily,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                    ],
+                _SectionHeader(
+                  icon: Icons.font_download_outlined,
+                  title: '字体样式',
+                  colors: colors,
+                  trailing: Icon(
+                    Icons.chevron_right,
+                    size: 20,
+                    color: colors.textSecondary,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Icon(
-                  Icons.chevron_right,
-                  size: 20,
-                  color: colors.textSecondary,
+                const SizedBox(height: 12),
+                Text(
+                  _draftFontDisplay,
+                  style: TextStyle(
+                    // 与预览一致：以所选字体渲染当前值，便于直接比对。
+                    fontSize: 13,
+                    fontFamily: _draftFamily.isEmpty ? null : _draftFamily,
+                    color: colors.textPrimary,
+                  ),
                 ),
               ],
             ),
@@ -342,7 +347,7 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     );
   }
 
-  /// 大小选择区：滑杆（6 档）+ 档位刻度标签 + 当前档位。
+  /// 大小选择区：滑杆（6 档）+ 与刻度精确对齐的档位标签。
   Widget _buildSizeSection(NarrChatColors colors) {
     // 滑杆按 0..5 的序号取值，偏移量与序号的换算集中在此（避免散落魔法数）。
     const levelCount = FontScaleLevel.maxOffset - FontScaleLevel.minOffset + 1;
@@ -350,71 +355,127 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     return _SectionCard(
       colors: colors,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Icon(
-                Icons.format_size_outlined,
-                size: 18,
-                color: colors.textSecondary,
+          _SectionHeader(
+            icon: Icons.format_size_outlined,
+            title: '字体大小',
+            colors: colors,
+            trailing: Text(
+              _draftLabel,
+              key: const ValueKey('font_settings_scale_label'),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.primary,
               ),
-              const SizedBox(width: 8),
-              Text(
-                '字体大小',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: colors.textPrimary,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                _draftLabel,
-                key: const ValueKey('font_settings_scale_label'),
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Slider(
-            key: const ValueKey('font_settings_scale_slider'),
-            min: 0,
-            max: (levelCount - 1).toDouble(),
-            divisions: levelCount - 1,
-            value: sliderValue,
-            label: _draftLabel,
-            onChanged: (value) => setState(
-              () => _draftScaleIndex = FontScaleLevel.minOffset + value.round(),
             ),
           ),
-          // 6 档刻度标签：等宽列 + 居中，窄屏下也不溢出。
-          Row(
-            children: [
-              for (final level in FontScaleLevel.values)
-                Expanded(
-                  child: Text(
-                    level.label,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: level.offset == _draftScaleIndex
-                          ? Theme.of(context).colorScheme.primary
-                          : colors.textSecondary,
-                      fontWeight: level.offset == _draftScaleIndex
-                          ? FontWeight.w700
-                          : FontWeight.w400,
-                    ),
+          const SizedBox(height: 8),
+          // 滑杆与档位标签共用 [trackInset] 左右内边距，使 6 个标签的中心
+          // 与滑杆 6 个刻度（含首尾）严格对齐；标签取自然宽度居中且禁止换行
+          // （窄屏放不下时省略号，绝不折行）。
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: _trackInset),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Slider(
+                  key: const ValueKey('font_settings_scale_slider'),
+                  min: 0,
+                  max: (levelCount - 1).toDouble(),
+                  divisions: levelCount - 1,
+                  value: sliderValue,
+                  label: _draftLabel,
+                  onChanged: (value) => setState(
+                    () => _draftScaleIndex =
+                        FontScaleLevel.minOffset + value.round(),
                   ),
                 ),
-            ],
+                Row(
+                  children: [
+                    for (final level in FontScaleLevel.values)
+                      Expanded(
+                        child: Text(
+                          level.label,
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: level.offset == _draftScaleIndex
+                                ? Theme.of(context).colorScheme.primary
+                                : colors.textSecondary,
+                            fontWeight: level.offset == _draftScaleIndex
+                                ? FontWeight.w700
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 滑杆轨道左右内边距（Material 滑杆的固定 tap target 内缩）：
+/// 刻度位于 `[inset, width - inset]`，档位标签行使用同一内边距即可对齐。
+const double _trackInset = 24;
+
+/// 预览样例文本（中文；两段、含中英混排与标点，末尾为数字尾缀）。
+const String _previewCn =
+    '现在，这位自称蓝色大肥鱼的小女仆牵起裙摆，转了一圈，问：“诶？你认为我这样好看嘛？主人……会喜欢我这样嘛？”\n'
+    '而那位穿著漢服的姑娘將團扇掩住嘴唇，輕笑著不知道說了什麼，只見小女僕羞著臉錘了她兩下。“才不會呢！”她嬌嗔道。\n'
+    '0123456789';
+
+/// 预览样例文本（上段中文的英文翻译，同样两段 + 数字尾缀）。
+const String _previewEn =
+    'Now, this little maid who calls herself the Big Blue Fat Fish lifted her '
+    'skirt and twirled around, asking, "Eh? Do you think I look good like this? '
+    'Would Master... like me this way?"\n'
+    'Meanwhile, the girl in Hanfu covered her lips with a round fan and laughed '
+    'softly, saying something none could hear, until the little maid, blushing, '
+    'pounded her twice. "No way!" she pouted.\n'
+    '0123456789';
+
+/// 分区头部：图标 + 标题（+ 右侧当前值），三个分区共用同一套样式。
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final NarrChatColors colors;
+  final Widget? trailing;
+
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.colors,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: colors.textSecondary),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: colors.textPrimary,
+            ),
+          ),
+        ),
+        ?trailing,
+      ],
     );
   }
 }
