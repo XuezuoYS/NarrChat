@@ -248,24 +248,30 @@ class NarrChatApp extends StatelessWidget {
           CloudSyncProvider.navigatorKey = navigatorKey;
           // HUD 在 MaterialApp.builder 中位于 Navigator 之上（无 Overlay 可挂
           // Tooltip），因此为「子内容 + 同步 HUD」包一层专属 Overlay。
+          // 同时在此应用**全局字体缩放**（字体设置二级页的 6 档）：builder 的
+          // child 即 Navigator 子树，故所有页面与对话框的文字一致缩放。
           return ImeCaretSync(
             child: MaterialApp(
-              builder: (context, child) => Overlay(
-                initialEntries: [
-                  OverlayEntry(
-                    builder: (_) => Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        child ?? const SizedBox.shrink(),
-                        // 应用级同步悬浮 HUD：仅同步进行时出现。
-                        const SyncHud(),
-                        // 应用级同步结果悬浮气泡：成功 2 秒自动消失，
-                        // 失败驻留待关闭（内容可复制）。
-                        const SyncResultBubble(),
-                      ],
+              builder: (context, child) => MediaQuery.withClampedTextScaling(
+                minScaleFactor: ui.fontScaleMultiplier,
+                maxScaleFactor: ui.fontScaleMultiplier,
+                child: Overlay(
+                  initialEntries: [
+                    OverlayEntry(
+                      builder: (_) => Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          child ?? const SizedBox.shrink(),
+                          // 应用级同步悬浮 HUD：仅同步进行时出现。
+                          const SyncHud(),
+                          // 应用级同步结果悬浮气泡：成功 2 秒自动消失，
+                          // 失败驻留待关闭（内容可复制）。
+                          const SyncResultBubble(),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               title: 'NarrChat',
               debugShowCheckedModeBanner: false,

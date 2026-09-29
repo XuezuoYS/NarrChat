@@ -43,6 +43,9 @@ void main() {
     expect(find.text('跟随系统'), findsOneWidget);
     expect(find.text('亮色'), findsOneWidget);
     expect(find.text('暗色'), findsOneWidget);
+    // 字体设置入口行：显示当前字体与缩放档位（默认系统默认 / 0%）。
+    expect(find.text('字体设置'), findsOneWidget);
+    expect(find.text('系统默认（0%）'), findsOneWidget);
   });
 
   testWidgets('宽屏下主题设置保持横向布局', (tester) async {
@@ -55,5 +58,6 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('主题'), findsOneWidget);
     expect(find.text('跟随系统（默认）：随系统亮暗自动切换'), findsOneWidget);
+    expect(find.text('字体设置'), findsOneWidget);
   });
 }

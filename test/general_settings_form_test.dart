@@ -51,6 +51,8 @@ void main() {
     // UI 设置内容：主题设置可见。
     expect(find.text('主题'), findsOneWidget);
     expect(find.text('跟随系统（默认）：随系统亮暗自动切换'), findsOneWidget);
+    // UI 设置内容：字体设置入口行可见（字体样式 + 大小缩放的二级页入口）。
+    expect(find.text('字体设置'), findsOneWidget);
 
     // 其它设置内容：检查更新开关可见。
     expect(

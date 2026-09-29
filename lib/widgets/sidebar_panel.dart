@@ -423,6 +423,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
             backgroundColor: widget.isHistoryView
                 ? context.narrColors.historyBackground
                 : context.narrColors.surface,
+            textScale: MediaQuery.textScalerOf(context).scale(1.0),
             onToggle: () => setState(() => _collapsed[key] = !collapsed),
             onEdit: onEdit,
             onSave: onSave,
@@ -455,6 +456,11 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
   final bool collapsed;
   final bool editing;
   final Color backgroundColor;
+
+  /// 当前全局文字缩放倍率（字体缩放档位）；用于按档位放大固定高度，
+  /// 避免 +30% / +45% 档位下「标题 + 副标题」超出固定高度而溢出。
+  final double textScale;
+
   final VoidCallback onToggle;
   final VoidCallback? onEdit;
   final VoidCallback? onSave;
@@ -467,6 +473,7 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
     required this.backgroundColor,
     required this.onToggle,
     this.subtitle,
+    this.textScale = 1.0,
     this.onEdit,
     this.onSave,
     this.onCancel,
@@ -484,11 +491,15 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
     textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
   );
 
-  @override
-  double get minExtent => _height;
+  /// 标题栏高度：随全局文字缩放档位等比放大（最小为原始高度）。
+  double get _scaledHeight =>
+      _height * (textScale < 1.0 ? 1.0 : textScale);
 
   @override
-  double get maxExtent => _height;
+  double get minExtent => _scaledHeight;
+
+  @override
+  double get maxExtent => _scaledHeight;
 
   @override
   Widget build(
@@ -618,6 +629,7 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
         oldDelegate.collapsed != collapsed ||
         oldDelegate.editing != editing ||
         oldDelegate.backgroundColor != backgroundColor ||
+        oldDelegate.textScale != textScale ||
         oldDelegate.onToggle != onToggle ||
         oldDelegate.onEdit != onEdit ||
         oldDelegate.onSave != onSave ||

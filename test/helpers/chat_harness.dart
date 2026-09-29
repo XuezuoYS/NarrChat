@@ -57,7 +57,8 @@ const String kHarnessBookUuid = 'book-1';
 ///   “单轮高于视口”的场景可加大）；
 /// - [theme]：应用主题（默认浅色主题；深色置灰等外观用例可传 dark）；
 /// - [warningsStore]：常驻黄框警告的本地存储（默认新建内存替身，
-///   冷启动恢复场景可预置数据）。
+///   冷启动恢复场景可预置数据）；
+/// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
   AiService? ai,
@@ -80,6 +81,7 @@ Future<RoundProvider> pumpChatScreen(
   int seedBodyRepeats = 40,
   ThemeData? theme,
   Size size = const Size(1400, 900),
+  double textScale = 1.0,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -150,6 +152,14 @@ Future<RoundProvider> pumpChatScreen(
       ],
       child: MaterialApp(
         theme: theme ?? NarrChatTheme.light,
+        // 全局字体缩放：等价于生产 `main.dart` 的 MediaQuery.withClampedTextScaling。
+        builder: textScale == 1.0
+            ? null
+            : (context, child) => MediaQuery.withClampedTextScaling(
+                  minScaleFactor: textScale,
+                  maxScaleFactor: textScale,
+                  child: child ?? const SizedBox.shrink(),
+                ),
         home: Scaffold(body: const ChatScreen()),
       ),
     ),
@@ -164,7 +174,8 @@ Future<RoundProvider> pumpChatScreen(
 /// [notificationBackend] 注入通知后端（缺省时用 [FakeNotificationBackend]，
 /// 避免默认走真实 flutter_local_notifications 插件）；
 /// [notificationSettings] 注入预先构建（已 refresh）的通知设置 Provider，
-/// 用于「未开启通知提示条」等需要预置开关状态的用例。
+/// 用于「未开启通知提示条」等需要预置开关状态的用例；
+/// [textScale]：全局文字缩放倍率（默认 1.0 不缩放）。
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
   required List<Book> books,
@@ -172,6 +183,7 @@ Future<BookProvider> pumpHomeScreen(
   NotificationBackend? notificationBackend,
   NotificationSettingsProvider? notificationSettings,
   Size size = const Size(1400, 900),
+  double textScale = 1.0,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -218,7 +230,18 @@ Future<BookProvider> pumpHomeScreen(
           create: (_) => FakeImageRevivalService(),
         ),
       ],
-      child: MaterialApp(theme: NarrChatTheme.light, home: const HomeScreen()),
+      child: MaterialApp(
+        theme: NarrChatTheme.light,
+        // 全局字体缩放：等价于生产 `main.dart` 的 MediaQuery.withClampedTextScaling。
+        builder: textScale == 1.0
+            ? null
+            : (context, child) => MediaQuery.withClampedTextScaling(
+                  minScaleFactor: textScale,
+                  maxScaleFactor: textScale,
+                  child: child ?? const SizedBox.shrink(),
+                ),
+        home: const HomeScreen(),
+      ),
     ),
   );
   await tester.pumpAndSettle();

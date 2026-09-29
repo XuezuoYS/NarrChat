@@ -122,6 +122,14 @@ class SystemFontsService {
     return null;
   }
 
+  /// 已扫描字体中 [familyName] 的展示名（优先简体中文名）；未找到返回 null。
+  ///
+  /// 供界面把存储的字体族名显示为可读名称（如 "Microsoft YaHei" → "微软雅黑"）。
+  String? displayNameOf(String familyName) {
+    if (familyName.isEmpty) return null;
+    return _findFont(familyName)?.displayName;
+  }
+
   // —— 字体目录收集 ——
 
   Future<List<File>> _collectFontFiles() async {
