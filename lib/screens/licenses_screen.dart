@@ -6,6 +6,8 @@ import '../theme/app_theme.dart';
 import '../utils/license_meta.dart';
 import '../widgets/app_empty_hint.dart';
 import '../widgets/app_notice_overlay.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 单个包的可展示许可证数据。
 class _PackageLicense {
@@ -84,9 +86,12 @@ class _LicensesScreenState extends State<LicensesScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBar: AppBar(title: const Text('开放源代码许可')),
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        title: '开放源代码许可',
+      ),
       body: FutureBuilder<List<_PackageLicense>>(
         future: _licensesFuture,
         builder: (context, snapshot) {

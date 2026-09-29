@@ -5,6 +5,8 @@ import '../theme/app_theme.dart';
 import '../utils/formats.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_merge_preview.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 数据库合并冲突决策页面。
 ///
@@ -247,9 +249,11 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('数据库合并'),
+    return IslandAwareScaffold(
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        leadingWidth: kToolbarHeight,
+        title: '数据库合并',
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: '取消导入',

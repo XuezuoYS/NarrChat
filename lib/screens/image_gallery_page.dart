@@ -13,6 +13,8 @@ import '../theme/app_theme.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/image_viewer_window.dart' show ImageViewerDeletedEvents;
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 本地图片库（二级页面）：按「小米相册」风格设计。
 ///
@@ -270,10 +272,11 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
         _images != null &&
         _images!.isNotEmpty &&
         _selected.length == _images!.length;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.surface,
-      appBar: AppBar(
-        backgroundColor: colors.surface,
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        leadingWidth: kToolbarHeight,
         leading: _selectMode
             ? IconButton(
                 icon: const Icon(Icons.close),
@@ -281,11 +284,11 @@ class _ImageGalleryPageState extends State<ImageGalleryPage> {
                 onPressed: _toggleSelectMode,
               )
             : null,
-        title: Text(_selectMode ? '已选 ${_selected.length} 张' : '图片库'),
+        title: _selectMode ? '已选 ${_selected.length} 张' : '图片库',
         actions: [
           if (_images != null && _images!.isNotEmpty)
             TextButton.icon(
-              onPressed: _selectMode ? _toggleSelectMode : _toggleSelectMode,
+              onPressed: _toggleSelectMode,
               icon: Icon(_selectMode ? Icons.done : Icons.checklist, size: 18),
               label: Text(_selectMode ? '完成' : '选择'),
             ),

@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
 import '../widgets/app_empty_hint.dart';
+import '../widgets/island_bar.dart';
 import '../widgets/markdown_preview.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 「更新日志」页：解析根目录 `update_log.md`（已通过 `pubspec.yaml` 声明为
 /// asset）并渲染，开发者维护该文件即可更新页面内容。
@@ -33,9 +35,12 @@ class _UpdateLogScreenState extends State<UpdateLogScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBar: AppBar(title: const Text('更新日志')),
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        title: '更新日志',
+      ),
       body: FutureBuilder<String>(
         future: _contentFuture,
         builder: (context, snapshot) {

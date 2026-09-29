@@ -111,16 +111,59 @@ class AppNotice { int id; String message; NoticeKind kind; Duration dwell; bool 
 
 ### 3.1 形态
 
-- **出现 / 消失动画**：内容出现时 200ms 自顶部下移淡入（位移 12px + 淡入，`easeOutCubic`）；
-  内容清空时同参数上移淡出，**淡出期间沿用最后一帧内容快照**
-  （不会先闪空再淡出），播完才从树上撤下（此前是无动画地瞬间出现 / 消失）；
-- **收起态**：一枚胶囊 = 图标 + 一行主文案（长文省略号）+ 其他活动段计数 `+N` + 展开箭头。
-  **收起态没有取消按钮**，保持干净。
-- **展开态**：点击胶囊 → 200ms 形变展开成宽度 `min(360, 窗口宽 - 24)` 的面板，
-  头部改为计数摘要（`同步中 1 · 生成中 1 · 结果 1`），下方逐段成行。
-- **空闲**：无进度 / 无生成 / 无结果时整体不渲染（`SizedBox.shrink()`）。
+- **收起态**：嵌在**页面顶栏的中部**（由统一顶栏 `NarrChatAppBar` 提供槽位，见 §3.6）：
+  宽屏居中嵌在工具栏一行内、标题被按需挤压；窄屏（< 760）或宽度预算不足时
+  顶栏向下多出一行（[kIslandRowHeight] = 28）居中放岛；
+- **展开态**：点击胶囊 → 200ms 从顶栏**脱离**成悬浮卡片（顶栏下缘 +10、居中、
+  宽 `min(360, 窗口宽 - 24)`，圆角 999→14、阴影 0→6 一起过渡）；顶栏槽位
+  收缩为 [kIslandMarkerSize] 的**小标记**（标题回收空间），点击标记可把岛收回顶栏；
+- **出现 / 消失动画（嵌入态，手机厂商岛式）**：**非线性地改变岛的实际宽度**——
+  出现时自中心向左右张开，消失时自两侧向中心收窄至宽度归零撤下
+  （`ClipRRect(圆角) + Align(widthFactor: _unfoldCurve(presence))`；曲线为
+  `Curves.easeOutCubic`，描边随展开度淡入）。裁剪形状恒为**圆角胶囊**
+  （半径 999 由 Skia 收敛为高的一半），因此任意中间态都不会出现直角遮罩。
+  顶栏槽位会保留到完全收窄为止（附加行再花 200ms 收回），否则消失动画会在中途
+  被抽走锚点、退化成悬浮淡出；
+- **出现 / 消失动画（无槽位的悬浮态）**：自顶部下移 12px + 淡入 / 反向淡出，
+  淡出期间沿用最后一帧内容快照（不会先闪空再淡出）；
+- **展开脱离 / 收回**：位置 / 宽度 / 圆角（999→14）/ 阴影（0→6）200ms 一起过渡；
+  槽位处的小标记随脱离度淡出，与「岛降回顶栏」连续衔接；
+- **锚点缺失时**（对话框 / 未接顶栏的页面 / 图片查看器独立窗口）：退化为页面顶部
+  居中悬浮（与嵌入协作启用前一致）；
 - **底色**：不透明近黑 `kNoticeSurface` + 白 / 浅色字体（与悬浮渠道同一套常量，见 §2.6）。
 - 位置：`安全区 + kToolbarHeight + 8`，水平居中；**不可拖动**（灵动岛式固定锚点）。
+
+### 3.6 与统一顶栏的协作（槽位协议）
+
+全应用顶栏已统一为单一组件 `lib/widgets/narr_chat_app_bar.dart`
+（左侧按键 / 标题图标 / 标题 / 右侧按键 + 岛槽位），页面用
+`lib/widgets/island_bar.dart` 的 `IslandAwareScaffold` 包裹即可接入：
+
+| 角色 | 职责 |
+| --- | --- |
+| `IslandBarController` | 顶栏与岛之间的唯一协作点：`slotRect`（岛收起时应处的矩形）、`barRect`（顶栏矩形，用于悬浮位贴住下缘）、`islandActive` / `islandExpanded`（岛的状态）、`extraRowHeight`（顶栏附加行当前高度，逐帧） |
+| `NarrChatAppBar` | 按宽度与左右占位算预算并汇报 `twoRow`；渲染不可见槽位 `IslandSlot`（只测量矩形，岛由 overlay 画在同一位置）；把标题约束到「岛左缘 - 间距」 |
+| `IslandAwareScaffold` | 只订阅 `extraRowHeight` 逐帧重建脚手架，让顶栏高度平滑拉出 / 收回附加行（`body` 作为 child 不重建） |
+| `PinnedNoticeIsland` | 收起态画在槽位里；展开态从槽位脱离到悬浮位并在槽位处留小标记 |
+
+宽度与标题规则（常量见 `island_bar.dart`）：
+
+```
+actionsWidth  = 右侧按键实测宽度（首帧用保守估计 160，测量后收敛）
+available     = 顶栏宽 - 左侧占位 - actionsWidth - 2×标题保底 - 2×间距
+slotBudget    = clamp(available, 0, 顶栏宽 × 0.42)
+twoRow        = 顶栏宽 < 760  或  slotBudget < 140
+标题可用宽     = 单行 ? (顶栏宽/2 - 槽位宽/2 - 间距 - 左侧占位) : 顶栏宽
+```
+
+- 标题保底 [kIslandTitleMinWidth] = 88px（约 8 个汉字，随全局字号缩放）；
+- 岛展开后槽位收缩为 24px，标题随之回收空间；
+- 预算不足（如右侧按键过宽）时即使窗口够宽也改走附加行，避免把标题挤没；
+- **无左侧按键时**标题间距回到 Material 默认的 16px（否则根页面标题会贴到窗口左缘）；
+- **自动返回键**交给 `AppBar.automaticallyImplyLeading`（判据是
+  `ModalRoute.impliesAppBarDismissal`，挂在路由上、路由栈变化即自动重建）；
+  不要自己判 `Navigator.canPop()`——它在「返回动画途中恰好重建」时会把状态判死，
+  留下一个永不消失的返回键。
 
 ### 3.2 收起态主文案优先级
 
@@ -186,7 +229,8 @@ RoundProvider.activeGenerationBookUuids ─┘
 | 位置 | 接线 |
 | --- | --- |
 | `lib/main.dart` | `MaterialApp.builder` → `MediaQuery.withClampedTextScaling` → `AppNoticeOverlay(onOpenBook: 通知服务.openChatBook)` |
-| `lib/widgets/image_viewer_window.dart` | 两个查看器窗口的 `MaterialApp.builder` → `AppNoticeOverlay(pinnedIsland: false)`（子窗口无云同步 / 生成 Provider） |
+| `lib/widgets/image_viewer_window.dart` | 两个查看器窗口的 `MaterialApp.builder` → `AppNoticeOverlay(pinnedIsland: false)`（子窗口无云同步 / 生成 Provider，也没有顶栏槽位协作） |
+| 页面顶栏 | 全部迁移到 `NarrChatAppBar` + `IslandAwareScaffold`（首页 / 对话页 / 设置外壳 / 字体设置 / 图片库 / 数据库结构 / 数据库合并 / 调试 / 更新日志 / 许可） |
 | `test/helpers/notice_harness.dart` | `floatingNoticeBuilder()` / `noticeHostBuilder()` / `pumpNoticeApp()` / `flushNotices()` |
 | `test/helpers/chat_harness.dart` | `pumpChatScreen` / `pumpHomeScreen` / `pumpNotificationHost` 已默认挂宿主 |
 
@@ -241,6 +285,8 @@ RoundProvider.activeGenerationBookUuids ─┘
 | `test/app_notice_center_test.dart` | 单槽 FIFO、去重、上限淘汰、驻留到点、点击/划过提前退出、兜底移除、`reset` / `dispose` 无悬挂定时器 |
 | `test/floating_notice_test.dart` | 居中 + 半透明、**黑底白字与半透明度（≤ 0.85）**、200ms/3s/1s 时序、点击与按住划过提前消失、悬停不触发、去重、320 宽可换行不溢出、`copyable` |
 | `test/pinned_notice_island_test.dart` | 空闲不占位、**出现 / 消失动画（200ms 淡入淡出 + 淡出期间保留快照）**、**黑底白字视觉**、收起态无取消按钮、展开后分平面取消、生成段计数与跳转、结果 3s/15s 自动撤销、「已读」提前收起、主文案优先级、窄屏不溢出 |
+| `test/narr_chat_app_bar_test.dart` | 统一顶栏自身：无左键时标题保留 16px 标准左留白且不显示返回键、可返回路由自动出返回键并让位、**返回根路由后返回键不残留**（回归） |
+| `test/island_bar_test.dart` | 顶栏 × 岛协作：宽屏嵌入（槽位在工具栏内、水平居中、标题被挤压且不重叠、保底 8 字宽）、窄屏与预算不足改走附加行（**高度 200ms 过渡**、中途值介于两端之间）、**嵌入态非线性调整宽度（0→完整宽，前段更快、左右对称）**、**消失收窄后撤下**、展开脱离（悬浮在顶栏下方 + 槽位收缩为小标记 + 点击收回）、无顶栏页面回退悬浮、岛消失后附加行收回 |
 | `test/cloud_sync_provider_test.dart` | 结果队列去重 / 上限淘汰 / 按 id 关闭、成功 3s 与失败 15s 的驻留时长 |
 
 页面级用例通过 `test/helpers/notice_harness.dart` 挂宿主；
@@ -252,4 +298,8 @@ RoundProvider.activeGenerationBookUuids ─┘
 - 应用内通知**不落盘**：进程重启后不保留任何未读 / 历史；
 - 计时与会话状态无关：应用在后台时驻留照跑，回到前台可能已经过期；
 - 悬浮通知为纯展示（无操作按钮）；需要用户决策的一律走对话框；
-- 驻场岛固定在标题栏下方，不支持拖动与自定义位置。
+- 窄屏（< 760）顶栏会为岛多占一行 28px：出现 / 消失时页面内容被推挤 28px
+  （有 200ms 过渡，但确实会发生位移）；
+- 岛嵌在顶栏时，标题会被挤压到「岛左缘 - 间距」以内（保底 8 字宽后省略号），
+  这是设计取舍：宁可截断标题也不与岛重叠；
+- 顶栏附加行只在岛有内容时占用；无内容时顶栏恢复单行（高度动画 200ms）。

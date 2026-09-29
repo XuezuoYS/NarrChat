@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 import 'book_list_screen.dart';
 import 'settings_screen.dart';
 
@@ -59,28 +60,19 @@ class _HomeScreenState extends State<HomeScreen> {
         if (didPop) return;
         _handleSystemBack();
       },
-      child: Scaffold(
-        // 极简白色顶部：细底边 + 品牌 Logo（模仿 DeepSeek 顶部）。
-        appBar: PreferredSize(
-          preferredSize: const Size.fromHeight(kToolbarHeight),
-          child: Container(
-            decoration: BoxDecoration(
-              color: context.narrColors.surface,
-              border: Border(
-                bottom: BorderSide(color: context.narrColors.divider),
-              ),
+      // 统一顶栏：品牌 Logo + 标题 + 设置；收起态的驻场岛嵌在顶栏中部。
+      child: IslandAwareScaffold(
+        appBarBuilder: (context, extraRow) => NarrChatAppBar(
+          extraRowHeight: extraRow,
+          icon: const BrandLogo(size: 28),
+          title: 'NarrChat',
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: '设置',
+              onPressed: () => SettingsScreen.open(context),
             ),
-            child: AppBar(
-              title: const BrandLogo(title: 'NarrChat'),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.settings_outlined),
-                  tooltip: '设置',
-                  onPressed: () => SettingsScreen.open(context),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
         body: const BookListScreen(),
       ),

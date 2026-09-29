@@ -5,6 +5,8 @@ import '../services/update_check_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
 import '../widgets/app_notice_overlay.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/update_available_dialog.dart';
 import 'database_inspect_screen.dart';
 
@@ -97,9 +99,10 @@ class DebugScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBar: AppBar(title: const Text('调试')),
+      appBarBuilder: (context, extraRow) =>
+          NarrChatAppBar(extraRowHeight: extraRow, title: '调试'),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

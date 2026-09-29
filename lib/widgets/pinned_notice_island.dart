@@ -10,9 +10,10 @@ import '../providers/cloud_sync_provider.dart';
 import '../providers/round_provider.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
+import 'island_bar.dart';
 import 'notice_visuals.dart';
 
-/// 驻场通知渠道：顶部居中的「灵动岛」式常驻胶囊。
+/// 驻场通知渠道：**收起时嵌进顶栏、展开时脱离成悬浮卡片**的灵动岛式胶囊。
 ///
 /// 统一承载三类常驻信息（取代原 `SyncHud` / `SyncResultBubble` / `GenerationBanner`）：
 /// - **同步进度**：分平面阶段 / 计数 / 进度条；
@@ -20,11 +21,12 @@ import 'notice_visuals.dart';
 ///   （失败条目另有「已读」按钮可提前收起）；
 /// - **正在生成**：`N本书正在生成……`，点击条目跳转对应书；
 ///
-/// 交互：
-/// - 收起态只有图标 + 一行主文案（无取消按钮）；
-/// - 点击胶囊展开 200ms：展开区含分平面**取消**按钮、生成书列表、结果条目；
-/// - **出现 / 消失都有 200ms 动画**（自顶部下移淡入、上移淡出）；
-/// - 无任何内容时整体消失（收起态恢复为收起，不记忆展开状态）。
+/// 与顶栏的协作（见 [IslandBarController]）：
+/// - 顶栏把「槽位矩形」发布出来 → 收起态胶囊画在该矩形里（宽屏居中嵌入工具栏，
+///   窄屏 / 预算不足时顶栏向下多出一行）；
+/// - 点击胶囊 → 200ms 从槽位脱离到悬浮位置（顶栏下方 +8、居中、宽 `min(360, 窗口-24)`），
+///   槽位处留下一枚小标记，点击标记即可把岛收回顶栏；
+/// - 页面没有槽位（对话框 / 独立窗口 / 未接顶栏的页面）时退化为顶部悬浮。
 class PinnedNoticeIsland extends StatefulWidget {
   const PinnedNoticeIsland({super.key, required this.onOpenBook});
 
@@ -43,14 +45,23 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
   /// 出现 / 消失动画时长。
   static const Duration _presenceDuration = Duration(milliseconds: 200);
 
+  /// 「嵌入顶栏 → 脱离悬浮」动画时长。
+  static const Duration _detachDuration = Duration(milliseconds: 200);
+
+  /// 出现 / 消失时**宽度变化**的非线性曲线（手机厂商的岛多为「快出慢收」）。
+  static const Curve _unfoldCurve = Curves.easeOutCubic;
+
   /// 展开态宽度上限（窄屏取窗口宽 - 24）。
   static const double _panelWidth = 360;
 
   /// 展开区高度上限占窗口比例（超出内部滚动）。
   static const double _panelMaxHeightRatio = 0.3;
 
-  /// 出现 / 消失时的垂直位移（自上而下落入原位）。
+  /// 出现 / 消失时的垂直位移（自顶部落入原位；嵌入态不做位移）。
   static const double _presenceSlide = 12;
+
+  /// 悬浮时与顶栏（槽位下缘）的间距。
+  static const double _floatGap = 10;
 
   bool _expanded = false;
   late final AnimationController _expand = AnimationController(
@@ -59,16 +70,37 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     value: 1,
   );
 
-  /// 出现度：0 = 完全隐藏，1 = 完全就位。由内容有无驱动（见 [_syncPresence]）。
+  /// 出现度：0 = 完全隐藏，1 = 完全就位。
   late final AnimationController _presence = AnimationController(
     vsync: this,
     duration: _presenceDuration,
   );
 
+  /// 脱离度：0 = 嵌在顶栏槽位，1 = 悬浮。仅在有槽位时有效。
+  ///
+  /// 初值为 0（嵌入态）：槽位出现时不会先从悬浮位置闪一下再归位。
+  late final AnimationController _detach = AnimationController(
+    vsync: this,
+    duration: _detachDuration,
+  );
+
   /// 上一次期望的出现状态（避免每帧重复调度）。
   bool? _wantPresent;
 
-  /// 消失动画期间用于继续渲染的最后一帧内容快照。
+  /// 上一次期望的脱离状态（避免每帧重复调度）。
+  bool? _wantDetached;
+
+  /// 上一次推送给顶栏控制器的「有无内容 / 是否展开」。
+  bool? _pushedActive;
+  bool? _pushedExpanded;
+
+  /// 收起态时槽位的矩形（脱离动画的起点）。
+  ///
+  /// 岛一展开，顶栏就把槽位收缩为小标记（矩形随之变化），因此必须缓存
+  /// 「收起时那次」的矩形，脱离动画才不会从 24px 的小标记位置开始。
+  Rect? _embeddedRect;
+
+  /// 隐藏动画期间用于继续渲染的最后一帧内容快照。
   _IslandContent? _snapshot;
 
   /// 结果条目 id → 自动撤销定时器（与是否展开无关）。
@@ -82,7 +114,31 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     _resultTimers.clear();
     _expand.dispose();
     _presence.dispose();
+    _detach.dispose();
     super.dispose();
+  }
+
+  /// 同步结果条目的自动撤销定时器：新条目起计时，已移除的条目取消计时。
+  ///
+  /// 计时不依赖展开态 / 是否渲染（收起时条目不在渲染树内，定时器仍归本 State），
+  /// 因此「偶发异常下提示一直常驻」不再可能发生。
+  void _syncResultTimers(List<SyncResultToast> toasts) {
+    final ids = {for (final t in toasts) t.id};
+    for (final id in _resultTimers.keys.toList()) {
+      if (!ids.contains(id)) {
+        _resultTimers.remove(id)?.cancel();
+      }
+    }
+    for (final toast in toasts) {
+      _resultTimers.putIfAbsent(
+        toast.id,
+        () => Timer(toast.dwell, () {
+          _resultTimers.remove(toast.id);
+          if (!mounted) return;
+          context.read<CloudSyncProvider>().dismissSyncResult(toast.id);
+        }),
+      );
+    }
   }
 
   /// 按「有无内容」驱动出现 / 消失动画。
@@ -105,27 +161,18 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     });
   }
 
-  /// 同步结果条目的自动撤销定时器：新条目起计时，已移除的条目取消计时。
-  ///
-  /// 计时不依赖展开态（收起时条目不在渲染树内，定时器仍归本 State），
-  /// 因此「偶发异常下提示一直常驻」不再可能发生。
-  void _syncResultTimers(List<SyncResultToast> toasts) {
-    final ids = {for (final t in toasts) t.id};
-    for (final id in _resultTimers.keys.toList()) {
-      if (!ids.contains(id)) {
-        _resultTimers.remove(id)?.cancel();
+  /// 按「是否展开 + 是否有顶栏槽位」驱动脱离 / 归位动画。
+  void _syncDetach(bool wanted) {
+    if (_wantDetached == wanted) return;
+    _wantDetached = wanted;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (wanted) {
+        _detach.forward();
+      } else {
+        _detach.reverse();
       }
-    }
-    for (final toast in toasts) {
-      _resultTimers.putIfAbsent(
-        toast.id,
-        () => Timer(toast.dwell, () {
-          _resultTimers.remove(toast.id);
-          if (!mounted) return;
-          context.read<CloudSyncProvider>().dismissSyncResult(toast.id);
-        }),
-      );
-    }
+    });
   }
 
   void _toggle() {
@@ -158,11 +205,19 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     // 结果条目的自动撤销计时归本 State（与展开态无关：收起时也要到点兑现）。
     _syncResultTimers(toasts);
 
-    final present = activePlanes.isNotEmpty ||
-        generatingUuids.isNotEmpty ||
-        toasts.isNotEmpty;
+    final present =
+        activePlanes.isNotEmpty || generatingUuids.isNotEmpty || toasts.isNotEmpty;
     // 出现 / 消失动画由「有无内容」驱动（帧后执行，见 _syncPresence）。
     _syncPresence(present);
+
+    // 岛的存在状态汇报给顶栏控制器（驱动顶栏附加行高度与槽位形态）；
+    // 汇报会让统一顶栏重建，因此放到帧后执行，避免 build 期间标记重建。
+    //
+    // 「存在」的判据是 **有内容 或 仍在播放消失动画**：槽位必须留到岛完全收窄
+    // 消失为止，否则消失动画会在中途被抽走锚点、退化成悬浮淡出；因此这一步
+    // 必须放在「完全隐藏」的提前返回之前（否则永远收不回顶栏附加行）。
+    final bar = IslandBarScope.maybeOf(context);
+    _syncBarFlags(bar, present || _presence.value > 0);
 
     if (present) {
       _snapshot = _IslandContent(
@@ -178,13 +233,146 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     final content = _snapshot;
     if (content == null) return const SizedBox.shrink();
 
+    if (bar == null) {
+      // 无岛宿主（独立窗口等）：直接走悬浮。
+      _syncDetach(false);
+      return _buildFloating(context, content, present);
+    }
+    return ListenableBuilder(
+      listenable: Listenable.merge([bar.slotRect, bar.barRect]),
+      builder: (context, child) {
+        final slotRect = bar.slotRect.value;
+        // 收起态记录槽位矩形（脱离动画的起点）。
+        if (slotRect != null && !_expanded) _embeddedRect = slotRect;
+        // 有槽位才存在「脱离」概念；无槽位时始终按悬浮处理。
+        _syncDetach(_expanded && slotRect != null);
+        if (slotRect == null) {
+          _embeddedRect = null;
+          return _buildFloating(context, content, present);
+        }
+        return _buildSlotAnchored(context, content, slotRect, bar, present);
+      },
+    );
+  }
+
+  /// 把「是否存在（有内容或仍在收窄）/ 是否展开」推给顶栏控制器
+  /// （帧后执行，且仅在变化时推送）。
+  void _syncBarFlags(IslandBarController? bar, bool active) {
+    if (bar == null) return;
+    if (_pushedActive == active && _pushedExpanded == _expanded) return;
+    _pushedActive = active;
+    _pushedExpanded = _expanded;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final controller = IslandBarScope.maybeOf(context);
+      controller?.setIslandActive(active);
+      controller?.setIslandExpanded(_expanded);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 定位：嵌入顶栏槽位（并支持脱离为悬浮）
+  // ---------------------------------------------------------------------------
+
+  /// 槽位锚定：收起态画在槽位里；展开态从槽位脱离到悬浮位置，槽位处留小标记。
+  Widget _buildSlotAnchored(
+    BuildContext context,
+    _IslandContent content,
+    Rect slot,
+    IslandBarController bar,
+    bool present,
+  ) {
     final media = MediaQuery.of(context);
     final panelWidth = math.min(_panelWidth, media.size.width - 24);
+    // 脱离起点用「收起时缓存的槽位矩形」；顶栏此刻已把槽位收缩为小标记。
+    //
+    // 缓存缺失、或缓存到的是小标记尺寸（顶栏已收缩 / 刚切换页面）时，退化为
+    // 悬浮形态：否则卡片会被挤进 24px 的标记槽位里而产生溢出。
+    final cached = _embeddedRect;
+    if (cached == null || cached.width < kIslandMinWidth) {
+      return _buildFloating(context, content, present);
+    }
+    final embedded = cached;
+    // 悬浮位置贴住顶栏下缘（顶栏矩形由统一顶栏汇报；缺失时退化为槽位下缘）。
+    final barBottom = bar.barRect.value?.bottom ?? embedded.bottom;
+    final floatTop = math.max(embedded.bottom, barBottom) + _floatGap;
 
+    return AnimatedBuilder(
+      animation: Listenable.merge([_presence, _detach]),
+      builder: (context, _) {
+        final t = Curves.easeOutCubic.transform(_detach.value);
+        // 出现度：非线性宽度因子（0 = 宽度归零，1 = 完整宽度）。
+        final unfold = _unfoldCurve.transform(_presence.value);
+        // 目标宽度：收起态 = 槽位可用宽（卡片本身按内容成形），展开态 = 面板宽。
+        final targetWidth = embedded.width + (panelWidth - embedded.width) * t;
+        final top = embedded.top + (floatTop - embedded.top) * t;
+        final radius = 999.0 + (kNoticeRadius - 999.0) * t;
+        final elevation = 6.0 * t;
+        return Stack(
+          children: [
+            if (unfold > 0)
+              Positioned(
+                // 目标矩形与悬浮矩形都水平居中，因此按目标宽居中摆放即可。
+                left: media.size.width / 2 - targetWidth / 2,
+                top: top,
+                width: targetWidth,
+                child: Center(
+                  // 手机厂商的岛式动画：**非线性地改变岛的实际宽度**（自中心向
+                  // 左右张开 / 自两侧向中心收窄），并由**圆角**裁剪成形——
+                  // 因此任何时刻的轮廓都是一枚圆角胶囊，而不是直角遮罩。
+                  child: ClipRRect(
+                    key: const ValueKey('island_unfold_clip'),
+                    borderRadius: BorderRadius.circular(radius),
+                    child: Align(
+                      key: const ValueKey('island_unfold'),
+                      alignment: Alignment.center,
+                      widthFactor: unfold,
+                      child: _buildCard(
+                        context,
+                        content: content,
+                        contentWidth: panelWidth,
+                        panelMaxHeight:
+                            media.size.height * _panelMaxHeightRatio,
+                        radius: radius,
+                        elevation: elevation,
+                        borderOpacity: unfold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            // 展开脱离后：槽位处留下小标记（点击收回顶栏）；
+            // 收回过程中随脱离度淡出，与「岛降回顶栏」连续衔接。
+            if (t > 0)
+              Positioned(
+                left: slot.left,
+                top: slot.top,
+                width: slot.width,
+                height: slot.height,
+                child: Opacity(
+                  // 与「岛降回顶栏」（t↓）和「岛整体收窄消失」（unfold↓）双重衔接。
+                  opacity: t * unfold,
+                  child: _buildMarker(context, content),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 无顶栏槽位（对话框 / 未接顶栏的页面 / 独立窗口）时的退化形态：
+  /// 顶部居中悬浮（与嵌入协作启用前一致）。
+  Widget _buildFloating(
+    BuildContext context,
+    _IslandContent content,
+    bool present,
+  ) {
+    final media = MediaQuery.of(context);
+    final panelWidth = math.min(_panelWidth, media.size.width - 24);
     return Align(
       alignment: Alignment.topCenter,
       child: Padding(
-        // 标题栏（AppBar）下方 + 8：与页面标题/操作按钮错开。
         padding: EdgeInsets.only(
           top: media.padding.top + kToolbarHeight + 8,
           left: 12,
@@ -208,24 +396,65 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
           child: _buildCard(
             context,
             content: content,
-            panelWidth: panelWidth,
+            contentWidth: panelWidth,
             panelMaxHeight: media.size.height * _panelMaxHeightRatio,
+            radius: _expanded ? 16 : 999,
+            elevation: 6,
           ),
         ),
       ),
     );
   }
 
-  /// 胶囊 / 展开面板本体（黑底卡片）。
+  /// 展开态槽位里的小标记：黑底 + 当前主图标（点击收回顶栏）。
+  Widget _buildMarker(BuildContext context, _IslandContent content) {
+    final leading = _headerSpec(context, expanded: false, content: content).leading;
+    return Center(
+      child: GestureDetector(
+        onTap: _toggle,
+        behavior: HitTestBehavior.opaque,
+        child: Tooltip(
+          message: '收回顶栏',
+          child: Material(
+            color: kNoticeSurface,
+            shape: const StadiumBorder(side: BorderSide(color: kNoticeBorder)),
+            child: SizedBox(
+              width: kIslandMarkerSize,
+              height: kIslandMarkerSize,
+              child: Center(
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: FittedBox(child: leading),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 卡片本体
+  // ---------------------------------------------------------------------------
+
+  /// 胶囊 / 展开面板本体（黑底卡片；[radius] / [elevation] 由脱离动画插值）。
+  ///
+  /// 卡片按**内容**成形（收起态即一枚胶囊），宽度动画由外层 [ClipRRect] +
+  /// [Align] 完成：[borderOpacity] 让描边随展开度淡入，避免半开时只余上下两条边。
   Widget _buildCard(
     BuildContext context, {
     required _IslandContent content,
-    required double panelWidth,
+    required double contentWidth,
     required double panelMaxHeight,
+    required double radius,
+    required double elevation,
+    double borderOpacity = 1,
   }) {
     final body = _expanded
         ? SizedBox(
-            width: panelWidth,
+            width: contentWidth,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -273,21 +502,27 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       // 通知表面恒为深色：覆盖选取高亮 / 光标 / 图标按钮前景色。
       data: noticeThemeOf(context),
       child: Material(
-        elevation: 6,
+        elevation: elevation,
         // 关掉 M3 表面着色，保持纯黑底。
         surfaceTintColor: Colors.transparent,
         color: kNoticeSurface,
-        borderRadius: BorderRadius.circular(_expanded ? 16 : 999),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(radius),
+          side: BorderSide(
+            color: Colors.white.withValues(alpha: 0.12 * borderOpacity),
+          ),
+        ),
         clipBehavior: Clip.antiAlias,
         child: body,
       ),
     );
   }
 
-  /// 胶囊头部：图标 + 主文案（+ 其他活动段计数）+ 展开/收起箭头。
+  /// 头部内容规格：图标 + 主文案 + 其他活动段计数。
   ///
-  /// 主文案优先级：**最新同步结果 > 同步进度 > 正在生成**（其余活动段以 `+N` 提示）。
-  Widget _buildHeader(
+  /// 主文案优先级：**最新同步结果 > 同步进度 > 正在生成**（其余活动段以 `+N` 提示）；
+  /// 展开态改为计数摘要（细节在展开区各自成行，避免重复文案）。
+  ({Widget leading, String text, int extraCount}) _headerSpec(
     BuildContext context, {
     required bool expanded,
     required _IslandContent content,
@@ -295,13 +530,11 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     final activePlanes = content.planes;
     final generatingUuids = content.generatingUuids;
     final toasts = content.toasts;
-    const textStyle = TextStyle(fontSize: 12.5, color: kNoticeTextPrimary);
 
     final Widget leading;
     final String text;
     int extraCount = 0;
     if (expanded) {
-      // 展开态：头部只做**计数摘要**（细节在展开区各自成行，避免重复文案）。
       final parts = <String>[
         if (activePlanes.isNotEmpty) '同步中 ${activePlanes.length}',
         if (generatingUuids.isNotEmpty) '生成中 ${generatingUuids.length}',
@@ -330,6 +563,17 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       leading = _spinner();
       text = '${generatingUuids.length}本书正在生成……';
     }
+    return (leading: leading, text: text, extraCount: extraCount);
+  }
+
+  /// 胶囊头部：图标 + 主文案（+ 其他活动段计数）+ 展开 / 收起箭头。
+  Widget _buildHeader(
+    BuildContext context, {
+    required bool expanded,
+    required _IslandContent content,
+  }) {
+    const textStyle = TextStyle(fontSize: 12.5, color: kNoticeTextPrimary);
+    final spec = _headerSpec(context, expanded: expanded, content: content);
 
     return InkWell(
       onTap: _toggle,
@@ -341,17 +585,17 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
         child: Row(
           mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
           children: [
-            leading,
+            spec.leading,
             const SizedBox(width: 8),
             Flexible(
               child: Text(
-                text,
+                spec.text,
                 maxLines: expanded ? 2 : 1,
                 overflow: TextOverflow.ellipsis,
                 style: textStyle,
               ),
             ),
-            if (extraCount > 0) ...[
+            if (spec.extraCount > 0) ...[
               const SizedBox(width: 6),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -360,7 +604,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  '+$extraCount',
+                  '+${spec.extraCount}',
                   style: const TextStyle(
                     fontSize: 10,
                     color: kNoticeTextPrimary,
@@ -380,7 +624,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     );
   }
 
-  Widget _spinner() => SizedBox(
+  Widget _spinner() => const SizedBox(
     width: 14,
     height: 14,
     child: CircularProgressIndicator(
@@ -425,6 +669,19 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       SyncPhase.idle => '同步',
     };
   }
+}
+
+/// 驻场岛一帧内容快照（消失动画期间继续渲染最后一帧，避免内容先消失再淡出）。
+class _IslandContent {
+  const _IslandContent({
+    required this.planes,
+    required this.generatingUuids,
+    required this.toasts,
+  });
+
+  final List<(SyncPlane, SyncProgressEvent?)> planes;
+  final List<String> generatingUuids;
+  final List<SyncResultToast> toasts;
 }
 
 /// 结果条目：类型图标 + 可复制文案（失败类带「已读」）。
@@ -604,17 +861,4 @@ class _GeneratingRow extends StatelessWidget {
       ),
     );
   }
-}
-
-/// 驻场岛一帧内容快照（消失动画期间继续渲染最后一帧，避免内容先消失再淡出）。
-class _IslandContent {
-  const _IslandContent({
-    required this.planes,
-    required this.generatingUuids,
-    required this.toasts,
-  });
-
-  final List<(SyncPlane, SyncProgressEvent?)> planes;
-  final List<String> generatingUuids;
-  final List<SyncResultToast> toasts;
 }

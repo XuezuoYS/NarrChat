@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_notice_center.dart';
 import 'floating_notice_host.dart';
+import 'island_bar.dart';
 import 'pinned_notice_island.dart';
 
 /// 应用内通知宿主：挂载两个渠道，并提供 [AppNoticeCenter] 作用域。
@@ -11,11 +12,13 @@ import 'pinned_notice_island.dart';
 /// - 通知恒显示在页面与对话框之上（不再受 `ScaffoldMessenger` 的 Scaffold 约束）；
 /// - `child`（Navigator 子树）位于本作用域之内，页面任意位置可用 `context.notices`；
 /// - 通知宿主自带一层 [Overlay]：位于 Navigator 之上时没有现成 Overlay，
-///   而提示里的 Tooltip（如「取消数据同步」）必须有 Overlay 祖先。
+///   而提示里的 Tooltip（如「取消数据同步」）必须有 Overlay 祖先；
+/// - 同时提供 [IslandBarController] 作用域（[IslandBarScope]）：统一顶栏用不可见
+///   槽位把「岛该待的矩形」发布给岛，使岛**收起时嵌进顶栏、展开时脱离悬浮**。
 ///
 /// [pinnedIsland] 为 false 时只挂悬浮渠道（图片查看器独立窗口没有云同步 / 生成
-/// 相关的 Provider，故不需要驻场岛）。
-class AppNoticeOverlay extends StatelessWidget {
+/// 相关的 Provider，也就没有岛，槽位协作一并关闭）。
+class AppNoticeOverlay extends StatefulWidget {
   const AppNoticeOverlay({
     super.key,
     required this.child,
@@ -37,19 +40,37 @@ class AppNoticeOverlay extends StatelessWidget {
   final AppNoticeCenter? center;
 
   @override
+  State<AppNoticeOverlay> createState() => _AppNoticeOverlayState();
+}
+
+class _AppNoticeOverlayState extends State<AppNoticeOverlay>
+    with TickerProviderStateMixin {
+  /// 顶栏—岛协作控制器（负责槽位矩形与顶栏附加行高度动画）。
+  late final IslandBarController _barController = IslandBarController(
+    vsync: this,
+  );
+
+  @override
+  void dispose() {
+    _barController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final openBook = onOpenBook;
-    final injected = center;
+    final openBook = widget.onOpenBook;
+    final injected = widget.center;
+    final islandOn = widget.pinnedIsland && openBook != null;
     // 通知宿主放进独立 Overlay：Overlay 自身不参与命中测试，空白区域
     // 的指针事件照常落到 child（页面）上。
     final stack = Stack(
       fit: StackFit.expand,
       children: [
-        child,
+        widget.child,
         Overlay(
           initialEntries: [
             OverlayEntry(builder: (_) => const FloatingNoticeHost()),
-            if (pinnedIsland && openBook != null)
+            if (islandOn)
               OverlayEntry(
                 builder: (_) => PinnedNoticeIsland(onOpenBook: openBook),
               ),
@@ -57,15 +78,19 @@ class AppNoticeOverlay extends StatelessWidget {
         ),
       ],
     );
+    final scoped = IslandBarScope(
+      controller: islandOn ? _barController : null,
+      child: stack,
+    );
     if (injected != null) {
       return ChangeNotifierProvider<AppNoticeCenter>.value(
         value: injected,
-        child: stack,
+        child: scoped,
       );
     }
     return ChangeNotifierProvider<AppNoticeCenter>(
       create: (_) => AppNoticeCenter(),
-      child: stack,
+      child: scoped,
     );
   }
 }

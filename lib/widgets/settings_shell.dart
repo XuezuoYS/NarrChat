@@ -2,6 +2,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'island_bar.dart';
+import 'narr_chat_app_bar.dart';
 
 /// 设置页导航项。
 class SettingsNavItem {
@@ -76,25 +78,22 @@ class _SettingsShellState extends State<SettingsShell> {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Row(
-          children: [
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                gradient: NarrChatTheme.brandGradient,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(widget.icon, size: 16, color: Colors.white),
-            ),
-            const SizedBox(width: 10),
-            Text(widget.title),
-          ],
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        // 设置页顶栏无底部边线（沿用原外观），标题前带品牌渐变图标。
+        showBorder: false,
+        icon: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            gradient: NarrChatTheme.brandGradient,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(widget.icon, size: 16, color: Colors.white),
         ),
+        title: widget.title,
         actions: [
           ...?widget.actions,
           IconButton(

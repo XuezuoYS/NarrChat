@@ -6,6 +6,8 @@ import '../services/system_fonts_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/font_picker_dialog.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 「字体设置」二级页（由「通用设置 → UI 设置 → 字体设置」进入）。
 ///
@@ -187,17 +189,19 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
         if (didPop) return;
         _handleBack();
       },
-      child: Scaffold(
+      child: IslandAwareScaffold(
         backgroundColor: colors.background,
-        appBar: AppBar(
+        appBarBuilder: (context, extraRow) => NarrChatAppBar(
+          extraRowHeight: extraRow,
+          leadingWidth: kToolbarHeight,
           leading: BackButton(
             key: const ValueKey('font_settings_back'),
             onPressed: _handleBack,
           ),
-          title: const Text('字体设置'),
+          title: '字体设置',
           actions: [
-            // 与「保存」等尺寸的白底按钮（AppBar 的 FilledButton 前景色
-            // 由 appBarTheme 的 foregroundColor 提供），便于识别为操作按钮。
+            // 与「保存」等尺寸的白底按钮（顶栏前景色由主题的 appBarTheme 提供），
+            // 便于识别为操作按钮。
             FilledButton.icon(
               key: const ValueKey('font_settings_reset'),
               onPressed: _isSaving ? null : _reset,

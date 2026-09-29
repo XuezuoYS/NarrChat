@@ -6,6 +6,8 @@ import '../services/debug_database_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_empty_hint.dart';
 import '../widgets/data_pagination.dart';
+import '../widgets/island_bar.dart';
+import '../widgets/narr_chat_app_bar.dart';
 
 /// 「数据库结构」页：只读查看当前用户库的表结构、索引与内容（按页）。
 ///
@@ -32,9 +34,12 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return Scaffold(
+    return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBar: AppBar(title: const Text('数据库结构')),
+      appBarBuilder: (context, extraRow) => NarrChatAppBar(
+        extraRowHeight: extraRow,
+        title: '数据库结构',
+      ),
       body: FutureBuilder<List<DebugTableSummary>>(
         future: _tablesFuture,
         builder: (context, snapshot) {

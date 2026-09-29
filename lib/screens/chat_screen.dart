@@ -40,8 +40,10 @@ import '../widgets/edit_text_images_dialog.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/floor_jump_bar.dart';
 import '../widgets/image_preview.dart';
+import '../widgets/island_bar.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
+import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/responsive_builder.dart';
 import '../widgets/round_action_dialogs.dart';
@@ -1526,8 +1528,10 @@ class _ChatScreenState extends State<ChatScreen>
           _closeDrawer();
         }
       },
-      child: Scaffold(
-        appBar: _buildAppBar(context),
+      // 统一顶栏：返回 + 书名（可点击进设置）+ 书籍设置 / 全局设置；
+      // 收起态的驻场岛嵌在顶栏中部（窄屏顶栏向下多一行）。
+      child: IslandAwareScaffold(
+        appBarBuilder: (context, extraRow) => _buildAppBar(context, extraRow),
         body: LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= _kWideBreakpoint;
@@ -1561,54 +1565,34 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 对话页顶栏：返回书籍列表 + 书名 + 书籍设置 / 全局设置。
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
+  PreferredSizeWidget _buildAppBar(BuildContext context, double extraRow) {
     final book = context.watch<BookProvider>().currentBook;
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(kToolbarHeight),
-      child: Container(
-        decoration: BoxDecoration(
-          color: context.narrColors.surface,
-          border: Border(bottom: BorderSide(color: context.narrColors.divider)),
-        ),
-        child: AppBar(
-          // 收紧返回按钮与书名之间的间距（默认 titleSpacing=16 使箭头右侧空白偏大）。
-          titleSpacing: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: '返回书籍列表',
-            onPressed: () => Navigator.of(context).maybePop(),
-          ),
-          // 书名可点击：点击直接进入书籍设置页（无视觉提示，仅友好性交互）。
-          title: GestureDetector(
-            onTap: book == null
-                ? null
-                : () => BookSettingsScreen.open(context, book: book),
-            child: Text(
-              book?.title ?? '对话',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: context.narrColors.textPrimary,
-              ),
-            ),
-          ),
-          actions: [
-            if (book != null)
-              IconButton(
-                icon: const Icon(Icons.book_outlined),
-                tooltip: '书籍设置',
-                onPressed: () => BookSettingsScreen.open(context, book: book),
-              ),
-            IconButton(
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: '设置',
-              onPressed: () => SettingsScreen.open(context),
-            ),
-          ],
-        ),
+    return NarrChatAppBar(
+      extraRowHeight: extraRow,
+      leadingWidth: kToolbarHeight,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back),
+        tooltip: '返回书籍列表',
+        onPressed: () => Navigator.of(context).maybePop(),
       ),
+      // 书名可点击：点击直接进入书籍设置页（无视觉提示，仅友好性交互）。
+      title: book?.title ?? '对话',
+      onTitleTap: book == null
+          ? null
+          : () => BookSettingsScreen.open(context, book: book),
+      actions: [
+        if (book != null)
+          IconButton(
+            icon: const Icon(Icons.book_outlined),
+            tooltip: '书籍设置',
+            onPressed: () => BookSettingsScreen.open(context, book: book),
+          ),
+        IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          tooltip: '设置',
+          onPressed: () => SettingsScreen.open(context),
+        ),
+      ],
     );
   }
 
