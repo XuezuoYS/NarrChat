@@ -8,7 +8,10 @@ import 'package:flutter/material.dart';
 const double kIslandEmbedBreakpoint = 760;
 
 /// 顶栏附加行高（窄屏 / 宽度预算不足时）。
-const double kIslandRowHeight = 28;
+///
+/// 比胶囊高一点：岛在行内**居中**，上下各留 4px 顶栏背景留白；
+/// 若行高等于胶囊高，岛会紧贴行底，观感上「下面没有留白」。
+const double kIslandRowHeight = 36;
 
 /// 收起态胶囊高度（嵌入顶栏时）。
 const double kIslandPillHeight = 28;
@@ -29,7 +32,9 @@ const double kIslandTitleGap = 12;
 const double kIslandMarkerSize = 24;
 
 /// 顶栏高度动画时长（附加行拉出 / 收回）。
-const Duration kIslandRowDuration = Duration(milliseconds: 200);
+///
+/// 比岛的宽度动画（200ms）更快：附加行只是「让位」，快一点才不会被感知成卡顿。
+const Duration kIslandRowDuration = Duration(milliseconds: 140);
 
 /// 驻场岛「嵌入顶栏 / 脱离悬浮」的协作控制器。
 ///
@@ -44,7 +49,9 @@ class IslandBarController {
   IslandBarController({required TickerProvider vsync})
       : _row = AnimationController(vsync: vsync, duration: kIslandRowDuration) {
     _row.addListener(() {
-      extraRowHeight.value = _row.value * kIslandRowHeight;
+      // 非线性（快出慢收）：与岛的宽度动画同一观感，但更快收尾。
+      extraRowHeight.value =
+          Curves.easeOutCubic.transform(_row.value) * kIslandRowHeight;
     });
   }
 
@@ -74,6 +81,9 @@ class IslandBarController {
   bool _active = false;
   bool _twoRow = false;
   bool _disposed = false;
+
+  /// 当前槽位矩形的发布者（用于忽略旧页面槽位销毁时的清空）。
+  Object? _slotOwner;
 
   /// 是否处于「顶栏向下多一行」形态（由统一顶栏按宽度预算汇报）。
   bool get twoRow => _twoRow;
@@ -109,10 +119,19 @@ class IslandBarController {
 
   /// 槽位测量结果（不可见占位框的全局矩形）。
   ///
-  /// 槽位的清空是「帧后」投递的：页面销毁 / 应用退出时可能晚于本控制器销毁，
-  /// 因此必须用 [_disposed] 兜住，否则会命中「已释放的 ValueNotifier」断言。
-  void publishSlotRect(Rect? rect) {
-    if (_disposed || slotRect.value == rect) return;
+  /// [owner] 是发布者（槽位 State）：页面切换时旧页面的槽位会销毁并发布 `null`，
+  /// 若此时已有新页面的槽位接管，就**不能**让旧发布者把矩形清空——否则岛会掉回
+  /// 悬浮位、且新槽位不会再发布（它只在布局变化时才发布），表现就是「返回后位置不对」。
+  void publishSlotRect(Rect? rect, Object owner) {
+    if (_disposed) return;
+    if (rect == null) {
+      if (!identical(_slotOwner, owner)) return;
+      _slotOwner = null;
+      if (slotRect.value != null) slotRect.value = null;
+      return;
+    }
+    _slotOwner = owner;
+    if (slotRect.value == rect) return;
     slotRect.value = rect;
   }
 
@@ -179,6 +198,7 @@ class IslandSlot extends StatefulWidget {
 class _IslandSlotState extends State<IslandSlot> {
   final GlobalKey _key = GlobalKey();
   IslandBarController? _controller;
+  bool _publishScheduled = false;
 
   @override
   void didChangeDependencies() {
@@ -188,39 +208,43 @@ class _IslandSlotState extends State<IslandSlot> {
   }
 
   @override
-  void didUpdateWidget(covariant IslandSlot oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.width != widget.width ||
-        oldWidget.height != widget.height) {
-      _schedulePublish();
-    }
-  }
-
-  @override
   void dispose() {
-    // 槽位随页面销毁：清掉发布过的矩形（帧后执行，避免在 build 期触发重建），
-    // 岛据此回退为顶部悬浮。
+    // 槽位随页面销毁：清掉自己发布过的矩形（帧后执行，避免在 build 期触发重建）。
+    // 只有当自己仍是「当前发布者」时才会生效——页面切换瞬间新页面的槽位可能已经
+    // 接管，此时清空会让岛掉回悬浮位且再也不会归位。
     final controller = _controller;
     if (controller != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        controller.publishSlotRect(null);
+        controller.publishSlotRect(null, this);
       });
     }
     super.dispose();
   }
 
+  /// 每次 build 都（帧后、去重地）重新测量并发布。
+  ///
+  /// 关键点：窄屏附加行是**逐帧长高**的，槽位矩形也随之逐帧变化；只在挂载那一帧
+  /// 测量会让岛停在「行高还只有 1px 时」的位置（偏上约 13px、与顶栏重叠）。
   void _schedulePublish() {
+    if (_publishScheduled) return;
+    _publishScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _publishScheduled = false;
       if (!mounted) return;
       final box = _key.currentContext?.findRenderObject() as RenderBox?;
       if (box == null || !box.hasSize) return;
-      _controller?.publishSlotRect(box.localToGlobal(Offset.zero) & box.size);
+      _controller?.publishSlotRect(
+        box.localToGlobal(Offset.zero) & box.size,
+        this,
+      );
     });
   }
 
   @override
-  Widget build(BuildContext context) =>
-      SizedBox(key: _key, width: widget.width, height: widget.height);
+  Widget build(BuildContext context) {
+    _schedulePublish();
+    return SizedBox(key: _key, width: widget.width, height: widget.height);
+  }
 }
 
 /// 感知驻场岛的页面脚手架：只有顶栏随「附加行高度」逐帧重建。

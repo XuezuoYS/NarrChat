@@ -359,15 +359,20 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       return _buildFloating(context, content, present);
     }
     return ListenableBuilder(
-      listenable: Listenable.merge([bar.slotRect, bar.barRect]),
+      listenable: Listenable.merge([
+        bar.slotRect,
+        bar.barRect,
+        bar.extraRowHeight,
+      ]),
       builder: (context, child) {
-        final slotRect = bar.slotRect.value;
-        // 收起态记录槽位矩形（脱离动画的起点）。
+        // 槽位优先用当前发布值；页面切换 / 顶栏销毁的瞬间会短暂为 null，
+        // 此时沿用最后一次槽位矩形（各页面顶栏几何一致），避免岛突然掉回悬浮。
+        final slotRect = bar.slotRect.value ?? _embeddedRect;
+        // 收起态持续刷新缓存（脱离动画的起点）。
         if (slotRect != null && !_expanded) _embeddedRect = slotRect;
-        // 有槽位才存在「脱离」概念；无槽位时始终按悬浮处理。
+        // 有槽位才存在「脱离」概念；从未收到过槽位（如独立窗口）时按悬浮处理。
         _syncDetach(_expanded && slotRect != null);
         if (slotRect == null) {
-          _embeddedRect = null;
           return _buildFloating(context, content, present);
         }
         return _buildSlotAnchored(context, content, slotRect, bar, present);
@@ -713,7 +718,14 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       splashColor: kNoticeDivider,
       highlightColor: kNoticeDivider,
       child: Padding(
-        padding: EdgeInsets.fromLTRB(10, 7, expanded ? 10 : 6, 7),
+        // 收起态上下留 5：内容约 18 高 → 胶囊正好等于 [kIslandPillHeight]（28），
+        // 与顶栏槽位 / 附加行严格一致（否则会往下溢出几像素压到页面内容）。
+        padding: EdgeInsets.fromLTRB(
+          10,
+          expanded ? 7 : 5,
+          expanded ? 10 : 6,
+          expanded ? 7 : 5,
+        ),
         child: Row(
           mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
           children: [

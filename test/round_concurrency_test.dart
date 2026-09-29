@@ -17,6 +17,8 @@ import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/island_bar.dart';
+import 'package:narrchat/widgets/narr_chat_app_bar.dart';
 import 'package:narrchat/widgets/pinned_notice_island.dart';
 import 'package:provider/provider.dart';
 
@@ -271,8 +273,9 @@ void main() {
       required RoundProvider roundProvider,
       required WorldBookProvider worldBookProvider,
       void Function(String bookUuid)? onOpenBook,
+      Size size = const Size(1400, 900),
     }) async {
-      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -353,6 +356,78 @@ void main() {
       expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成，避免悬空。
+      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
+        await tester.pump();
+      }
+      ai.sessions.first.completer.complete(
+        const AiCallResult(
+          content: _fullContent,
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      );
+      await tester.pump();
+      await fA;
+    });
+
+    testWidgets('窄屏对话页：岛嵌在顶栏附加行里，而不是掉到悬浮位', (tester) async {
+      final bookDao = FakeBookDao(books: [bookA, bookB]);
+      final dao = FakeRoundDao();
+      final ai = _ConcurrentAiService();
+      final bookProvider = BookProvider(dao: bookDao);
+      await bookProvider.loadBooks();
+      bookProvider.selectBook(bookB);
+
+      final roundProvider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        retryDelay: Duration.zero,
+      );
+      await roundProvider.loadRounds('b2');
+      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+
+      // 与真机截图一致的窄窗口（< 760 走「顶栏向下多一行」）。
+      await pumpChat(
+        tester,
+        bookProvider: bookProvider,
+        roundProvider: roundProvider,
+        worldBookProvider: worldBookProvider,
+        size: const Size(378, 793),
+      );
+
+      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+      await tester.pump();
+      // 出现在出现动画 / 附加行高度动画都结束之后。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final bar = tester.getRect(find.byType(NarrChatAppBar));
+      expect(bar.height, closeTo(kToolbarHeight + kIslandRowHeight, 1),
+          reason: '窄屏顶栏向下多一行');
+      final card = tester.getRect(
+        find
+            .descendant(
+              of: find.byType(PinnedNoticeIsland),
+              matching: find.byType(Material),
+            )
+            .first,
+      );
+      // 悬浮位在顶栏下方（top ≈ kToolbarHeight + 8）；嵌在附加行时在行内居中，
+      // 上下各留 4px 顶栏背景留白。
+      final rowBottom = bar.bottom - 1; // 顶栏底部 1px 边线
+      final rowTop = rowBottom - kIslandRowHeight;
+      expect(
+        card.top,
+        closeTo(rowTop + (kIslandRowHeight - kIslandPillHeight) / 2, 1.5),
+        reason: '岛应嵌在附加行里（不是悬浮位）',
+      );
+      expect(card.bottom, lessThanOrEqualTo(rowBottom - 2),
+          reason: '岛下方保留顶栏背景留白，也不越出顶栏');
+
+      // 收尾：完成生成，避免悬空。
       for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
         await tester.pump();
       }

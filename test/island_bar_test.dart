@@ -232,6 +232,27 @@ void main() {
     );
   });
 
+  testWidgets('切换页面后：岛仍嵌在新顶栏槽位里（返回不得把槽位清成空）', (tester) async {
+    final sync = await pumpBarApp(tester);
+    await startSync(tester, sync);
+    final embeddedTop = islandCard(tester).top;
+    expect(embeddedTop, lessThan(30), reason: '此时岛嵌在工具栏内');
+
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+    navigator.push(MaterialPageRoute<void>(builder: (_) => barPage()));
+    await settle(tester);
+    expect(islandCard(tester).top, closeTo(embeddedTop, 2),
+        reason: '新页面顶栏的槽位接管后位置不变');
+
+    // 返回：被销毁页面的槽位会发布 null，但它已不是当前发布者，
+    // 不能因此把岛打回顶部悬浮位（悬浮位 top≈64）。
+    navigator.pop();
+    await settle(tester);
+    expect(islandCard(tester).top, closeTo(embeddedTop, 2),
+        reason: '返回后岛仍应嵌在顶栏槽位里');
+    expect(islandVisibleWidth(tester), greaterThan(0));
+  });
+
   testWidgets('宽屏：岛收起时嵌在顶栏中部，标题被挤压但不与岛重叠', (tester) async {
     final sync = await pumpBarApp(tester);
     // 无内容时不占槽位。
@@ -274,20 +295,41 @@ void main() {
       await tester.pump();
     }
     // 过渡途中：高度严格介于单行与「工具栏 + 附加行」之间（不是瞬变）。
-    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 60));
     await tester.pump();
     final midHeight = tester.getSize(find.byType(NarrChatAppBar)).height;
     expect(midHeight, greaterThan(kToolbarHeight));
     expect(
       midHeight,
       lessThan(kToolbarHeight + kIslandRowHeight),
-      reason: '附加行高度是 200ms 过渡出来的',
+      reason: '附加行高度是过渡出来的',
+    );
+    // 且要够快：140ms 内必须拉满（曾用 200ms 线性动画，观感偏慢）。
+    await tester.pump(const Duration(milliseconds: 160));
+    expect(
+      tester.getSize(find.byType(NarrChatAppBar)).height,
+      closeTo(kToolbarHeight + kIslandRowHeight, 0.5),
+      reason: '附加行应在 140ms 内拉满',
     );
     await settle(tester);
 
     final bar = barRect(tester);
     expect(bar.height, closeTo(kToolbarHeight + kIslandRowHeight, 1),
         reason: '窄屏顶栏高度 = 工具栏 + 附加行');
+    // 岛**居中**于附加行（上下各留 4px 顶栏背景）：
+    // 曾经因为「槽位只在挂载那一帧测量」而永久偏上约 13px、与顶栏重叠。
+    final rowBottom = bar.bottom - 1; // 顶栏底部 1px 边线
+    final rowTop = rowBottom - kIslandRowHeight;
+    final card = islandCard(tester);
+    expect(
+      card.top,
+      closeTo(rowTop + (kIslandRowHeight - kIslandPillHeight) / 2, 1.5),
+      reason: '岛垂直居中于附加行',
+    );
+    expect(rowBottom - card.bottom, closeTo(card.top - rowTop, 1),
+        reason: '岛上下留白一致');
+    expect(rowBottom - card.bottom, greaterThan(2),
+        reason: '岛下方必须留出顶栏背景留白');
     final slot = tester.getRect(find.byType(IslandSlot));
     expect(
       slot.center.dy,
@@ -299,6 +341,37 @@ void main() {
     final title = tester.getRect(find.text(longTitle));
     expect(title.right, greaterThan(700 / 2),
         reason: '窄屏顶栏的岛在附加行，标题不再让位');
+  });
+
+  testWidgets('窄屏收起（无岛）：顶栏原本的元素不被附加行挤压', (tester) async {
+    // 回归：曾把 28px 占位框留在 0 高的 bottom 槽里，使 AppBar 把工具栏压成
+    // 28px——标题 / 按钮整体上移到 top≈5，观感就是「顶栏元素被动了」。
+    // 用「图标 + 标题 + 右侧按键」模拟首页顶栏。
+    await pumpBarApp(
+      tester,
+      size: const Size(380, 900),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          tooltip: '设置',
+          onPressed: () {},
+        ),
+      ],
+    );
+    await tester.pump(const Duration(milliseconds: 200));
+
+    final bar = barRect(tester);
+    expect(bar.height, kToolbarHeight, reason: '无岛时顶栏仍是单行');
+    expect(tester.takeException(), isNull, reason: '不得出现布局溢出');
+    // 工具栏内容垂直居中（(56-1px 底边) / 2 ≈ 27.5）。
+    final center = bar.top + (kToolbarHeight - 1) / 2;
+    expect(tester.getRect(find.text(longTitle)).center.dy, closeTo(center, 1.5),
+        reason: '标题垂直居中于工具栏');
+    expect(
+      tester.getRect(find.byIcon(Icons.settings_outlined)).center.dy,
+      closeTo(center, 1.5),
+      reason: '右侧按键垂直居中于工具栏',
+    );
   });
 
   testWidgets('预算不足：窗口够宽但右侧按键过宽时同样走附加行', (tester) async {

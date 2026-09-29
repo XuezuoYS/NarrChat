@@ -211,22 +211,33 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
         final slot = slotVisible
             ? IslandSlot(width: slotWidth, height: kIslandPillHeight)
             : null;
+        // 附加行形态：向下多出一行放岛（高度随动画逐帧变化）。
+        //
+        // 两个必须点（都是 `AppBar` 的 bottom 槽布局决定的：它内部是
+        // `Column([Flexible(工具栏), bottom])`，bottom **由子组件高度决定**）：
+        // 1. 子组件高度必须显式等于行高，否则多余高度会被工具栏吃掉（工具栏变高、
+        //    内容整体下移）；
+        // 2. 行高为 0 时子组件必须为空，否则 28px 的占位框会把工具栏压扁
+        //    （标题 / 按钮整体上移，观感就是「顶栏原本的元素被动了」）。
         final islandRow = islandOn
             ? PreferredSize(
                 preferredSize: Size.fromHeight(widget.extraRowHeight),
-                child: widget.extraRowHeight <= 0.5
-                    ? const SizedBox.shrink()
-                    : Center(
-                        child: IslandSlot(
-                          width: expanded
-                              ? kIslandMarkerSize
-                              : (barWidth - 2 * kIslandTitleGap).clamp(
-                                  kIslandMinWidth,
-                                  barWidth,
-                                ),
-                          height: kIslandPillHeight,
+                child: SizedBox(
+                  height: widget.extraRowHeight,
+                  child: widget.extraRowHeight <= 0.5
+                      ? null
+                      : Center(
+                          child: IslandSlot(
+                            width: expanded
+                                ? kIslandMarkerSize
+                                : (barWidth - 2 * kIslandTitleGap).clamp(
+                                    kIslandMinWidth,
+                                    barWidth,
+                                  ),
+                            height: kIslandPillHeight,
+                          ),
                         ),
-                      ),
+                ),
               )
             : null;
 
