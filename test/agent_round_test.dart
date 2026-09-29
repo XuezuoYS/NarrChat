@@ -20,7 +20,8 @@ import 'helpers/fakes.dart';
 /// RoundProvider Agent 档位（Response API 协议）集成测试。
 ///
 /// 覆盖：Lv.2（六工具 + 三小节正文）主响应落库 / 缺口修复轮 / 预览 /
-/// 强制选项；Lv.1（仅历史工具 + 5 区块正文）的混合落库与维护轮必发。
+/// 强制选项；Lv.1（仅历史工具 + 5 区块正文）的四步流程（准备 → 记忆 → 正文）、
+/// 混合落库与「合规一轮零额外请求」。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -621,7 +622,7 @@ void main() {
     );
   });
 
-  test('AGENT Lv.1：正文 5 区块 + 仅历史工具 → 世界/角色取自正文、历史取自工具', () async {
+  test('AGENT Lv.1：准备 → 记忆(先落条目) → 正文 5 区块；维护轮不再是每轮必发', () async {
     final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
@@ -629,19 +630,23 @@ void main() {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = capturedBodies.length;
         if (idx == 1) {
-          // 正文轮：5 区块（世界 / 角色随正文携带，无记忆区块）。
-          return sse(storyOnlyLines(
-              '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n## 当前时间\n第二天 辰时\n\n'
-              '## 世界状态\n- 地点：青云宗主殿\n\n## 角色状态\n## 林远\n- 气血：60'));
+          // 第 1 帧 = 准备阶段：定本轮大纲（文本不上屏、不采纳）。
+          return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
         }
-        // 维护轮（每轮必发）：只补本轮历史条目。
-        return sse([
-          ...editLines('h1', AgentStateSection.memorySummary, [
-            {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
-          ]),
-          completed('resp_h', input: 2, output: 2),
-          '',
-        ]);
+        if (idx == 2) {
+          // 第 2 帧 = 记忆阶段（required）：本轮历史条目**先于正文**落地。
+          return sse([
+            ...editLines('h1', AgentStateSection.memorySummary, [
+              {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+            ]),
+            completed('resp_h', input: 2, output: 2),
+            '',
+          ]);
+        }
+        // 第 3 帧 = 正文阶段：5 区块（世界 / 角色随正文携带，无记忆区块）。
+        return sse(storyOnlyLines(
+            '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n## 当前时间\n第二天 辰时\n\n'
+            '## 世界状态\n- 地点：青云宗主殿\n\n## 角色状态\n## 林远\n- 气血：60'));
       }),
     );
     final provider = RoundProvider(
@@ -655,7 +660,17 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
-    expect(capturedBodies, hasLength(2), reason: 'Lv.1 维护轮每轮必发');
+
+    // 合规一轮 = 恰好 3 帧：准备 auto → 记忆 required → 正文 auto
+    //（维护轮只作兜底，不再「每轮必发」）。
+    expect(capturedBodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
+    expect(
+      capturedBodies.map((b) => b['tool_choice']).toList(),
+      ['auto', 'required', 'auto'],
+    );
+    // 记忆帧思考强度降为 low（用户开启思考时不硬关；正文 / 准备帧不覆盖）。
+    expect(capturedBodies[1]['reasoning'], {'effort': 'low'});
+    expect('${capturedBodies[0]['reasoning']}', isNot(contains('none')));
 
     // 工具集 = 历史一读一写 + 联网（世界 / 角色不在其中）。
     final names = (capturedBodies.first['tools'] as List)
@@ -673,20 +688,101 @@ void main() {
     );
     expect(names, isNot(contains('narrchat_editWorldState')));
     expect(names, isNot(contains('narrchat_readCharacterState')));
-    // instructions = Lv.1 的 5 区块契约 + 历史工具契约。
+    // instructions = Lv.1 的 5 区块契约 + 历史工具契约；三帧共用同一前缀
+    //（服务商上下文缓存依赖此）。
     expect('${capturedBodies.first['instructions']}',
         contains('完整输出以下 5 个二级标题'));
     expect('${capturedBodies.first['instructions']}',
         contains('narrchat_readHistory'));
+    for (final b in capturedBodies.skip(1)) {
+      expect(b['instructions'], capturedBodies.first['instructions']);
+      expect(b['tools'], capturedBodies.first['tools']);
+    }
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
+    expect(round.aiNarrative, isNot(contains('本轮大纲')));
     expect(round.worldState, '- 地点：青云宗主殿');
     expect(round.characterState, contains('- 气血：60'));
     expect(round.currentTime, '第二天 辰时');
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(provider.agentWarnings, isEmpty);
+    expect(provider.rawExchangesFor(round.id!), hasLength(3));
+  });
+
+  test('AGENT Lv.1 合规一轮不发维护请求：准备读史 + 大纲 → 记忆 → 正文（RAW 4 帧）', () async {
+    final dao = FakeRoundDao();
+    final capturedBodies = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final idx = capturedBodies.length;
+        if (idx == 1) {
+          // 准备帧 1：读一次历史（读取器不是编辑器 → 准备阶段继续）。
+          return sse([
+            callAdded('fc_r', 'narrchat_readHistory'),
+            callArgs('fc_r', {'round': 1}),
+            completed('resp_r'),
+            '',
+          ]);
+        }
+        if (idx == 2) {
+          // 准备帧 2：只有大纲文本、无工具调用 → 准备阶段闭环。
+          return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
+        }
+        if (idx == 3) {
+          // 记忆帧（required）：追加本轮历史条目。
+          return sse([
+            ...editLines('fc_m', AgentStateSection.memorySummary, [
+              {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+            ]),
+            completed('resp_m'),
+            '',
+          ]);
+        }
+        // 正文帧：5 区块。
+        return sse(storyOnlyLines(
+            '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n## 当前时间\n第二天 辰时\n\n'
+            '## 世界状态\n- 地点：青云宗主殿\n\n## 角色状态\n## 林远\n- 气血：60'));
+      }),
+    );
+    final provider = RoundProvider(
+      dao: dao,
+      bookDao: FakeBookDao(),
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
+      experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
+
+    // 准备 2 帧 + 记忆 1 帧 + 正文 1 帧；**没有维护请求**。
+    expect(capturedBodies, hasLength(4));
+    expect(
+      capturedBodies.map((b) => b['tool_choice']).toList(),
+      ['auto', 'auto', 'required', 'auto'],
+    );
+    for (final b in capturedBodies) {
+      final input = (b['input'] as List).cast<Map<String, dynamic>>();
+      expect(
+        input.any((i) => '${i['content']}'.contains('[State-maintenance turn]')),
+        isFalse,
+        reason: '合规流程下 Lv.1 不应出现维护轮指令',
+      );
+    }
+
+    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    expect(round.aiNarrative, contains('殿前风冷'));
+    expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
+    expect(round.worldState, '- 地点：青云宗主殿');
+    expect(provider.agentWarnings, isEmpty);
+    // RAW：4 次交换，全为成功帧（可追溯）。
+    final exchanges = provider.rawExchangesFor(round.id!)!;
+    expect(exchanges, hasLength(4));
+    expect(exchanges.where((e) => e.error.isNotEmpty), isEmpty);
   });
 
   test('兼容降级重发：400 探测帧**不计失败轮**、不计 token，RAW 写明 HTTP 码', () async {

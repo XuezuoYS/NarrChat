@@ -133,7 +133,7 @@ class AiCallResult {
 
   /// 响应被服务端**截断**（Responses `status: incomplete`）：[content] /
   /// [toolCalls] 是截断前的部分结果。**不抛异常**——上层按语义决定如何补救
-  /// （AGENT 状态轮拆小工具调用重试并按需上调输出上限；正文轮按已有部分采纳）。
+  /// （AGENT 工具帧拆小工具调用重试并按需上调输出上限；正文帧按已有部分采纳）。
   final bool incomplete;
 
   /// 截断原因（`incomplete_details.reason`，原样保留以便定位；未知 = 'unknown'）。

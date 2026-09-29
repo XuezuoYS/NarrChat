@@ -5,7 +5,7 @@ import 'narr_agent_tool.dart';
 
 /// 协议线路适配（纯函数集合）。
 ///
-/// AGENT 两阶段执行器（`AgentRoundRunner`）内部以「Responses 形状」的平铺
+/// AGENT 分阶段执行器（`AgentRoundRunner`）内部以「Responses 形状」的平铺
 /// items 累积会话（`reasoning` / `function_call` / `function_call_output` /
 /// 普通角色消息），线路协议（Chat Completions / Responses）在**组装请求体时**
 /// 再转换为对应形态——执行器因此与线路协议完全解耦：

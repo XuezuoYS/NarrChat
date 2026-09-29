@@ -669,17 +669,34 @@ void main() {
       expect(system, isNot(contains('narrchat_editWorldState')));
       expect(system, contains('【角色状态输出格式】'));
       expect(system, contains('【状态快照规则】'));
-      expect(system, contains('状态维护回合'));
+      // 四步契约：准备（读史+大纲）→ 记忆（先写条目）→ 正文 → 禁止记忆区块。
+      expect(system, contains('【第一步·准备】'));
+      expect(system, contains('【第二步·记忆先写】'));
+      expect(system, contains('【第三步·正文】'));
+      expect(system, contains('【第四步·禁止输出记忆区块】'));
+      expect(system, contains('恰好一条'));
+      expect(system, contains('op=append'));
+      // 维护回合已降级为兜底，不再是契约里的每轮必发步骤。
+      expect(system, isNot(contains('状态维护回合')));
     });
 
-    test('用户消息：5 区块格式要求 + 先读历史，且无记忆格式提醒', () {
+    test('用户消息：5 区块格式要求 + 先读史与大纲、再写记忆条目', () {
       final user = buildLv1Bundle().userPrompt;
       expect(user, contains('【格式要求】'));
       expect(user, contains('5 个二级标题（##）区块'));
-      expect(user, contains('先调用 narrchat_readHistory'));
+      expect(user, contains('narrchat_readHistory'));
+      expect(user, contains('**一次**'));
+      expect(user, contains('大纲'));
+      expect(user, contains('narrchat_editHistory'));
+      expect(user, contains('op=append'));
       expect(user, contains('五个区块'));
       expect(user, contains('【用户输入内容开始】'));
       expect(user, isNot(contains('【记忆总结格式】')));
+      // 记忆条目先于正文：编辑器的调用要求出现在 5 区块之前。
+      expect(
+        user.indexOf('narrchat_editHistory'),
+        lessThan(user.indexOf('五个区块')),
+      );
     });
   });
 }

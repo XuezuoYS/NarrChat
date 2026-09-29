@@ -31,9 +31,10 @@ class AiRequestValues {
 
   /// 工具选择策略（`tool_choice`：`auto` / `required` / `none`；null = 不发送）。
   ///
-  /// 仅 AGENT 模式使用：正文轮 `auto`，状态轮 `required`（强制调用工具，
-  /// 杜绝「只写正文不改状态」）。两阶段的 `instructions` / `tools` 必须
-  /// **完全一致**（工具取超集），否则请求前缀变化会让服务商的上下文缓存失效。
+  /// 仅 AGENT 模式使用：准备 / 正文阶段 `auto`，记忆 / 维护轮 `required`
+  /// （强制调用工具，杜绝「只写正文不落地状态 / 记忆」）。各阶段的
+  /// `instructions` / `tools` 必须**完全一致**（工具取超集），否则请求前缀变化
+  /// 会让服务商的上下文缓存失效。
   final String? toolChoice;
 
   const AiRequestValues({

@@ -45,7 +45,7 @@ String agentEditToolName(AgentStateSection section) => switch (section) {
     };
 
 /// 按 [sections] 组装状态工具集：**全部读取器在前、编辑器在后**（同一档位的
-/// 顺序恒定，两阶段共用同一份 schema，服务商上下文缓存前缀不受影响）。
+/// 顺序恒定，各阶段共用同一份 schema，服务商上下文缓存前缀不受影响）。
 List<NarrAgentTool> buildStateTools(
   AgentStateWorkingCopy workingCopy, {
   required List<AgentStateSection> sections,
@@ -75,7 +75,7 @@ NarrAgentTool _editTool(AgentStateWorkingCopy copy, AgentStateSection section) =
 
 /// 状态读取器基类：纯只读、幂等、无副作用。
 ///
-/// 返回值 = **该栏目**工作副本当前渲染（正文轮调用 = 上一轮库内状态；
+/// 返回值 = **该栏目**工作副本当前渲染（准备 / 正文阶段调用 = 上一轮库内状态；
 /// 维护轮调用 = 上一轮 + 本轮正文之后的状态），应用侧无需区分调用时机。
 abstract class _SectionReadTool implements NarrAgentTool {
   _SectionReadTool(this.workingCopy, this.section);
@@ -155,16 +155,18 @@ class NarrchatReadHistoryTool extends _SectionReadTool {
   @override
   String get description =>
       'Read back the CURRENT `<memorySummary>` block ONLY — the history: one '
-      'entry per round (`- 第N轮｜日期：{当前时间}｜{概括内容}`). Call it FIRST in '
-      'the story '
-      'turn (the past rounds are the story\'s basis) and again in the '
-      'maintenance turn before editing; copy `before` anchors VERBATIM from '
-      'this result (the ONLY correct anchor source for '
-      '$kEditHistoryToolName). DO NOT echo the block in your reply. '
+      'entry per round (`- 第N轮｜日期：{当前时间}｜{概括内容}`). Read it ONCE per '
+      'round BEFORE writing anything (the past rounds are the basis of this '
+      'round\'s outline and of the new memory entry); it is the ONLY correct '
+      'anchor source for $kEditHistoryToolName, so copy `before` anchors '
+      'VERBATIM from this result. Reading it again in the same round is '
+      'refused — reuse the block already in this conversation. DO NOT echo the '
+      'block in your reply. '
       '只读取当前 `<memorySummary>` 块（历史/记忆总结：每轮一条 '
-      '`- 第N轮｜日期：{当前时间}｜{概括内容}`），正文回合动笔前先调用、'
-      '维护回合编辑前再调用一次；'
+      '`- 第N轮｜日期：{当前时间}｜{概括内容}`）：每轮**只在动笔前读一次**'
+      '（以往轮次是本轮大纲与新记忆条目的依据），'
       '`before` 锚点必须逐字复制（$kEditHistoryToolName 唯一正确的锚点来源）；'
+      '同一轮内重复读取会被拒绝——复用对话中已有的块；'
       '禁止把该块写进回复。';
 }
 
@@ -345,8 +347,10 @@ class NarrchatEditHistoryTool extends _SectionEditTool {
   String get description =>
       'Line-edit the HISTORY section (`<memorySummary>`): one memory entry per '
       'round, format `- 第N轮｜日期：{当前时间}｜{概括内容}`. Every round must end '
-      'with EXACTLY ONE entry for this round — add it with op=append (the date '
-      'is this round\'s `## 当前时间` value). op=noChange is NOT accepted here; '
+      'with EXACTLY ONE entry for this round — add it with op=append; the date '
+      'is this round\'s planned in-story time, and the story\'s '
+      '`## 当前时间` must match it (whichever comes first, keep the two '
+      'consistent). op=noChange is NOT accepted here; '
       'op=set / delete are for correcting existing entries only. Locate with a '
       'verbatim anchor copied CHARACTER-BY-CHARACTER from the '
       '$kReadHistoryToolName result — NEVER line numbers. A rejected edit '
@@ -354,7 +358,8 @@ class NarrchatEditHistoryTool extends _SectionEditTool {
       'step. '
       '按行编辑**历史/记忆总结**栏目（`<memorySummary>`）：每轮一条 '
       '`- 第N轮｜日期：{当前时间}｜{概括内容}`，本轮必须用 op=append 追加'
-      '**恰好一条**（日期 = 本轮正文 `## 当前时间` 的取值）；'
+      '**恰好一条**（日期 = 本轮计划的故事内时间，正文 `## 当前时间` 与之一致，'
+      '二者谁先写出就以谁为准）；'
       '本栏**不接受** op=noChange，op=set / delete 只用于修正既有条目；'
       '`before` 必须从 $kReadHistoryToolName 的结果逐字复制，绝不数行号'
       '（匹配失败会回传该栏当前全文供你重锚）。';

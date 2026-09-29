@@ -498,7 +498,8 @@ class RoundProvider extends ChangeNotifier {
   /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
   ///
   /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
-  /// - Agent 档位（Lv.1 / Lv.2，实验性功能）：返回正文轮首帧（线路形态由协议决定）；
+  /// - Agent 档位（Lv.1 / Lv.2，实验性功能）：返回本轮首帧（Lv.1 = 准备帧、
+  ///   Lv.2 = 正文帧；线路形态由协议决定）；
   /// - 联网搜索开启：返回工具循环首帧（工具 schema；system 不追加联网指令，
   ///   调用指导全在工具 `description` 里）；
   /// - 联网搜索关闭：返回直发请求体（无工具）。
@@ -520,7 +521,7 @@ class RoundProvider extends ChangeNotifier {
     );
     final Map<String, dynamic> firstBody;
     if (req.agent) {
-      // AGENT 模式：预览正文轮首帧（与实发同一条组装路径）。
+      // AGENT 模式：预览本轮首帧（与实发同一条组装路径）。
       firstBody = req.directBody;
     } else if (req.useSearch) {
       // 联网搜索工具循环：与实发共用同一线段（线路 / schema 形状一致）。
@@ -649,7 +650,8 @@ class RoundProvider extends ChangeNotifier {
     final temperature = settings?.temperature ?? 1.0;
     final maxTokens = settings?.maxTokens;
 
-    // AGENT 模式：两阶段执行器（正文轮 → 维护轮）+ 自定义状态/搜索工具。
+    // AGENT 模式：分阶段执行器（Lv.1 = 准备 → 记忆 → 正文；
+    // Lv.2 = 正文 → 缺口驱动的维护轮）+ 自定义状态/搜索工具。
     // 线路（responses / chat）只影响请求体形态，执行器结构完全一致：
     // - responses 线路：instructions + input items + 顶层工具 schema；
     // - chat 线路：system 消息 + role 消息 + 嵌套 function schema，
@@ -670,7 +672,7 @@ class RoundProvider extends ChangeNotifier {
         {'role': 'user', 'content': userContent},
       ];
       // 工具 schema 超集（档位对应的状态工具 + 可选搜索工具），
-      // **两阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
+      // **各阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
       // 使服务商的上下文缓存整段失效。
       final schemaTools = [
         ...buildStateTools(
@@ -1374,7 +1376,7 @@ class RoundProvider extends ChangeNotifier {
     );
   }
 
-  /// AGENT 单轮执行（两阶段 + 状态自取；线路由 req.responsesWire 决定）。
+  /// AGENT 单轮执行（分阶段 + 状态自取；线路由 req.responsesWire 决定）。
   ///
   /// 返回聚合结果（正文 = 最后一个标题帧）、工作副本合并快照与执行器结果。
   /// 状态**只**来自工作副本：模型不再以文本区块输出状态，故无文本兜底。
@@ -1400,8 +1402,8 @@ class RoundProvider extends ChangeNotifier {
     );
     // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
     final profile = AgentModeProfile.of(req.agentLevel);
-    // 工具超集：档位对应的状态工具 + （可选）搜索工具，两阶段共用同一份
-    // schema，保证 instructions / tools 前缀在正文轮与维护轮之间完全一致。
+    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各阶段共用同一份**
+    // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
     final tools = <NarrAgentTool>[
       ...buildStateTools(workingCopy, sections: profile.toolSections),
       if (req.useSearch) ..._makeAgentTools(gen),
@@ -1519,17 +1521,17 @@ class RoundProvider extends ChangeNotifier {
   /// AGENT 模式单帧请求体（Responses 线路；预览与实发共用同一路径）。
   ///
   /// 帧间差异只有这几处，其余前缀逐字节一致（服务商上下文缓存依赖此）：
-  /// - [AgentTurnRequest.items]：本轮累积 input（正文轮追加了 assistant / 工具
-  ///   条目，状态轮再追加最新状态快照块与指令）；
-  /// - [AgentTurnRequest.toolChoice]：正文轮 `auto`、状态轮 `required`；
-  ///   平台不支持时 null；
+  /// - [AgentTurnRequest.items]：本轮累积 input（各阶段追加 assistant / 工具
+  ///   条目与阶段指令，维护轮再追加缺口清单）；
+  /// - [AgentTurnRequest.toolChoice]：准备 / 正文阶段 `auto`、记忆 / 维护轮
+  ///   `required`；平台不支持时 null；
   /// - [AgentTurnRequest.previousResponseId]：有状态续接帧不重发
   ///   instructions / tools；
-  /// - [AgentTurnRequest.stateThinkingEffort]：状态帧把思考强度降为 `low`——
-  ///   不硬关（状态维护需要理解正文与快照），只在用户开启思考模式时生效；
+  /// - [AgentTurnRequest.stateThinkingEffort]：记忆 / 维护帧把思考强度降为
+  ///   `low`——不硬关（需要读懂大纲与最新快照），只在用户开启思考模式时生效；
   ///   服务商不接受时由执行器回落用户设置。
   ///
-  /// `max_output_tokens` **一律沿用用户设置**：程序不为状态帧擅自抬高上限，
+  /// `max_output_tokens` **一律沿用用户设置**：程序不为工具帧擅自抬高上限，
   /// 触顶时由执行器下发「拆短调用」指令 + 黄框提示用户自行调高。
   static Map<String, dynamic> _agentBody({
     required AiSettingsProvider? settings,
@@ -2103,7 +2105,7 @@ class RoundProvider extends ChangeNotifier {
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
 /// [agent]（实验性档位）与 [responsesWire]（线路协议）**正交**：
-/// - [agent] 为 true：Agent 两阶段执行器启用（自定义工具 + 状态工作副本），
+/// - [agent] 为 true：Agent 分阶段执行器启用（自定义工具 + 状态工作副本），
 ///   [agentLevel] / [agentValues] 等字段随之生效；
 /// - [responsesWire] 为 true：请求体走 Response API 线路（/responses）。
 class _RoundRequest {

@@ -99,7 +99,7 @@ class ApiType {
   /// DeepSeek 官方请求体动态组合规则（OpenAI 兼容）：
   /// - 始终注入：model / messages / stream / thinking（官方默认开启，必须显式声明）
   ///   与 max_tokens（留空时移除该键）；tool_choice（值为 null 时移除该键，
-  ///   仅 AGENT 模式在两阶段帧中携带）；
+  ///   仅 AGENT 模式在记忆 / 维护帧中携带）；
   /// - 思考模式：追加 reasoning_effort，不发送 temperature；
   /// - 非思考模式：追加 temperature，不发送 reasoning_effort；
   /// - 流式：追加 stream_options.include_usage 以统计 Token；
@@ -159,7 +159,7 @@ class ApiType {
   /// - 联网搜索：tools（function 类型，顶层 name 形态）。
   ///
   /// 协议只决定请求体 / 线路格式（POST /responses），**不自动启用 Agent**；
-  /// Agent 档位（Lv.1 / Lv.2 两阶段生成 + 自定义工具 + 状态工作副本）由
+  /// Agent 档位（Lv.1 / Lv.2 分阶段生成 + 自定义工具 + 状态工作副本）由
   /// 「设置 → 通用设置 → 实验性功能」中独立的「Agent 模式」下拉控制（默认关闭），
   /// 与协议选择正交。
   static const ApiType openAiResponses = ApiType(
@@ -176,7 +176,7 @@ class ApiType {
         'input': '{{messages}}',
         'stream': '{{stream}}',
         'max_output_tokens': '{{max_tokens}}',
-        // AGENT 两阶段：正文轮 auto，状态轮 required（强制调工具）。
+        // AGENT 工具帧：记忆 / 维护轮 required（强制调工具）。
         // 放在 always（而非 search）：有状态续接帧不重发 tools，但仍需
         // tool_choice；null（Chat 模式 / 服务商不支持）时整键省略 →
         // Chat 请求体逐字节不变。

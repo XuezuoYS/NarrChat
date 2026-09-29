@@ -15,7 +15,8 @@ import 'package:narrchat/services/ai_service.dart';
 import 'helpers/fakes.dart';
 
 /// Agent 档位（实验性功能）**开启** + Chat 兼容协议：
-/// 两阶段执行器在 Chat 通道运行——帧转为合法的 Chat messages
+/// 分阶段执行器在 Chat 通道运行（Lv.2 = 正文 / 维护两阶段；
+/// Lv.1 = 准备 → 记忆 → 正文）——帧转为合法的 Chat messages
 /// （assistant 携带 tool_calls、工具结果以 role:tool 回传），
 /// 无 instructions / previous_response_id，tool_choice 被拒时就地降级。
 void main() {
@@ -234,7 +235,7 @@ void main() {
     expect(provider.rawExchangesFor(round.id!), hasLength(2));
   });
 
-  test('Agent Lv.1 开 + Chat 协议：正文 5 区块 + 仅历史工具（世界/角色取自正文）', () async {
+  test('Agent Lv.1 开 + Chat 协议：准备/记忆/正文三帧（仅历史工具，世界/角色取自正文）', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
@@ -242,26 +243,32 @@ void main() {
         bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = bodies.length;
         if (idx == 1) {
-          // 正文轮：5 区块（世界 / 角色随正文携带；正文不含记忆区块）。
-          // 角色状态按新契约带 ```markdown 围栏（提取时剥离，落库为纯文本）。
+          // 准备帧：只有本轮大纲、无工具调用 → 准备阶段闭环（文本不采纳）。
+          return sse(
+            chatFrame(content: '本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'),
+          );
+        }
+        if (idx == 2) {
+          // 记忆帧（required）：本轮历史条目**先于正文**落地。
           return sse(
             chatFrame(
-              content: '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n'
-                  '## 当前时间\n第二天 辰时\n\n## 世界状态\n- 地点：青云宗主殿\n\n'
-                  '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
+              tools: const [
+                (
+                  id: 'call_9',
+                  section: AgentStateSection.memorySummary,
+                  newLine: '- 第1轮｜日期：第二天 辰时｜殿前递帖',
+                ),
+              ],
             ),
           );
         }
-        // 维护轮（每轮必发）：补本轮历史条目。
+        // 正文帧：5 区块（世界 / 角色随正文携带；正文不含记忆区块）。
+        // 角色状态按新契约带 ```markdown 围栏（提取时剥离，落库为纯文本）。
         return sse(
           chatFrame(
-            tools: const [
-              (
-                id: 'call_9',
-                section: AgentStateSection.memorySummary,
-                newLine: '- 第1轮｜日期：第二天 辰时｜殿前递帖',
-              ),
-            ],
+            content: '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n'
+                '## 当前时间\n第二天 辰时\n\n## 世界状态\n- 地点：青云宗主殿\n\n'
+                '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
           ),
         );
       }),
@@ -278,8 +285,17 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
-    expect(bodies, hasLength(2), reason: 'Lv.1 维护轮每轮必发');
+    // 合规一轮 = 恰好 3 帧：准备 auto → 记忆 required → 正文 auto
+    //（维护轮只作兜底，不再「每轮必发」）。
+    expect(bodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
+    expect(
+      bodies.map((b) => b['tool_choice']).toList(),
+      ['auto', 'required', 'auto'],
+    );
 
+    // Chat 线路形态：messages + 嵌套 function schema，无 instructions / input。
+    expect(bodies.first.containsKey('messages'), isTrue);
+    expect(bodies.first.containsKey('instructions'), isFalse);
     final tools = toolSchemas(bodies.first);
     expect(
       tools.map((t) => t['name']),
@@ -295,18 +311,40 @@ void main() {
         isNot(contains('narrchat_editWorldState')));
     expect(tools.map((t) => t['name']),
         isNot(contains('narrchat_readCharacterState')));
+    expect((bodies.first['tools'] as List).first.containsKey('name'), isFalse,
+        reason: 'Chat 线路为嵌套 function 形态');
+    // 三帧共用同一 system / tools 前缀（服务商上下文缓存依赖此）。
+    for (final b in bodies.skip(1)) {
+      expect(jsonEncode(b['tools']), jsonEncode(bodies.first['tools']));
+    }
     final system = (bodies.first['messages'] as List).first as Map<String, dynamic>;
+    expect(system['role'], 'system');
     expect('${system['content']}', contains('完整输出以下 5 个二级标题'));
     expect('${system['content']}', contains('narrchat_readHistory'));
+
+    // 记忆帧的工具调用在 Chat 通道转为合法帧会话：assistant 携带 tool_calls、
+    // 工具结果以 `role: tool` 回传（出现在**正文帧**（第 3 帧）的 messages 里）。
+    final messages3 = (bodies[2]['messages'] as List).cast<Map<String, dynamic>>();
+    final assistant = messages3.firstWhere(
+      (m) => m['role'] == 'assistant' && m['tool_calls'] != null,
+    );
+    expect((assistant['tool_calls'] as List), hasLength(1));
+    expect(((assistant['tool_calls'] as List).first as Map)['id'], 'call_9');
+    final toolMsg = messages3.firstWhere((m) => m['role'] == 'tool');
+    expect(toolMsg['tool_call_id'], 'call_9');
+    expect((toolMsg['content'] as String?) ?? '', contains('已更新'));
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
+    expect(round.aiNarrative, isNot(contains('本轮大纲')));
     expect(round.worldState, '- 地点：青云宗主殿');
     // 围栏在提取时已剥离：落库内容是纯文本（面板/编辑器不再看到围栏）。
     expect(round.characterState, '## 林远\n- 气血：60');
     expect(round.currentTime, '第二天 辰时');
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
+    expect(provider.agentWarnings, isEmpty);
+    expect(provider.rawExchangesFor(round.id!), hasLength(3));
   });
 
   test('Agent 开 + Chat 协议：预览请求体为 Chat 形态（messages/tools），无指令字段', () async {

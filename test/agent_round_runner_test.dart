@@ -8,9 +8,10 @@ import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
 
-/// `AgentRoundRunner` 单元测试：两阶段（正文轮 auto / 维护轮 required）、
-/// 档位差异（Lv.1 / Lv.2）、帧级正文分类与「最后一个标题帧胜出」、门控上屏、
-/// 读取器自取、协议兼容降级、无进展止损。
+/// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 auto /
+/// 维护轮 required；Lv.1 = 准备 → 记忆 → 正文，维护轮仅兜底）、档位差异、
+/// 帧级正文分类与「最后一个标题帧胜出」、门控上屏、读取器自取、
+/// 协议兼容降级、无进展止损。
 void main() {
   const lastRound = Round(
     id: 1,
@@ -59,6 +60,8 @@ void main() {
     bool supportsToolChoice = true,
     bool supportsThinkingEffort = true,
     bool reduceReasoningReplay = false,
+    int maxPrepFrames = kAgentMaxPrepFrames,
+    int maxMemoryFrames = kAgentMaxMemoryFrames,
     int maxStateFrames = kAgentMaxStateFrames,
   }) {
     final requests = <_Request>[];
@@ -101,6 +104,8 @@ void main() {
       supportsToolChoice: supportsToolChoice,
       supportsThinkingEffort: supportsThinkingEffort,
       reduceReasoningReplay: reduceReasoningReplay,
+      maxPrepFrames: maxPrepFrames,
+      maxMemoryFrames: maxMemoryFrames,
       maxStateFrames: maxStateFrames,
     );
     return (runner: runner, requests: requests, sunk: sunk);
@@ -1033,7 +1038,41 @@ void main() {
 
   // ---------------------------------------------------------------------------
   // Lv.1（仅历史工具 + 5 区块正文）
+  //
+  // 四步流程：准备（读史 + 大纲，`auto`）→ 记忆（`required`，条目**先于正文**
+  // 落地）→ 正文（`auto`，唯一采纳 / 上屏阶段）→ 缺口驱动的维护轮（兜底）。
   // ---------------------------------------------------------------------------
+
+  /// Lv.1 准备帧：只有大纲文本、**无工具调用** → 准备阶段立即结束
+  /// （准备阶段文本不上屏、不采纳）。
+  AiCallResult lv1PrepareTurn({
+    String outline = '本轮大纲：主角前往主峰，结束时间 = 第二天 申时。',
+    List<AiToolCall> toolCalls = const [],
+  }) =>
+      AiCallResult(
+        content: outline,
+        toolCalls: toolCalls,
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_prep',
+      );
+
+  /// Lv.1 准备帧：先读一次历史（读取器不是编辑器 → 准备阶段继续到下一帧）。
+  AiCallResult lv1PrepareReadTurn(String id) => AiCallResult(
+        content: '',
+        toolCalls: [readCall(id, AgentStateSection.memorySummary)],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_read',
+      );
+
+  /// Lv.1 空手帧：只有文本、无工具调用（记忆帧模拟「模型没调编辑器」）。
+  AiCallResult lv1EmptyTurn(String text) => AiCallResult(
+        content: text,
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_empty',
+      );
 
   /// Lv.1 正文帧：5 区块（世界 / 角色随正文携带，记忆区块应由应用剥离）。
   AiCallResult lv1StoryTurn({
@@ -1050,7 +1089,8 @@ void main() {
         responseId: 'resp_1',
       );
 
-  /// Lv.1 维护帧：只改历史（追加本轮条目）。
+  /// 历史编辑帧（追加恰好一条本轮条目）：既是**记忆阶段**的正解，
+  /// 也是**维护轮兜底**的正解——两处都是同一个工具调用形态。
   AiCallResult lv1HistoryTurn(String id, {String entry = ''}) => AiCallResult(
         content: '',
         toolCalls: [
@@ -1068,89 +1108,378 @@ void main() {
         responseId: 'resp_2',
       );
 
-  test('Lv.1：正文 5 区块保留世界/角色、剥离记忆；维护轮每轮必发且只处理历史', () async {
+  test('Lv.1：准备(读史) → 记忆(条目先落地) → 正文(5 区块，剥离记忆)', () async {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
+      // 把脚本钉在「准备恰好一帧」上：准备阶段本来会在模型继续调工具时循环，
+      // 这里用 maxPrepFrames = 1 让第一帧（读史）后即进入记忆阶段。
+      maxPrepFrames: 1,
       script: [
+        lv1PrepareReadTurn('p1'),
+        lv1HistoryTurn('h1'),
         // 模型违规多写了记忆区块：采纳时必须剥离（历史只走工具）。
         lv1StoryTurn(extra: '\n\n## 记忆总结\n- 第2轮｜日期：第二天 申时｜正文里偷写的'),
-        lv1HistoryTurn('h1'),
       ],
     );
 
     final result = await run(h.runner);
 
+    // 三帧固定顺序：准备(auto) → 记忆(required + 思考降为 low) → 正文(auto)。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.memory, AgentStage.story],
+    );
+    expect(
+      h.requests.map((r) => r.toolChoice).toList(),
+      ['auto', 'required', 'auto'],
+    );
+    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
+    expect(h.requests[0].stateThinkingEffort, isNull);
+    expect(h.requests[2].stateThinkingEffort, isNull);
+    // 准备帧指令：本阶段先读历史一次（这里由脚本自己扮演模型）。
+    expect(
+      '${h.requests[0].items.last['content']}',
+      contains('[Prepare]'),
+    );
+    expect(
+      '${h.requests[0].items.last['content']}',
+      contains(kReadHistoryToolName),
+    );
+
+    // 记忆条目在正文**之前**落地，合规一轮不发起维护轮。
+    expect(result.stateTurnUsed, isFalse);
+    expect(result.frames, 3);
+    expect(result.warnings, isEmpty);
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(copy.memorySummary, contains('主角前往主峰'));
+
+    // 正文帧请求里：读史 → 记忆编辑（含回传的栏目全文）→ 正文阶段指令，
+    // 顺序即「先读、再写条目、最后写正文」。
+    final storyItems = h.requests[2].items;
+    final readAt = storyItems.indexWhere(
+      (i) => i['type'] == 'function_call' && i['call_id'] == 'p1',
+    );
+    final editAt = storyItems.indexWhere(
+      (i) => i['type'] == 'function_call' && i['call_id'] == 'h1',
+    );
+    final editOutAt = storyItems.indexWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'h1',
+    );
+    final storyNoteAt = storyItems.indexWhere(
+      (i) => '${i['content']}'.startsWith('[Story]'),
+    );
+    expect(readAt, greaterThanOrEqualTo(0));
+    expect(editAt, greaterThan(readAt));
+    expect(editOutAt, greaterThan(editAt));
+    expect(storyNoteAt, greaterThan(editOutAt));
+    // 记忆条目已随工具结果进入正文帧上下文（不是「写完正文再补」）。
+    expect('${storyItems[editOutAt]['output']}', contains('第2轮'));
+    // 正文帧请求被组装时正文**还不存在**：没有任何 `## 剧情演绎` assistant 消息
+    // （唯一采纳阶段是正文阶段，正文条目在它之后才进会话）。
+    expect(
+      storyItems.any(
+        (i) =>
+            i['role'] == 'assistant' &&
+            '${i['content']}'.contains('## 剧情演绎'),
+      ),
+      isFalse,
+    );
+
     // 正文保留世界 / 角色（Lv.1 由正文携带），记忆区块被剥离。
+    expect(result.content, contains('## 剧情演绎'));
     expect(result.content, contains('## 世界状态'));
     expect(result.content, contains('- 地点：主峰'));
     expect(result.content, contains('## 角色状态'));
     expect(result.content, isNot(contains('## 记忆总结')));
     expect(result.content, isNot(contains('正文里偷写的')));
 
-    // 维护轮每轮必发（历史条目只可能在维护轮产生）。
-    expect(result.stateTurnUsed, isTrue);
-    expect(h.requests, hasLength(2));
-    expect(h.requests[1].stage, AgentStage.state);
-    expect(h.requests[1].toolChoice, 'required');
-    final directive = '${h.requests[1].items.last['content']}';
-    expect(directive, contains(kReadHistoryToolName));
-    expect(directive, contains(kEditHistoryToolName));
-    // 世界 / 角色由正文携带 → Lv.1 维护轮不涉及它们的工具。
-    expect(directive, isNot(contains(kEditWorldStateToolName)));
-    expect(directive, isNot(contains(kEditCharacterStateToolName)));
-
-    // 历史条目落进工作副本；世界 / 角色不被工具改动（落库由 provider 从正文解析）。
-    expect(copy.memorySummary, contains('第2轮'));
+    // 世界 / 角色不被工具改动（落库由 provider 从正文解析）；时间取自正文。
     expect(copy.worldState, '- 地点：青云宗\n- 天气：晴');
-    expect(result.warnings, isEmpty);
+    expect(copy.currentTime, '第二天 申时');
   });
 
-  test('Lv.1：正文轮调用历史编辑器被拒绝执行，维护轮照常补条目', () async {
+  test('Lv.1：会话累积顺序——记忆条目先于正文 assistant 回传（续写帧可见）', () async {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
+      maxPrepFrames: 1,
       script: [
-        lv1StoryTurn(
-          toolCalls: [
-            editCall('bad_h', AgentStateSection.memorySummary, [
-              {
-                'op': 'append',
-                'newLine': '- 第2轮｜日期：第二天 申时｜正文轮抢写',
-              },
-            ]),
-          ],
-        ),
+        lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
+        // 正文帧 1：半截正文 + 读取器（非编辑器 → 正文阶段继续下一帧）。
+        AiCallResult(
+          content: '## 剧情演绎\n写了一半',
+          toolCalls: [readCall('s1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_s1',
+        ),
+        lv1StoryTurn(),
       ],
     );
 
     final result = await run(h.runner);
 
-    // 正文轮的历史编辑被拒绝：不落库、回传说明、不计入缺项清单。
-    final refused = result.outcomes.first;
-    expect(result.outcomes, hasLength(2), reason: '拒绝项 + 维护轮历史编辑');
-    expect(refused.applied, isFalse);
-    expect(refused.isStateTool, isFalse);
-    expect(refused.message, contains('维护轮'));
-    final refusedOutput = h.requests[1].items.firstWhere(
-      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'bad_h',
+    expect(h.requests, hasLength(4));
+    final items = h.requests[3].items;
+    final editOutAt = items.indexWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'h1',
     );
-    // 拒绝说明：英文要求在前、中文概述在后，无 [EN] / 【中】 语言标记。
+    final storyAssistantAt = items.indexWhere(
+      (i) =>
+          i['role'] == 'assistant' &&
+          '${i['content']}'.contains('## 剧情演绎'),
+    );
+    expect(editOutAt, greaterThanOrEqualTo(0));
+    expect(storyAssistantAt, greaterThan(editOutAt),
+        reason: '记忆条目必须排在正文 assistant 消息之前（正文受其约束）');
+    // 最后一个标题帧胜出：半截正文不进入本轮结果。
+    expect(result.content, contains('## 世界状态'));
+    expect(result.content, isNot(contains('写了一半')));
+    expect(result.stateTurnUsed, isFalse);
+  });
+
+  test('Lv.1：记忆阶段调用历史编辑器**被执行成功**（旧「正文轮拒绝」护栏已删除）', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      maxPrepFrames: 1,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        lv1HistoryTurn('h1'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 记忆帧的历史编辑直接落地（不再有「正文轮才写历史 → 被拒 → 维护轮补」）。
+    final edit = result.outcomes.firstWhere((o) => o.callId == 'h1');
+    expect(edit.name, kEditHistoryToolName);
+    expect(edit.applied, isTrue);
+    expect(edit.isStateTool, isTrue);
+    expect(edit.message, contains('已更新'));
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(copy.failedSections, isEmpty);
+    expect(result.stateTurnUsed, isFalse);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：记忆阶段模型抢写正文被丢弃，正文只来自正文阶段', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      maxPrepFrames: 1,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        // 记忆帧违规抢写正文（`## 剧情演绎`）+ 正常追加本轮条目。
+        AiCallResult(
+          content: '## 剧情演绎\n抢写的正文',
+          toolCalls: [
+            editCall('h1', AgentStateSection.memorySummary, [
+              {
+                'op': 'append',
+                'newLine': '- 第2轮｜日期：第二天 申时｜主角前往主峰',
+              },
+            ]),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_mem',
+        ),
+        lv1StoryTurn(),
+      ],
+    );
+    final sunk = <AiStreamChunk>[];
+    final result = await h.runner.run(
+      initialInputItems: const [
+        {'role': 'user', 'content': 'hi'},
+      ],
+      stream: true,
+      onChunk: sunk.add,
+    );
+
+    // 采纳的正文只来自正文阶段（记忆帧的抢写文本不是候选）。
+    expect(result.content, contains('## 剧情演绎\n正文'));
+    expect(result.content, contains('## 世界状态'));
+    expect(result.content, isNot(contains('抢写的正文')));
+    // 上屏同样不含抢写文本（记忆阶段文本通道关闭）。
+    final published = sunk
+        .where((c) => c.contentDelta.isNotEmpty)
+        .map((c) => c.contentDelta)
+        .join();
+    expect(published, contains('## 剧情演绎'));
+    expect(published, isNot(contains('抢写的正文')));
+    // 抢写文本确实以 assistant 消息留在会话里（模型看得见自己的输出），
+    // 但**不参与采纳**——结构上无法成为本轮正文。
+    expect(
+      h.requests[2].items.any(
+        (i) => i['role'] == 'assistant' && '${i['content']}'.contains('抢写的正文'),
+      ),
+      isTrue,
+    );
+    // 记忆条目照常落地，合规一轮无维护轮、无警告。
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.frames, 3);
+    expect(result.stateTurnUsed, isFalse);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：记忆阶段空手帧 → 重发指令，用尽后由维护轮兜底', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      maxPrepFrames: 1,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        lv1EmptyTurn('（记忆帧 1：只回文本）'),
+        lv1EmptyTurn('（记忆帧 2：只回文本）'),
+        lv1EmptyTurn('（记忆帧 3：只回文本）'),
+        lv1StoryTurn(),
+        lv1HistoryTurn('m1'),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 准备 1 帧 + 记忆 3 帧（用尽）+ 正文 1 帧 + 维护轮 1 帧。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [
+        AgentStage.prepare,
+        AgentStage.memory,
+        AgentStage.memory,
+        AgentStage.memory,
+        AgentStage.story,
+        AgentStage.state,
+      ],
+    );
+    expect(
+      h.requests.map((r) => r.toolChoice).toList(),
+      ['auto', 'required', 'required', 'required', 'auto', 'required'],
+    );
+    expect(result.frames, 6);
+    expect(result.stateTurnUsed, isTrue);
+    // 每帧都重发记忆指令：首帧与「仍缺」帧的文案不同（不重复回传失败说明）。
+    expect(
+      '${h.requests[1].items.last['content']}',
+      contains('[History entry · before the story]'),
+    );
+    for (final at in const [2, 3]) {
+      expect(
+        '${h.requests[at].items.last['content']}',
+        contains('[History entry · still missing]'),
+      );
+      expect(
+        '${h.requests[at].items.last['content']}',
+        contains(kEditHistoryToolName),
+      );
+    }
+    // 维护轮兜底指令只谈历史（世界 / 角色由正文携带，不再是维护对象）。
+    final directive = '${h.requests[5].items.last['content']}';
+    expect(directive, contains('[State-maintenance turn]'));
+    expect(directive, contains(kEditHistoryToolName));
+    expect(directive, contains('op=noChange is NOT accepted'));
+    expect(directive, isNot(contains(kEditCharacterStateToolName)));
+    expect(directive, isNot(contains(kEditWorldStateToolName)));
+    // 条目由维护轮补上 → 无残留警告。
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：记忆帧重复读取历史被拒绝（编辑照常落地）', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      maxPrepFrames: 1,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        // 记忆帧：多此一举地再读一遍历史（本轮已提供全文 → 被拒）+ 正常编辑。
+        AiCallResult(
+          content: '',
+          toolCalls: [
+            readCall('m_read', AgentStateSection.memorySummary),
+            editCall('m_edit', AgentStateSection.memorySummary, [
+              {
+                'op': 'append',
+                'newLine': '- 第2轮｜日期：第二天 申时｜主角前往主峰',
+              },
+            ]),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_mem',
+        ),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 读取被拒：不执行、不算状态缺项（流程违规 ≠ 待修栏目）。
+    final refusedRead =
+        result.outcomes.firstWhere((o) => o.callId == 'm_read');
+    expect(refusedRead.applied, isFalse);
+    expect(refusedRead.message, contains('本阶段不再重复读取'));
+    expect(refusedRead.isStateTool, isFalse);
+    // 回传说明：英文要求在前、中文概述在后，点名历史编辑器，无语言标记。
+    final refusedOutput = h.requests[2].items.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'm_read',
+    );
     final refusedText = '${refusedOutput['output']}';
-    expect(refusedText, contains('History edits belong'));
-    expect(refusedText, contains('未执行'));
     expect(refusedText, contains(kEditHistoryToolName));
+    expect(refusedText, contains('已在对话中'));
     expect(refusedText, isNot(contains('[EN]')));
     expect(refusedText, isNot(contains('【中】')));
-    expect(copy.memorySummary, isNot(contains('正文轮抢写')));
 
-    // 维护轮照常发起并补齐本轮条目。
-    expect(h.requests, hasLength(2));
+    // 编辑照常落地：合规一轮（3 帧）无维护轮、无警告。
+    expect(
+      result.outcomes.firstWhere((o) => o.callId == 'm_edit').applied,
+      isTrue,
+    );
     expect(copy.memorySummary, contains('第2轮'));
-    expect(copy.memorySummary, contains('主角前往主峰'));
+    expect(result.frames, 3);
+    expect(result.stateTurnUsed, isFalse);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：准备帧就写完记忆条目 → 记忆阶段零帧直接跳过（不逼重复追加）', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      script: [
+        // 准备帧：工具**全是编辑器** → 准备阶段立即闭环（该帧文本不上屏）。
+        lv1HistoryTurn('p1', entry: '- 第2轮｜日期：第二天 申时｜准备帧写入'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 进入记忆阶段时本轮条目已在准备帧落地 → [_memorySatisfied] 成立 →
+    // **不再发** `required` 帧（否则会逼模型重复 `op=append`，第二条条目让
+    // applyEdits 整栏失败并多烧两帧修复）。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.story],
+    );
+    expect(
+      h.requests.map((r) => r.toolChoice).toList(),
+      ['auto', 'auto'],
+    );
+    expect(result.frames, 2);
+    // 准备帧落地的那一条没有被重复追加（历史栏恰好一条本轮条目）。
+    expect(AgentStateWorkingCopy.memoryEntryCount(copy.memorySummary, 2), 1);
+    expect(copy.memorySummary, contains('准备帧写入'));
+    expect(result.stateTurnUsed, isFalse);
     expect(result.warnings, isEmpty);
   });
 
@@ -1159,7 +1488,7 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      script: [lv1StoryTurn(), lv1HistoryTurn('h1')],
+      script: [lv1PrepareTurn(), lv1HistoryTurn('h1'), lv1StoryTurn()],
     );
     // 工具集（Lv.1）= 历史读取 + 历史编辑。
     expect(h.runner.tools.map((t) => t.name), [

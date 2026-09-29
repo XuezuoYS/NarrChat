@@ -1863,7 +1863,7 @@ class _ChatScreenState extends State<ChatScreen>
           final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
           // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
           if (showFailure && index == chatRounds.length * 2) {
-            // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 空正文轮：
+            // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 未产出正文：
             // 说明状态改动已作废，与红色错误框语义不同）。
             final pendingIndex = shell.nextRoundIndex;
             final notes = roundProvider.roundWarningsFor(pendingIndex);

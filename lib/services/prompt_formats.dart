@@ -264,11 +264,15 @@ const List<String> agentReasoningRules = [
 ///
 /// Lv.1 只有历史相关工具（[kReadHistoryToolName] / [kEditHistoryToolName]）
 /// 与联网工具：世界状态与角色状态仍由**正文文本**携带（故复用 Chat 的区块
-/// 纪律与角色状态格式），只有「历史」改为工具维护：
-/// - 正文回合：先调 [kReadHistoryToolName] 读到历史（正文唯一依据），
-///   再输出 5 个区块，且**禁止**输出 `## 记忆总结`；
-/// - 维护回合（正文轮之后必发）：**直接复用**正文回合读到的历史做锚点，
-///   调 [kEditHistoryToolName] 追加本轮条目（不再重复读取）。
+/// 纪律与角色状态格式），只有「历史」改为工具维护。每轮固定四步：
+/// - 准备阶段（[prepareNote]）：[kReadHistoryToolName] 读**一次**历史
+///   （正文唯一依据）+ 需要时联网，随后在思考里写出本轮**大纲**
+///   （关键事件 / 出场角色 / **本轮结束**时的剧情内时间），文本不上屏；
+/// - 记忆阶段（[memoryNote]）：按大纲用 [kEditHistoryToolName] 追加
+///   **恰好一条**本轮条目（`op=append`），单独一帧、只调工具、不输出文本；
+/// - 正文阶段（[storyNote]）：按大纲输出 5 个区块，**禁止**输出
+///   `## 记忆总结`（该区块只以工具结果形式出现）；
+/// - 维护回合降级为**兜底**（仅当记忆条目未落地时才补写），不再是每轮必发。
 class AgentLv1PromptFormat extends ChatPromptFormat {
   const AgentLv1PromptFormat() : super(includeMemory: false);
 
@@ -287,34 +291,118 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
     kEditHistoryToolName,
   ];
 
-  /// 历史工具契约（`- ` 项目符号；英文在前、中文一行摘要在后）。
+  /// 输出区块的 `## 区块名` 箭头清单（正文阶段指令与【指令执行】共用同一形状）。
+  static String _sectionsArrow() =>
+      outputSections.map((s) => '`## $s`').join(' → ');
+
+  /// 记忆阶段的编辑行（**单行**）：怎么调 [kEditHistoryToolName]。
+  ///
+  /// 记忆阶段指令与执行器（`agent_round_runner.dart`）的修复指令共用本行，
+  /// 改名即同时改两处文案口径。
+  static const String memoryEditLine =
+      'Call $kEditHistoryToolName with op=append and EXACTLY ONE entry: '
+      '`- 第N轮｜日期：{当前时间}｜{概括内容}` — N = this round, the date = the '
+      'end-of-round in-story time of your outline (the story\'s `## 当前时间` '
+      'must match it). '
+      '用 $kEditHistoryToolName 的 op=append 追加**恰好一条**本轮记忆条目'
+      '（N = 本轮；日期 = 大纲里本轮结束时的剧情内时间，'
+      '正文 `## 当前时间` 必须与之一致）。';
+
+  /// 准备阶段指令（英文要求在前、中文概述在后，与维护轮指令同一形态）。
+  ///
+  /// 记忆阶段提前结束、需要整体补做准备时，指令会带上本段以避免模型误解时序。
+  List<String> prepareNote() => [
+        '[Prepare] Call $kReadHistoryToolName ONCE — the ONLY source of history '
+            '(earlier assistant messages carry no memory block). Search the web '
+            '(narrchat_webSearch / narrchat_webFetchPage) only when real-world '
+            'facts are needed. Then settle THIS round\'s outline in your '
+            'reasoning: key events, characters, and the in-story time at which '
+            'the round ENDS (keep the time format used in history). The outline '
+            'is thinking, not output: do NOT write the story here and do NOT '
+            'call $kEditHistoryToolName in this step — the memory entry and the '
+            'story come AFTER it, in that order.',
+        '',
+        '【准备阶段】先调用 $kReadHistoryToolName **一次**（历史的**唯一**来源，'
+            '此前各轮的 assistant 消息里没有记忆区块）；只有需要现实世界资料时'
+            '才联网（narrchat_webSearch / narrchat_webFetchPage）。'
+            '随后在心里定下**本轮大纲**：关键事件、出场角色、'
+            '本轮**结束**时的剧情内时间（沿用历史的时间格式）。'
+            '大纲只是思考、不是输出：本阶段不写正文，也不要调用 '
+            '$kEditHistoryToolName——记忆条目与正文都在本阶段之后，'
+            '且**先记忆、后正文**，顺序不要误解。',
+      ];
+
+  /// 记忆阶段指令（调用 [kEditHistoryToolName] 的 `op=append` 恰好一条）。
+  ///
+  /// 该阶段是**独立一帧**（`tool_choice = required`）：只调工具、不输出文本，
+  /// 记忆条目先于正文落地，成为正文的既定约束。
+  List<String> memoryNote() => [
+        '[Memory FIRST · tool call only] This turn emits NO text; the story '
+            'comes in the NEXT step. $memoryEditLine '
+            'This is the ONLY history edit for this round.',
+        '',
+        '【记忆阶段】本回合**只调工具、不输出任何文本**（正文在下一步）：'
+            '$memoryEditLine 本轮历史只此一条。',
+      ];
+
+  /// 正文阶段指令（5 区块、禁止 `## 记忆总结`）。
+  ///
+  /// 本阶段是唯一采纳文本的阶段：只写正文，不复述工具结果与指令。
+  List<String> storyNote() => [
+        '[Story] History and this round\'s memory entry are already in place '
+            '($kEditHistoryToolName ran before this turn). Write the story NOW, '
+            'following your outline, this round\'s user input and the book\'s '
+            'settings / style references: output exactly the five sections — '
+            '${_sectionsArrow()}. NEVER output `## 记忆总结`, never echo the '
+            'history or tool results, never restate these instructions.',
+        '',
+        '【正文阶段】历史与本轮记忆条目都已就位（$kEditHistoryToolName 已先执行），'
+            '现在按大纲、本轮用户输入与本书设定/文笔参考写正文，'
+            '只输出五个区块：${_sectionsArrow()}；'
+            '`## 当前时间` 用大纲里本轮结束时的剧情内时间。'
+            '**禁止**输出 `## 记忆总结`、不要复述历史或工具结果、不要复述指令。',
+      ];
+
+  /// 四步流程契约（`- ` 项目符号；英文详述在前、中文概述在后）。
+  ///
+  /// 顺序即执行顺序：准备（读史 → 大纲）→ 记忆（先写条目）→ 正文（5 区块）
+  /// → 禁止输出记忆区块。维护回合只作兜底，不在本契约内展开。
   static const List<String> historyContract = [
-    '- [History lives in tools ONLY] Call $kReadHistoryToolName FIRST to see '
-        'the past rounds (the ONLY source of history — previous assistant '
-        'messages carry no memory section), then write the story\'s five '
-        'sections. NEVER output `## 记忆总结` in your reply: that block exists '
-        'ONLY as a tool result. Read history ONCE: the state-maintenance turn '
-        'that follows MUST reuse that result (it will not read again — copy '
-        '`before` anchors from the history text already in this conversation). '
-        'Do NOT call $kEditHistoryToolName in the story turn — history edits '
-        'belong exclusively to the maintenance turn.',
-    '- 【历史先读后写】先调用 $kReadHistoryToolName 读取历史（历史的**唯一**来源，'
-        '此前各轮的 assistant 消息里没有记忆区块），再写正文五个区块。'
-        '**禁止**在回复里输出 `## 记忆总结`——该区块只以工具结果形式出现。'
-        '历史**只读一次**：随后的「状态维护回合」必须复用这次结果'
-        '（不会再次读取——`before` 锚点从对话中已有的历史全文里复制）。'
-        '正文回合**不要**调用 $kEditHistoryToolName：历史修改只属于维护回合。',
-    '- [Every round · one entry] The maintenance turn must append EXACTLY ONE '
-        'memory entry for this round with $kEditHistoryToolName: '
-        '`- 第N轮｜日期：{当前时间}｜{概括内容}` (op=append; N = this round; the '
-        'date = the `## 当前时间` value of THIS round\'s story). op=noChange is '
-        'NOT accepted for history; a missing entry is a failure. Write that '
-        'call DIRECTLY in your first maintenance response — never spend a turn '
-        'on reading.',
-    '- 【每轮义务】维护回合必须用 $kEditHistoryToolName 追加**恰好一条**本轮记忆条目：'
-        '`- 第N轮｜日期：{当前时间}｜{概括内容}`（op=append；N = 本轮；'
-        '日期 = 本轮正文 `## 当前时间` 的取值）。历史栏**不接受** op=noChange；'
-        '漏掉条目即失败。**第一个维护帧就直接写**，不要花一轮去读取。',
+    '- [Flow · step 1 · prepare] Call $kReadHistoryToolName ONCE in this '
+        'round\'s preparation: it is the ONLY source of history (earlier '
+        'assistant messages carry no memory block). Search the web only when '
+        'real-world facts are needed. Then settle THIS round\'s OUTLINE in your '
+        'reasoning — key events, characters, and the in-story time at which the '
+        'round ENDS (keep the time format used in history). The outline is '
+        'thinking, not output: never write the story in this step. '
+        '【第一步·准备】本轮准备时先调用 $kReadHistoryToolName **一次**'
+        '（历史的**唯一**来源，此前各轮的 assistant 消息里没有记忆区块）；'
+        '需要现实世界资料时才联网；随后在心里定下**本轮大纲**——关键事件、'
+        '出场角色、本轮**结束**时的剧情内时间（沿用历史的时间格式）。'
+        '大纲只是思考、不是输出：本步绝不写正文。',
+    '- [Flow · step 2 · memory FIRST] BEFORE the story, write this round\'s '
+        'memory entry with ONE $kEditHistoryToolName call (op=append): exactly '
+        'one entry `- 第N轮｜日期：{当前时间}｜{概括内容}`, the date = the '
+        'outline\'s end-of-round in-story time (the story\'s `## 当前时间` must '
+        'match it). Do it in its own turn: that turn carries the tool call ONLY '
+        '— no text at all. The history section accepts NO op=noChange; a '
+        'missing or duplicated entry is a failure. '
+        '【第二步·记忆先写】正文**之前**先用 $kEditHistoryToolName 写本轮记忆条目'
+        '（op=append）：**恰好一条** `- 第N轮｜日期：{当前时间}｜{概括内容}`，'
+        '日期 = 大纲里本轮结束时的剧情内时间（正文 `## 当前时间` 必须与之一致）；'
+        '单独一回合完成，该回合**只调工具、不输出任何文本**。'
+        '历史栏**不接受** op=noChange；漏写或重复即失败。',
+    '- [Flow · step 3 · story] Only THEN write the story\'s five sections, '
+        'following the outline, this round\'s user input and the book\'s '
+        'settings / style references: `## 剧情演绎` → `## 推荐行动` → '
+        '`## 当前时间` → `## 世界状态` → `## 角色状态`. '
+        '【第三步·正文】然后才写正文五个区块，依据 = 大纲 + 本轮用户输入 + '
+        '本书设定/文笔参考（顺序固定，同上）。',
+    '- [Flow · step 4 · never the memory block] NEVER output `## 记忆总结`: '
+        'that block exists ONLY as a tool result. Do NOT echo the history or '
+        'any tool result, and do NOT restate these instructions. '
+        '【第四步·禁止输出记忆区块】**禁止**输出 `## 记忆总结`——该区块只以'
+        '工具结果形式出现；不要复述历史或任何工具结果，不要复述本指令。',
     '',
   ];
 
@@ -332,21 +420,24 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
   @override
   List<String> get userExecuteNote => [
         '[Execute now] Call $kReadHistoryToolName ONCE (the story must follow '
-            'the past rounds), then write the STORY: output `## 剧情演绎` → '
-            '`## 推荐行动` → `## 当前时间` → `## 世界状态` → `## 角色状态` (five '
-            'sections; do NOT output `## 记忆总结`, do not echo the history '
-            'tool result, do not restate these instructions). History '
-            '(`## 记忆总结`) is maintained in the separate '
-            'state-maintenance turn that follows — it reuses this read. '
-            'Start with $kReadHistoryToolName, then ## 剧情演绎 immediately.',
+            'the past rounds) and settle THIS round\'s outline (key events, '
+            'characters and the end-of-round in-story time). Then write the '
+            'memory entry with ONE $kEditHistoryToolName call (op=append, '
+            'exactly one entry, date = the outline\'s end-of-round time). Only '
+            'then write the STORY: output ${_sectionsArrow()} (five sections; '
+            'do NOT output `## 记忆总结`, do not echo the history tool result, '
+            'do not restate these instructions). '
+            'Start with $kReadHistoryToolName, then the history edit, then '
+            '## 剧情演绎 immediately.',
         '',
         '【指令执行】[Agent 模式] 先调用 $kReadHistoryToolName **一次**'
-            '（正文必须基于以往轮次的历史），再输出正文五个区块：'
-            '`## 剧情演绎` → `## 推荐行动` → '
-            '`## 当前时间` → `## 世界状态` → `## 角色状态`。**不要**输出 `## 记忆总结`、'
-            '不要复述历史工具结果、不要复述指令。历史的修改都在随后的'
-            '「状态维护回合」完成，且**复用这次读取结果**（不再重复读取）。'
-            '从 $kReadHistoryToolName 开始，然后立即输出 ## 剧情演绎。',
+            '（正文必须基于以往轮次的历史），并定下本轮大纲（关键事件、出场角色、'
+            '本轮结束时的剧情内时间）；随后先用 $kEditHistoryToolName 写记忆条目'
+            '（op=append，**恰好一条**，日期 = 大纲里本轮结束时的剧情内时间）；'
+            '最后才输出正文五个区块：${_sectionsArrow()}。'
+            '**不要**输出 `## 记忆总结`、不要复述历史工具结果、不要复述指令。'
+            '从 $kReadHistoryToolName 开始，再到历史编辑，'
+            '然后立即输出 ## 剧情演绎。',
       ];
 }
 

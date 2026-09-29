@@ -179,6 +179,12 @@ void main() {
         'narrchat_readHistory',
         'narrchat_editHistory',
       ]);
+      // 记忆阶段的单行编辑行（执行器修复指令复用本行）。
+      expect(AgentLv1PromptFormat.memoryEditLine,
+          contains('narrchat_editHistory'));
+      expect(AgentLv1PromptFormat.memoryEditLine, contains('op=append'));
+      expect(AgentLv1PromptFormat.memoryEditLine,
+          contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
     });
 
     test('systemHead 复用 Chat 骨架但只列 5 个区块（排除记忆总结）+ 思考语言规则', () {
@@ -202,22 +208,75 @@ void main() {
       expect(lines.any((l) => RegExp(r'^\d+\. ').hasMatch(l)), isFalse);
     });
 
-    test('systemTail 为历史工具契约（先读后写 / 只读一次 / 每轮恰一条 / 正文禁止记忆区块）', () {
+    test('systemTail 为四步契约（准备读史+大纲 → 记忆先写 → 正文 → 禁止记忆区块）', () {
       final lines = format.systemTail;
-      expect(lines.first, contains('narrchat_readHistory'));
+      final text = lines.join('\n');
       expect(lines.first, startsWith('- '));
-      expect(lines.first, contains('state-maintenance turn'));
+      expect(lines.first, contains('narrchat_readHistory'));
+      expect(lines.first, contains('ONCE'));
+      expect(text, contains('【第一步·准备】'));
+      expect(text, contains('【第二步·记忆先写】'));
+      expect(text, contains('【第三步·正文】'));
+      expect(text, contains('【第四步·禁止输出记忆区块】'));
+      // 顺序 = 四步顺序：读史 → 大纲 → 记忆条目 → 正文。
+      expect(
+        text.indexOf('本轮大纲'),
+        greaterThan(text.indexOf('narrchat_readHistory')),
+      );
+      expect(
+        text.indexOf('恰好一条'),
+        greaterThan(text.indexOf('本轮大纲')),
+      );
+      expect(
+        text.indexOf('## 剧情演绎'),
+        greaterThan(text.indexOf('恰好一条')),
+      );
+      // 每轮义务仍在：恰好一条（op=append）、不接受 noChange、缺/重即失败。
+      expect(text, contains('narrchat_editHistory'));
+      expect(text, contains('op=append'));
+      expect(text, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(text, contains('不接受'));
       expect(lines.any((l) => l.contains('禁止')), isTrue);
-      expect(lines.any((l) => l.contains('恰好一条')), isTrue);
-      expect(lines.any((l) => l.contains('narrchat_editHistory')), isTrue);
-      expect(lines.any((l) => l.contains('不接受')), isTrue);
-      // 历史只读一次：维护回合复用正文回合的读取结果。
-      expect(lines.any((l) => l.contains('历史**只读一次**')), isTrue);
-      expect(lines.first, contains('Read history ONCE'));
-      expect(lines.any((l) => l.contains('第一个维护帧就直接写')), isTrue);
       // 记忆格式（Chat 的规则）不在这里——历史由工具维护。
-      expect(lines.any((l) => l.contains('【记忆总结格式】')), isFalse);
+      expect(text, isNot(contains('【记忆总结格式】')));
+      // 文案不使用数字序号（有序列表渲染会重编号）。
+      expect(lines.any((l) => RegExp(r'^\d+\. ').hasMatch(l)), isFalse);
       expect(lines.last, '');
+    });
+
+    test('阶段指令：prepareNote / memoryNote / storyNote 覆盖四步契约', () {
+      final prepare = format.prepareNote();
+      final memory = format.memoryNote();
+      final story = format.storyNote();
+      // 三段指令都非空，且都点明历史编辑器（准备段 = 本步不要调用它）。
+      for (final note in [prepare, memory, story]) {
+        expect(note, isNotEmpty);
+        expect(note.join('\n'), contains('narrchat_editHistory'));
+        // 文案不使用数字序号（有序列表渲染会重编号）。
+        expect(note.any((l) => RegExp(r'^\d+\. ').hasMatch(l)), isFalse);
+      }
+      // 准备段：读史**一次** + 本轮大纲（含本轮结束时间）+ 本步不写正文。
+      final prepareText = prepare.join('\n');
+      expect(prepareText, contains('narrchat_readHistory'));
+      expect(prepareText, contains('ONCE'));
+      expect(prepareText, contains('**一次**'));
+      expect(prepareText, contains('本轮大纲'));
+      expect(prepareText, contains('结束'));
+      // 记忆段：复用单行编辑行（恰好一条 + 记忆条目模板）。
+      final memoryText = memory.join('\n');
+      expect(memoryText, contains(AgentLv1PromptFormat.memoryEditLine));
+      expect(memoryText, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(memoryText, contains('恰好一条'));
+      // 正文段：5 个区块齐全、禁止记忆区块。
+      final storyText = story.join('\n');
+      for (final section in AgentLv1PromptFormat.outputSections) {
+        expect(storyText, contains('`## $section`'), reason: '缺少区块：$section');
+      }
+      expect(storyText, contains('剧情演绎'));
+      expect(storyText, contains('角色状态'));
+      expect(storyText, contains('禁止'));
+      // 明确点名被禁止的记忆区块（只以工具结果形式出现）。
+      expect(storyText, contains('`## 记忆总结`'));
     });
 
     test('userHead 只声明 5 区块，无记忆格式提醒', () {
@@ -231,21 +290,33 @@ void main() {
       expect(lines.single, contains('5 个二级标题（##）区块'));
     });
 
-    test('userExecuteNote 双语：先读历史再输出 5 区块（历史只读一次）', () {
+    test('userExecuteNote 双语：读史+大纲 → 先写记忆条目 → 再输出 5 区块', () {
       final lines = format.userExecuteNote;
       expect(lines, hasLength(3));
       expect(lines[0], contains('[Execute now]'));
       expect(lines[0], contains('narrchat_readHistory'));
       expect(lines[0], contains('ONCE'));
+      expect(lines[0], contains('outline'));
+      expect(lines[0], contains('narrchat_editHistory'));
+      expect(lines[0], contains('op=append'));
       expect(lines[0], contains('five'));
-      expect(lines[0], contains('reuses this read'));
       expect(lines[1], '', reason: '中英两块之间空行分隔');
       expect(lines[2], contains('【指令执行】[Agent 模式]'));
-      expect(lines[2], contains('先调用 narrchat_readHistory'));
-      expect(lines[2], contains('**一次**'));
-      expect(lines[2], contains('复用这次读取结果'));
+      expect(lines[2], contains('先调用 narrchat_readHistory **一次**'));
+      expect(lines[2], contains('大纲'));
+      expect(lines[2], contains('narrchat_editHistory'));
+      expect(lines[2], contains('恰好一条'));
       expect(lines[2], contains('五个区块'));
       expect(lines[2], contains('## 角色状态'));
+      // 顺序 = 四步顺序：读史 → 记忆条目 → 正文（记忆先于正文）。
+      expect(
+        lines[2].indexOf('narrchat_readHistory'),
+        lessThan(lines[2].indexOf('narrchat_editHistory')),
+      );
+      expect(
+        lines[2].indexOf('narrchat_editHistory'),
+        lessThan(lines[2].indexOf('## 剧情演绎')),
+      );
     });
   });
 
