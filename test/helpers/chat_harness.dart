@@ -23,6 +23,7 @@ import 'package:narrchat/services/non_stream_replay.dart';
 import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/sidebar_panel.dart';
 import 'package:provider/provider.dart';
 
 import 'fakes.dart';
@@ -324,6 +325,21 @@ Future<void> waitSendDone(
     await tester.pump();
   }
   await tester.pumpAndSettle();
+}
+
+/// 侧栏面板内容区（[SidebarPanel] 内的 CustomScrollView）的滚动控制器。
+///
+/// 面板与快速定位导轨共用该控制器（面板私有持有，经 widget 暴露），
+/// 供「跳转轮次后保持滚动位置」等断言读取当前 offset。宽窄屏、独立 pump
+/// 的面板均适用（子树内仅有这一个 CustomScrollView）。
+ScrollController sidebarScrollController(WidgetTester tester) {
+  final csv = tester.widget<CustomScrollView>(
+    find.descendant(
+      of: find.byType(SidebarPanel),
+      matching: find.byType(CustomScrollView),
+    ),
+  );
+  return csv.controller!;
 }
 
 /// 结束 [FakeStreamingAiService] 的流式并等待本轮收尾，返回生成是否成功。

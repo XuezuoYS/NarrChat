@@ -71,16 +71,7 @@ Future<void> _pumpSidebar(WidgetTester tester) async {
   await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
 }
 
-/// 侧栏 CustomScrollView 的控制器（与导轨共用，私有持有但经 widget 暴露）。
-ScrollController _sidebarController(WidgetTester tester) {
-  final csv = tester.widget<CustomScrollView>(
-    find.descendant(
-      of: find.byType(SidebarPanel),
-      matching: find.byType(CustomScrollView),
-    ),
-  );
-  return csv.controller!;
-}
+/// 侧栏 CustomScrollView 的控制器（与导轨共用）见 [sidebarScrollController]。
 
 /// 在导轨上按住一次「拖动态」（可传 [move] 在按住期间移动），执行 [body] 后松开。
 Future<void> _dragSession(
@@ -175,7 +166,7 @@ void main() {
 
   testWidgets('鼠标拖动拇指至底部：侧栏滚动到底，当前标题 = 最后条目（记忆总结）', (tester) async {
     await _pumpSidebar(tester);
-    final controller = _sidebarController(tester);
+    final controller = sidebarScrollController(tester);
     final maxExtent = controller.position.maxScrollExtent;
     expect(maxExtent, greaterThan(1000));
 
@@ -248,7 +239,7 @@ void main() {
     );
     await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
 
-    final controller = _sidebarController(tester);
+    final controller = sidebarScrollController(tester);
     final maxExtent = controller.position.maxScrollExtent;
     final strip = _strip();
     final size = tester.getSize(strip);

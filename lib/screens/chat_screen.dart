@@ -2541,17 +2541,39 @@ class _ChatScreenState extends State<ChatScreen>
               ? rounds.firstWhere((r) => r.id == sidebarProvider.historyRoundId)
               : latest)
         : latest;
+    // 当前查看轮次在列表中的下标（-1 = 无轮次或该轮次已不在列表中）。
+    final viewedIndex = viewedRound == null
+        ? -1
+        : rounds.indexWhere((r) => r.id == viewedRound.id);
 
     return SidebarPanel(
-      key: ValueKey(viewedRound?.id),
+      // 不随轮次更换 key：State（滚动位置 / 折叠状态）跨轮次保留，
+      // 轮次内容重置由 SidebarPanel.didUpdateWidget 负责（见其文档）。
       round: viewedRound,
       isHistoryView: sidebarProvider.isHistoryView && viewedRound != null,
-      onBackToCurrent: () => context.read<SidebarProvider>().showCurrent(),
+      onPreviousRound: viewedIndex > 0
+          ? () => _viewSidebarRound(rounds, viewedIndex - 1)
+          : null,
+      onNextRound: viewedIndex >= 0 && viewedIndex < rounds.length - 1
+          ? () => _viewSidebarRound(rounds, viewedIndex + 1)
+          : null,
+      onBackToCurrent: sidebarProvider.isHistoryView
+          ? () => context.read<SidebarProvider>().showCurrent()
+          : null,
       onClose: onClose,
       onSaveField: (round, field, value) => context
           .read<RoundProvider>()
           .updateRoundField(round.id!, field, value),
     );
+  }
+
+  /// 侧栏顶栏导航：查看 [rounds] 中下标为 [index] 的轮次（越界时忽略）。
+  ///
+  /// 最新一轮由 [SidebarProvider.showRound] 视为「当前轮次」，其余为历史轮次；
+  /// 面板 State 复用，因此跳转后侧栏滚动位置保持不变。
+  void _viewSidebarRound(List<Round> rounds, int index) {
+    if (index < 0 || index >= rounds.length) return;
+    context.read<SidebarProvider>().showRound(rounds[index], rounds.last);
   }
 }
 

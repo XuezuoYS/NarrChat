@@ -12,7 +12,9 @@ import 'quick_scroll_rail.dart';
 /// 侧边栏面板。
 ///
 /// - 顶部 Top Bar：固定显示“当前轮次（第 N 轮）”或“历史轮次（第 X 轮）”；
-///   历史轮次时背景变浅灰并带红色警告边框以作醒目区分。
+///   历史轮次时背景变浅灰并带红色警告边框以作醒目区分；
+///   右侧**常驻三个方形导航按钮**（查看上一轮 / 查看下一轮 / 回到最新轮），
+///   无对应目标时按钮置灰（如最新轮下「下一轮」「回到最新轮」不可用）。
 /// - 内容区：将数据库存储的 `world_state`、`character_state`、`memory_summary`、
 ///   `current_time` 以可编辑文本形式显示；
 ///   `character_state` 使用 [MarkdownCollapsibleEditor] 折叠组件（含“一键展开”）。
@@ -25,13 +27,24 @@ import 'quick_scroll_rail.dart';
 ///   保存结果通过 ScaffoldMessenger 的 SnackBar（Flutter 默认通知渠道）提示。
 ///   历史轮次的修改绝不自动影响后续轮次，仅作为快照存档。
 ///
-/// 父级通过 `ValueKey(round.id)` 切换本组件状态，切换轮次时编辑器内容自动重置。
+/// 父子约定：父级切换 [round] 时**不更换本组件 key**（State 复用），
+/// 轮次内容在 [State.didUpdateWidget] 中重置；滚动位置与折叠状态保留，
+/// 便于跳转轮次后在同一位置对比查看。
 class SidebarPanel extends StatefulWidget {
   final Round? round;
   final bool isHistoryView;
   /// 显式保存回调；返回是否保存成功（成功提示「已保存」，失败提示「保存失败」）。
   final Future<bool> Function(Round round, String field, String value) onSaveField;
-  final VoidCallback onBackToCurrent;
+
+  /// 顶栏【查看上一轮】：为 null 表示没有上一轮（按钮置灰）。
+  final VoidCallback? onPreviousRound;
+
+  /// 顶栏【查看下一轮】：为 null 表示已是最新轮（按钮置灰）。
+  final VoidCallback? onNextRound;
+
+  /// 顶栏【回到最新轮】（即切回「当前轮次」）：
+  /// 为 null 表示当前已是最新轮（按钮置灰）。
+  final VoidCallback? onBackToCurrent;
 
   /// 顶栏“收起”按钮回调（为空则不显示该按钮）。
   final VoidCallback? onClose;
@@ -41,7 +54,9 @@ class SidebarPanel extends StatefulWidget {
     required this.round,
     required this.isHistoryView,
     required this.onSaveField,
-    required this.onBackToCurrent,
+    this.onPreviousRound,
+    this.onNextRound,
+    this.onBackToCurrent,
     this.onClose,
   });
 
@@ -51,7 +66,7 @@ class SidebarPanel extends StatefulWidget {
 
 class _SidebarPanelState extends State<SidebarPanel> {
   /// 快速定位滚动导轨的锚点注册器（路径 → 同一实例的 GlobalKey）：
-  /// 区块与角色状态内部树节点共用；生命周期随本 State（切换轮次重建）。
+  /// 区块与角色状态内部树节点共用；生命周期随本 State（跨轮次切换复用）。
   final TocAnchorRegistry _tocAnchors = TocAnchorRegistry();
 
   late final TextEditingController _worldState =
@@ -82,15 +97,34 @@ class _SidebarPanelState extends State<SidebarPanel> {
   @override
   void didUpdateWidget(covariant SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 保险起见：若轮次 id 变化（正常情况下因 ValueKey 不会走到这里）则重置内容，
-    // 并清空编辑/折叠状态，避免把旧轮次的值写回旧轮次。
-    if (oldWidget.round?.id != widget.round?.id) {
-      _editing.clear();
-      _worldState.text = widget.round?.worldState ?? '';
-      _characterState.text = widget.round?.characterState ?? '';
-      _memorySummary.text = widget.round?.memorySummary ?? '';
-      _currentTime.text = widget.round?.currentTime ?? '';
+    // 轮次切换（父级复用本 State）时重置内容；滚动位置/折叠状态保留。
+    if (oldWidget.round?.id != widget.round?.id) _resetToRound();
+  }
+
+  /// 顶部四个子模块编辑器的 GlobalKey（[EditableFieldState]，轮次切换时用于退出编辑）。
+  List<GlobalKey> get _editorKeys =>
+      [_worldStateKey, _characterStateKey, _memorySummaryKey, _currentTimeKey];
+
+  /// 切换到新轮次时重置面板内容。
+  ///
+  /// 与旧实现（父级用 `ValueKey(round.id)` 强制重建 State）的差异：
+  /// - **保留**滚动位置与各模块折叠状态，跳转轮次后仍停在同一位置便于对比；
+  /// - 进行中的编辑先 [EditableFieldState.cancel] 退出（丢弃未保存修改），
+  ///   避免旧轮次的编辑快照/编辑控制器把内容带回新轮次。
+  ///
+  /// [EditableFieldState.cancel] 会把编辑控制器还原为**旧**轮次文本，
+  /// 因此必须先退出编辑、再写入新轮次内容。
+  void _resetToRound() {
+    _editing.clear();
+    for (final key in _editorKeys) {
+      // 与标题栏按钮同一取 State 方式（见 _enterEditModule / _saveModule）。
+      final editable = key.currentState as EditableFieldState?;
+      if (editable != null && editable.isEditing) editable.cancel();
     }
+    _worldState.text = widget.round?.worldState ?? '';
+    _characterState.text = widget.round?.characterState ?? '';
+    _memorySummary.text = widget.round?.memorySummary ?? '';
+    _currentTime.text = widget.round?.currentTime ?? '';
   }
 
   @override
@@ -280,25 +314,48 @@ class _SidebarPanelState extends State<SidebarPanel> {
                 : NarrChatTheme.primary,
           ),
           const SizedBox(width: 8),
+          // 标题单行常显（轮次号不可被截断）：三个导航按钮挤压出的余量在
+          // 窄屏 / 大字号档位（+30% ~ +45%）下可能不足，此时按比例缩小而不是
+          // 折行——顶栏高度因此恒定，面板内容不会随字号档位跳动。
           Expanded(
-            child: Text(
-              history
-                  ? '历史轮次（第 ${round?.roundIndex ?? '?'} 轮）'
-                  : '当前轮次（第 ${round?.roundIndex ?? 0} 轮）',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: history
-                    ? theme.colorScheme.error
-                    : context.narrColors.textPrimary,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  history
+                      ? '历史轮次（第 ${round?.roundIndex ?? '?'} 轮）'
+                      : '当前轮次（第 ${round?.roundIndex ?? 0} 轮）',
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: history
+                        ? theme.colorScheme.error
+                        : context.narrColors.textPrimary,
+                  ),
+                ),
               ),
             ),
           ),
-          if (history)
-            TextButton(
-              onPressed: widget.onBackToCurrent,
-              child: const Text('回到当前'),
-            ),
+          // 常驻三个方形导航按钮（左→右：上一轮 / 下一轮 / 回到最新轮）：
+          // 分别由 onPreviousRound / onNextRound / onBackToCurrent 驱动，
+          // 为 null 表示无对应目标 → 按钮置灰但仍占位。
+          _SidebarNavButton(
+            icon: Icons.keyboard_arrow_up,
+            tooltip: '查看上一轮',
+            onPressed: widget.onPreviousRound,
+          ),
+          _SidebarNavButton(
+            icon: Icons.keyboard_arrow_down,
+            tooltip: '查看下一轮',
+            onPressed: widget.onNextRound,
+          ),
+          _SidebarNavButton(
+            icon: Icons.keyboard_double_arrow_down,
+            tooltip: '回到最新轮',
+            onPressed: widget.onBackToCurrent,
+          ),
           if (widget.onClose != null)
             IconButton(
               onPressed: widget.onClose,
@@ -634,5 +691,62 @@ class _SidebarSectionHeaderDelegate extends SliverPersistentHeaderDelegate {
         oldDelegate.onEdit != onEdit ||
         oldDelegate.onSave != onSave ||
         oldDelegate.onCancel != onCancel;
+  }
+}
+
+/// 侧边栏顶栏轮次导航的方形图标按钮。
+///
+/// 【查看上一轮】/【查看下一轮】/【回到最新轮】三者共用：
+/// - 几何尺寸统一为 [size] × [size] 的正方形（含同款描边圆角），
+///   保证三个按钮外观完全一致、常驻不因可用性改变布局；
+/// - [onPressed] 为 null 时置灰（禁用），即「无对应目标」。
+class _SidebarNavButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  const _SidebarNavButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  /// 方形边长（三个按钮一致）。
+  static const double size = 28;
+
+  /// 相邻按钮之间的间距。
+  static const double gap = 6;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: gap),
+      child: Tooltip(
+        message: tooltip,
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: IconButton(
+            onPressed: onPressed,
+            padding: EdgeInsets.zero,
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(
+              width: size,
+              height: size,
+            ),
+            style: IconButton.styleFrom(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
+                side: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+            ),
+            icon: Icon(icon),
+          ),
+        ),
+      ),
+    );
   }
 }
