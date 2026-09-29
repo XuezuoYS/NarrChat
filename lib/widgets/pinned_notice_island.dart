@@ -51,6 +51,9 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
   /// 出现 / 消失时**宽度变化**的非线性曲线（手机厂商的岛多为「快出慢收」）。
   static const Curve _unfoldCurve = Curves.easeOutCubic;
 
+  /// 每次宽度变化的时长（出现 / 内容变长变短 / 展开脱离共用）。
+  static const Duration _widthDuration = Duration(milliseconds: 200);
+
   /// 展开态宽度上限（窄屏取窗口宽 - 24）。
   static const double _panelWidth = 360;
 
@@ -84,6 +87,33 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     duration: _detachDuration,
   );
 
+  /// 可见宽度动画：**每次长度变化都要有动画**（出现 / 内容变长变短 / 展开脱离）。
+  ///
+  /// 值域 0..1 是「本次变化」的进度，实际宽度在 [_widthFrom] 与 [_widthTo]
+  /// 之间按 [_unfoldCurve] 非线性插值；中途被打断时以当前可见宽度为新起点。
+  late final AnimationController _widthAnim = AnimationController(
+    vsync: this,
+    duration: _widthDuration,
+    value: 1,
+  );
+
+  /// 本次宽度变化的起点 / 终点（逻辑像素）。
+  double _widthFrom = 0;
+  double _widthTo = 0;
+
+  /// 收起态胶囊自身的自然宽度（帧后测量；宽度动画的长度目标）。
+  double? _pillWidth;
+
+  /// 收起态胶囊的测量键（包住头部内容）。
+  final GlobalKey _pillKey = GlobalKey();
+
+  /// 待生效的宽度目标（build 中登记，帧后执行，避免 build 期间驱动动画）。
+  double? _widthTarget;
+  bool _widthScheduled = false;
+
+  /// 当前顶栏控制器（build 中记录；宽度动画监听里向它汇报占位宽度）。
+  IslandBarController? _bar;
+
   /// 上一次期望的出现状态（避免每帧重复调度）。
   bool? _wantPresent;
 
@@ -106,6 +136,32 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
   /// 结果条目 id → 自动撤销定时器（与是否展开无关）。
   final Map<int, Timer> _resultTimers = {};
 
+  /// 当前可见宽度（非线性插值结果）。
+  double get _visibleWidth {
+    if (!_widthAnim.isAnimating && _widthAnim.value == 1) return _widthTo;
+    final t = _unfoldCurve.transform(_widthAnim.value);
+    return _widthFrom + (_widthTo - _widthFrom) * t;
+  }
+
+  /// 描边透明度：随可见宽度淡入（半开时不会只余上下两条边）。
+  double get _borderOpacity {
+    if (_widthTo <= 0) return 0;
+    return (_visibleWidth / _widthTo).clamp(0.0, 1.0);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // 宽度动画期间实时把占位宽度汇报给顶栏 → 标题逐帧跟随挤压 / 回收。
+    _widthAnim.addListener(_publishBarWidth);
+    _widthAnim.addStatusListener((status) {
+      if (status != AnimationStatus.completed) return;
+      _publishBarWidth();
+      // 宽度归零后需要一次重建才能把岛从树上撤下（见 build 中的提前返回）。
+      if (mounted) setState(() {});
+    });
+  }
+
   @override
   void dispose() {
     for (final t in _resultTimers.values) {
@@ -115,6 +171,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     _expand.dispose();
     _presence.dispose();
     _detach.dispose();
+    _widthAnim.dispose();
     super.dispose();
   }
 
@@ -175,6 +232,57 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     });
   }
 
+  /// 登记宽度目标（build 中调用；帧后生效）。
+  ///
+  /// [target] 为 null 表示「还不知道目标」（收起态胶囊尚未测量到自然宽），
+  /// 此时保持现状，等测量结果触发的下一次 build 再登记。
+  void _scheduleWidth(double? target) {
+    _widthTarget = target;
+    if (_widthScheduled) return;
+    _widthScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _widthScheduled = false;
+      if (!mounted) return;
+      final want = _widthTarget;
+      if (want == null) return;
+      _animateWidthTo(want);
+    });
+  }
+
+  /// 把可见宽度非线性地动画到 [target]（被打断时以当前可见宽度为新起点）。
+  void _animateWidthTo(double target) {
+    // 目标没变就什么都不做：build 会反复登记同一个目标，若每次都重启动画，
+    // 动画永远走不出第一帧（宽度会卡在起点）。
+    if ((_widthTo - target).abs() < 0.5) return;
+    final from = _visibleWidth;
+    _widthFrom = from;
+    _widthTo = target;
+    if ((from - target).abs() < 0.5) {
+      _widthAnim.value = 1;
+      _publishBarWidth();
+      return;
+    }
+    _widthAnim.forward(from: 0);
+  }
+
+  /// 帧后测量收起态胶囊自身的自然宽度（宽度动画的长度目标）。
+  void _scheduleMeasurePill() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final box = _pillKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      final measured = box.size.width;
+      final current = _pillWidth;
+      if (current != null && (current - measured).abs() < 0.5) return;
+      setState(() => _pillWidth = measured);
+    });
+  }
+
+  /// 把当前可见宽度汇报给顶栏（标题据此逐帧跟随挤压 / 回收）。
+  void _publishBarWidth() {
+    _bar?.setIslandWidth(_visibleWidth);
+  }
+
   void _toggle() {
     setState(() => _expanded = !_expanded);
     if (_expanded) {
@@ -209,15 +317,23 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
         activePlanes.isNotEmpty || generatingUuids.isNotEmpty || toasts.isNotEmpty;
     // 出现 / 消失动画由「有无内容」驱动（帧后执行，见 _syncPresence）。
     _syncPresence(present);
+    // 宽度目标：无内容 → 归零；展开 → 面板宽；收起 → 胶囊自然宽（测量值，
+    // 未测到时保持现状，测量结果触发的下一次 build 会重新登记）。
+    final panelWidth = math.min(
+      _panelWidth,
+      MediaQuery.sizeOf(context).width - 24,
+    );
+    _scheduleWidth(!present ? 0 : (_expanded ? panelWidth : _pillWidth));
 
     // 岛的存在状态汇报给顶栏控制器（驱动顶栏附加行高度与槽位形态）；
     // 汇报会让统一顶栏重建，因此放到帧后执行，避免 build 期间标记重建。
     //
-    // 「存在」的判据是 **有内容 或 仍在播放消失动画**：槽位必须留到岛完全收窄
+    // 「存在」的判据是 **有内容 或 仍在收窄**：槽位必须留到岛完全收窄
     // 消失为止，否则消失动画会在中途被抽走锚点、退化成悬浮淡出；因此这一步
     // 必须放在「完全隐藏」的提前返回之前（否则永远收不回顶栏附加行）。
     final bar = IslandBarScope.maybeOf(context);
-    _syncBarFlags(bar, present || _presence.value > 0);
+    _bar = bar;
+    _syncBarFlags(bar, present || _visibleWidth > 0.5);
 
     if (present) {
       _snapshot = _IslandContent(
@@ -225,13 +341,17 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
         generatingUuids: generatingUuids,
         toasts: toasts,
       );
-    } else if (_presence.value == 0) {
+    } else if (_presence.value == 0 && _visibleWidth <= 0.5) {
       // 完全隐藏：不占位。
       return const SizedBox.shrink();
     }
     // 消失动画期间沿用最后一帧内容，避免内容「先消失再淡出」。
     final content = _snapshot;
     if (content == null) return const SizedBox.shrink();
+
+    // 收起态帧后测量胶囊自然宽（宽度动画的长度目标；展开态目标为面板宽）。
+    // 两个形态（嵌入槽位 / 无槽位悬浮）都要测量，因此放在分支之前。
+    if (!_expanded) _scheduleMeasurePill();
 
     if (bar == null) {
       // 无岛宿主（独立窗口等）：直接走悬浮。
@@ -298,45 +418,45 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     final floatTop = math.max(embedded.bottom, barBottom) + _floatGap;
 
     return AnimatedBuilder(
-      animation: Listenable.merge([_presence, _detach]),
+      animation: Listenable.merge([_presence, _detach, _widthAnim]),
       builder: (context, _) {
         final t = Curves.easeOutCubic.transform(_detach.value);
-        // 出现度：非线性宽度因子（0 = 宽度归零，1 = 完整宽度）。
-        final unfold = _unfoldCurve.transform(_presence.value);
-        // 目标宽度：收起态 = 槽位可用宽（卡片本身按内容成形），展开态 = 面板宽。
+        // 目标矩形宽度：收起态按槽位可用宽居中（卡片本身按内容成形），
+        // 展开态收敛到面板宽。
         final targetWidth = embedded.width + (panelWidth - embedded.width) * t;
         final top = embedded.top + (floatTop - embedded.top) * t;
         final radius = 999.0 + (kNoticeRadius - 999.0) * t;
         final elevation = 6.0 * t;
+        // 可见宽度：非线性、且**每次变化都带动画**（出现 / 文字变长变短 / 脱离）。
+        final visible = _visibleWidth.clamp(0.0, targetWidth);
         return Stack(
           children: [
-            if (unfold > 0)
+            // 宽度为 0 时也照常布局（只是被裁成不可见）：胶囊需要先参与布局才能
+            // 测出自然宽度，否则「先有宽度再测量、先测量才有宽度」互相等待。
+            if (present || visible > 0.5)
               Positioned(
                 // 目标矩形与悬浮矩形都水平居中，因此按目标宽居中摆放即可。
                 left: media.size.width / 2 - targetWidth / 2,
                 top: top,
                 width: targetWidth,
                 child: Center(
-                  // 手机厂商的岛式动画：**非线性地改变岛的实际宽度**（自中心向
-                  // 左右张开 / 自两侧向中心收窄），并由**圆角**裁剪成形——
-                  // 因此任何时刻的轮廓都是一枚圆角胶囊，而不是直角遮罩。
-                  child: ClipRRect(
-                    key: const ValueKey('island_unfold_clip'),
-                    borderRadius: BorderRadius.circular(radius),
-                    child: Align(
-                      key: const ValueKey('island_unfold'),
-                      alignment: Alignment.center,
-                      widthFactor: unfold,
-                      child: _buildCard(
-                        context,
-                        content: content,
-                        contentWidth: panelWidth,
-                        panelMaxHeight:
-                            media.size.height * _panelMaxHeightRatio,
-                        radius: radius,
-                        elevation: elevation,
-                        borderOpacity: unfold,
-                      ),
+                  // 手机厂商的岛式动画：非线性地把岛**收放到目标宽度**，并由
+                  // 圆角路径裁剪成形——任意中间态都是一枚圆角胶囊（无直角遮罩），
+                  // 卡片内部始终按自身宽度布局，文字不会跟着重排。
+                  child: ClipPath(
+                    clipper: _CenteredCapsuleClipper(
+                      width: visible,
+                      radius: radius,
+                    ),
+                    child: _buildCard(
+                      context,
+                      content: content,
+                      contentWidth: panelWidth,
+                      panelMaxHeight: media.size.height * _panelMaxHeightRatio,
+                      radius: radius,
+                      elevation: elevation,
+                      borderOpacity: _borderOpacity,
+                      measurePill: !_expanded,
                     ),
                   ),
                 ),
@@ -350,8 +470,8 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
                 width: slot.width,
                 height: slot.height,
                 child: Opacity(
-                  // 与「岛降回顶栏」（t↓）和「岛整体收窄消失」（unfold↓）双重衔接。
-                  opacity: t * unfold,
+                  // 与「岛降回顶栏」（t↓）和「岛整体收窄消失」（宽度↓）双重衔接。
+                  opacity: t * Curves.easeOutCubic.transform(_presence.value),
                   child: _buildMarker(context, content),
                 ),
               ),
@@ -379,7 +499,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
           right: 12,
         ),
         child: AnimatedBuilder(
-          animation: _presence,
+          animation: Listenable.merge([_presence, _widthAnim]),
           builder: (context, child) {
             final t = Curves.easeOutCubic.transform(_presence.value);
             // 淡出播完且已无内容 → 从树上撤下（出现首帧仍保留内容，避免闪空）。
@@ -389,7 +509,14 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
               opacity: t,
               child: Transform.translate(
                 offset: Offset(0, -_presenceSlide * (1 - t)),
-                child: child,
+                // 悬浮态同样把「长度变化」做成动画（文字变长变短不跳变）。
+                child: ClipPath(
+                  clipper: _CenteredCapsuleClipper(
+                    width: _visibleWidth,
+                    radius: _expanded ? kNoticeRadius : 999,
+                  ),
+                  child: child,
+                ),
               ),
             );
           },
@@ -400,6 +527,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
             panelMaxHeight: media.size.height * _panelMaxHeightRatio,
             radius: _expanded ? 16 : 999,
             elevation: 6,
+            measurePill: !_expanded,
           ),
         ),
       ),
@@ -451,6 +579,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     required double radius,
     required double elevation,
     double borderOpacity = 1,
+    bool measurePill = false,
   }) {
     final body = _expanded
         ? SizedBox(
@@ -496,7 +625,10 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
               ],
             ),
           )
-        : _buildHeader(context, expanded: false, content: content);
+        : KeyedSubtree(
+            key: measurePill ? _pillKey : null,
+            child: _buildHeader(context, expanded: false, content: content),
+          );
 
     return Theme(
       // 通知表面恒为深色：覆盖选取高亮 / 光标 / 图标按钮前景色。
@@ -671,9 +803,40 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
   }
 }
 
+/// 把子组件裁成一枚**水平居中的圆角胶囊**，宽度为 [width]。
+///
+/// 岛的长度变化（出现 / 消失 / 文字变长变短 / 展开脱离）都通过它表达：
+/// 子组件始终按自身宽度布局（文字不重排），只有可见区域在非线性地收放；
+/// 裁剪路径带圆角，因此任意中间态都是胶囊轮廓，不会出现直角遮罩。
+class _CenteredCapsuleClipper extends CustomClipper<Path> {
+  const _CenteredCapsuleClipper({required this.width, required this.radius});
+
+  /// 可见宽度（逻辑像素）。
+  final double width;
+
+  /// 圆角半径（99+ 视为「按高度收敛成胶囊」）。
+  final double radius;
+
+  @override
+  Path getClip(Size size) {
+    final w = width.clamp(0.0, size.width);
+    final rect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: w,
+      height: size.height,
+    );
+    // 半径超过一半短边时按一半收敛（与 Skia 对超大圆角的处理一致）。
+    final r = math.min(radius, math.min(rect.width, rect.height) / 2);
+    return Path()..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(r)));
+  }
+
+  @override
+  bool shouldReclip(covariant _CenteredCapsuleClipper oldClipper) =>
+      oldClipper.width != width || oldClipper.radius != radius;
+}
+
 /// 驻场岛一帧内容快照（消失动画期间继续渲染最后一帧，避免内容先消失再淡出）。
-class _IslandContent {
-  const _IslandContent({
+class _IslandContent {  const _IslandContent({
     required this.planes,
     required this.generatingUuids,
     required this.toasts,

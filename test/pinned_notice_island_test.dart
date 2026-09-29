@@ -79,8 +79,20 @@ void main() {
     return sync;
   }
 
+  /// 走完驻场岛的出现 / 消失动画（淡入 200ms + 宽度收放 200ms；
+  /// 宽度动画需要先测出胶囊自然宽，故多推一帧）。
+  Future<void> settlePresence(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 250));
+  }
+
   /// 点击胶囊展开并等 200ms 形变完成（ticker 首帧 elapsed 恒为 0，需多推一帧）。
+  ///
+  /// 先等「宽度展开动画」走完：起点宽度为 0，期间右侧箭头处于裁剪区之外不可点。
   Future<void> expand(WidgetTester tester) async {
+    await settlePresence(tester);
     await tester.tap(find.byIcon(Icons.expand_more));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -91,13 +103,6 @@ void main() {
   double islandOpacity(WidgetTester tester) => tester
       .widget<Opacity>(find.byKey(const ValueKey('island_presence')))
       .opacity;
-
-  /// 走完驻场岛的出现 / 消失动画（200ms；ticker 首帧 elapsed 恒为 0）。
-  Future<void> settlePresence(WidgetTester tester) async {
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 200));
-  }
 
   testWidgets('出现动画：内容出现后自顶部淡入就位（200ms）', (tester) async {
     final sync = await pumpIsland(tester);

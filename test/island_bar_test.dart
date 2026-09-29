@@ -21,9 +21,10 @@ import 'helpers/fakes.dart';
 void main() {
   /// 测试页：统一顶栏 + 空 body（不接任何业务页面）。
   ///
-  /// 标题刻意取长文本（约 27 字，宽于顶栏一半）：宽屏下必须被驻场岛挤压
-  /// （省略号）且保底 [kIslandTitleMinWidth]；窄屏下不受挤压。
-  const longTitle = '测试页面标题很长用于验证挤压再加一些字凑够二十七个字整';
+  /// 标题刻意取长文本（约 50 字，宽于顶栏一半）：宽屏下必须被驻场岛挤压
+  /// （省略号）且保底 [kIslandTitleMinWidth]；没有岛时则能用满顶栏宽度。
+  const longTitle =
+      '测试页面标题很长用于验证驻场岛的挤压行为所以这里再补上足够多的字符让标题宽度超过顶栏的一半以上还要再多一些';
 
   Widget barPage({List<Widget> actions = const []}) => IslandAwareScaffold(
     appBarBuilder: (context, extraRow) => NarrChatAppBar(
@@ -111,78 +112,117 @@ void main() {
   Rect barRect(WidgetTester tester) =>
       tester.getRect(find.byType(NarrChatAppBar));
 
-  /// 岛当前**可见宽度**（展开度裁剪盒的宽度）；未渲染（宽度归零）时返回 null。
-  double? islandCardWidth(WidgetTester tester) {
-    final clip = find.byKey(const ValueKey('island_unfold_clip'));
-    if (clip.evaluate().isEmpty) return null;
-    return tester.getSize(clip).width;
+  /// 岛当前可见宽度（由岛逐帧汇报给顶栏控制器，正是标题挤压的依据）。
+  double islandVisibleWidth(WidgetTester tester) {
+    final island = find.byType(PinnedNoticeIsland);
+    if (island.evaluate().isEmpty) return 0;
+    final bar = IslandBarScope.maybeOf(tester.element(island));
+    expect(bar, isNotNull, reason: '岛必须处在顶栏作用域内');
+    return bar!.islandWidth.value;
   }
 
-  /// 展开度因子（1 = 完整宽度）。同时用于校验「非线性」：中途不应等于线性进度。
-  double unfoldFactor(WidgetTester tester) => tester
-      .widget<Align>(find.byKey(const ValueKey('island_unfold')))
-      .widthFactor!;
+  testWidgets('无常驻岛：标题不受挤压（岛宽度为 0）', (tester) async {
+    await pumpBarApp(tester);
+    expect(islandVisibleWidth(tester), 0);
+    // 长标题可用满顶栏宽度：越过顶栏中线（不会被压到左半区）。
+    final title = tester.getRect(find.text(longTitle));
+    expect(title.right, greaterThan(1400 / 2),
+        reason: '没有岛时标题不该让位');
+  });
 
-  testWidgets('嵌入态出现：非线性调整宽度，自中心向左右展开', (tester) async {
+  testWidgets('嵌入态出现：非线性收放宽度，标题实时跟随挤压', (tester) async {
     final sync = await pumpBarApp(tester);
     sync.debugSetSyncState(SyncPlane.data, SyncState.syncing);
     sync.debugSetProgress(
       SyncPlane.data,
       const SyncProgressEvent(phase: SyncPhase.pullManifest, label: '读取云端清单…'),
     );
-    // 零时长推帧：完成「岛汇报有内容 → 顶栏占位 → 槽位测量」链路，
-    // 但不推进动画时钟（此时宽度仍为 0，未渲染）。
-    for (var i = 0; i < 4; i++) {
+    // 零时长推帧：完成「岛汇报有内容 → 顶栏占位 → 槽位测量 → 胶囊测量」链路，
+    // 但不推进动画时钟（此时宽度仍为 0）。
+    for (var i = 0; i < 5; i++) {
       await tester.pump();
     }
-    expect(islandCardWidth(tester), isNull, reason: '起点宽度为 0');
+    expect(islandVisibleWidth(tester), 0, reason: '起点宽度为 0');
+    final titleFull = tester.getRect(find.text(longTitle)).width;
 
-    // 动画途中出现中间宽度（左右同时张开），且是**非线性**推进：
-    // 时钟走了 60/200，宽度应已超过线性进度（easeOutCubic）。
+    // 动画途中出现中间宽度；非线性曲线（easeOutCubic）下前段应明显快于线性。
     await tester.pump(const Duration(milliseconds: 60));
-    final mid = islandCardWidth(tester)!;
+    final mid = islandVisibleWidth(tester);
     expect(mid, greaterThan(0));
-    expect(unfoldFactor(tester), greaterThan(60 / 200),
-        reason: '非线性曲线：前段更快');
 
     // 展开到完整宽度：胶囊按**内容自然宽**成形，而不是撑满槽位。
     await tester.pump(const Duration(milliseconds: 300));
-    final full = islandCardWidth(tester)!;
+    final full = islandVisibleWidth(tester);
     expect(full, greaterThan(mid));
-    expect(unfoldFactor(tester), 1);
     final slotWidth = tester.getRect(find.byType(IslandSlot)).width;
     expect(full, lessThan(slotWidth),
         reason: '胶囊按内容成形（槽位只是可用宽度上限）');
+    expect(mid, greaterThan(full * 0.5),
+        reason: '非线性：时钟走 30% 时宽度应已过半');
+
+    // 标题跟随岛宽度实时变化：岛变宽 → 标题可用宽度变小。
+    expect(tester.getRect(find.text(longTitle)).width, lessThan(titleFull));
+    final visibleLeft = 1400 / 2 - full / 2;
     expect(
-      tester.getRect(find.byKey(const ValueKey('island_unfold_clip'))).center.dx,
-      closeTo(1400 / 2, 2),
-      reason: '自中心向左右对称展开',
+      tester.getRect(find.text(longTitle)).right,
+      lessThanOrEqualTo(visibleLeft - kIslandTitleGap + 0.5),
+      reason: '标题止于岛（可见左缘）之前',
     );
+  });
+
+  testWidgets('内容变长：岛宽度带动画过渡，标题随之实时让位', (tester) async {
+    final sync = await pumpBarApp(tester);
+    // 先出现一段短文案的岛。
+    await startSync(tester, sync, label: '读取');
+    final before = islandVisibleWidth(tester);
+    final titleBefore = tester.getRect(find.text(longTitle)).width;
+    expect(before, greaterThan(0));
+
+    // 文案变长 → 目标宽度变化，应先保持旧宽度再动画到新宽度（不跳变）。
+    sync.debugSetProgress(
+      SyncPlane.data,
+      const SyncProgressEvent(
+        phase: SyncPhase.pullManifest,
+        label: '读取云端清单并逐条比对后合并到本地数据库快照',
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(islandVisibleWidth(tester), closeTo(before, 1),
+        reason: '变化后的第一帧不应跳变到新宽度');
+
+    await tester.pump(const Duration(milliseconds: 1)); // 动画首帧（elapsed 0）
+    await tester.pump(const Duration(milliseconds: 100));
+    final mid = islandVisibleWidth(tester);
+    expect(mid, greaterThan(before), reason: '动画中段已开始变宽');
+    final titleMid = tester.getRect(find.text(longTitle)).width;
+    expect(titleMid, lessThan(titleBefore),
+        reason: '标题随岛变宽而实时收缩');
+
+    await tester.pump(const Duration(milliseconds: 300));
+    final after = islandVisibleWidth(tester);
+    expect(after, greaterThan(mid), reason: '动画终点为新的自然宽度');
+    expect(tester.getRect(find.text(longTitle)).width, lessThanOrEqualTo(titleMid));
   });
 
   testWidgets('嵌入态消失：非线性收窄宽度直至撤下', (tester) async {
     final sync = await pumpBarApp(tester);
     await startSync(tester, sync);
-    final full = islandCardWidth(tester)!;
+    final full = islandVisibleWidth(tester);
     expect(full, greaterThan(0));
 
     sync.debugSetSyncState(SyncPlane.data, SyncState.success);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pump(const Duration(milliseconds: 120));
-    final mid = islandCardWidth(tester)!;
+    final mid = islandVisibleWidth(tester);
     expect(mid, greaterThan(0));
     expect(mid, lessThan(full), reason: '收窄过程中保留中间宽度');
-    // 收窄同样居中对称（两侧一起向中心收）。
-    expect(
-      tester.getRect(find.byKey(const ValueKey('island_unfold_clip'))).center.dx,
-      closeTo(1400 / 2, 2),
-    );
 
     // 播完即撤下（不残留空壳）。
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump();
-    expect(islandCardWidth(tester), isNull);
+    expect(islandVisibleWidth(tester), 0);
     expect(
       find.descendant(
         of: find.byType(PinnedNoticeIsland),

@@ -130,11 +130,13 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
     if (!widget.islandEnabled || controller == null) {
       return _buildBar(context, null, expanded: false);
     }
-    // 岛的有内容 / 已展开状态变化时重建顶栏（决定占不占槽位、槽位收缩为小标记）。
+    // 岛的「有内容 / 已展开 / 实时可见宽度」任一变化都重建顶栏：
+    // 前者决定占不占槽位与槽位形态，后者决定标题的可用宽度（逐帧跟随挤压）。
     return ListenableBuilder(
       listenable: Listenable.merge([
         controller.islandActive,
         controller.islandExpanded,
+        controller.islandWidth,
       ]),
       builder: (context, _) => _buildBar(
         context,
@@ -187,11 +189,20 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
         final slotVisible = islandOn &&
             (controller.islandActive.value || expanded) &&
             slotBudget >= kIslandMinWidth;
-        // 单行形态下标题只能用「岛左缘 - 间距」，且必须落在左侧按键之后。
-        final titleMaxWidth = twoRow
+        // 岛当前在工具栏里占用的宽度：
+        // - 无内容 / 无岛宿主 → 0（标题**不受任何挤压**，用满可用宽度）；
+        // - 展开脱离 → 只剩小标记；
+        // - 有内容 → 实时可见宽度（出现 / 文字变长变短 / 收窄消失都逐帧跟随）。
+        final islandBarWidth = !islandOn
+            ? 0.0
+            : expanded
+                ? kIslandMarkerSize
+                : controller.islandWidth.value;
+        // 单行形态且岛真的占位时，标题只能用「岛左缘 - 间距」，且必须落在左侧按键之后。
+        final titleMaxWidth = (twoRow || islandBarWidth <= 0.5)
             ? barWidth
             : (barWidth / 2 -
-                    slotWidth / 2 -
+                    islandBarWidth / 2 -
                     kIslandTitleGap -
                     leadingWidth -
                     titleSpacing)

@@ -252,7 +252,13 @@ void main() {
 
   group('跨书进程驻场岛', () {
     /// 展开驻场岛并等形变完成（岛上常驻转圈动画，不能用 pumpAndSettle）。
+    ///
+    /// 先等胶囊「宽度展开动画」走完（200ms，起点宽度为 0、期间右侧箭头被
+    /// 裁剪掉不可点），再点箭头展开面板。
     Future<void> expandIsland(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));

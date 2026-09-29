@@ -59,6 +59,12 @@ class IslandBarController {
   /// 岛是否已展开并从顶栏脱离（由岛汇报；统一顶栏据此把槽位收缩为小标记）。
   final ValueNotifier<bool> islandExpanded = ValueNotifier<bool>(false);
 
+  /// 岛当前在顶栏里**可见的宽度**（由岛按宽度动画逐帧汇报）。
+  ///
+  /// 统一顶栏据此让标题逐帧跟随挤压 / 回收：岛上没有内容时为 0（标题不受挤压），
+  /// 出现 / 文字变长变短 / 收窄消失的过程中为动画中的实时宽度。
+  final ValueNotifier<double> islandWidth = ValueNotifier<double>(0);
+
   /// 岛收起时应处的矩形（全局坐标）；无顶栏槽位的页面为 null（岛回退为悬浮）。
   final ValueNotifier<Rect?> slotRect = ValueNotifier<Rect?>(null);
 
@@ -84,6 +90,14 @@ class IslandBarController {
   void setIslandExpanded(bool value) {
     if (_disposed || islandExpanded.value == value) return;
     islandExpanded.value = value;
+  }
+
+  /// 岛汇报「当前可见宽度」（宽度动画逐帧调用，变化不足 0.5px 不通知）。
+  void setIslandWidth(double value) {
+    if (_disposed) return;
+    final next = value.isFinite && value > 0 ? value : 0.0;
+    if ((islandWidth.value - next).abs() < 0.5) return;
+    islandWidth.value = next;
   }
 
   /// 顶栏汇报「是否走附加行形态」（按当前宽度预算判定）。
@@ -123,6 +137,7 @@ class IslandBarController {
     extraRowHeight.dispose();
     islandActive.dispose();
     islandExpanded.dispose();
+    islandWidth.dispose();
     slotRect.dispose();
     barRect.dispose();
   }

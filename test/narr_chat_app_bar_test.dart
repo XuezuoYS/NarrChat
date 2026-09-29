@@ -10,14 +10,14 @@ import 'package:narrchat/widgets/narr_chat_app_bar.dart';
 /// - 自动返回按钮交给 `AppBar` 依据 `ModalRoute.impliesAppBarDismissal` 判定，
 ///   路由栈变化后会自动消失（曾出现「返回首页后残留返回按钮」）。
 void main() {
-  Widget barApp({Widget? home}) => MaterialApp(
+  Widget barApp({Widget? home, String title = '测试页'}) => MaterialApp(
     theme: NarrChatTheme.light,
     home: home ??
         IslandAwareScaffold(
           appBarBuilder: (context, extraRow) => NarrChatAppBar(
             extraRowHeight: extraRow,
             icon: const Icon(Icons.abc, size: 24),
-            title: '测试页',
+            title: title,
           ),
           body: const SizedBox.expand(),
         ),
@@ -60,6 +60,20 @@ void main() {
       tester.getRect(find.text('二级页')).left,
       greaterThanOrEqualTo(kToolbarHeight),
     );
+  });
+
+  testWidgets('无常驻岛：标题不受挤压，可用满顶栏宽度', (tester) async {
+    // 未接入岛作用域（无槽位）时，标题不应被预留出「岛的位置」。
+    const longTitle =
+        '测试页面标题很长用于验证无常驻岛时标题不会被挤压所以这里再补上足够多的字符让它远超顶栏中线';
+    await tester.pumpWidget(barApp(title: longTitle));
+    await tester.pumpAndSettle();
+
+    final barWidth = tester.getSize(find.byType(NarrChatAppBar)).width;
+    final title = tester.getRect(find.text(longTitle));
+    expect(title.right, greaterThan(barWidth / 2),
+        reason: '没有岛时标题不该被压到左半区');
+    expect(title.left, closeTo(16 + 24 + 10, 0.5));
   });
 
   testWidgets('返回根路由后：返回按钮不残留，标题左留白恢复', (tester) async {
