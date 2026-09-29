@@ -316,25 +316,34 @@ void main() {
     final bar = barRect(tester);
     expect(bar.height, closeTo(kToolbarHeight + kIslandRowHeight, 1),
         reason: '窄屏顶栏高度 = 工具栏 + 附加行');
-    // 岛**居中**于附加行（上下各留 4px 顶栏背景）：
-    // 曾经因为「槽位只在挂载那一帧测量」而永久偏上约 13px、与顶栏重叠。
+    // 岛**向上嵌进工具栏空白区**，下方留顶栏背景留白：
+    // - 曾经因为「槽位只在挂载那一帧测量」而永久偏上约 13px、与顶栏重叠；
+    // - 曾经完全排在工具栏下方，视觉上隔着整块空白（间距过大）。
     final rowBottom = bar.bottom - 1; // 顶栏底部 1px 边线
     final rowTop = rowBottom - kIslandRowHeight;
     final card = islandCard(tester);
+    expect(rowTop - card.top, closeTo(kIslandRowOverlap, 0.5),
+        reason: '岛向上借用工具栏空白 $kIslandRowOverlap px（视觉上紧贴上方元素）');
+    expect(rowBottom - card.bottom, closeTo(kIslandRowPadding, 0.5),
+        reason: '岛下方留白 = $kIslandRowPadding px');
+    expect(card.bottom, greaterThan(rowTop), reason: '岛跨在工具栏下缘上');
+    // 视觉验收：岛顶与标题底部的关系必须正好是「工具栏下部空白 − 上提量」
+    // （不写死像素，跟着 kIslandRowOverlap 走；当前 5px → 约 14px）。
+    final titleBox = tester.getRect(find.text(longTitle));
+    final visualGap = card.top - titleBox.bottom;
+    final toolbarGapWithoutOverlap =
+        bar.top + kToolbarHeight - 1 - titleBox.bottom; // 工具栏下部的空白
+    expect(visualGap, greaterThan(0), reason: '不与标题重叠');
     expect(
-      card.top,
-      closeTo(rowTop + (kIslandRowHeight - kIslandPillHeight) / 2, 1.5),
-      reason: '岛垂直居中于附加行',
+      visualGap,
+      closeTo(toolbarGapWithoutOverlap - kIslandRowOverlap, 1),
+      reason: '视觉间距 = 工具栏下部空白 − 上提量',
     );
-    expect(rowBottom - card.bottom, closeTo(card.top - rowTop, 1),
-        reason: '岛上下留白一致');
-    expect(rowBottom - card.bottom, greaterThan(2),
-        reason: '岛下方必须留出顶栏背景留白');
     final slot = tester.getRect(find.byType(IslandSlot));
     expect(
-      slot.center.dy,
-      inInclusiveRange(bar.top + kToolbarHeight, bar.bottom),
-      reason: '岛在附加行内',
+      slot.top,
+      closeTo(bar.top + kToolbarHeight - 1 - kIslandRowOverlap, 1),
+      reason: '槽位向上嵌进工具栏下方的空白区',
     );
     expect(slot.center.dx, closeTo(700 / 2, 2));
     // 标题保持完整宽度（不受岛挤压：可越过顶栏中线）。

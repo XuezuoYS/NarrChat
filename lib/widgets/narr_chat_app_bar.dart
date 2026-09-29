@@ -219,6 +219,13 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
         //    内容整体下移）；
         // 2. 行高为 0 时子组件必须为空，否则 28px 的占位框会把工具栏压扁
         //    （标题 / 按钮整体上移，观感就是「顶栏原本的元素被动了」）。
+        //
+        // 另外整行向上平移 [kIslandRowOverlap]：岛嵌进工具栏下方那段空白里，
+        // 视觉上靠紧上方标题 / 图标（平移会被槽位测量计入，岛据此定位）。
+        //
+        // 槽位在行内**顶部对齐**（不用 Center）：行高由「胶囊 − 上提 + 下方留白」
+        // 组成，顶部对齐后「槽位顶 = 行顶 − 上提」「槽位底到行底 = 下方留白」
+        // 才在任何取值下都精确成立（Center 会在行高 > 胶囊时多居中一截）。
         final islandRow = islandOn
             ? PreferredSize(
                 preferredSize: Size.fromHeight(widget.extraRowHeight),
@@ -226,15 +233,19 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
                   height: widget.extraRowHeight,
                   child: widget.extraRowHeight <= 0.5
                       ? null
-                      : Center(
-                          child: IslandSlot(
-                            width: expanded
-                                ? kIslandMarkerSize
-                                : (barWidth - 2 * kIslandTitleGap).clamp(
-                                    kIslandMinWidth,
-                                    barWidth,
-                                  ),
-                            height: kIslandPillHeight,
+                      : Transform.translate(
+                          offset: const Offset(0, -kIslandRowOverlap),
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: IslandSlot(
+                              width: expanded
+                                  ? kIslandMarkerSize
+                                  : (barWidth - 2 * kIslandTitleGap).clamp(
+                                      kIslandMinWidth,
+                                      barWidth,
+                                    ),
+                              height: kIslandPillHeight,
+                            ),
                           ),
                         ),
                 ),

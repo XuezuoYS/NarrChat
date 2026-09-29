@@ -415,17 +415,14 @@ void main() {
             )
             .first,
       );
-      // 悬浮位在顶栏下方（top ≈ kToolbarHeight + 8）；嵌在附加行时在行内居中，
-      // 上下各留 4px 顶栏背景留白。
+      // 悬浮位在顶栏下方（top ≈ kToolbarHeight + 8）；嵌在附加行时岛向上借
+      // kIslandRowOverlap 的工具栏空白区，下方留 kIslandRowPadding 的顶栏背景留白。
       final rowBottom = bar.bottom - 1; // 顶栏底部 1px 边线
       final rowTop = rowBottom - kIslandRowHeight;
-      expect(
-        card.top,
-        closeTo(rowTop + (kIslandRowHeight - kIslandPillHeight) / 2, 1.5),
-        reason: '岛应嵌在附加行里（不是悬浮位）',
-      );
-      expect(card.bottom, lessThanOrEqualTo(rowBottom - 2),
-          reason: '岛下方保留顶栏背景留白，也不越出顶栏');
+      expect(rowTop - card.top, closeTo(kIslandRowOverlap, 0.5),
+          reason: '岛应嵌在附加行里（不是悬浮位）');
+      expect(rowBottom - card.bottom, closeTo(kIslandRowPadding, 0.5),
+          reason: '岛下方保留顶栏背景留白');
 
       // 收尾：完成生成，避免悬空。
       for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {

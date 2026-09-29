@@ -7,14 +7,24 @@ import 'package:flutter/material.dart';
 /// 嵌入断点：顶栏宽度窄于此值时，改为「向下多出一行」放岛。
 const double kIslandEmbedBreakpoint = 760;
 
-/// 顶栏附加行高（窄屏 / 宽度预算不足时）。
-///
-/// 比胶囊高一点：岛在行内**居中**，上下各留 4px 顶栏背景留白；
-/// 若行高等于胶囊高，岛会紧贴行底，观感上「下面没有留白」。
-const double kIslandRowHeight = 36;
-
 /// 收起态胶囊高度（嵌入顶栏时）。
 const double kIslandPillHeight = 28;
+
+/// 附加行内岛**向上借用工具栏空白区**的高度。
+///
+/// 工具栏 56px 里内容只占约 20px，下方留有一大片空白；如果岛完全排在工具栏
+/// 下方，视觉上就会与上方的标题 / 图标隔得很远（曾经约 23px）。把岛向上提
+/// 这一份，正好嵌进那段空白：不改动任何顶栏元素的尺寸与位置，视觉上岛距上方
+/// 内容 = 「工具栏下部空白 − 本值」。当前 5px → 视觉间距约 14px。
+/// 岛由应用级 overlay 绘制，因此可以与顶栏重叠。
+const double kIslandRowOverlap = 5;
+
+/// 附加行内岛下方的顶栏背景留白。
+const double kIslandRowPadding = 8;
+
+/// 顶栏附加行高 = 胶囊高 - 上提量 + 下方留白（窄屏 / 宽度预算不足时）。
+const double kIslandRowHeight =
+    kIslandPillHeight - kIslandRowOverlap + kIslandRowPadding;
 
 /// 岛的最小可用宽度：预算低于此值即改走附加行。
 const double kIslandMinWidth = 140;
