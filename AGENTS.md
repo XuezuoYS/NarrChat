@@ -33,7 +33,7 @@
 ### 其余要求
 
 - 所有多行输入框都需要支持 md 高亮解析，详见 `lib/widgets/markdown_editing_controller.dart`
-- 未经明确允许，禁止擅自更改 release.yaml / update_log.md。
+- 未经明确允许，禁止擅自更改 release.yaml / update_log.md。“git 提交”要求下同样不允许操作这两个文件。
 - 未经明确允许，禁止进行 Git 操作。
 
 ## 测试规范
