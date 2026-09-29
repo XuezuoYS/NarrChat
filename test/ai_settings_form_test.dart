@@ -47,6 +47,22 @@ Future<void> _expandFirstModel(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('窄列（261 宽）：平台与模型行展开后不溢出', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(261, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = SettingsFormState(
+      ai: AiSettingsProvider(),
+      sync: CloudSyncProvider(),
+    );
+    addTearDown(form.dispose);
+
+    // 与云同步面板同一列宽（曾在该列宽出现 RenderFlex overflow）。
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+    await _expandFirstModel(tester);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
   testWidgets('默认态：提示当前为内置预置，平台标注「内置默认」且无重置入口', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));

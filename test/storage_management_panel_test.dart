@@ -41,6 +41,28 @@ void main() {
     );
   }
 
+  testWidgets('窄列（261 宽）：各区不溢出', (tester) async {
+    tester.view.physicalSize = const Size(261, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 与云同步面板同一列宽（曾在该列宽出现 RenderFlex overflow）。
+    await tester.pumpWidget(
+      wrap(
+        FakeStorageService(
+          db: StorageDbInfo(
+            path: 'C:/data/narrchat.db',
+            size: 2048,
+            modified: DateTime(2026, 1, 1),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('存储管理'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
   testWidgets('渲染：数据库导出区 + 图片管理入口（含统计）', (tester) async {
     final service = FakeStorageService(
       db: StorageDbInfo(

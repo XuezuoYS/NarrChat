@@ -560,14 +560,19 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             style: TextStyle(fontSize: 11, color: colors.textSecondary),
           ),
           const SizedBox(height: 16),
-          Row(
+          // 换行布局（而非 Row + Spacer）：窄卡片（内容宽 ~229）下「测试连接 /
+          // 删除连接」两个按钮宽度之和会超出可用宽度，Row 会溢出并画出黄黑条纹；
+          // Wrap 在空间不足时把第二个按钮换到下一行，宽布局下与两端对齐一致。
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            spacing: 12,
+            runSpacing: 8,
             children: [
               OutlinedButton.icon(
                 onPressed: provider.isBusy ? null : _testConnection,
                 icon: const Icon(Icons.wifi_tethering_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
-              const Spacer(),
               TextButton.icon(
                 onPressed: provider.isConfigured && !provider.isBusy
                     ? _disconnect

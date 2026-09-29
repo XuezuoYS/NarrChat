@@ -35,6 +35,18 @@ void main() {
     );
   }
 
+  testWidgets('窄列（261 宽）：同一设置页列宽下各分区不溢出', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    // 云同步面板曾在该列宽（卡片内容 229）出现 RenderFlex overflow；
+    // 通用设置各分区共用同一列宽，一并纳入回归。
+    await tester.pumpWidget(buildApp(261));
+    await tester.pump();
+    expect(find.text('通用设置'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
   testWidgets('三个子模块分区齐全：UI 设置 / 其它设置 / 实验性设置', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));

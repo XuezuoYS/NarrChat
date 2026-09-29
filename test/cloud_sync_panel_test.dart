@@ -70,6 +70,15 @@ void main() {
     expect(find.text('云同步'), findsOneWidget);
   });
 
+  testWidgets('超窄卡片(261)：连接操作行换行而不溢出', (tester) async {
+    // 卡片内边距 all(16) → 内容宽 229：正是 Windows 实机日志里溢出的约束宽度。
+    await pumpPanel(tester,
+        theme: NarrChatTheme.light, form: makeForm(), width: 261);
+    expect(find.text('测试连接'), findsOneWidget);
+    expect(find.text('删除连接'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
   testWidgets('同步模式分段：点「手动」后 form.syncMode 变为 manual', (tester) async {
     final form = makeForm();
     await pumpPanel(tester, theme: NarrChatTheme.light, form: form);
