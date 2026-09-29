@@ -1,10 +1,3 @@
-## **[IMPORTANT]受限模式下运行 Flutter / Dart 命令的权限与审批**
-
-- 顶层 `flutter` / `dart` 命令（`flutter analyze`、`flutter test`、`flutter pub get`、`flutter precache` 等）通常需要访问**工作区之外**的资源：pub 缓存、Flutter SDK / engine 工件、网络下载。在受限沙箱（如`workspace-write`）下这些访问会被挡住，命令会长时间空转或超时。
-- 因此，需要运行这类命令时，**不要自行尝试** *Don't attempt on your own*，**直接向用户发起单次权限申请**（单次审批），说明越权访问的原因，记住，你应使用当前 Harness or Agents 工具的类**危险权限申请**渠道申请，而非提问等。
-- 若用户未授予完整权限：向用户说明需要执行的命令并跳过执行，**不要**在受限沙箱下反复等待超时。
-- **对于具有 Auto Review 的 Harness** 自动审批等模式下，除了默认的之外，请对 `flutter analyze`、`flutter test`、`flutter pub get`、`flutter precache` 进行通过审批。
-
 ## 开始工作
 
 ### 项目简介
