@@ -18,7 +18,9 @@ import 'markdown_editing_controller.dart';
 ///   旧数据无需迁移即可继续渲染；
 /// - **合并条目**（轮次写成 `11~15` / `11-15`，半角/全角 `-` / `~` 均可）徽标显示
 ///   原文区间（如 `第11~15轮`），底纹与文字改用**灰阶**主题色（去强调；亮/暗
-///   主题各取 `ColorScheme` 对应色，无需另行硬编码）；常规单轮条目仍是品牌蓝徽标；
+///   主题各取 `ColorScheme` 对应色，无需另行硬编码），且卡片改为两行——
+///   首行「轮次 + 时间」、次行「记忆内容」整宽（与徽标左对齐）；
+///   常规单轮条目保持原布局与品牌蓝徽标（左侧徽标 + 右侧「时间 / 内容」）；
 /// - 时间段的标签允许省略或使用「时间：」（兼容历史数据），同样按条目卡片渲染；
 /// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据，
 ///   判定与 [parseMemoryEntries] 同源，见 [unmatchedMemoryLines]）；
@@ -245,16 +247,8 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     );
   }
 
-  Widget _entryCard(ThemeData theme, MemoryEntry e) {
-    // 合并条目（`11~15`）用灰阶徽标去强调：底纹 / 文字都取当前主题的 ColorScheme
-    // 灰阶（亮色 surfaceContainerHighest + onSurfaceVariant，深色自动随之切换），
-    // 与常规单轮条目的品牌蓝徽标形成区分；卡片底色与边框两态一致。
-    final merged = e.isMerged;
-    final badgeBackground = merged
-        ? theme.colorScheme.surfaceContainerHighest
-        : theme.colorScheme.primary.withValues(alpha: 0.1);
-    final badgeForeground =
-        merged ? theme.colorScheme.onSurfaceVariant : theme.colorScheme.primary;
+  /// 记忆条目卡片外框（底色 + 细边框；单轮与合并条目共用）。
+  Widget _card(ThemeData theme, Widget child) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
@@ -262,60 +256,115 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 轮次徽标（合并区间保留原文分隔符，如 `第11~15轮`）
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: badgeBackground,
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: Text(
-              '第${e.roundLabel}轮',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: badgeForeground,
-              ),
+      child: child,
+    );
+  }
+
+  /// 轮次徽标（合并区间保留原文分隔符，如 `第11~15轮`）。
+  ///
+  /// 合并条目（`11~15`）用灰阶去强调：底纹 / 文字都取当前主题的 ColorScheme 灰阶
+  /// （亮色 surfaceContainerHighest + onSurfaceVariant，深色自动随之切换），
+  /// 与常规单轮条目的品牌蓝徽标形成区分。
+  Widget _roundBadge(ThemeData theme, MemoryEntry e) {
+    final merged = e.isMerged;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: merged
+            ? theme.colorScheme.surfaceContainerHighest
+            : theme.colorScheme.primary.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        '第${e.roundLabel}轮',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: merged
+              ? theme.colorScheme.onSurfaceVariant
+              : theme.colorScheme.primary,
+        ),
+      ),
+    );
+  }
+
+  /// 时间行（时钟图标 + 时间文本）；缺失时显示「（未标注时间）」。
+  Widget _timeRow(MemoryEntry e) {
+    return Row(
+      children: [
+        Icon(
+          Icons.schedule,
+          size: 12,
+          color: context.narrColors.textSecondary,
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            e.time.isEmpty ? '（未标注时间）' : e.time,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: context.narrColors.textSecondary,
             ),
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _contentText(ThemeData theme, MemoryEntry e) {
+    return Text(
+      e.content,
+      style: TextStyle(
+        fontSize: 13,
+        height: 1.5,
+        color: theme.colorScheme.onSurface,
+      ),
+    );
+  }
+
+  Widget _entryCard(ThemeData theme, MemoryEntry e) {
+    final badge = _roundBadge(theme, e);
+    final time = _timeRow(e);
+    final content = _contentText(theme, e);
+
+    // 合并条目（覆盖多轮、内容通常更长）改两行：首行「轮次 + 时间」（时间紧接
+    // 徽标同一行），次行「记忆内容」整宽（与徽标左对齐）；
+    if (e.isMerged) {
+      return _card(
+        theme,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                badge,
+                const SizedBox(width: 8),
+                Expanded(child: time),
+              ],
+            ),
+            const SizedBox(height: 6),
+            content,
+          ],
+        ),
+      );
+    }
+
+    // 单轮条目保持原布局：左侧徽标，右侧「时间 + 内容」。
+    return _card(
+      theme,
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          badge,
           const SizedBox(width: 8),
-          // 时间 + 内容
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.schedule,
-                      size: 12,
-                      color: context.narrColors.textSecondary,
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        e.time.isEmpty ? '（未标注时间）' : e.time,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: context.narrColors.textSecondary,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                time,
                 const SizedBox(height: 4),
-                Text(
-                  e.content,
-                  style: TextStyle(
-                    fontSize: 13,
-                    height: 1.5,
-                    color: theme.colorScheme.onSurface,
-                  ),
-                ),
+                content,
               ],
             ),
           ),

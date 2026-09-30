@@ -120,6 +120,47 @@ void main() {
       controller.dispose();
     });
 
+    testWidgets('合并条目两行布局：首行轮次+时间，次行内容整宽；单轮条目保持原布局', (tester) async {
+      final controller = TextEditingController(
+        text: '- 11~15 | 第一天 清晨 | 区间概括。\n'
+            '- 16 | 第二天 午时 | 主角获胜。',
+      );
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+
+      final mergedBadge = find
+          .ancestor(of: find.text('第11~15轮'), matching: find.byType(Container))
+          .first;
+      // 首行：徽标与时间同处一行（垂直中心一致）。
+      expect(
+        tester.getCenter(find.text('第一天 清晨')).dy,
+        closeTo(tester.getCenter(mergedBadge).dy, 0.5),
+      );
+      // 次行：内容另起一行，且与徽标左对齐（整宽，不再缩进在徽标右侧）。
+      final mergedContent = tester.getTopLeft(find.text('区间概括。'));
+      expect(
+        mergedContent.dx,
+        closeTo(tester.getTopLeft(mergedBadge).dx, 0.5),
+      );
+      expect(
+        mergedContent.dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(mergedBadge).dy),
+      );
+
+      // 单轮条目保持原布局：时间与内容都在徽标右侧（缩进）。
+      final singleBadge = find
+          .ancestor(of: find.text('第16轮'), matching: find.byType(Container))
+          .first;
+      expect(
+        tester.getTopLeft(find.text('第二天 午时')).dx,
+        greaterThan(tester.getTopLeft(singleBadge).dx),
+      );
+      expect(
+        tester.getTopLeft(find.text('主角获胜。')).dx,
+        greaterThan(tester.getTopLeft(singleBadge).dx),
+      );
+      controller.dispose();
+    });
+
     for (final (name, theme) in [
       ('浅色', NarrChatTheme.light),
       ('深色', NarrChatTheme.dark),
