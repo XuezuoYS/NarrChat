@@ -59,6 +59,10 @@
   `lib/utils/memory_entry_format.dart` 的 `kMemoryEntryFormat` /
   `kMemoryEntryFormatPrecedence`）：与历史旧条目 / 既有文案的写法冲突时以新格式
   为准，旧条目本身原样继承、不改写。
+  轮次另容忍**合并区间**（`11~15` / `11-15`，半角 `-`/`~` 与全角 `－`/`～`）：
+  解析为一条覆盖区间内各轮的条目（升序归一、保留原分隔符供侧栏徽标展示），
+  计数对区间内每一轮各计 1（侧栏「记忆总结」区以灰阶徽标渲染合并条目）；
+  三段及以上（`11~13~15`）不识别，按未命中行兜底展示。
   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
   `<memorySummary>` 是读取结果的**字面块标签**；
   真源见 `prompt_formats.dart` 文件头「文案约定」（Mod 文案不受此约定约束）；

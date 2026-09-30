@@ -19,6 +19,13 @@
 /// 解析容忍：`-` / `*` / `+` 三种列表符（漏写列表符亦兼容）、可选的 `第` / `轮`、
 /// 全/半角分隔符 `｜`/`|` 与冒号 `：`/`:`、可省略的 `日期：` / `时间：` 标签，
 /// 以及内容中再次出现 `|`（末尾分组贪婪）。
+///
+/// 【合并区间（兼容渲染与计数）】轮次写成「数字 + `-` / `~` + 数字」（半角 `-`/`~`
+/// 与全角 `－`/`～` 均可，如 `11~15` / `第11－15轮`）时，视为**一条覆盖区间内
+/// 各轮**的合并条目：轮次取小端（`round` = 11、`roundEnd` = 15，降序写法同样
+/// 归一化），[MemoryEntry.roundSeparator] 保留原文分隔符用于展示，
+/// [memoryEntryCount] 对区间内**每一轮**都计 1（即「11、12、…、15 轮条目都存在」）。
+/// 三段及以上（`11~13~15`）不识别，交由调用方按未命中行兜底展示。
 library;
 
 /// 模型面向的记忆条目模板（提示词、工具描述、UI 提示、测试共用）。
@@ -32,9 +39,22 @@ const String kMemoryEntryFormatPrecedence =
     '旧条目本身保持原样继承、不要改写，本轮新条目必须用本格式。';
 
 /// 一条记忆条目：轮次 + 时间 + 内容（三者绑定在一条内）。
+///
+/// 轮次支持**合并区间**（`11~15`）：此时 [round] 为区间小端、[roundEnd] 为非空
+/// 的区间大端，[covers] 对区间内每一轮都返回 true。
 class MemoryEntry {
-  /// 轮次（新格式 = 行首裸数字；旧格式 = `第N轮` 中的 N）。
+  /// 轮次（新格式 = 行首裸数字；旧格式 = `第N轮` 中的 N；
+  /// 合并区间 = 区间**小端**，如 `11~15` / `15~11` 都是 11）。
   final int round;
+
+  /// 合并区间的结束轮（`11~15` → 15）；`null` 表示单轮条目。
+  ///
+  /// `11~11` 这类两端相同的写法按单轮处理（[roundEnd] 为 null），不显示区间。
+  final int? roundEnd;
+
+  /// 合并区间原文使用的分隔符（半角 `-` / `~` 或全角 `－` / `～`）；
+  /// 单轮条目为空串。仅用于忠实展示（见 [roundLabel]）。
+  final String roundSeparator;
 
   /// 该轮剧情内时间（新格式第 2 段；旧格式 `日期：` / `时间：` 后的取值）。
   final String time;
@@ -46,47 +66,98 @@ class MemoryEntry {
     required this.round,
     required this.time,
     required this.content,
+    this.roundEnd,
+    this.roundSeparator = '',
   });
+
+  /// 是否为合并条目（覆盖多轮）。
+  bool get isMerged => roundEnd != null;
+
+  /// 覆盖的最后一轮（单轮条目 = [round]）。
+  int get roundMax => roundEnd ?? round;
+
+  /// [roundIndex] 是否被本条目覆盖：单轮 = 轮次相等；合并 = 落在闭区间内
+  /// （即区间内每一轮都算「已有条目」）。
+  bool covers(int roundIndex) => roundIndex >= round && roundIndex <= roundMax;
+
+  /// 徽标文案（不含「第」「轮」）：单轮 `34`；合并 `11~15`（保留原文分隔符）。
+  String get roundLabel =>
+      isMerged ? '$round$roundSeparator$roundEnd' : '$round';
 }
 
 /// 记忆条目行的正则：新格式 `- 34 | {时间} | {内容}` 与旧格式
-/// `- 第N轮｜日期：xxx｜概括内容` 一并对齐为「轮次 / 时间 / 内容」三段。
+/// `- 第N轮｜日期：xxx｜概括内容` 一并对齐为「轮次 / 时间 / 内容」三段；
+/// 轮次额外容忍**合并区间**（`11~15` / `第11～15轮`，见 [roundEnd]）。
 ///
 /// 容忍：
 /// - 列表符 `-` / `*` / `+`（漏写列表符亦兼容，避免「校验过、卡片渲染不出」）；
 /// - 旧格式的 `第` / `轮`（可省略，故新格式的裸数字同一条正则即可命中）；
+/// - 轮次区间：`11~15`、`11-15`、`11～15`、`11－15`（半角/全角 `-` / `~`，
+///   两侧允许空格）；仅「数字 + 分隔符 + 数字」两段，三段及以上不命中；
 /// - 分隔符全角 `｜` 或半角 `|`；
 /// - 冒号全角 `：` 或半角 `:`；
 /// - 时间段的标签：`日期：` / `时间：`（冒号全半角均可），或**省略标签**
 ///   （兼容模型未输出标签的历史数据）；
 /// - 记忆内容中再次出现 `｜`/`|`（末尾 `.*` 贪婪匹配）。
+///
+/// 分组使用**命名组**（`start` / `sep` / `end` / `time` / `content`），
+/// 避免新增区间分组后数字下标漂移。
 final RegExp memoryEntryLineRegex = RegExp(
-  r'^\s*(?:[-*+]\s*)?(?:第\s*)?(\d+)\s*(?:轮)?\s*[｜|]\s*'
-  r'(?:(?:日期|时间)\s*[:：]\s*)?([^｜|]*?)\s*[｜|]\s*(.*)$',
+  r'^\s*(?:[-*+]\s*)?(?:第\s*)?(?<start>\d+)\s*'
+  r'(?:(?<sep>[－～~-])\s*(?<end>\d+)\s*)?'
+  r'(?:轮)?\s*[｜|]\s*'
+  r'(?:(?:日期|时间)\s*[:：]\s*)?(?<time>[^｜|]*?)\s*[｜|]\s*(?<content>.*)$',
 );
+
+/// 解析**一行**记忆条目；未命中条目格式（含无法解析、或三段及以上区间写法）返回
+/// `null`，由调用方决定兜底展示（见 [unmatchedMemoryLines]）。
+///
+/// 区间归一口径：`round` = 两端的较小值、`roundEnd` = 较大值（降序写法同样
+/// 归一化，保持 [MemoryEntry.roundLabel] 可用）；两端相同 → 按单轮处理。
+MemoryEntry? parseMemoryEntryLine(String line) {
+  final m = memoryEntryLineRegex.firstMatch(line.trim());
+  if (m == null) return null;
+  final start = int.tryParse(m.namedGroup('start') ?? '');
+  if (start == null) return null;
+  final end = int.tryParse(m.namedGroup('end') ?? '');
+  // 区间小端 / 大端（降序写法如 `15~11` 归一化为 11 → 15）。
+  final low = (end == null || end >= start) ? start : end;
+  final high = end == null ? start : (end >= start ? end : start);
+  final merged = high > low;
+  return MemoryEntry(
+    round: low,
+    roundEnd: merged ? high : null,
+    roundSeparator: merged ? (m.namedGroup('sep') ?? '') : '',
+    time: (m.namedGroup('time') ?? '').trim(),
+    content: (m.namedGroup('content') ?? '').trim(),
+  );
+}
 
 /// 解析记忆总结文本为条目列表（新格式与旧格式兼容）。
 ///
-/// 按行解析：能匹配 [memoryEntryLineRegex] 的行转换为 [MemoryEntry]，
-/// 无法匹配的行直接忽略（需要兜底展示原始文本时，请由调用方自行保留原文本）。
+/// 按行解析：能匹配 [memoryEntryLineRegex] 的行转换为 [MemoryEntry]（含合并区间），
+/// 无法匹配的行直接忽略（需要兜底展示原始文本时用 [unmatchedMemoryLines]）。
 List<MemoryEntry> parseMemoryEntries(String text) {
   final result = <MemoryEntry>[];
   for (final line in text.split('\n')) {
-    final m = memoryEntryLineRegex.firstMatch(line.trim());
-    if (m == null) continue;
-    result.add(
-      MemoryEntry(
-        round: int.tryParse(m.group(1) ?? '') ?? 0,
-        time: (m.group(2) ?? '').trim(),
-        content: (m.group(3) ?? '').trim(),
-      ),
-    );
+    final entry = parseMemoryEntryLine(line);
+    if (entry != null) result.add(entry);
   }
   return result;
 }
 
+/// 未命中条目格式的**非空行**（保持原文，含前后空白），按出现顺序返回。
+///
+/// 与 [parseMemoryEntries] 共用 [parseMemoryEntryLine]，保证「渲染为卡片」与
+/// 「兜底为原文」的口径完全一致（合并区间行不会再落进兜底文本）。
+List<String> unmatchedMemoryLines(String text) => [
+      for (final line in text.split('\n'))
+        if (line.trim().isNotEmpty && parseMemoryEntryLine(line) == null) line,
+    ];
+
 /// 记忆总结中第 [roundIndex] 轮条目的数量（「每轮恰好一条」校验的依据）。
 ///
+/// 合并区间条目按**覆盖**计：`11~15` 让 11 ~ 15 每一轮各计 1。
 /// 只统计**解析成条目**的行：某条目的内容里恰好提到「第N轮」不会被误计。
 int memoryEntryCount(String text, int roundIndex) =>
-    parseMemoryEntries(text).where((e) => e.round == roundIndex).length;
+    parseMemoryEntries(text).where((e) => e.covers(roundIndex)).length;

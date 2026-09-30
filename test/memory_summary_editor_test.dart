@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/memory_summary_editor.dart';
 
-Widget _wrap(Widget child) {
+Widget _wrap(Widget child, {ThemeData? theme}) {
   return MaterialApp(
-    theme: NarrChatTheme.light,
+    theme: theme ?? NarrChatTheme.light,
     home: Scaffold(
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(12),
@@ -15,11 +15,24 @@ Widget _wrap(Widget child) {
   );
 }
 
+/// 徽标指示（`第N轮` / `第11~15轮`）所在 `Container` 的底纹色。
+Color _badgeBackground(WidgetTester tester, String label) {
+  final badge = tester.widget<Container>(
+    find.ancestor(of: find.text(label), matching: find.byType(Container)).first,
+  );
+  return (badge.decoration! as BoxDecoration).color!;
+}
+
+/// 徽标文字色。
+Color _badgeForeground(WidgetTester tester, String label) =>
+    tester.widget<Text>(find.text(label)).style!.color!;
+
 /// `MemorySummaryEditor` 视图 / 编辑模式测试。
 ///
 /// 条目解析本身的用例在 `memory_entry_format_test.dart`（格式真源）；本文件只
-/// 验证组件行为：新格式与旧格式（兼容渲染）都按条目卡片渲染、非结构化文本原样
-/// 展示、编辑保存回调。
+/// 验证组件行为：新格式与旧格式（兼容渲染）都按条目卡片渲染、**合并区间条目
+/// （`11~15`）以灰阶徽标渲染（亮/暗主题各一例）**、常规条目仍为品牌蓝徽标、
+/// 非结构化文本原样展示、编辑保存回调。
 void main() {
   group('MemorySummaryEditor', () {
     testWidgets('视图模式按条目渲染轮次徽标/时间/内容（新格式）', (tester) async {
@@ -91,6 +104,47 @@ void main() {
       expect(find.text('（未标注时间）'), findsOneWidget);
       controller.dispose();
     });
+
+    testWidgets('合并区间条目渲染为卡片（徽标保留原文分隔符，不进兜底文本）', (tester) async {
+      final controller = TextEditingController(
+        text: '- 11~15 | 第一天 清晨 | 区间概括。\n'
+            '- 16 | 第二天 午时 | 主角获胜。',
+      );
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+      expect(find.text('第11~15轮'), findsOneWidget);
+      expect(find.text('区间概括。'), findsOneWidget);
+      expect(find.text('第一天 清晨'), findsOneWidget);
+      expect(find.text('第16轮'), findsOneWidget);
+      // 合并行必须作为条目卡片渲染，而不是落到兜底原文里。
+      expect(find.text('- 11~15 | 第一天 清晨 | 区间概括。'), findsNothing);
+      controller.dispose();
+    });
+
+    for (final (name, theme) in [
+      ('浅色', NarrChatTheme.light),
+      ('深色', NarrChatTheme.dark),
+    ]) {
+      testWidgets('合并条目徽标走灰阶主题色、常规条目仍为品牌蓝（$name）', (tester) async {
+        final controller = TextEditingController(
+          text: '- 11~15 | 第一天 清晨 | 区间概括。\n'
+              '- 16 | 第二天 午时 | 主角获胜。',
+        );
+        await tester.pumpWidget(
+          _wrap(MemorySummaryEditor(controller: controller), theme: theme),
+        );
+        final scheme = theme.colorScheme;
+        // 合并条目：灰阶底纹 + 灰阶文字（亮/暗主题各取自己的 ColorScheme token）。
+        expect(_badgeBackground(tester, '第11~15轮'), scheme.surfaceContainerHighest);
+        expect(_badgeForeground(tester, '第11~15轮'), scheme.onSurfaceVariant);
+        // 常规单轮条目：品牌蓝徽标不变（两态可区分）。
+        expect(
+          _badgeBackground(tester, '第16轮'),
+          NarrChatTheme.primary.withValues(alpha: 0.1),
+        );
+        expect(_badgeForeground(tester, '第16轮'), NarrChatTheme.primary);
+        controller.dispose();
+      });
+    }
 
     testWidgets('非结构化文本原样展示（不丢数据）', (tester) async {
       final controller = TextEditingController(text: '主角初入宗门。');

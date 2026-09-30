@@ -16,8 +16,12 @@ import 'markdown_editing_controller.dart';
 /// - 新格式（`- 34 | {时间} | {内容}`）与旧格式
 ///   （`- 第N轮｜日期：xxx｜概括内容`）共用 [memoryEntryLineRegex] 解析，
 ///   旧数据无需迁移即可继续渲染；
+/// - **合并条目**（轮次写成 `11~15` / `11-15`，半角/全角 `-` / `~` 均可）徽标显示
+///   原文区间（如 `第11~15轮`），底纹与文字改用**灰阶**主题色（去强调；亮/暗
+///   主题各取 `ColorScheme` 对应色，无需另行硬编码）；常规单轮条目仍是品牌蓝徽标；
 /// - 时间段的标签允许省略或使用「时间：」（兼容历史数据），同样按条目卡片渲染；
-/// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据）；
+/// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据，
+///   判定与 [parseMemoryEntries] 同源，见 [unmatchedMemoryLines]）；
 /// - 点击标题栏「编辑」或双击进入原始文本编辑模式；
 /// - 不自动保存：仅保存/退出编辑触发 [onSave]，取消编辑丢弃修改。
 class MemorySummaryEditor extends StatefulWidget {
@@ -199,15 +203,10 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       );
     }
 
-    // 逐行解析：命中条目格式的进入卡片，未命中的非空行追加为兜底文本
-    // （条目解析 = 共享真源，计数与渲染口径一致）。
+    // 逐行解析：命中条目格式的进入卡片（含 `11~15` 这类合并区间），未命中的
+    // 非空行追加为兜底文本（解析与兜底判定 = 共享真源，口径完全一致）。
     final entries = parseMemoryEntries(text);
-    final unmatched = [
-      for (final line in text.split('\n'))
-        if (line.trim().isNotEmpty &&
-            !memoryEntryLineRegex.hasMatch(line.trim()))
-          line,
-    ];
+    final unmatched = unmatchedMemoryLines(text);
 
     // 完全非结构化文本：原样展示，保证内容不丢。
     if (entries.isEmpty) {
@@ -247,6 +246,15 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
   }
 
   Widget _entryCard(ThemeData theme, MemoryEntry e) {
+    // 合并条目（`11~15`）用灰阶徽标去强调：底纹 / 文字都取当前主题的 ColorScheme
+    // 灰阶（亮色 surfaceContainerHighest + onSurfaceVariant，深色自动随之切换），
+    // 与常规单轮条目的品牌蓝徽标形成区分；卡片底色与边框两态一致。
+    final merged = e.isMerged;
+    final badgeBackground = merged
+        ? theme.colorScheme.surfaceContainerHighest
+        : theme.colorScheme.primary.withValues(alpha: 0.1);
+    final badgeForeground =
+        merged ? theme.colorScheme.onSurfaceVariant : theme.colorScheme.primary;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
@@ -257,19 +265,19 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 轮次徽标
+          // 轮次徽标（合并区间保留原文分隔符，如 `第11~15轮`）
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.1),
+              color: badgeBackground,
               borderRadius: BorderRadius.circular(5),
             ),
             child: Text(
-              '第${e.round}轮',
+              '第${e.roundLabel}轮',
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: theme.colorScheme.primary,
+                color: badgeForeground,
               ),
             ),
           ),
