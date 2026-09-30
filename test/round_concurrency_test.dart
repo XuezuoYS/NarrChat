@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/config/chat_route.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
@@ -659,6 +660,133 @@ void main() {
       expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成。
+      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
+        await tester.pump();
+      }
+      ai.sessions.first.completer.complete(
+        const AiCallResult(
+          content: _fullContent,
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      );
+      await tester.pump();
+      await fA;
+    });
+
+    testWidgets('其它书经驻场岛跳转进入正在生成的书：岛提示随即取消（回归）', (tester) async {
+      // 回归：通知跳转用 pushReplacement 时，被替换页面**晚到**的
+      // `isCurrent=false` 汇报（裸 `setVisibleChatBook(null)`）会抹掉新页面刚
+      // 汇报的可见书籍，导致已停留在该书页面上却仍提示「这本书正在生成」——
+      // 只在「经驻场岛/通知跳转进入」时出现，从首页进入（push）不会。
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final bookDao = FakeBookDao(books: [bookA, bookB]);
+      final dao = FakeRoundDao();
+      final ai = _ConcurrentAiService();
+      final bookProvider = BookProvider(dao: bookDao);
+      await bookProvider.loadBooks(); // 默认选中书A
+      bookProvider.selectBook(bookB); // 当前查看书 B
+
+      final roundProvider = RoundProvider(
+        dao: dao,
+        bookDao: bookDao,
+        aiService: ai,
+        retryDelay: Duration.zero,
+      );
+      await roundProvider.loadRounds(bookB.uuid);
+      final service = GenerationNotificationService(
+        bookProvider: bookProvider,
+        backend: FakeNotificationBackend(),
+        attentionBackend: FakeTaskbarAttentionBackend(),
+      );
+      await service.init();
+
+      // 真实导航宿主：通知服务观察路由栈，驻场岛跳转接 `openChatBook`
+      // （等价生产 main.dart 的接线）。
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
+            ChangeNotifierProvider(
+              create: (_) => ExperimentalSettingsProvider(),
+            ),
+            ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
+            ChangeNotifierProvider(create: (_) => bookProvider),
+            ChangeNotifierProvider(
+              create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
+            ),
+            ChangeNotifierProvider(create: (_) => roundProvider),
+            ChangeNotifierProvider(create: (_) => SidebarProvider()),
+            ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
+          ],
+          child: MaterialApp(
+            theme: NarrChatTheme.light,
+            navigatorKey: service.navigatorKey,
+            navigatorObservers: [service.routeObserver],
+            builder: noticeHostBuilder(
+              onOpenBook: (uuid) => unawaited(service.openChatBook(uuid)),
+            ),
+            home: const Scaffold(body: Center(child: Text('首页'))),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 首页进入书 B 的对话页（真实路径：命名 chat 路由）。
+      service.navigatorKey.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const ChatScreen(),
+          settings: const RouteSettings(name: chatRouteName, arguments: 'b2'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(roundProvider.visibleChatBookUuid, 'b2');
+
+      // 书 A 开始生成（保持挂起）→ 岛在书 B 的页面上提示。
+      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('1本书正在生成……'), findsOneWidget);
+
+      // 展开 → 点「书A」→ 通知服务跳转（栈顶已是 chat 页，走 pushReplacement）。
+      await tester.tap(find.byIcon(Icons.expand_more));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+      final islandBookA = find.descendant(
+        of: find.byType(PinnedNoticeIsland),
+        matching: find.text('书A'),
+      );
+      expect(islandBookA, findsOneWidget);
+      await tester.tap(islandBookA);
+      await tester.pump();
+      // 路由切换 + 岛淡出（200ms）/ 收窄（200ms）都走完；生成中转圈动画常驻，
+      // 不能 pumpAndSettle，按固定步长推进。
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+
+      // 跳转结果：栈顶与「可见对话页」都应是书 A，且岛不再提示它正在生成。
+      expect(service.topChatBookUuid, 'b1');
+      expect(
+        roundProvider.visibleChatBookUuid,
+        'b1',
+        reason: '进入书 A 后可见对话页即书 A（不能被被替换页面的晚到清空抹掉）',
+      );
+      expect(
+        find.text('1本书正在生成……'),
+        findsNothing,
+        reason: '已停留在书 A 页面，岛不应再提示该书正在生成',
+      );
+
+      // 收尾：完成书 A 生成，避免悬空。
       for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
         await tester.pump();
       }

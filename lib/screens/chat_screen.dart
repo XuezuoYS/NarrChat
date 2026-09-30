@@ -381,21 +381,35 @@ class _ChatScreenState extends State<ChatScreen>
   /// 判据是**路由是否当前可见**（`ModalRoute.isCurrent`，挂在 `ModalRoute` 的
   /// 继承依赖上，被其它页面覆盖 / 返回时会重新触发本方法）：
   /// - 停留在本页 → 汇报本书 uuid：不提示「这本书正在生成」；
-  /// - 进入设置 / 回首页 / 切到别的书 → 汇报 null：提示出现；
+  /// - 进入设置 / 回首页 / 切到别的书 → 释放本页占用的书籍（带归属校验）：提示出现；
   /// - 返回本页 → 再次汇报本书 uuid：提示消失（与改动前的内嵌横幅一致）。
   ///
   /// 汇报会通知监听者（驻场岛等），因此值变化时**帧后**下发，
   /// 避免在 build 期间（本方法由依赖变化触发）markNeedsBuild。
+  ///
+  /// 清空（汇报 null）走 [RoundProvider.clearVisibleChatBook] 的**归属校验**：
+  /// 本方法帧后下发，而路由切换（如通知跳转的 `pushReplacement`）时被替换页面的
+  /// `isCurrent` 变 false 可能晚于新页面的汇报，裸清空会把新页面刚汇报的书籍一起
+  /// 抹掉——表现为「经驻场岛进入正在生成的书后，岛仍提示该书正在生成」。
+  /// 本页只释放自己占用的那本书，晚到的清空对已接管的新页面无副作用。
   void _reportVisibleBook() {
     final bookUuid = context.read<BookProvider>().currentBook?.uuid;
     final isCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     final wanted = isCurrent ? bookUuid : null;
     if (wanted == _reportedBookUuid) return;
+    // 本页此前占用（汇报为可见）的那本书：清空时的归属校验依据。
+    final owned = _reportedBookUuid;
     _reportedBookUuid = wanted;
     _roundProvider ??= context.read<RoundProvider>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _roundProvider?.setVisibleChatBook(wanted);
+      final round = _roundProvider;
+      if (round == null) return;
+      if (wanted != null) {
+        round.setVisibleChatBook(wanted);
+      } else if (owned != null) {
+        round.clearVisibleChatBook(owned);
+      }
     });
   }
 
