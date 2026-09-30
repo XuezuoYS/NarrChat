@@ -15,63 +15,29 @@ Widget _wrap(Widget child) {
   );
 }
 
+/// `MemorySummaryEditor` 视图 / 编辑模式测试。
+///
+/// 条目解析本身的用例在 `memory_entry_format_test.dart`（格式真源）；本文件只
+/// 验证组件行为：新格式与旧格式（兼容渲染）都按条目卡片渲染、非结构化文本原样
+/// 展示、编辑保存回调。
 void main() {
-  group('parseMemoryEntries', () {
-    test('解析「- 第N轮｜日期：xxx｜概括内容」为条目（三者绑定）', () {
-      const text = '- 第1轮｜日期：第一天 清晨｜主角初入宗门。\n'
-          '- 第2轮｜日期：第三天 午时｜主角获胜。';
-      final entries = parseMemoryEntries(text);
-      expect(entries, hasLength(2));
-      expect(entries[0].round, 1);
-      expect(entries[0].date, '第一天 清晨');
-      expect(entries[0].content, '主角初入宗门。');
-      expect(entries[1].round, 2);
-      expect(entries[1].date, '第三天 午时');
-      expect(entries[1].content, '主角获胜。');
-    });
-
-    test('容忍半角分隔符、`*` 列表符与概括内容内的分隔符', () {
-      const text = '* 第1轮 | 日期: 第一天 | 遇到苏清月｜结伴同行';
-      final entries = parseMemoryEntries(text);
-      expect(entries, hasLength(1));
-      expect(entries.single.round, 1);
-      expect(entries.single.date, '第一天');
-      expect(entries.single.content, '遇到苏清月｜结伴同行');
-    });
-
-    test('兼容时间部分省略标签（无「时间：」前缀）', () {
-      const text = '- 第1轮｜第一天 清晨｜主角初入宗门。\n'
-          '- 第2轮｜第三天 午时｜主角获胜。';
-      final entries = parseMemoryEntries(text);
-      expect(entries, hasLength(2));
-      expect(entries[0].round, 1);
-      expect(entries[0].date, '第一天 清晨');
-      expect(entries[0].content, '主角初入宗门。');
-      expect(entries[1].round, 2);
-      expect(entries[1].date, '第三天 午时');
-      expect(entries[1].content, '主角获胜。');
-    });
-
-    test('兼容「时间：」标签与省略标签混用', () {
-      const text = '- 第1轮｜时间：第一天 清晨｜主角初入宗门。\n'
-          '- 第2轮｜第三天 午时｜主角获胜。';
-      final entries = parseMemoryEntries(text);
-      expect(entries, hasLength(2));
-      expect(entries[0].round, 1);
-      expect(entries[0].date, '第一天 清晨');
-      expect(entries[1].round, 2);
-      expect(entries[1].date, '第三天 午时');
-    });
-
-    test('无法解析的行被忽略（返回空列表）', () {
-      expect(parseMemoryEntries('主角初入宗门。'), isEmpty);
-      expect(parseMemoryEntries(''), isEmpty);
-      expect(parseMemoryEntries('第1轮 第一天 内容'), isEmpty);
-    });
-  });
-
   group('MemorySummaryEditor', () {
-    testWidgets('视图模式按条目渲染轮数徽标/日期/概括', (tester) async {
+    testWidgets('视图模式按条目渲染轮次徽标/时间/内容（新格式）', (tester) async {
+      final controller = TextEditingController(
+        text: '- 1 | 2026年10月1日03:32:31 | 主角初入宗门。\n'
+            '- 2 | 2026年10月3日12:00:00 | 主角获胜。',
+      );
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+      expect(find.text('第1轮'), findsOneWidget);
+      expect(find.text('第2轮'), findsOneWidget);
+      expect(find.text('2026年10月1日03:32:31'), findsOneWidget);
+      expect(find.text('2026年10月3日12:00:00'), findsOneWidget);
+      expect(find.text('主角初入宗门。'), findsOneWidget);
+      expect(find.text('主角获胜。'), findsOneWidget);
+      controller.dispose();
+    });
+
+    testWidgets('视图模式兼容旧格式（`- 第N轮｜日期：xxx｜概括内容`）', (tester) async {
       final controller = TextEditingController(
         text: '- 第1轮｜日期：第一天 清晨｜主角初入宗门。\n'
             '- 第2轮｜日期：第三天 午时｜主角获胜。',
@@ -86,7 +52,7 @@ void main() {
       controller.dispose();
     });
 
-    testWidgets('视图模式兼容无「时间：」前缀的条目', (tester) async {
+    testWidgets('视图模式兼容无「时间：」前缀的旧条目', (tester) async {
       final controller = TextEditingController(
         text: '- 第1轮｜第一天 清晨｜主角初入宗门。\n'
             '- 第2轮｜第三天 午时｜主角获胜。',
@@ -98,6 +64,31 @@ void main() {
       expect(find.text('第三天 午时'), findsOneWidget);
       expect(find.text('主角初入宗门。'), findsOneWidget);
       expect(find.text('主角获胜。'), findsOneWidget);
+      controller.dispose();
+    });
+
+    testWidgets('视图模式新旧混排：两种格式都渲染为卡片，杂散行兜底显示', (tester) async {
+      final controller = TextEditingController(
+        text: '- 第1轮｜日期：第一天 清晨｜主角初入宗门。\n'
+            '- 2 | 第三天 午时 | 主角获胜。\n'
+            '这一行不是条目格式。',
+      );
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+      expect(find.text('第1轮'), findsOneWidget);
+      expect(find.text('第2轮'), findsOneWidget);
+      expect(find.text('第一天 清晨'), findsOneWidget);
+      expect(find.text('第三天 午时'), findsOneWidget);
+      expect(find.text('主角初入宗门。'), findsOneWidget);
+      expect(find.text('主角获胜。'), findsOneWidget);
+      // 未命中格式的行原样保留（不丢数据）。
+      expect(find.text('这一行不是条目格式。'), findsOneWidget);
+      controller.dispose();
+    });
+
+    testWidgets('时间缺失的条目显示「（未标注时间）」', (tester) async {
+      final controller = TextEditingController(text: '- 1 |  | 主角初入宗门。');
+      await tester.pumpWidget(_wrap(MemorySummaryEditor(controller: controller)));
+      expect(find.text('（未标注时间）'), findsOneWidget);
       controller.dispose();
     });
 
@@ -127,17 +118,17 @@ void main() {
       expect(find.text('原始文本编辑'), findsOneWidget);
       final field = find.byType(TextField);
       expect(field, findsOneWidget);
-      // 追加一行
+      // 追加一行（新格式）
       await tester.enterText(
         field,
         '- 第1轮｜日期：第一天 清晨｜主角初入宗门。\n'
-        '- 第2轮｜日期：第三天 午时｜主角获胜。',
+        '- 2 | 第三天 午时 | 主角获胜。',
       );
       // 点击「完成」立即保存
       await tester.tap(find.text('完成'));
       await tester.pump();
-      expect(saved, contains('第2轮'));
-      expect(controller.text, contains('第2轮'));
+      expect(saved, contains('- 2 | 第三天 午时 | 主角获胜。'));
+      expect(controller.text, contains('- 2 | 第三天 午时 | 主角获胜。'));
       controller.dispose();
     });
   });

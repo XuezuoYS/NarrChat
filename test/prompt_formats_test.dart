@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_sections.dart';
+import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// 模式格式生成要求（ChatPromptFormat / AgentLv1PromptFormat /
 /// AgentLv2PromptFormat / PromptMode）与共享组装（PromptSections）单元测试。
@@ -133,8 +134,11 @@ void main() {
       expect(lines[1], '');
       final rules = lines[2];
       expect(rules, contains('- 每条记忆独占一行'));
+      expect(rules, contains(kMemoryEntryFormat));
       expect(rules, contains('不得使用真实日期'));
       expect(rules, contains('为已确认的历史记忆'));
+      // 与旧写法冲突时以新格式为准（一行简单提示，真源 = 常量）。
+      expect(rules, contains(kMemoryEntryFormatPrecedence));
       expect(rules, isNot(contains('1. 每条记忆独占一行')));
       expect(lines.last, '');
     });
@@ -149,8 +153,8 @@ void main() {
       );
       expect(lines[1], '');
       expect(lines[2], contains('【记忆总结格式】'));
-      // 模板同样只用占位符（`{当前时间}` / `{概括内容}`）。
-      expect(lines[2], contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      // 模板同样只用占位符（`{轮次}` / `{时间}` / `{记忆内容}`）。
+      expect(lines[2], contains(kMemoryEntryFormat));
     });
 
     test('userExecuteNote 为单行【指令执行】（含模式标记）', () {
@@ -184,7 +188,7 @@ void main() {
           contains('narrchat_editHistory'));
       expect(AgentLv1PromptFormat.memoryEditLine, contains('op=append'));
       expect(AgentLv1PromptFormat.memoryEditLine,
-          contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+          contains(kMemoryEntryFormat));
     });
 
     test('systemHead 复用 Chat 骨架但只列 5 个区块（排除记忆总结）+ 思考语言规则', () {
@@ -234,7 +238,9 @@ void main() {
       // 每轮义务仍在：恰好一条（op=append）、不接受 noChange、缺/重即失败。
       expect(text, contains('narrchat_editHistory'));
       expect(text, contains('op=append'));
-      expect(text, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(text, contains(kMemoryEntryFormat));
+      // 与旧写法冲突时以新格式为准（同一提示行也在契约里）。
+      expect(text, contains(kMemoryEntryFormatPrecedence));
       expect(text, contains('不接受'));
       expect(lines.any((l) => l.contains('禁止')), isTrue);
       // 记忆格式（Chat 的规则）不在这里——历史由工具维护。
@@ -265,7 +271,7 @@ void main() {
       // 记忆段：复用单行编辑行（恰好一条 + 记忆条目模板）。
       final memoryText = memory.join('\n');
       expect(memoryText, contains(AgentLv1PromptFormat.memoryEditLine));
-      expect(memoryText, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(memoryText, contains(kMemoryEntryFormat));
       expect(memoryText, contains('恰好一条'));
       // 正文段：5 个区块齐全、禁止记忆区块。
       final storyText = story.join('\n');
@@ -335,16 +341,18 @@ void main() {
       ]);
     });
 
-    test('systemHead 集中双语 8 条契约（三区块输出 / 锚定编辑 / 维护回合 / 思考语言），末行为空行', () {
+    test('systemHead 集中双语契约（三区块输出 / 锚定编辑 / 维护回合 / 思考语言）+ 格式优先行，末行为空行', () {
       final lines = format.systemHead;
       expect(lines.first, '当前模式：Agent');
       expect(lines[2], contains('【AGENT 模式契约】'));
-      // 双语成对出现（中文 8 条 + 英文 8 条：7 条流程规则 + 思考语言规则），
+      // 中文 9 条（8 条流程 / 思考规则 + 记忆条目「格式优先」单行提示），
+      // 英文 8 条（格式优先行按中文单行给出），
       // 全部为 `- ` 项目符号（不用数字序号：渲染会重编号、中英配对会错位）。
       final zhCount = lines.where((l) => l.startsWith('- 【')).length;
       final enCount = lines.where((l) => l.startsWith('- [')).length;
-      expect(zhCount, 8);
+      expect(zhCount, 9);
       expect(enCount, 8);
+      expect(lines, contains(kMemoryEntryFormatPrecedence));
       expect(lines.any((l) => RegExp(r'^\d+\. ').hasMatch(l)), isFalse);
       // 思考（reasoning）一律英文（英文思考便于阅读模型推理）。
       expect(lines.any((l) => l.contains('Write ALL of your reasoning')), isTrue);

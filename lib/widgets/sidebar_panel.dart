@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../theme/app_theme.dart';
+import '../utils/memory_entry_format.dart';
 import 'app_notice_overlay.dart';
 import 'editable_field_state.dart';
 import 'markdown_collapsible_editor.dart';
@@ -266,7 +267,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         _buildSection(
                           key: RoundField.memorySummary,
                           label: '记忆总结',
-                          subtitle: '每条一行：- 第N轮｜日期：xxx｜概括内容',
+                          subtitle: '每条一行：$kMemoryEntryFormat',
                           onEdit: () => _enterEditModule(RoundField.memorySummary, _memorySummaryKey),
                           onSave: () => _saveModule(_memorySummaryKey),
                           onCancel: () => _cancelModule(_memorySummaryKey),

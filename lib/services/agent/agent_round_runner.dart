@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../models/agent_mode_level.dart';
+import '../../utils/memory_entry_format.dart';
 import '../ai_response_parser.dart';
 import '../ai_service.dart';
 import '../prompt_formats.dart';
@@ -583,12 +584,12 @@ class AgentRoundRunner {
   }
 
   /// 记忆阶段完成判定（应用侧事实）：历史栏被真实编辑过、当前没有失败登记、
-  /// 且**恰好一条**本轮（`第 N 轮`）条目。
+  /// 且**恰好一条**本轮（轮次 = N）条目。
   bool _memorySatisfied() {
     const section = AgentStateSection.memorySummary;
     return workingCopy.touchedSections.contains(section) &&
         !workingCopy.failedSections.contains(section) &&
-        AgentStateWorkingCopy.memoryEntryCount(
+        memoryEntryCount(
               workingCopy.memorySummary,
               workingCopy.roundIndex,
             ) ==
@@ -798,7 +799,7 @@ class AgentRoundRunner {
         '状态维护轮：正文已完成，但历史（记忆总结）栏仍没有本轮那一条。本回合'
         '**不输出任何文本**，只调工具。**读取器（$reads）已禁用**：它的 '
         '`<memorySummary>` 结果**已在对话中**（写正文不改变状态），不要重复读取'
-        '——直接调用**一次** $edits，日期用你已经定好的大纲。'
+        '——直接调用**一次** $edits，时间用你已经定好的大纲。'
         '历史栏**不接受** op=noChange。**不要**改动世界状态 / 角色状态——'
         '它们在正文里，而正文已经写完。$entryLine';
   }

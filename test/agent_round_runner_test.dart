@@ -7,6 +7,7 @@ import 'package:narrchat/services/agent/agent_round_runner.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 auto /
 /// 维护轮 required；Lv.1 = 准备 → 记忆 → 正文，维护轮仅兜底）、档位差异、
@@ -1477,8 +1478,34 @@ void main() {
     );
     expect(result.frames, 2);
     // 准备帧落地的那一条没有被重复追加（历史栏恰好一条本轮条目）。
-    expect(AgentStateWorkingCopy.memoryEntryCount(copy.memorySummary, 2), 1);
+    expect(memoryEntryCount(copy.memorySummary, 2), 1);
     expect(copy.memorySummary, contains('准备帧写入'));
+    expect(result.stateTurnUsed, isFalse);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：准备帧按新格式写完记忆条目 → 记忆阶段同样零帧跳过', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      script: [
+        // 新格式（`- {轮次} | {时间} | {记忆内容}`）与旧格式同等成立：
+        // `_memorySatisfied` 走共享解析，两种写法都只算一条。
+        lv1HistoryTurn('p1', entry: '- 2 | 第二天 申时 | 准备帧写入'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.story],
+    );
+    expect(result.frames, 2);
+    expect(copy.memorySummary, '- 2 | 第二天 申时 | 准备帧写入');
+    expect(memoryEntryCount(copy.memorySummary, 2), 1);
     expect(result.stateTurnUsed, isFalse);
     expect(result.warnings, isEmpty);
   });

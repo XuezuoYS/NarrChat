@@ -4,6 +4,7 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/prompt_formats.dart';
+import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// `AgentStateWorkingCopy` 锚定式编辑单元测试。
 ///
@@ -263,6 +264,32 @@ void main() {
       expect(c.memorySummary, contains('第1轮'));
       // 条目追加在最后一行。
       expect(c.memorySummary.split('\n').last, contains('第2轮'));
+    });
+
+    test('append 新格式条目 → 通过；新旧混排下每轮计数各为 1', () {
+      final c = copy(lastRound: baseRound, roundIndex: 2);
+      final r = c.applyEdits(AgentStateSection.memorySummary, [
+        const AgentLineEdit(
+          op: 'append',
+          newLine: '- 2 | 第二天 申时 | 主角见到掌门',
+        ),
+      ]);
+      expect(r.applied, isTrue);
+      expect(c.memorySummary, contains(baseRound.memorySummary));
+      expect(c.memorySummary.split('\n').last, '- 2 | 第二天 申时 | 主角见到掌门');
+      expect(memoryEntryCount(c.memorySummary, 1), 1);
+      expect(memoryEntryCount(c.memorySummary, 2), 1);
+    });
+
+    test('新格式重复本轮条目 → 校验失败（每轮恰好一条）', () {
+      final c = copy(lastRound: baseRound, roundIndex: 2);
+      final r = c.applyEdits(AgentStateSection.memorySummary, [
+        const AgentLineEdit(op: 'append', newLine: '- 2 | 第二天 申时 | 第一条'),
+        const AgentLineEdit(op: 'append', newLine: '- 2 | 第二天 夜 | 第二条'),
+      ]);
+      expect(r.applied, isFalse);
+      expect(r.message, contains('2 条'));
+      expect(c.memorySummary, baseRound.memorySummary);
     });
   });
 

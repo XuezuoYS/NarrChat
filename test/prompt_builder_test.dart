@@ -6,6 +6,7 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/ai_response_parser.dart';
 import 'package:narrchat/services/prompt_builder.dart';
 import 'package:narrchat/services/prompt_formats.dart';
+import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// PromptBuilder 组装逻辑单元测试（原 widget_test.dart 拆分而来：
 /// 仅保留 PromptBuilder 组；WorldBookScanner / Constants / AiResponseParser
@@ -185,10 +186,11 @@ void main() {
           '【用户输入内容结束】'));
     });
 
-    test('系统提示词包含记忆总结格式强制规则（轮数/日期/概括绑定一条）', () {
+    test('系统提示词包含记忆总结格式强制规则（轮次/时间/内容绑定一条）', () {
       final system = buildBundle().systemPrompt;
       expect(system, contains('【记忆总结格式】'));
-      expect(system, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(system, contains(kMemoryEntryFormat));
+      expect(system, contains(kMemoryEntryFormatPrecedence));
       expect(system, contains('绑定在一条内'));
       expect(system, contains('从第 1 轮到本轮'));
       expect(system, contains('不得使用真实日期'));
@@ -198,7 +200,7 @@ void main() {
     test('用户提示词包含记忆总结格式提醒', () {
       final user = buildBundle().userPrompt;
       expect(user, contains('【记忆总结格式】'));
-      expect(user, contains('- 第N轮｜日期：{当前时间}｜{概括内容}'));
+      expect(user, contains(kMemoryEntryFormat));
       expect(user, contains('从第 1 轮至本轮每轮一条'));
     });
 
@@ -559,7 +561,8 @@ void main() {
       expect(system, contains('状态维护回合'));
       // 历史形状 = 三个正文小节；状态由读取器提供（模型自取）。
       expect(system, contains('历史中你之前的消息恰好就是这三个小节'));
-      expect(system, contains('第N轮'));
+      expect(system, contains(kMemoryEntryFormat));
+      expect(system, contains(kMemoryEntryFormatPrecedence));
       // 旧文案（工具数量说错 / 让模型从 assistant 消息里抄状态）不得复现。
       expect(system, isNot(contains('全部四个状态工具')));
       expect(system, isNot(contains('两个状态工具')));

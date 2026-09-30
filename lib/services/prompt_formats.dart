@@ -26,13 +26,18 @@
 /// - 用户填写的文本（书籍设定 / 文笔参考 / 世界书 / Mod 文案）里的 `#`/`##`
 ///   由 UI 灰字提示（`PromptInputHint`）规避，同样不写进提示词。
 /// - **可填取值一律用占位符，不写具体案例**：模型面向文案里的占位符统一写作
-///   `{中文名}`（`{当前时间}` / `{概括内容}` / `{类别名}` / `{角色名}` /
-///   `{属性名}` / `{属性值}`）——示例只表达**形状**，写死某本书的角色名、
-///   类别名或日期取值会被模型当成设定照抄，也与用户实际设定冲突。
+///   `{中文名}`（`{轮次}` / `{时间}` / `{记忆内容}` / `{当前时间}` / `{类别名}` /
+///   `{角色名}` / `{属性名}` / `{属性值}`）——示例只表达**形状**，写死某本书的
+///   角色名、类别名或日期取值会被模型当成设定照抄，也与用户实际设定冲突。
+///   记忆条目的模板与「格式优先」行是跨文件共用的常量（真源 =
+///   `lib/utils/memory_entry_format.dart` 的 `kMemoryEntryFormat` /
+///   `kMemoryEntryFormatPrecedence`）：提示词与工具描述一律引用，不再硬编码
+///   字面量；旧写法 `- 第N轮｜日期：…｜…` 只作**兼容解析**（UI 渲染与校验计数）。
 ///   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
-///   `<memorySummary>` 是读取结果的**字面块标签**；`第N轮` 的 `N` 是轮号。
+///   `<memorySummary>` 是读取结果的**字面块标签**。
 library;
 
+import '../utils/memory_entry_format.dart';
 import 'agent/state/state_tool_names.dart';
 
 /// 一种生成模式的「格式生成要求」规格。
@@ -167,27 +172,32 @@ class ChatPromptFormat implements PromptFormatSpec {
       '（这是历史记录的核心结构，优先级最高）：';
 
   static const String memoryRuleLines =
-      '- 每条记忆独占一行，格式为：`- 第N轮｜日期：{当前时间}｜{概括内容}`；'
-      '「轮数」「日期」「概括内容」三者必须绑定在一条内，'
+      '- 每条记忆独占一行，格式为：`$kMemoryEntryFormat`'
+      '（每条以 `- ` 列表符开头）；'
+      '「轮次」「时间」「记忆内容」三者必须绑定在一条内，'
       '严禁拆行、严禁分块、严禁只写其中一项。\n'
+      '- 「轮次」写本轮轮号的**裸数字**（如 34），不要写「第34轮」。\n'
       '- 从第 1 轮到本轮，每一轮都必须保留一条记忆条目，'
-      '条目按轮数从小到大顺序排列、不得缺轮。\n'
-      '- 每条条目的「日期」必须使用该轮 `## 当前时间` 的内容'
-      '（剧情内时间），不得使用真实日期。\n'
-      '- 「概括内容」用一句话概括该轮发生的核心事件与关键进展；'
+      '条目按轮次从小到大顺序排列、不得缺轮。\n'
+      '- 每条条目的「时间」必须使用该轮 `## 当前时间` 的内容'
+      '（剧情内时间），不得使用真实日期；写法沿用历史条目的时间写法'
+      '（公历或本书自定历法皆可）。\n'
+      '- 「记忆内容」用一句话概括该轮发生的核心事件与关键进展；'
       '若该轮无重要事件则写「无重要事件」。\n'
       '- 轮次增多时可压缩、精简旧条目的措辞以控制篇幅，'
       '但不得删除任何轮次条目、不得调换顺序、不得将多条合并为一条。\n'
       '- 上一轮 AI 返回（最后一条 assistant 消息）中的 `## 记忆总结`'
       '为已确认的历史记忆，必须完整继承并在此基础上追加本轮条目，'
-      '不得凭空改写、丢失或重排。';
+      '不得凭空改写、丢失或重排。\n'
+      '$kMemoryEntryFormatPrecedence';
 
   static const String memoryFormatUserNote =
       '【记忆总结格式】`## 记忆总结` 必须按 '
-      '`- 第N轮｜日期：{当前时间}｜{概括内容}` '
-      '逐轮输出：每条一行，轮数、日期、概括内容三者绑定在一条内；'
+      '`$kMemoryEntryFormat` '
+      '逐轮输出：每条一行（以 `- ` 列表符开头），'
+      '轮次、时间、记忆内容三者绑定在一条内；'
       '从第 1 轮至本轮每轮一条，'
-      '日期一律使用该轮 `## 当前时间`（详见系统指令【记忆总结格式】）。';
+      '时间一律使用该轮 `## 当前时间`（详见系统指令【记忆总结格式】）。';
 
   @override
   List<String> get systemHead => [
@@ -301,11 +311,11 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
   /// 改名即同时改两处文案口径。
   static const String memoryEditLine =
       'Call $kEditHistoryToolName with op=append and EXACTLY ONE entry: '
-      '`- 第N轮｜日期：{当前时间}｜{概括内容}` — N = this round, the date = the '
-      'end-of-round in-story time of your outline (the story\'s `## 当前时间` '
-      'must match it). '
+      '`$kMemoryEntryFormat` — {轮次} = this round as a bare number; '
+      '{时间} = the end-of-round in-story time of your outline (the story\'s '
+      '`## 当前时间` must match it). '
       '用 $kEditHistoryToolName 的 op=append 追加**恰好一条**本轮记忆条目'
-      '（N = 本轮；日期 = 大纲里本轮结束时的剧情内时间，'
+      '（{轮次} = 本轮轮号（裸数字）；{时间} = 大纲里本轮结束时的剧情内时间，'
       '正文 `## 当前时间` 必须与之一致）。';
 
   /// 准备阶段指令（英文要求在前、中文概述在后，与维护轮指令同一形态）。
@@ -382,16 +392,18 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
         '大纲只是思考、不是输出：本步绝不写正文。',
     '- [Flow · step 2 · memory FIRST] BEFORE the story, write this round\'s '
         'memory entry with ONE $kEditHistoryToolName call (op=append): exactly '
-        'one entry `- 第N轮｜日期：{当前时间}｜{概括内容}`, the date = the '
-        'outline\'s end-of-round in-story time (the story\'s `## 当前时间` must '
-        'match it). Do it in its own turn: that turn carries the tool call ONLY '
-        '— no text at all. The history section accepts NO op=noChange; a '
-        'missing or duplicated entry is a failure. '
+        'one entry `$kMemoryEntryFormat` ({轮次} = this round as a bare number; '
+        '{时间} = the outline\'s end-of-round in-story time — the story\'s '
+        '`## 当前时间` must match it). Do it in its own turn: that turn carries '
+        'the tool call ONLY — no text at all. The history section accepts NO '
+        'op=noChange; a missing or duplicated entry is a failure. '
         '【第二步·记忆先写】正文**之前**先用 $kEditHistoryToolName 写本轮记忆条目'
-        '（op=append）：**恰好一条** `- 第N轮｜日期：{当前时间}｜{概括内容}`，'
-        '日期 = 大纲里本轮结束时的剧情内时间（正文 `## 当前时间` 必须与之一致）；'
+        '（op=append）：**恰好一条** `$kMemoryEntryFormat`'
+        '（{轮次} = 本轮轮号（裸数字）；{时间} = 大纲里本轮结束时的剧情内时间，'
+        '正文 `## 当前时间` 必须与之一致）；'
         '单独一回合完成，该回合**只调工具、不输出任何文本**。'
         '历史栏**不接受** op=noChange；漏写或重复即失败。',
+    kMemoryEntryFormatPrecedence,
     '- [Flow · step 3 · story] Only THEN write the story\'s five sections, '
         'following the outline, this round\'s user input and the book\'s '
         'settings / style references: `## 剧情演绎` → `## 推荐行动` → '
@@ -526,17 +538,19 @@ class AgentLv2PromptFormat implements PromptFormatSpec {
           'op=reset 仅用于空栏目或首次填入。'
           '锚点被拒时会回传该栏目当前全文，一步到位重锚。',
       '- [Every round] Each round must end with exactly ONE memory entry '
-          '`- 第N轮｜日期：{当前时间}｜{概括内容}` via $kEditHistoryToolName '
-          '(op=append, N = this round, the date = the `## 当前时间` value of '
-          'THIS round\'s story — keep the entry to ONE short sentence). Time is '
+          '`$kMemoryEntryFormat` via $kEditHistoryToolName '
+          '(op=append, {轮次} = this round as a bare number, {时间} = the '
+          '`## 当前时间` value of THIS round\'s story — keep the entry to ONE '
+          'short sentence). Time is '
           'part of the story body: there is NO time tool. op=noChange must '
           'carry a `reason` and is NOT accepted for history; silently omitting '
           'a section is a failure, not a no-op.',
       '- 【每轮义务】每轮必须用 $kEditHistoryToolName 写出**恰好一条**本轮记忆条目 '
-          '`- 第N轮｜日期：{当前时间}｜{概括内容}`（op=append；N = 本轮；'
-          '日期 = 本轮正文 `## 当前时间` 的取值；一句话概括，别写长）。'
+          '`$kMemoryEntryFormat`（op=append；{轮次} = 本轮轮号（裸数字）；'
+          '{时间} = 本轮正文 `## 当前时间` 的取值；一句话概括，别写长）。'
           '时间只存在于正文里（**没有时间工具**）。op=noChange 必须附 reason，'
           '且历史栏**不接受** op=noChange；直接省略某个栏目算失败。',
+      kMemoryEntryFormatPrecedence,
       '- [No lazy editing] The app byte-compares every section with last '
           'round. For every named character in this round\'s story, walk their '
           'mutable lines (好感度 / 当前心理 / 当前状态 / 当前位置 / 伤势 / 物品 / '

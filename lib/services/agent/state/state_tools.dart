@@ -1,3 +1,4 @@
+import '../../../utils/memory_entry_format.dart';
 import '../agent_activity.dart';
 import '../narr_agent_tool.dart';
 import 'agent_state_working_copy.dart';
@@ -155,7 +156,7 @@ class NarrchatReadHistoryTool extends _SectionReadTool {
   @override
   String get description =>
       'Read back the CURRENT `<memorySummary>` block ONLY — the history: one '
-      'entry per round (`- 第N轮｜日期：{当前时间}｜{概括内容}`). Read it ONCE per '
+      'entry per round (`$kMemoryEntryFormat`). Read it ONCE per '
       'round BEFORE writing anything (the past rounds are the basis of this '
       'round\'s outline and of the new memory entry); it is the ONLY correct '
       'anchor source for $kEditHistoryToolName, so copy `before` anchors '
@@ -163,11 +164,11 @@ class NarrchatReadHistoryTool extends _SectionReadTool {
       'refused — reuse the block already in this conversation. DO NOT echo the '
       'block in your reply. '
       '只读取当前 `<memorySummary>` 块（历史/记忆总结：每轮一条 '
-      '`- 第N轮｜日期：{当前时间}｜{概括内容}`）：每轮**只在动笔前读一次**'
+      '`$kMemoryEntryFormat`）：每轮**只在动笔前读一次**'
       '（以往轮次是本轮大纲与新记忆条目的依据），'
       '`before` 锚点必须逐字复制（$kEditHistoryToolName 唯一正确的锚点来源）；'
       '同一轮内重复读取会被拒绝——复用对话中已有的块；'
-      '禁止把该块写进回复。';
+      '禁止把该块写进回复。\n$kMemoryEntryFormatPrecedence';
 }
 
 // -----------------------------------------------------------------------------
@@ -346,9 +347,9 @@ class NarrchatEditHistoryTool extends _SectionEditTool {
   @override
   String get description =>
       'Line-edit the HISTORY section (`<memorySummary>`): one memory entry per '
-      'round, format `- 第N轮｜日期：{当前时间}｜{概括内容}`. Every round must end '
-      'with EXACTLY ONE entry for this round — add it with op=append; the date '
-      'is this round\'s planned in-story time, and the story\'s '
+      'round, format `$kMemoryEntryFormat`. Every round must end '
+      'with EXACTLY ONE entry for this round — add it with op=append; the '
+      '{时间} is this round\'s planned in-story time, and the story\'s '
       '`## 当前时间` must match it (whichever comes first, keep the two '
       'consistent). op=noChange is NOT accepted here; '
       'op=set / delete are for correcting existing entries only. Locate with a '
@@ -357,10 +358,11 @@ class NarrchatEditHistoryTool extends _SectionEditTool {
       'returns this section\'s current full text so you can re-anchor in one '
       'step. '
       '按行编辑**历史/记忆总结**栏目（`<memorySummary>`）：每轮一条 '
-      '`- 第N轮｜日期：{当前时间}｜{概括内容}`，本轮必须用 op=append 追加'
-      '**恰好一条**（日期 = 本轮计划的故事内时间，正文 `## 当前时间` 与之一致，'
+      '`$kMemoryEntryFormat`，本轮必须用 op=append 追加'
+      '**恰好一条**（{轮次} = 本轮轮号（裸数字）；'
+      '{时间} = 本轮计划的故事内时间，正文 `## 当前时间` 与之一致，'
       '二者谁先写出就以谁为准）；'
       '本栏**不接受** op=noChange，op=set / delete 只用于修正既有条目；'
       '`before` 必须从 $kReadHistoryToolName 的结果逐字复制，绝不数行号'
-      '（匹配失败会回传该栏当前全文供你重锚）。';
+      '（匹配失败会回传该栏当前全文供你重锚）。\n$kMemoryEntryFormatPrecedence';
 }

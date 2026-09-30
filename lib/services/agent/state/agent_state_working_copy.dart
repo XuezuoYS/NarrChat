@@ -1,4 +1,5 @@
 import '../../../models/round.dart';
+import '../../../utils/memory_entry_format.dart';
 
 /// 状态节区（工具 `section` 参数的合法取值）。
 enum AgentStateSection {
@@ -98,8 +99,9 @@ typedef _AnchorMatch = ({int start, int end});
 /// 空白 + 全半角标点统一 + 列表前导符统一），**仅用于比较**，存储仍保留原文
 /// 字节。失败时回传该栏目当前全文，让下一帧的锚点必然命中。
 ///
-/// 【结构性校验】记忆总结每轮必须**恰好一条**本轮（第 N 轮）条目；
+/// 【结构性校验】记忆总结每轮必须**恰好一条**本轮（轮次 = N）条目；
 /// `noChange` 必须附 `reason`（记忆总结不允许 noChange）。
+/// 条目解析与计数复用 `utils/memory_entry_format.dart`（新格式与旧格式兼容）。
 class AgentStateWorkingCopy {
   AgentStateWorkingCopy({
     required this.roundIndex,
@@ -231,8 +233,8 @@ class AgentStateWorkingCopy {
         return _fail(
           section,
           '${section.label}每轮必须补充本轮条目，不能声明 noChange；'
-          '请用 op=append 追加 `- 第N轮｜日期：{当前时间}｜{概括内容}`'
-          '（N = $roundIndex）。',
+          '请用 op=append 追加 `$kMemoryEntryFormat`'
+          '（{轮次} = $roundIndex）。',
         );
       }
       final reason = edits.map((e) => e.reason.trim()).firstWhere(
@@ -271,7 +273,7 @@ class AgentStateWorkingCopy {
         return _fail(
           section,
           '${section.label}变更后必须包含本轮（第 $roundIndex 轮）条目，'
-          '格式：`- 第N轮｜日期：{当前时间}｜{概括内容}`；'
+          '格式：`$kMemoryEntryFormat`；'
           '追加条目请用 op=append（自动追加到栏目末尾）。',
         );
       }
@@ -324,22 +326,6 @@ class AgentStateWorkingCopy {
 
   static String _clip(String text, int max) =>
       text.length <= max ? text : '${text.substring(0, max)}…';
-
-  /// 记忆总结中第 [roundIndex] 轮条目的数量（每轮恰好一条的校验依据）。
-  static int memoryEntryCount(String memory, int roundIndex) {
-    final re = RegExp(r'第\s*(\d+)\s*轮');
-    var count = 0;
-    for (final line in memory.split('\n')) {
-      if (line.trim().isEmpty) continue;
-      for (final m in re.allMatches(line)) {
-        if (int.tryParse(m.group(1)!) == roundIndex) {
-          count++;
-          break;
-        }
-      }
-    }
-    return count;
-  }
 
   // ---------------------------------------------------------------------------
   // 内部：单条锚定编辑（字节级保留）

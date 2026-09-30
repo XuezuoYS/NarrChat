@@ -51,18 +51,23 @@
   结果页面」）；`RoundProvider` 的组装路径**不再向 system 追加任何联网指令**
   （Chat 工具循环与 Agent 档位强制开启两条路径都不追加）；
 - **占位符写法统一为 `{中文名}`**：模型面向文案里涉及具体取值的位置一律写作
-  `{当前时间}` / `{概括内容}`（记忆条目模板）与 `{类别名}` / `{角色名}` /
+  `{轮次}` / `{时间}` / `{记忆内容}`（记忆条目模板）与 `{类别名}` / `{角色名}` /
   `{属性名}` / `{属性值}`（角色状态形态示例），**不写具体案例**
   （写死的角色名 / 类别名 / 日期取值会被模型当成设定照抄，也与用户实际书籍
   设定冲突）；旧写法 `<时间>` / `<一句话概括>` / `xxx` / `{name}` 已废弃。
+  记忆条目的模板与「格式优先」行是跨文件常量（真源 =
+  `lib/utils/memory_entry_format.dart` 的 `kMemoryEntryFormat` /
+  `kMemoryEntryFormatPrecedence`）：与历史旧条目 / 既有文案的写法冲突时以新格式
+  为准，旧条目本身原样继承、不改写。
   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
-  `<memorySummary>` 是读取结果的**字面块标签**，`第N轮` 的 `N` 是轮号；
+  `<memorySummary>` 是读取结果的**字面块标签**；
   真源见 `prompt_formats.dart` 文件头「文案约定」（Mod 文案不受此约定约束）；
 - **参数 schema 文案**沿用同一「英文 + 中文」写法（如 `before` / `reason`）；
 - 契约由 `test/agent_tool_descriptions_test.dart`（工具描述）、
   `test/state_coverage_test.dart` / `test/agent_state_working_copy_test.dart`
-  （缺口指令、快照块无标记）与 `test/prompt_placeholders_test.dart`
-  （占位符写法）守护。
+  （缺口指令、快照块无标记）、`test/memory_entry_format_test.dart`（条目解析 /
+  计数）与 `test/prompt_placeholders_test.dart`
+  （占位符写法与格式优先级行）守护。
 
 ### 状态工具（`state/state_tools.dart`，仅 Agent 档位注入）
 
@@ -83,11 +88,11 @@
 | 工具 | 参数 | 语义 / 校验 |
 |---|---|---|
 | `narrchat_readWorldState` / `narrchat_readCharacterState` / `narrchat_readHistory` | `round`（可选，核对用） | **读取工作副本该栏目的当前渲染**（`<<<NARRCHAT_STATE round=N>>>` 包裹**单个** `<tag>` 块，空栏目标 `empty="true"`）。纯只读、幂等、无副作用：**Lv.1 准备回合读一次**（= 上一轮库内状态）、**Lv.2 正文回合读一次**；记忆 / 维护回合**不再读取**（写正文不改变状态，读到的那一份就是唯一锚点来源）。**真实注册**（模型必须先调它才能看到状态与锚点）；**每栏只保留最新一份**结果（同栏旧份自动剔除，且只有真正执行成功的读取才剔除旧份——被拒绝的重复读取不得顶掉已有锚点来源）。**非正文阶段**（记忆 / 维护帧）对「本轮已提供过全文的栏目」的读取调用被**拒绝执行**（回一条说明 + 工具框 ✕，不计入缺项清单）——准备阶段已提供过历史全文时，记忆帧的重复读取同样被拒绝；未提供过的栏目（漏读 / 参数被截断）照常执行 |
-| `narrchat_editWorldState` / `narrchat_editCharacterState` / `narrchat_editHistory` | 仅 `edits[]`（工具自身已绑定栏目，**无 `section` 参数**） | **锚定式**行编辑：`op=append`（newLine 追加到栏目末尾，历史条目固定用）/ `set`（`before` 整行/连续多行逐字锚定 → `newLine` 替换）/ `insertAfter`（`before` 锚定 → 其后插入）/ `delete`（`before` 锚定删除）/ `noChange`（**必须带非空 `reason`**，登记进 `declaredUnchanged`；**最后手段**，历史栏不接受）/ `reset`（整栏目替换，仅限空栏目或明确重排）。`before` 锚点必须来自**该栏目读取器**的结果，三级匹配：逐字行 → 归一化行（折叠空白与全/半角标点）→ 归一化行内子串；未命中 → 报错并回传**该栏目当前全文**（≤400 行）供重锚；不唯一 → 报错（列出命中行号）；同调用内按顺序应用（先插入的内容可被后续编辑引用）；事务化（任一失败整体不提交）；**历史**变更后必须恰含一条本轮（`第 N 轮`）条目（Lv.1 在**记忆阶段**先于正文用 `op=append` 落入**恰好一条**本轮条目，日期 = 准备阶段大纲里的本轮结束时间，正文 `## 当前时间` 应与之一致）。旧的 `line` 行号参数已被移除，携带时明确报错引导改用 `before` / `append` |
+| `narrchat_editWorldState` / `narrchat_editCharacterState` / `narrchat_editHistory` | 仅 `edits[]`（工具自身已绑定栏目，**无 `section` 参数**） | **锚定式**行编辑：`op=append`（newLine 追加到栏目末尾，历史条目固定用）/ `set`（`before` 整行/连续多行逐字锚定 → `newLine` 替换）/ `insertAfter`（`before` 锚定 → 其后插入）/ `delete`（`before` 锚定删除）/ `noChange`（**必须带非空 `reason`**，登记进 `declaredUnchanged`；**最后手段**，历史栏不接受）/ `reset`（整栏目替换，仅限空栏目或明确重排）。`before` 锚点必须来自**该栏目读取器**的结果，三级匹配：逐字行 → 归一化行（折叠空白与全/半角标点）→ 归一化行内子串；未命中 → 报错并回传**该栏目当前全文**（≤400 行）供重锚；不唯一 → 报错（列出命中行号）；同调用内按顺序应用（先插入的内容可被后续编辑引用）；事务化（任一失败整体不提交）；**历史**变更后必须恰含一条本轮（轮次 = N）条目 `- {轮次} | {时间} | {记忆内容}`（Lv.1 在**记忆阶段**先于正文用 `op=append` 落入**恰好一条**本轮条目，{时间} = 准备阶段大纲里的本轮结束时间，正文 `## 当前时间` 应与之一致；条目解析新旧格式兼容）。旧的 `line` 行号参数已被移除，携带时明确报错引导改用 `before` / `append` |
 
 **当前时间不设工具**：属于正文 `## 当前时间` 小节（正文的合法输出段），
 应用从正文解析写入工作副本（缺失则沿用上一轮时间），不参与缺口判定。
-Lv.1 的**记忆条目在正文之前**用 `op=append` 落入，日期 = 准备阶段大纲里的
+Lv.1 的**记忆条目在正文之前**用 `op=append` 落入，{时间} = 准备阶段大纲里的
 本轮结束时间，正文 `## 当前时间` 应与之一致。
 
 ### 状态快照的获取方式（模型自取，不做预置）

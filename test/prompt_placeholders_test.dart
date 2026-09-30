@@ -7,12 +7,13 @@ import 'package:narrchat/services/agent/state/state_coverage.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/prompt_formats.dart';
+import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// 内置提示词（Mod 除外）的**占位符约定**守护。
 ///
 /// 约定（真源：`prompt_formats.dart` 文件头「文案约定」）：
-/// - 涉及具体取值的位置一律写成 `{中文名}`——`{当前时间}` / `{概括内容}` /
-///   `{类别名}` / `{角色名}` / `{属性名}` / `{属性值}`；
+/// - 涉及具体取值的位置一律写成 `{中文名}`——`{轮次}` / `{时间}` / `{记忆内容}` /
+///   `{当前时间}` / `{类别名}` / `{角色名}` / `{属性名}` / `{属性值}`；
 /// - **不得出现具体案例示例**（写死的角色名 / 类别名 / 日期取值），也不得回退
 ///   到旧写法（`<时间>` / `<一句话概括>` / `xxx` / `{name}`）。
 ///
@@ -80,17 +81,28 @@ void main() {
     }
   });
 
-  test('记忆条目模板在三种模式与历史工具中统一为占位符写法', () {
-    const template = '- 第N轮｜日期：{当前时间}｜{概括内容}';
-    // Chat：系统规则 + 用户消息提醒各一处。
-    expect(const ChatPromptFormat().systemTail.join('\n'), contains(template));
+  test('记忆条目模板与格式优先级行在三种模式与历史工具中统一', () {
+    // 单一真源：新格式（带 `- ` 列表符）+ 「冲突时以本格式为准」一行。
+    const template = kMemoryEntryFormat;
+    expect(template, startsWith('- '));
+    expect(template, contains('{轮次}'));
+    expect(template, contains('{时间}'));
+    expect(template, contains('{记忆内容}'));
+    // Chat：系统规则（含格式优先级行）+ 用户消息提醒。
+    final chatSystem = const ChatPromptFormat().systemTail.join('\n');
+    expect(chatSystem, contains(template));
+    expect(chatSystem, contains(kMemoryEntryFormatPrecedence));
     expect(const ChatPromptFormat().userHead.join('\n'), contains(template));
-    // Agent Lv.1：历史工具契约的「每轮义务」；Lv.2：每轮义务（systemHead）。
-    expect(const AgentLv1PromptFormat().systemTail.join('\n'),
-        contains(template));
-    expect(const AgentLv2PromptFormat().systemHead.join('\n'),
-        contains(template));
-    // 历史读取器与编辑器描述引用同一模板（锚点来源与追加格式一致）。
+    // Agent Lv.1：历史工具契约的「每轮义务」+ 格式优先级行。
+    final lv1System = const AgentLv1PromptFormat().systemTail.join('\n');
+    expect(lv1System, contains(template));
+    expect(lv1System, contains(kMemoryEntryFormatPrecedence));
+    // Lv.2：每轮义务（systemHead）+ 格式优先级行。
+    final lv2System = const AgentLv2PromptFormat().systemHead.join('\n');
+    expect(lv2System, contains(template));
+    expect(lv2System, contains(kMemoryEntryFormatPrecedence));
+    // 历史读取器与编辑器描述引用同一模板（锚点来源与追加格式一致），
+    // 并各自带上格式优先级行。
     final workingCopy = AgentStateWorkingCopy(
       roundIndex: 2,
       lastRound: const Round(id: 1, bookUuid: 'b1', roundIndex: 1),
@@ -103,8 +115,10 @@ void main() {
       ))
         tool.name: tool.description,
     };
-    expect(descriptions[kReadHistoryToolName], contains(template));
-    expect(descriptions[kEditHistoryToolName], contains(template));
+    for (final name in const [kReadHistoryToolName, kEditHistoryToolName]) {
+      expect(descriptions[name], contains(template));
+      expect(descriptions[name], contains(kMemoryEntryFormatPrecedence));
+    }
   });
 
   test('角色状态形态示例：围栏内每一行都用中文占位符', () {

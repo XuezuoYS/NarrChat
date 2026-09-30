@@ -2,63 +2,20 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
+import '../utils/memory_entry_format.dart';
 import 'editable_field_state.dart';
 import 'markdown_editing_controller.dart';
-
-/// 一条记忆条目：轮数 + 日期 + 概括内容（三者绑定在一条内）。
-class MemoryEntry {
-  final int round;
-  final String date;
-  final String content;
-
-  const MemoryEntry({
-    required this.round,
-    required this.date,
-    required this.content,
-  });
-}
-
-/// 记忆条目行的正则：`- 第N轮｜日期：xxx｜概括内容`。
-///
-/// 容忍：
-/// - 列表符 `-` 或 `*`；
-/// - 分隔符全角 `｜` 或半角 `|`；
-/// - 冒号全角 `：` 或半角 `:`；
-/// - 时间段的标签：`日期：` / `时间：`（冒号全半角均可），或**省略标签**
-///   （`- 第N轮｜xxx｜概括内容`，兼容模型未输出「时间：」前缀的历史数据）；
-/// - 概括内容中再次出现 `｜`/`|`（末尾 `.*` 贪婪匹配）。
-final RegExp _memoryEntryRegex = RegExp(
-  r'^[-*]\s*第\s*(\d+)\s*轮\s*[｜|]\s*(?:(?:日期|时间)\s*[:：]\s*)?([^｜|]*)\s*[｜|]\s*(.*)$',
-);
-
-/// 解析「- 第N轮｜日期：xxx｜概括内容」格式的记忆总结文本。
-///
-/// 时间段的「日期：」标签允许省略（亦兼容「时间：」标签），无标签时按裸时间值
-/// 读取。按行解析，能匹配的行转换为 [MemoryEntry]，无法匹配的行直接忽略
-/// （需要兜底展示原始文本时，请由调用方自行保留原文本）。
-List<MemoryEntry> parseMemoryEntries(String text) {
-  final result = <MemoryEntry>[];
-  for (final line in text.split('\n')) {
-    final m = _memoryEntryRegex.firstMatch(line.trim());
-    if (m == null) continue;
-    result.add(
-      MemoryEntry(
-        round: int.tryParse(m.group(1) ?? '') ?? 0,
-        date: (m.group(2) ?? '').trim(),
-        content: (m.group(3) ?? '').trim(),
-      ),
-    );
-  }
-  return result;
-}
 
 /// 「记忆总结」专用编辑组件。
 ///
 /// 与 [MarkdownField] 接口一致（外部传入 [controller]、保存/退出编辑触发
-/// [onSave]），但视图模式按「轮数 / 日期 / 概括内容」绑定为一条的条目卡片渲染
+/// [onSave]），但视图模式按「轮次 / 时间 / 内容」绑定为一条的条目卡片渲染
 /// （而非通用 Markdown 预览）：
 ///
-/// - 每条记忆 = 一个卡片：左侧「第N轮」徽标，下方日期 + 概括内容；
+/// - 每条记忆 = 一个卡片：左侧「第N轮」徽标，下方时间 + 内容；
+/// - 新格式（`- 34 | {时间} | {内容}`）与旧格式
+///   （`- 第N轮｜日期：xxx｜概括内容`）共用 [memoryEntryLineRegex] 解析，
+///   旧数据无需迁移即可继续渲染；
 /// - 时间段的标签允许省略或使用「时间：」（兼容历史数据），同样按条目卡片渲染；
 /// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据）；
 /// - 点击标题栏「编辑」或双击进入原始文本编辑模式；
@@ -185,7 +142,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
           const SizedBox(width: 4),
           Expanded(
             child: Text(
-              _editMode ? '原始文本编辑' : '记忆列表 · 每条绑定轮数/日期/概括',
+              _editMode ? '原始文本编辑' : '记忆列表 · 每条绑定轮次/时间/内容',
               style: TextStyle(fontSize: 11, color: theme.colorScheme.outline),
             ),
           ),
@@ -222,8 +179,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
           height: 1.4,
         ),
         decoration: InputDecoration(
-          hintText:
-              widget.hintText ?? '格式：- 第N轮｜日期：xxx｜概括内容（一行一条）',
+          hintText: widget.hintText ?? '格式：$kMemoryEntryFormat（一行一条）',
           isDense: true,
           border: InputBorder.none,
         ),
@@ -243,23 +199,15 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       );
     }
 
-    // 逐行解析：命中条目格式的进入卡片，未命中的非空行追加为兜底文本。
-    final entries = <MemoryEntry>[];
-    final unmatched = <String>[];
-    for (final line in text.split('\n')) {
-      final m = _memoryEntryRegex.firstMatch(line.trim());
-      if (m != null) {
-        entries.add(
-          MemoryEntry(
-            round: int.tryParse(m.group(1) ?? '') ?? 0,
-            date: (m.group(2) ?? '').trim(),
-            content: (m.group(3) ?? '').trim(),
-          ),
-        );
-      } else if (line.trim().isNotEmpty) {
-        unmatched.add(line);
-      }
-    }
+    // 逐行解析：命中条目格式的进入卡片，未命中的非空行追加为兜底文本
+    // （条目解析 = 共享真源，计数与渲染口径一致）。
+    final entries = parseMemoryEntries(text);
+    final unmatched = [
+      for (final line in text.split('\n'))
+        if (line.trim().isNotEmpty &&
+            !memoryEntryLineRegex.hasMatch(line.trim()))
+          line,
+    ];
 
     // 完全非结构化文本：原样展示，保证内容不丢。
     if (entries.isEmpty) {
@@ -309,7 +257,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 轮数徽标
+          // 轮次徽标
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
@@ -326,7 +274,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
             ),
           ),
           const SizedBox(width: 8),
-          // 日期 + 概括内容
+          // 时间 + 内容
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -341,7 +289,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
-                        e.date.isEmpty ? '（未标注日期）' : e.date,
+                        e.time.isEmpty ? '（未标注时间）' : e.time,
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w500,
