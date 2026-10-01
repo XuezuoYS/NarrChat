@@ -21,6 +21,12 @@ class Book {
   final String globalPrePrompt;
   final String globalPostPrompt;
   final int historyRounds;
+
+  /// 记忆总结压缩轮次（每轮生成时把最近多少轮压进记忆总结）。
+  ///
+  /// 0 = 关闭（默认）；当前档位为 5 / 10，后续可增档，不存在负数。
+  final int memorySummaryRounds;
+
   final String roleHierarchy;
 
   /// 角色类别及其详细描述格式模板（存储于 role_hierarchy_detail 列，JSON）。
@@ -36,6 +42,7 @@ class Book {
     this.globalPrePrompt = '',
     this.globalPostPrompt = '',
     this.historyRounds = 1,
+    this.memorySummaryRounds = 0,
     this.roleHierarchy = '',
     this.roleCategories = const [],
   });
@@ -51,6 +58,7 @@ class Book {
       globalPrePrompt: (map['global_pre_prompt'] as String?) ?? '',
       globalPostPrompt: (map['global_post_prompt'] as String?) ?? '',
       historyRounds: (map['history_rounds'] as int?) ?? 1,
+      memorySummaryRounds: (map['memory_summary_rounds'] as int?) ?? 0,
       roleHierarchy: (map['role_hierarchy'] as String?) ?? '',
       roleCategories:
           Constants.decodeRoleCategories(map['role_hierarchy_detail'] as String?),
@@ -68,6 +76,7 @@ class Book {
       'global_pre_prompt': globalPrePrompt,
       'global_post_prompt': globalPostPrompt,
       'history_rounds': historyRounds,
+      'memory_summary_rounds': memorySummaryRounds,
       'role_hierarchy': roleHierarchy,
       'role_hierarchy_detail': Constants.encodeRoleCategories(roleCategories),
     };
@@ -83,6 +92,7 @@ class Book {
     String? globalPrePrompt,
     String? globalPostPrompt,
     int? historyRounds,
+    int? memorySummaryRounds,
     String? roleHierarchy,
     List<RoleCategory>? roleCategories,
   }) {
@@ -96,6 +106,7 @@ class Book {
       globalPrePrompt: globalPrePrompt ?? this.globalPrePrompt,
       globalPostPrompt: globalPostPrompt ?? this.globalPostPrompt,
       historyRounds: historyRounds ?? this.historyRounds,
+      memorySummaryRounds: memorySummaryRounds ?? this.memorySummaryRounds,
       roleHierarchy: roleHierarchy ?? this.roleHierarchy,
       roleCategories: roleCategories ?? this.roleCategories,
     );

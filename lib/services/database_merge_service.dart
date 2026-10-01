@@ -748,6 +748,7 @@ class DatabaseMergeService {
       row['global_pre_prompt'],
       row['global_post_prompt'],
       row['history_rounds'],
+      row['memory_summary_rounds'],
       row['role_hierarchy'],
       row['role_hierarchy_detail'],
       worldBooksJson,

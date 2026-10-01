@@ -218,6 +218,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       globalPrePrompt: _globalPrePrompt.text,
       globalPostPrompt: _globalPostPrompt.text,
       historyRounds: _historyRounds,
+      // 本面板尚未提供该配置的编辑控件：原样带回既有档位，避免保存设置把它重置为关闭。
+      memorySummaryRounds: _book?.memorySummaryRounds ?? 0,
       roleHierarchy:
           Constants.joinRoleHierarchy(_roleCategories.map((c) => c.name).toList()),
       roleCategories: List.of(_roleCategories),

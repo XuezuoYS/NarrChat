@@ -434,7 +434,7 @@ void main() {
   });
 
   test('设置部件 remoteOnly：同一 uuid 就地合并，设置列整体落地（身份无需迁移）', () async {
-    // 本地已有同一 uuid 的书（旧分类、旧后置词）。
+    // 本地已有同一 uuid 的书（旧分类、旧后置词、旧记忆总结档位）。
     final bookDao = BookDao();
     final localBookUuid = await bookDao.insertBook(
       const Book(
@@ -442,13 +442,15 @@ void main() {
         title: 'X',
         category: '旧分类',
         globalPostPrompt: '旧后置词',
+        memorySummaryRounds: 5,
       ),
     );
-    // 远端书 X：新分类 + 新后置词（同一主键 → 就地合并）。
+    // 远端书 X：新分类 + 新后置词 + 新记忆总结档位（同一主键 → 就地合并）。
     final snapshotBytes = await _buildRemoteSnapshot(
       title: 'X',
       category: '新分类',
       globalPostPrompt: '新后置词',
+      memorySummaryRounds: 10,
     );
 
     final plan = SyncMergePlan(
@@ -474,6 +476,8 @@ void main() {
     expect(book.uuid, kRemoteBookUuid, reason: '两侧同一主键，无需改写身份');
     expect(book.globalPostPrompt, '新后置词', reason: '设置部件整体采用远端');
     expect(book.category, '新分类', reason: '设置部件整体采用远端');
+    expect(book.memorySummaryRounds, 10,
+        reason: '记忆总结压缩轮次属设置列，remoteOnly 时按远端覆盖');
   });
 
   test('同名但 uuid 不同 → 两本独立的书：远端整本导入，本地同名书原样保留', () async {
@@ -537,6 +541,7 @@ Future<Uint8List> _buildRemoteSnapshot({
   String title = '远端书',
   String category = '玄幻',
   String globalPostPrompt = '',
+  int memorySummaryRounds = 0,
   List<(int, String, String)> rounds = const [(1, '你好', '正文')],
   bool withWorldBooks = true,
   List<Map<String, Object?>> extraMods = const [],
@@ -559,6 +564,7 @@ Future<Uint8List> _buildRemoteSnapshot({
       global_pre_prompt TEXT DEFAULT '',
       global_post_prompt TEXT DEFAULT '',
       history_rounds INTEGER NOT NULL DEFAULT 1,
+      memory_summary_rounds INTEGER NOT NULL DEFAULT 0,
       role_hierarchy TEXT DEFAULT '',
       role_hierarchy_detail TEXT DEFAULT '',
       failed_user_input TEXT DEFAULT '',
@@ -632,6 +638,7 @@ Future<Uint8List> _buildRemoteSnapshot({
     'title': title,
     'category': category,
     'global_post_prompt': globalPostPrompt,
+    'memory_summary_rounds': memorySummaryRounds,
     'settings_updated_at': 100,
     'rounds_updated_at': 200,
   });

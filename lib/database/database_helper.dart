@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 17;
+  static const int _dbVersion = 18;
 
   Database? _database;
 
@@ -275,6 +275,17 @@ class DatabaseHelper {
         if (oldVersion < 17) {
           // v17：Token 用量改为「可空 = 无数据」（见 [_rebuildRoundsForUsageColumns]）。
           await _rebuildRoundsForUsageColumns(db);
+        }
+        if (oldVersion < 18) {
+          // v18：每本书新增「记忆总结压缩轮次」配置（0 = 关闭，档位 5 / 10，
+          // 未来可增档；无负数）。仅加列，历史行取默认 0（即关闭），不做数据迁移。
+          await _addColumnIfMissing(
+            db,
+            'books',
+            'memory_summary_rounds',
+            'ALTER TABLE books ADD COLUMN memory_summary_rounds '
+                'INTEGER NOT NULL DEFAULT 0',
+          );
         }
   }
 
@@ -599,6 +610,7 @@ class DatabaseHelper {
         global_pre_prompt TEXT DEFAULT '',
         global_post_prompt TEXT DEFAULT '',
         history_rounds INTEGER NOT NULL DEFAULT 1,
+        memory_summary_rounds INTEGER NOT NULL DEFAULT 0,
         role_hierarchy TEXT DEFAULT '',
         role_hierarchy_detail TEXT DEFAULT '',
         failed_user_input TEXT DEFAULT '',

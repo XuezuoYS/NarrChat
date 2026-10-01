@@ -11,6 +11,8 @@ void main() {
     String title = '书A',
     String category = '玄幻',
     String postPrompt = '后置',
+    int historyRounds = 1,
+    int memorySummaryRounds = 0,
     int settingsAt = 1000,
     int roundsAt = 2000,
   }) {
@@ -23,7 +25,8 @@ void main() {
       'writing_requirements': '',
       'global_pre_prompt': '',
       'global_post_prompt': postPrompt,
-      'history_rounds': 1,
+      'history_rounds': historyRounds,
+      'memory_summary_rounds': memorySummaryRounds,
       'role_hierarchy': '',
       'settings_updated_at': settingsAt,
       'rounds_updated_at': roundsAt,
@@ -250,6 +253,18 @@ void main() {
         SyncFingerprint.bookSettings(bookRow(category: '都市')),
         isNot(a),
         reason: '分类变化应改变设置部件指纹（单部件）',
+      );
+      expect(
+        SyncFingerprint.bookSettings(bookRow(memorySummaryRounds: 10)),
+        isNot(a),
+        reason: '记忆总结压缩轮次属于设置部件，改档位必须被检出',
+      );
+      expect(
+        SyncFingerprint.bookSettings(
+            bookRow(historyRounds: 1, memorySummaryRounds: 5)),
+        isNot(SyncFingerprint.bookSettings(
+            bookRow(historyRounds: 1, memorySummaryRounds: 10))),
+        reason: '5 / 10 两个档位互不相同',
       );
     });
 

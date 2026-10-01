@@ -983,6 +983,95 @@ void main() {
     }
     await migrated.close();
   });
+
+  test('v16→v18：books 新增记忆总结压缩轮次列（INTEGER NOT NULL DEFAULT 0），历史行取默认 0', () async {
+    final path = _newDbPath();
+    final db16 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 16, onCreate: _createV16Schema),
+    );
+    await db16.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    expect(
+      _columnNames(await db16.rawQuery('PRAGMA table_info(books)')),
+      isNot(contains('memory_summary_rounds')),
+      reason: '迁移前的旧库必须真的没有该列，否则本用例测不到新增',
+    );
+    await db16.close();
+
+    final db = await _openUpgraded(path);
+    final info = _columnInfo(await db.rawQuery('PRAGMA table_info(books)'));
+    expect(info, contains('memory_summary_rounds'), reason: 'v18 迁移必须补出该列');
+    final migratedSpec = _columnSpec(info, 'memory_summary_rounds');
+    expect(migratedSpec['type'], 'INTEGER');
+    expect(migratedSpec['notnull'], 1);
+    expect(migratedSpec['dflt_value'], '0');
+
+    // 历史行不做数据迁移：默认 0（关闭）。
+    final book = (await db.query('books')).single;
+    expect(book['uuid'], 'u-1');
+    expect(book['title'], '书A');
+    expect(book['memory_summary_rounds'], 0);
+    // 档位可写入 / 读回（0 / 5 / 10）。
+    for (final level in const [5, 10, 0]) {
+      await db.update(
+        'books',
+        {'memory_summary_rounds': level},
+        where: 'uuid = ?',
+        whereArgs: ['u-1'],
+      );
+      expect((await db.query('books')).single['memory_summary_rounds'], level);
+    }
+    await db.close();
+
+    // 迁移产物与新装库的该列定义逐项一致（同名 / 同类型 / 同非空 / 同默认值）。
+    final freshPath = _newDbPath();
+    DatabaseHelper.debugDatabasePathOverride = freshPath;
+    final fresh = await DatabaseHelper.instance.database;
+    addTearDown(() async {
+      DatabaseHelper.debugDatabasePathOverride = null;
+      await DatabaseHelper.instance.close();
+    });
+    expect(
+      _columnSpec(
+        _columnInfo(await fresh.rawQuery('PRAGMA table_info(books)')),
+        'memory_summary_rounds',
+      ),
+      migratedSpec,
+      reason: '迁移产物与新装库的该列定义必须一致',
+    );
+  });
+
+  test('v18 迁移幂等：列已存在时重跑不报错、不改写既有档位', () async {
+    final path = _newDbPath();
+    final db16 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 16, onCreate: _createV16Schema),
+    );
+    await db16.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db16.close();
+
+    final db = await _openUpgraded(path);
+    await db.update(
+      'books',
+      {'memory_summary_rounds': 5},
+      where: 'uuid = ?',
+      whereArgs: ['u-1'],
+    );
+    // 模拟「schema 已带新列、user_version 被降回 17」的遗留状态：重复迁移必须跳过建列。
+    await DatabaseHelper.migrate(db, 17, 18);
+    await DatabaseHelper.migrate(db, 17, 18);
+
+    final book = (await db.query('books')).single;
+    expect(book['title'], '书A');
+    expect(book['memory_summary_rounds'], 5, reason: '幂等迁移不得改写既有值');
+    expect(
+      _columnNames(await db.rawQuery('PRAGMA table_info(books)'))
+          .where((n) => n == 'memory_summary_rounds'),
+      hasLength(1),
+      reason: '不得出现重复列',
+    );
+    await db.close();
+  });
 }
 
 final List<Directory> _tempDirs = [];
@@ -1292,6 +1381,20 @@ Map<String, Map<String, Object?>> _columnInfo(
   List<Map<String, Object?>> rows,
 ) =>
     {for (final r in rows) r['name'] as String: r};
+
+/// 单列的「类型 / 非空 / 默认值」（不含 `cid`：迁移新增列必然落在表末尾，
+/// 列位置不参与「迁移产物 = 新装库」的判定）。
+Map<String, Object?> _columnSpec(
+  Map<String, Map<String, Object?>> info,
+  String column,
+) {
+  final col = info[column];
+  return {
+    'type': col?['type'],
+    'notnull': col?['notnull'],
+    'dflt_value': col?['dflt_value'],
+  };
+}
 
 /// \`PRAGMA foreign_key_list\` → {父表名: 父列名}。
 Map<String, String> _fkTargets(List<Map<String, Object?>> rows) => {

@@ -20,7 +20,7 @@ class SyncFingerprint {
   SyncFingerprint._();
 
   /// 「书籍设置部件」指纹：书名、分类、各类设定、前后置词、历史轮数、
-  /// 角色层级与描述格式（失败条目不在此列——随轮次部件）。
+  /// 记忆总结压缩轮次、角色层级与描述格式（失败条目不在此列——随轮次部件）。
   static String bookSettings(Map<String, Object?> row) {
     return jsonEncode([
       row['title'],
@@ -31,6 +31,7 @@ class SyncFingerprint {
       row['global_pre_prompt'],
       row['global_post_prompt'],
       row['history_rounds'],
+      row['memory_summary_rounds'],
       row['role_hierarchy'],
       row['role_hierarchy_detail'],
     ]);

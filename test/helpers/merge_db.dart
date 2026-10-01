@@ -54,6 +54,7 @@ Future<void> _createSchema(Database db) async {
       global_pre_prompt TEXT DEFAULT '',
       global_post_prompt TEXT DEFAULT '',
       history_rounds INTEGER NOT NULL DEFAULT 1,
+      memory_summary_rounds INTEGER NOT NULL DEFAULT 0,
       role_hierarchy TEXT DEFAULT '',
       role_hierarchy_detail TEXT DEFAULT '',
       failed_user_input TEXT DEFAULT '',

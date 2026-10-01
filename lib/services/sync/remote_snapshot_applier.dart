@@ -209,6 +209,7 @@ class RemoteSnapshotApplier {
     'global_pre_prompt',
     'global_post_prompt',
     'history_rounds',
+    'memory_summary_rounds',
     'role_hierarchy',
     'role_hierarchy_detail',
   ];

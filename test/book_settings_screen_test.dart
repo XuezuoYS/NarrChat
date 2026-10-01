@@ -30,11 +30,14 @@ void main() {
   });
 
   /// 以编辑模式 pump 书籍设置页（可注入一个"陈旧"的 Book 快照，模拟调用方持有旧实例）。
+  ///
+  /// 设置页被压在宿主路由之上：保存成功会 `pop` 回宿主，用例可断言落库结果。
   Future<void> pumpSettings(WidgetTester tester, {Book? book}) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final navigatorKey = GlobalKey<NavigatorState>();
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -49,9 +52,13 @@ void main() {
         ],
         child: MaterialApp(
           theme: NarrChatTheme.light,
-          home: BookSettingsScreen(book: book),
+          navigatorKey: navigatorKey,
+          home: const Scaffold(),
         ),
       ),
+    );
+    navigatorKey.currentState!.push<void>(
+      MaterialPageRoute(builder: (_) => BookSettingsScreen(book: book)),
     );
     await tester.pumpAndSettle();
   }
@@ -105,6 +112,24 @@ void main() {
 
     expect(find.widgetWithText(TextField, '远端标题2'), findsOneWidget);
     expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget);
+  });
+
+  testWidgets('保存设置不重置面板外的配置项：记忆总结压缩轮次原样带回', (tester) async {
+    dao.books[0] = dao.books[0].copyWith(memorySummaryRounds: 10);
+    await bookProvider.loadBooks();
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    await tester.enterText(find.widgetWithText(TextField, '当前标题'), '改后标题');
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(dao.books.single.title, '改后标题');
+    expect(
+      dao.books.single.memorySummaryRounds,
+      10,
+      reason: '面板暂无该控件，保存设置必须原样带回既有档位（不得重置为 0）',
+    );
   });
 
   testWidgets('每个子页都带 #/## 输入提示（灰字小字，文案单一真源）', (tester) async {
