@@ -27,6 +27,7 @@ import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_store.dart';
+import '../services/memory_merge_planner.dart';
 import '../services/non_stream_replay.dart';
 import '../services/prompt_builder.dart';
 import '../services/round_warnings_store.dart';
@@ -602,6 +603,13 @@ class RoundProvider extends ChangeNotifier {
   }) async {
     final settings = _aiSettingsProvider;
     final lastRound = latestRound;
+    // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 上一轮落库的记忆总结 +
+    // 本书档位），随后下发给提示词 / Agent 执行器，并用于生成后判定。
+    final memoryMergePlan = planMemoryMerge(
+      memoryText: lastRound?.memorySummary ?? '',
+      tier: book.memorySummaryRounds,
+      newRoundIndex: (lastRound?.roundIndex ?? 0) + 1,
+    );
     final recentRounds = _takeRecent(book.historyRounds);
     final worldBookEntries = _worldBookScanner.scan(
       userInput: userInput,
@@ -774,6 +782,7 @@ class RoundProvider extends ChangeNotifier {
         agentChaining:
             responsesWire && settings.selectedPlatform.supportsResponseChaining,
         agentToolChoice: settings.selectedPlatform.apiType.supportsToolChoice,
+        memoryMergePlan: memoryMergePlan,
       );
     }
 
@@ -811,6 +820,7 @@ class RoundProvider extends ChangeNotifier {
         useSearch: useSearch,
         directBody: requestBody,
         responsesWire: true,
+        memoryMergePlan: memoryMergePlan,
       );
     }
 
@@ -842,6 +852,7 @@ class RoundProvider extends ChangeNotifier {
       useStream: useStream,
       useSearch: useSearch,
       directBody: requestBody,
+      memoryMergePlan: memoryMergePlan,
     );
   }
 
@@ -1050,7 +1061,19 @@ class RoundProvider extends ChangeNotifier {
       final newRoundId = await _dao.insertRound(newRound);
       // 结束态：生成期间的顶部警告转存为该轮的常驻警告（空即清除上一轮失败
       // 尝试留下的同下标提示）；写入本地数据层，不入用户库、不云同步。
-      _setRoundWarnings(gen, newRound.roundIndex, gen.agentWarnings);
+      // Chat 模式无回炉机会：档位要求的记忆合并没落地 → 追加一条常驻警告
+      //（Agent 模式的同类判定在 `AgentRoundRunner` 内，避免重复提示）。
+      final mergePlan = req.memoryMergePlan;
+      final chatMergeWarnings = <String>[
+        if (agentOutcome == null &&
+            mergePlan != null &&
+            !isMemoryMergeApplied(parsed.memorySummary, mergePlan))
+          mergePlan.uiText,
+      ];
+      _setRoundWarnings(gen, newRound.roundIndex, [
+        ...gen.agentWarnings,
+        ...chatMergeWarnings,
+      ]);
       // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
       _rawDataByRound[newRoundId] = List.of(gen.rawExchanges);
       gen.rawExchanges.clear();
@@ -1476,6 +1499,7 @@ class RoundProvider extends ChangeNotifier {
       tools: tools,
       workingCopy: workingCopy,
       profile: profile,
+      memoryMergePlan: req.memoryMergePlan,
       chaining: req.agentChaining,
       supportsToolChoice: req.agentToolChoice,
       reduceReasoningReplay: _reduceReasoningReplay,
@@ -2192,6 +2216,12 @@ class _RoundRequest {
   /// 协议是否支持 `tool_choice`（能力初值；运行中被拒时执行器自动降级）。
   final bool agentToolChoice;
 
+  /// 本轮应执行的「记忆总结轮次合并」动作（档位 0 / 无动作时为 null）。
+  ///
+  /// 组装时一次算定（`memory_merge_planner.dart`）：Chat 经用户消息注入指令、
+  /// Agent 交执行器；两者都在生成后用它判定是否落地（未落地 → 常驻警告）。
+  final MemoryMergePlan? memoryMergePlan;
+
   const _RoundRequest({
     required this.systemPrompt,
     required this.historyMessages,
@@ -2206,5 +2236,6 @@ class _RoundRequest {
     this.agentValues,
     this.agentChaining = false,
     this.agentToolChoice = true,
+    this.memoryMergePlan,
   });
 }

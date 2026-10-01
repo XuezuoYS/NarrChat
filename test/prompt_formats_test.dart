@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/round.dart';
+import 'package:narrchat/services/memory_merge_planner.dart';
 import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_sections.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
@@ -21,6 +23,7 @@ class _StubFormat implements PromptFormatSpec {
     this.tail = const [],
     this.userHeadLines = const [],
     this.execute = const [],
+    this.userMerge = const [],
   });
 
   /// 各槽位可配置的测试内容（marker 便于定位插入位置）。
@@ -29,6 +32,7 @@ class _StubFormat implements PromptFormatSpec {
   final List<String> tail;
   final List<String> userHeadLines;
   final List<String> execute;
+  final List<String> userMerge;
 
   @override
   String get modeLabel => 'Stub';
@@ -47,6 +51,9 @@ class _StubFormat implements PromptFormatSpec {
 
   @override
   List<String> get userExecuteNote => execute;
+
+  @override
+  List<String> memoryMergeUserNote(MemoryMergePlan? plan) => userMerge;
 }
 
 void main() {
@@ -674,6 +681,203 @@ void main() {
       expect(lv2, isNot(contains('【二级标题纪律】')));
       expect(lv2, isNot(contains('【状态快照规则】')));
       expect(lv2, isNot(contains('【记忆总结格式】')));
+    });
+  });
+
+  group('记忆总结轮次合并（档位驱动）', () {
+    const sections = PromptSections();
+
+    /// 上一轮（第 16 轮）的记忆总结：1-7 已合并 + 散条目 8..16。
+    /// 档位 5 → 第 17 轮达到 2T=10，应合并 8-12。
+    const memoryText = '- 1 - 7 | t1 ~ t7 | 前七轮要点。\n'
+        '- 8 | t8 | 第八轮。\n'
+        '- 9 | t9 | 第九轮。\n'
+        '- 10 | t10 | 第十轮。\n'
+        '- 11 | t11 | 第十一轮。\n'
+        '- 12 | t12 | 第十二轮。\n'
+        '- 13 | t13 | 第十三轮。\n'
+        '- 14 | t14 | 第十四轮。\n'
+        '- 15 | t15 | 第十五轮。\n'
+        '- 16 | t16 | 第十六轮。';
+    const lastRound = Round(
+      bookUuid: 'b1',
+      roundIndex: 16,
+      memorySummary: memoryText,
+      currentTime: 't16',
+    );
+    const bookOff = Book(title: '测试书');
+    const bookOn5 = Book(title: '测试书', memorySummaryRounds: 5);
+
+    String systemOf(Book book, PromptFormatSpec format) =>
+        sections.buildSystemPrompt(
+          book: book,
+          worldBookEntries: '',
+          mods: null,
+          format: format,
+        );
+
+    String userOf(Book book, PromptFormatSpec format, {Round? round}) =>
+        sections.buildUserPrompt(
+          book: book,
+          lastRound: round,
+          userInput: '继续',
+          mods: null,
+          format: format,
+        );
+
+    test('策略文案：档位 0 = 不合并且保留既有区间；档位 5/10 = 2T 触发 + 合并格式', () {
+      final off = memoryMergePolicyLines(0).join('\n');
+      expect(off, contains('不要主动合并'));
+      expect(off, contains('原样保留'));
+      expect(off, isNot(contains(kMemoryMergedEntryFormat)));
+
+      final on5 = memoryMergePolicyLines(5).join('\n');
+      expect(on5, contains(kMemoryMergedEntryFormat));
+      expect(on5, contains('2 × 5'));
+      expect(on5, contains('最旧的 5 条'));
+      expect(on5, contains('以用户要求为准'));
+
+      final on10 = memoryMergePolicyLines(10).join('\n');
+      expect(on10, contains('2 × 10'));
+      expect(on10, contains('最旧的 10 条'));
+    });
+
+    test('本轮指令：应合并时给出填好区间与首末时间的模板行；无动作 / 无计划为空', () {
+      final p = planMemoryMerge(
+        memoryText: memoryText,
+        tier: 5,
+        newRoundIndex: 17,
+      );
+      final chat = memoryMergeDirectiveLines(p).join('\n');
+      expect(chat, contains('【本轮记忆合并】'));
+      expect(chat, contains('- 8 - 12 | t8 ~ t12 | {记忆内容}'));
+      expect(chat, contains('其它行逐字保留'));
+      expect(chat, contains('以用户要求为准'));
+
+      final agent = memoryMergeAgentDirectiveLines(p).join('\n');
+      expect(agent, contains('narrchat_editHistory'));
+      expect(agent, contains('op=set'));
+      expect(agent, contains('- 8 - 12 | t8 ~ t12 | {记忆内容}'));
+
+      // 还没到 2T（第 11 轮）→ 无指令；档位 0 / null → 无指令。
+      expect(
+        memoryMergeDirectiveLines(
+          planMemoryMerge(memoryText: memoryText, tier: 5, newRoundIndex: 11),
+        ),
+        isEmpty,
+      );
+      expect(memoryMergeDirectiveLines(null), isEmpty);
+      expect(memoryMergeAgentDirectiveLines(null), isEmpty);
+      expect(
+        memoryMergeDirectiveLines(
+          planMemoryMerge(memoryText: memoryText, tier: 0, newRoundIndex: 17),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('系统指令：策略块按档位注入；档位 0 与档位 5 互相排除，三个模式同口径', () {
+      final off = systemOf(bookOff, const ChatPromptFormat());
+      expect(off, contains('不要主动合并'));
+      expect(off, isNot(contains(kMemoryMergedEntryFormat)));
+
+      final on = systemOf(bookOn5, const ChatPromptFormat());
+      expect(on, contains(kMemoryMergedEntryFormat));
+      expect(on, contains('2 × 5'));
+      // Chat 记忆规则不再出现「不得将多条合并为一条」的自相矛盾表述。
+      expect(on, isNot(contains('不得将多条合并为一条')));
+      expect(on, contains('每一轮都必须被一条记忆条目覆盖'));
+
+      for (final format in <PromptFormatSpec>[
+        const AgentLv1PromptFormat(),
+        const AgentLv2PromptFormat(),
+      ]) {
+        final s = systemOf(bookOn5, format);
+        expect(s, contains(kMemoryMergedEntryFormat),
+            reason: '${format.modeLabel} 档位 > 0 时必须拿到同一份合并策略');
+        final offS = systemOf(bookOff, format);
+        expect(offS, contains('不要主动合并'));
+      }
+    });
+
+    test('用户消息：Chat 在用户输入之后、指令执行之前注入本轮合并指令', () {
+      final user = userOf(bookOn5, const ChatPromptFormat(), round: lastRound);
+      expect(user, contains('【本轮记忆合并】'));
+      expect(user, contains('- 8 - 12 | t8 ~ t12 | {记忆内容}'));
+      final posInput = user.indexOf('【用户输入内容结束】');
+      final posMerge = user.indexOf('【本轮记忆合并】');
+      final posExec = user.indexOf('【指令执行】');
+      expect(posMerge, greaterThan(posInput),
+          reason: '指令必须在用户输入之后（用户要求优先）');
+      expect(posMerge, lessThan(posExec));
+      expect(user, contains('以用户要求为准'));
+
+      // Agent 档位由阶段帧承载，用户消息不重复注入。
+      for (final format in <PromptFormatSpec>[
+        const AgentLv1PromptFormat(),
+        const AgentLv2PromptFormat(),
+      ]) {
+        expect(userOf(bookOn5, format, round: lastRound),
+            isNot(contains('【本轮记忆合并】')));
+      }
+      // 档位 0 / 未到 2T / 无上一轮 → 不注入。
+      expect(userOf(bookOff, const ChatPromptFormat(), round: lastRound),
+          isNot(contains('【本轮记忆合并】')));
+      expect(
+        userOf(
+          bookOn5,
+          const ChatPromptFormat(),
+          round: const Round(
+            bookUuid: 'b1',
+            roundIndex: 10,
+            memorySummary: memoryText,
+          ),
+        ),
+        isNot(contains('【本轮记忆合并】')),
+        reason: '上一轮是 16，本轮 11 的尾部片段末条对不上 → 不动作',
+      );
+      expect(userOf(bookOn5, const ChatPromptFormat()),
+          isNot(contains('【本轮记忆合并】')));
+    });
+
+    test('用户消息：memoryMergeUserNote 槽位位于后置词之后、指令执行之前', () {
+      const stub = _StubFormat(userMerge: ['<MERGE>'], execute: ['<EXECUTE>']);
+      final user = sections.buildUserPrompt(
+        book: bookOff,
+        lastRound: null,
+        userInput: '输入',
+        mods: null,
+        format: stub,
+      );
+      final pos = user.indexOf('<MERGE>');
+      expect(pos, greaterThan(user.indexOf('【后置词结束】')));
+      expect(pos, lessThan(user.indexOf('<EXECUTE>')));
+    });
+
+    test('Agent 契约与「本轮只此一条」不冲突：记忆步骤写明合并的 op 与漏读兜底', () {
+      const lv1 = AgentLv1PromptFormat();
+      final note = lv1.memoryNote().join('\n');
+      expect(note, contains('op=set'), reason: '记忆步骤必须说明合并的 op');
+      expect(note, contains('只此一次调用'));
+      expect(note, isNot(contains('本轮历史只此一条')));
+      expect(AgentLv1PromptFormat.memoryEditLine, contains('op=set'));
+      expect(AgentLv1PromptFormat.historyContract.join('\n'), contains('op=set'));
+      expect(
+        AgentLv1PromptFormat.historyContract.join('\n'),
+        contains('range entry'),
+      );
+      expect(lv1.userExecuteNote.join('\n'), contains('op=set'));
+
+      final lv2 = const AgentLv2PromptFormat().systemHead.join('\n');
+      expect(lv2, contains('op=set per range'));
+      expect(lv2, contains('每个目标区间'));
+
+      // 合并指令自带「会话里还没历史全文时先读一次」的兜底（漏读流程也能锚定）。
+      final directive = memoryMergeAgentDirectiveLines(
+        planMemoryMerge(memoryText: memoryText, tier: 5, newRoundIndex: 17),
+      ).join('\n');
+      expect(directive, contains('先调用一次 narrchat_readHistory'));
+      expect(directive, contains('不要重复读取'));
     });
   });
 }

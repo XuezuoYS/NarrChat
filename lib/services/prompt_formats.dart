@@ -39,6 +39,7 @@ library;
 
 import '../utils/memory_entry_format.dart';
 import 'agent/state/state_tool_names.dart';
+import 'memory_merge_planner.dart';
 
 /// 一种生成模式的「格式生成要求」规格。
 abstract class PromptFormatSpec {
@@ -64,6 +65,12 @@ abstract class PromptFormatSpec {
 
   /// 用户消息【指令执行】段（后置词之后、收尾之前）。
   List<String> get userExecuteNote;
+
+  /// 本轮记忆总结合并指令（注入用户消息）。
+  ///
+  /// 默认空实现：Agent 档位的合并指令由记忆 / 维护阶段的帧指令承载
+  /// （见 `agent_round_runner.dart`），只有 Chat 走用户消息注入。
+  List<String> memoryMergeUserNote(MemoryMergePlan? plan) => const [];
 }
 
 /// Chat 模式的格式生成要求：二级标题区块纪律、状态快照规则、
@@ -177,7 +184,9 @@ class ChatPromptFormat implements PromptFormatSpec {
       '「轮次」「时间」「记忆内容」三者必须绑定在一条内，'
       '严禁拆行、严禁分块、严禁只写其中一项。\n'
       '- 「轮次」写本轮轮号的**裸数字**（如 34），不要写「第34轮」。\n'
-      '- 从第 1 轮到本轮，每一轮都必须保留一条记忆条目，'
+      '- 从第 1 轮到本轮，每一轮都必须被一条记忆条目覆盖'
+      '（单轮条目 = 一条一轮；合并区间条目 = 一条覆盖多轮，'
+      '仅按下方【记忆总结·轮次合并】的档位规则生成），'
       '条目按轮次从小到大顺序排列、不得缺轮。\n'
       '- 每条条目的「时间」必须使用该轮 `## 当前时间` 的内容'
       '（剧情内时间），不得使用真实日期；写法沿用历史条目的时间写法'
@@ -185,10 +194,12 @@ class ChatPromptFormat implements PromptFormatSpec {
       '- 「记忆内容」用一句话概括该轮发生的核心事件与关键进展；'
       '若该轮无重要事件则写「无重要事件」。\n'
       '- 轮次增多时可压缩、精简旧条目的措辞以控制篇幅，'
-      '但不得删除任何轮次条目、不得调换顺序、不得将多条合并为一条。\n'
+      '但不得删除任何轮次条目、不得调换顺序；'
+      '合并只按【记忆总结·轮次合并】的档位规则执行。\n'
       '- 上一轮 AI 返回（最后一条 assistant 消息）中的 `## 记忆总结`'
-      '为已确认的历史记忆，必须完整继承并在此基础上追加本轮条目，'
-      '不得凭空改写、丢失或重排。\n'
+      '为已确认的历史记忆，必须完整继承并在此基础上追加本轮条目；'
+      '按档位规则合并时只改写被合并的那几行，'
+      '不得凭空改写、丢失或重排其它条目。\n'
       '$kMemoryEntryFormatPrecedence';
 
   static const String memoryFormatUserNote =
@@ -196,7 +207,8 @@ class ChatPromptFormat implements PromptFormatSpec {
       '`$kMemoryEntryFormat` '
       '逐轮输出：每条一行（以 `- ` 列表符开头），'
       '轮次、时间、记忆内容三者绑定在一条内；'
-      '从第 1 轮至本轮每轮一条，'
+      '从第 1 轮至本轮每轮都要有覆盖'
+      '（合并区间条目按【记忆总结·轮次合并】的档位规则生成），'
       '时间一律使用该轮 `## 当前时间`（详见系统指令【记忆总结格式】）。';
 
   @override
@@ -250,6 +262,115 @@ class ChatPromptFormat implements PromptFormatSpec {
             '`## 剧情演绎` 应充分推进剧情，其余区块按要求依次给出。'
             '立即从 `## 剧情演绎` 开始输出。',
       ];
+
+  /// 本轮记忆合并指令只对**输出记忆区块**的 Chat 形态注入；
+  /// Lv.1（[includeMemory] = false）继承本类但自动为空白
+  /// （其合并指令由记忆阶段帧承载）。
+  @override
+  List<String> memoryMergeUserNote(MemoryMergePlan? plan) =>
+      includeMemory ? memoryMergeDirectiveLines(plan) : const [];
+}
+
+/// 记忆总结「轮次合并」的**策略文案**（跨模式共享，单一真源）。
+///
+/// [tier] = 本书 `Book.memorySummaryRounds`（0 = 关闭，5 / 10 = 每个合并项
+/// 包含的轮次数；受支持取值见 `Book.memorySummaryRoundTiers`）。由
+/// [PromptSections.buildSystemPrompt] 按档位注入系统指令：
+/// - 档位 0：明确「不主动合并、已有区间条目原样保留」；
+/// - 档位 > 0：给出合并行格式（[kMemoryMergedEntryFormat]）、`2×档位` 触发规则、
+///   已合并条目冻结、本轮条目不并入、用户显式要求优先。
+///
+/// 合并算法真源 = `lib/services/memory_merge_planner.dart`；本函数只负责文案。
+List<String> memoryMergePolicyLines(int tier) {
+  if (tier <= 0) {
+    return const [
+      '- [Memory merge · off] The tier is 0: do NOT merge memory entries '
+          '(keep one entry per round). Keep any existing range entry EXACTLY as '
+          'it is — never rewrite, split or drop it.',
+      '- 【记忆总结·轮次合并】档位 0（关闭）：不要主动合并记忆条目，保持每轮一条；'
+          '历史中已有的合并条目（区间写法）原样保留，不改写、不拆分、不删除。',
+    ];
+  }
+  final cap = 2 * tier;
+  return [
+    '- [Memory merge · tier $tier] The memory section keeps one entry per '
+        'round, but the UNMERGED entries (single-round entries not covered by '
+        'any range entry) must never exceed $cap (= 2 × $tier). Once they '
+        'reach $cap, rewrite the OLDEST $tier of them as ONE range entry '
+        '`$kMemoryMergedEntryFormat` (rounds and both times filled in; '
+        '{记忆内容} = what must be remembered from that span — length is up to '
+        'you), and repeat until fewer than $cap unmerged entries remain. '
+        'NEVER rewrite, split or reorder an existing range entry; NEVER merge '
+        'the entry of the round being written. If this round\'s user input '
+        'explicitly asks for another merge (or no merge), follow the user '
+        'instead.',
+    '- 【记忆总结·轮次合并】档位 $tier：记忆栏保持「一轮一条」，但**未合并条目**'
+        '（未被任何区间条目覆盖的单轮条目）不得超过 $cap（= 2 × $tier）条。'
+        '达到 $cap 条时，把**最旧的 $tier 条**未合并条目合并为一条区间条目 '
+        '`$kMemoryMergedEntryFormat`（轮次与首末时间都填实；'
+        '{记忆内容} = 这期间需要记住的事，长度不限），'
+        '并重复到剩余未合并条目少于 $cap 条为止；'
+        '已合并条目一律不改写、不拆分、不重排，'
+        '**本轮正在写的那一条永不并入区间**。'
+        '若本轮用户输入明确要求别的合并方式（或要求不要合并），以用户要求为准。',
+  ];
+}
+
+/// 待合并区间的逐条清单（Chat 指令与 Agent 指令共用同一形状）。
+List<String> _mergeRangeLines(MemoryMergePlan plan) => [
+      for (final r in plan.ranges)
+        '  - 第 ${r.startRound}~${r.endRound} 轮（${r.roundCount} 条）合并为一行：'
+            '`${memoryMergedEntryTemplate(
+              startRound: r.startRound,
+              endRound: r.endRound,
+              startTime: r.startTime,
+              endTime: r.endTime,
+            )}`',
+    ];
+
+/// **Chat 模式**的本轮合并指令：把待合并区间写进 `## 记忆总结` 区块。
+///
+/// 由 [ChatPromptFormat.memoryMergeUserNote] 注入用户消息（无动作时返回空列表；
+/// Agent 档位由各阶段帧指令承载，不用本函数）。
+List<String> memoryMergeDirectiveLines(MemoryMergePlan? plan) {
+  if (plan == null || !plan.hasAction) return const [];
+  return [
+    '【本轮记忆合并】本轮必须完成以下合并，其余条目一字不改：',
+    ..._mergeRangeLines(plan),
+    '{记忆内容} 写成能记住这期间关键事件与因果的内容（长度不限）。'
+        '被合并的那几行整行替换为上面这一行，`## 记忆总结` 的其它行逐字保留、'
+        '顺序不变。若本轮【用户输入内容】明确要求别的合并方式（或要求不要合并），'
+        '以用户要求为准，不做上面的默认合并。',
+  ];
+}
+
+/// **Agent 档位**（Lv.1 / Lv.2）的本轮合并指令：给出锚定式编辑的落地手法。
+///
+/// [kEditHistoryToolName] 一次调用即可同时完成「合并」与「追加本轮条目」：
+/// 每个区间一条 `op=set`（`before` = 该区间的 T 行原文，用 `\n` 连接、
+/// 从读取结果逐字复制），最后一条 `op=append` 追加本轮条目。
+List<String> memoryMergeAgentDirectiveLines(MemoryMergePlan? plan) {
+  if (plan == null || !plan.hasAction) return const [];
+  return [
+    '- [Memory merge · tools] Apply these merges with '
+        '$kEditHistoryToolName BEFORE anything else (every other line stays '
+        'byte-identical); the ranges and their target lines are:',
+    ..._mergeRangeLines(plan),
+    '  Use ONE op=set per range: `before` = that range\'s entry lines copied '
+        'VERBATIM from the $kReadHistoryToolName result (joined with \\n), '
+        '`newLine` = the merged line above. Then append this round\'s entry as '
+        'usual (op=append) — one call may carry all of it. If the '
+        '`<memorySummary>` block is NOT in this conversation yet, call '
+        '$kReadHistoryToolName ONCE first (do NOT re-read when it is already '
+        'there). '
+        '【本轮记忆合并】每个区间一条 op=set：`before` = 该区间各轮条目原文'
+        '（用 \\n 连接，从 $kReadHistoryToolName 的结果里逐字复制），'
+        '`newLine` = 上面的合并行；随后照常 op=append 追加本轮条目，'
+        '以上可以放在同一次调用里。**若会话里还没有 `<memorySummary>` 全文，'
+        '先调用一次 $kReadHistoryToolName**（已在上下文中就不要重复读取）。'
+        '{记忆内容} 写成能记住这期间关键事件与因果的'
+        '内容（长度不限）。',
+  ];
 }
 
 /// Agent 档位通用规则：**思考（reasoning / thinking）一律用英文书写**。
@@ -280,6 +401,9 @@ const List<String> agentReasoningRules = [
 ///   （关键事件 / 出场角色 / **本轮结束**时的剧情内时间），文本不上屏；
 /// - 记忆阶段（[memoryNote]）：按大纲用 [kEditHistoryToolName] 追加
 ///   **恰好一条**本轮条目（`op=append`），单独一帧、只调工具、不输出文本；
+///   档位 > 0 且本轮指令要求合并时，**同一次调用**再加每个区间一条 `op=set`
+///   （锚点取自准备阶段读到的 `<memorySummary>`，见
+///   [memoryMergeAgentDirectiveLines]）；
 /// - 正文阶段（[storyNote]）：按大纲输出 5 个区块，**禁止**输出
 ///   `## 记忆总结`（该区块只以工具结果形式出现）；
 /// - 维护回合降级为**兜底**（仅当记忆条目未落地时才补写），不再是每轮必发。
@@ -308,15 +432,18 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
   /// 记忆阶段的编辑行（**单行**）：怎么调 [kEditHistoryToolName]。
   ///
   /// 记忆阶段指令与执行器（`agent_round_runner.dart`）的修复指令共用本行，
-  /// 改名即同时改两处文案口径。
+  /// 改名即同时改两处文案口径。「合并」的 op 只在**本轮指令要求时**才加
+  /// （见 [memoryMergePolicyLines] / [memoryMergeAgentDirectiveLines]）。
   static const String memoryEditLine =
       'Call $kEditHistoryToolName with op=append and EXACTLY ONE entry: '
       '`$kMemoryEntryFormat` — {轮次} = this round as a bare number; '
       '{时间} = the end-of-round in-story time of your outline (the story\'s '
-      '`## 当前时间` must match it). '
+      '`## 当前时间` must match it). Add ONE op=set per range ONLY when this '
+      'round\'s instructions require a merge (in the SAME call). '
       '用 $kEditHistoryToolName 的 op=append 追加**恰好一条**本轮记忆条目'
       '（{轮次} = 本轮轮号（裸数字）；{时间} = 大纲里本轮结束时的剧情内时间，'
-      '正文 `## 当前时间` 必须与之一致）。';
+      '正文 `## 当前时间` 必须与之一致）；'
+      '仅当本轮指令要求合并时，才在**同一次调用**里为每个区间加一条 op=set。';
 
   /// 准备阶段指令（英文要求在前、中文概述在后，与维护轮指令同一形态）。
   ///
@@ -349,10 +476,13 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
   List<String> memoryNote() => [
         '[Memory FIRST · tool call only] This turn emits NO text; the story '
             'comes in the NEXT step. $memoryEditLine '
-            'This is the ONLY history edit for this round.',
+            'This is the ONLY history CALL for this round — its ops are one '
+            'op=append plus (only when the instructions require a merge) the '
+            'merge op=set list.',
         '',
         '【记忆阶段】本回合**只调工具、不输出任何文本**（正文在下一步）：'
-            '$memoryEditLine 本轮历史只此一条。',
+            '$memoryEditLine 本轮历史**只此一次调用**——其中的 op 为「追加一条」，'
+            '外加（仅当指令要求合并时）各区间对应的 op=set。',
       ];
 
   /// 正文阶段指令（5 区块、禁止 `## 记忆总结`）。
@@ -394,13 +524,19 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
         'memory entry with ONE $kEditHistoryToolName call (op=append): exactly '
         'one entry `$kMemoryEntryFormat` ({轮次} = this round as a bare number; '
         '{时间} = the outline\'s end-of-round in-story time — the story\'s '
-        '`## 当前时间` must match it). Do it in its own turn: that turn carries '
-        'the tool call ONLY — no text at all. The history section accepts NO '
-        'op=noChange; a missing or duplicated entry is a failure. '
+        '`## 当前时间` must match it). When this round\'s instructions require a '
+        'memory merge (tier > 0), the SAME call also rewrites each target range '
+        'as one range entry — one op=set per range, `before` = that range\'s '
+        'entry lines copied VERBATIM from the read result. Do it in its own '
+        'turn: that turn carries the tool call ONLY — no text at all. The '
+        'history section accepts NO op=noChange; a missing or duplicated entry '
+        'is a failure. '
         '【第二步·记忆先写】正文**之前**先用 $kEditHistoryToolName 写本轮记忆条目'
         '（op=append）：**恰好一条** `$kMemoryEntryFormat`'
         '（{轮次} = 本轮轮号（裸数字）；{时间} = 大纲里本轮结束时的剧情内时间，'
         '正文 `## 当前时间` 必须与之一致）；'
+        '**本轮指令要求合并时**，同一次调用还要把每个目标区间改写成一条合并条目'
+        '——每个区间一条 op=set，`before` = 该区间条目原文（从读取结果逐字复制）。'
         '单独一回合完成，该回合**只调工具、不输出任何文本**。'
         '历史栏**不接受** op=noChange；漏写或重复即失败。',
     kMemoryEntryFormatPrecedence,
@@ -435,7 +571,9 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
             'the past rounds) and settle THIS round\'s outline (key events, '
             'characters and the end-of-round in-story time). Then write the '
             'memory entry with ONE $kEditHistoryToolName call (op=append, '
-            'exactly one entry, date = the outline\'s end-of-round time). Only '
+            'exactly one entry, date = the outline\'s end-of-round time; plus '
+            'the merge op=set list when this round\'s instructions require a '
+            'merge). Only '
             'then write the STORY: output ${_sectionsArrow()} (five sections; '
             'do NOT output `## 记忆总结`, do not echo the history tool result, '
             'do not restate these instructions). '
@@ -445,7 +583,8 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
         '【指令执行】[Agent 模式] 先调用 $kReadHistoryToolName **一次**'
             '（正文必须基于以往轮次的历史），并定下本轮大纲（关键事件、出场角色、'
             '本轮结束时的剧情内时间）；随后先用 $kEditHistoryToolName 写记忆条目'
-            '（op=append，**恰好一条**，日期 = 大纲里本轮结束时的剧情内时间）；'
+            '（op=append，**恰好一条**，日期 = 大纲里本轮结束时的剧情内时间；'
+            '若本轮指令要求合并，同一次调用再加每个区间一条 op=set）；'
             '最后才输出正文五个区块：${_sectionsArrow()}。'
             '**不要**输出 `## 记忆总结`、不要复述历史工具结果、不要复述指令。'
             '从 $kReadHistoryToolName 开始，再到历史编辑，'
@@ -459,7 +598,7 @@ class AgentLv1PromptFormat extends ChatPromptFormat {
 ///
 /// 状态工具契约引用的工具名见 [stateToolNames]（真源
 /// `lib/services/agent/state/state_tool_names.dart`，与 `state_tools.dart` 一致）。
-class AgentLv2PromptFormat implements PromptFormatSpec {
+class AgentLv2PromptFormat extends PromptFormatSpec {
   const AgentLv2PromptFormat();
 
   /// Agent 档位不写等级：模式标记统一为 `Agent`。
@@ -541,13 +680,18 @@ class AgentLv2PromptFormat implements PromptFormatSpec {
           '`$kMemoryEntryFormat` via $kEditHistoryToolName '
           '(op=append, {轮次} = this round as a bare number, {时间} = the '
           '`## 当前时间` value of THIS round\'s story — keep the entry to ONE '
-          'short sentence). Time is '
+          'short sentence). When this round\'s instructions require a memory '
+          'merge, that SAME call also rewrites each target range as one range '
+          'entry (one op=set per range, anchor copied from the history read '
+          'result). Time is '
           'part of the story body: there is NO time tool. op=noChange must '
           'carry a `reason` and is NOT accepted for history; silently omitting '
           'a section is a failure, not a no-op.',
       '- 【每轮义务】每轮必须用 $kEditHistoryToolName 写出**恰好一条**本轮记忆条目 '
           '`$kMemoryEntryFormat`（op=append；{轮次} = 本轮轮号（裸数字）；'
           '{时间} = 本轮正文 `## 当前时间` 的取值；一句话概括，别写长）。'
+          '**本轮指令要求合并时**，同一次调用还要把每个目标区间改成一条合并条目'
+          '（每个区间一条 op=set，锚点从历史读取结果逐字复制）。'
           '时间只存在于正文里（**没有时间工具**）。op=noChange 必须附 reason，'
           '且历史栏**不接受** op=noChange；直接省略某个栏目算失败。',
       kMemoryEntryFormatPrecedence,

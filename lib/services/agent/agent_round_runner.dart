@@ -4,6 +4,7 @@ import '../../models/agent_mode_level.dart';
 import '../../utils/memory_entry_format.dart';
 import '../ai_response_parser.dart';
 import '../ai_service.dart';
+import '../memory_merge_planner.dart';
 import '../prompt_formats.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
@@ -292,6 +293,7 @@ class AgentRoundRunner {
     required this.tools,
     required this.workingCopy,
     required this.profile,
+    this.memoryMergePlan,
     this.chaining = false,
     this.supportsToolChoice = true,
     this.supportsThinkingEffort = true,
@@ -322,6 +324,13 @@ class AgentRoundRunner {
 
   /// 档位档案（决定正文契约、参与缺口的栏目、是否走 Lv.1 四步流程）。
   final AgentModeProfile profile;
+
+  /// 本轮应执行的「记忆总结轮次合并」动作（档位 0 / 无动作时为 null）。
+  ///
+  /// 由调用方在生成前算定（输入 = 上一轮落库的记忆总结 + 本书档位，见
+  /// `memory_merge_planner.dart`）：Lv.1 并入记忆阶段帧指令并计入
+  /// [_memorySatisfied] 门槛；Lv.2 并入维护轮问题清单；终态未落地转常驻警告。
+  final MemoryMergePlan? memoryMergePlan;
 
   final bool chaining;
   bool supportsToolChoice;
@@ -423,7 +432,13 @@ class AgentRoundRunner {
     // 正文之后仍存在缺口（Lv.1 多为记忆未落地 / 校验失败 / 截断）→ 维护轮兜底；
     // 合规流程下缺项为空 → **零额外请求**。
     var gaps = _gaps(story);
-    final problems = [..._modelProblems, for (final g in gaps) g.modelText];
+    final problems = [
+      ..._modelProblems,
+      for (final g in gaps) g.modelText,
+      // 档位驱动的记忆合并：正文之后仍未落地 → 并入维护轮问题清单
+      //（即使无缺口，也会因此强制发起一次维护轮）。
+      ..._pendingMemoryMergeLines(),
+    ];
     final needStateTurn = story.isNotEmpty && problems.isNotEmpty;
     if (needStateTurn) {
       await _runStateStage(
@@ -446,6 +461,12 @@ class AgentRoundRunner {
     }
     for (final g in _gaps(story)) {
       _warnings.add(g.uiText);
+    }
+    // 记忆合并终态仍未落地 → 常驻警告（不阻断本轮正文）。
+    final mergePlan = memoryMergePlan;
+    if (mergePlan != null &&
+        !isMemoryMergeApplied(workingCopy.memorySummary, mergePlan)) {
+      _warnings.add(mergePlan.uiText);
     }
     // 失败提示只保留**终态仍未修复**的栏目（`failedSections` 记录的正是
     // 「该栏目最后一次尝试失败」，同栏目后续成功会自动撤销登记）；
@@ -550,9 +571,10 @@ class AgentRoundRunner {
     _adopted = '';
     _adoptedByHeading = false;
     _lastFallback = '';
-    // 历史全文已在准备阶段交给模型（写正文不改变状态）：本阶段与维护阶段的
-    // 重复读取一律被拒，锚点用对话中已有的 `<memorySummary>` 块。
-    _sectionsProvided.add(AgentStateSection.memorySummary);
+    // 历史锚点来源：**准备阶段已读过**（`_noteSectionsProvided` 已登记）时，本阶段
+    // 与维护阶段的重复读取一律被拒，锚点用对话中已有的 `<memorySummary>` 块；
+    // 模型**跳步漏读**时不在登记之列，本阶段仍允许读一次（[memoryMergeAgentDirectiveLines]
+    // 会点名这一情形）——否则「合并」这类需要逐字锚点的动作将无从落地。
     // 准备阶段若已把本轮条目落地（模型跳步抢写、或上一帧的编辑已生效），
     // **直接跳过本阶段**：再发一帧 `required` 只会逼模型重复 `op=append`
     // ——第二条条目会让 applyEdits 整栏失败并多烧两帧修复。
@@ -584,33 +606,55 @@ class AgentRoundRunner {
   }
 
   /// 记忆阶段完成判定（应用侧事实）：历史栏被真实编辑过、当前没有失败登记、
-  /// 且**恰好一条**本轮（轮次 = N）条目。
+  /// **恰好一条**本轮（轮次 = N）条目，且档位要求的合并已落地。
   bool _memorySatisfied() {
     const section = AgentStateSection.memorySummary;
-    return workingCopy.touchedSections.contains(section) &&
-        !workingCopy.failedSections.contains(section) &&
-        memoryEntryCount(
-              workingCopy.memorySummary,
-              workingCopy.roundIndex,
-            ) ==
-            1;
+    if (!workingCopy.touchedSections.contains(section) ||
+        workingCopy.failedSections.contains(section) ||
+        memoryEntryCount(workingCopy.memorySummary, workingCopy.roundIndex) != 1) {
+      return false;
+    }
+    final plan = memoryMergePlan;
+    return plan == null ||
+        isMemoryMergeApplied(workingCopy.memorySummary, plan);
+  }
+
+  /// 尚未落地的「记忆合并」指令行（无动作 / 已落地 → 空）。
+  ///
+  /// Lv.1 记忆阶段帧与 Lv.2 维护轮问题清单共用同一判定：
+  /// 以**工作副本当前文本**为准，模型一旦合并成功即不再重复要求。
+  List<String> _pendingMemoryMergeLines() {
+    final plan = memoryMergePlan;
+    if (plan == null || !plan.hasAction) return const [];
+    if (isMemoryMergeApplied(workingCopy.memorySummary, plan)) return const [];
+    return memoryMergeAgentDirectiveLines(plan);
   }
 
   /// 记忆阶段指令：**正文取自 [AgentLv1PromptFormat.memoryNote]**（与系统契约、
-  /// 用户消息同一真源），加一行阶段说明与失败重试的补充。
+  /// 用户消息同一真源），加一行阶段说明、档位驱动的合并指令，以及失败重试的补充。
   Map<String, dynamic> _memoryDirective({required bool first}) {
     const format = AgentLv1PromptFormat();
     final note = format.memoryNote().join('\n');
+    final mergeLines = _pendingMemoryMergeLines();
+    final entryWritten = memoryEntryCount(
+          workingCopy.memorySummary,
+          workingCopy.roundIndex,
+        ) ==
+        1;
     final lead = first
         ? '[History entry · before the story] Your outline for this round is '
             'already in this conversation. '
             '记忆阶段（正文之前）：本轮大纲已在上方。'
-        : '[History entry · still missing] The history section still does not '
-            'hold this round\'s single entry. '
-            '历史栏仍没有本轮那一条。';
+        : entryWritten
+            ? '[History entry · merge still missing] This round\'s entry is in '
+                'place, but the memory merge required above is NOT done yet. '
+                '历史栏已有本轮条目，但上面要求的合并还没完成。'
+            : '[History entry · still missing] The history section still does '
+                'not hold this round\'s single entry. '
+                '历史栏仍没有本轮那一条。';
     return {
       'role': 'user',
-      'content': '$lead\n$note',
+      'content': [lead, note, ...mergeLines].join('\n'),
     };
   }
 
@@ -706,9 +750,11 @@ class AgentRoundRunner {
       pending = List<String>.from(_modelProblems);
       if (pending.isEmpty) {
         final gaps = _gaps(_storyForChecks);
-        if (gaps.isEmpty) return;
         pending = [for (final g in gaps) g.modelText];
       }
+      // 档位要求的记忆合并仍未落地 → 继续修复帧（与缺口同一循环、同一帧数上限）。
+      pending.addAll(_pendingMemoryMergeLines());
+      if (pending.isEmpty) return;
       // 只要清单还有缺项就继续下一帧修复：模型「空手帧」（只回文本/只回读
       // 取器）不再提前结束整轮——记忆/角色这类缺项应得到补修机会，帧数
       // 上限（maxStateFrames）兜底。

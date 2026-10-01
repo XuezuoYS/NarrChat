@@ -152,6 +152,58 @@ void main() {
     });
   });
 
+  group('合并条目（模型面向形态）与转义容错', () {
+    test('记忆总结轮次合并的标准形态：轮次区间 ` - ` + 时间区间 ` ~ `', () {
+      final e = parseMemoryEntries(
+        '- 15 - 20 | 仙历十四年五月二十日 ~ 仙历十四年七月八日 | 这期间的要点。',
+      ).single;
+      expect(e.round, 15);
+      expect(e.roundEnd, 20);
+      expect(e.isMerged, isTrue);
+      expect(e.roundSeparator, '-');
+      expect(e.roundLabel, '15-20');
+      expect(e.time, '仙历十四年五月二十日 ~ 仙历十四年七月八日',
+          reason: '时间区间整段作为一个字段保留');
+      expect(e.content, '这期间的要点。');
+      expect(memoryEntryCount('- 15 - 20 | 甲 ~ 乙 | 摘要。', 17), 1);
+    });
+
+    test('模板渲染与解析互逆（骨架行可直接被解析层识别）', () {
+      final line = memoryMergedEntryTemplate(
+        startRound: 8,
+        endRound: 12,
+        startTime: '第一天 清晨',
+        endTime: '第五天 黄昏',
+      );
+      expect(line, '- 8 - 12 | 第一天 清晨 ~ 第五天 黄昏 | {记忆内容}');
+      final e = parseMemoryEntries(line).single;
+      expect(e.round, 8);
+      expect(e.roundMax, 12);
+      expect(e.time, '第一天 清晨 ~ 第五天 黄昏');
+    });
+
+    test('被模型转义的波浪线：轮次区间照常识别，时间/内容还原为字面量', () {
+      final e = parseMemoryEntries(
+        r'- 8\~12 | 第一天 清晨 \~ 第五天 黄昏 | 要点：\*重要\* 事件。',
+      ).single;
+      expect(e.round, 8);
+      expect(e.roundEnd, 12);
+      expect(e.roundSeparator, '~', reason: '徽标不得显示 `8\\~12`');
+      expect(e.roundLabel, '8~12');
+      expect(e.time, '第一天 清晨 ~ 第五天 黄昏');
+      expect(e.content, '要点：*重要* 事件。');
+      expect(memoryEntryCount(r'- 8\~12 | 甲 | 乙。', 10), 1);
+    });
+
+    test('unescapeMemoryEntryText 只还原转义标点，路径等原样保留', () {
+      expect(unescapeMemoryEntryText(r'a\~b'), 'a~b');
+      expect(unescapeMemoryEntryText(r'a\*\*b'), 'a**b');
+      expect(unescapeMemoryEntryText(r'C:\tmp\new'), r'C:\tmp\new');
+      expect(unescapeMemoryEntryText(r'a\\b'), r'a\b');
+      expect(unescapeMemoryEntryText('无转义'), '无转义');
+    });
+  });
+
   group('unmatchedMemoryLines', () {
     test('条目行（含合并区间）不进兜底；杂散行按序保留原文', () {
       const text = '- 1 | 第一天 | 初入宗门。\n'

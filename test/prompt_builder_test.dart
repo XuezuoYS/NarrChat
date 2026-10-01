@@ -201,7 +201,8 @@ void main() {
       final user = buildBundle().userPrompt;
       expect(user, contains('【记忆总结格式】'));
       expect(user, contains(kMemoryEntryFormat));
-      expect(user, contains('从第 1 轮至本轮每轮一条'));
+      expect(user, contains('从第 1 轮至本轮每轮都要有覆盖'));
+      expect(user, contains('合并区间条目'));
     });
 
     test('用户提示词包含本书文笔要求描述，且不含文笔参考段落', () {

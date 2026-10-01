@@ -1,6 +1,7 @@
 import '../models/book.dart';
 import '../models/mod.dart';
 import '../models/round.dart';
+import 'memory_merge_planner.dart';
 import 'prompt_formats.dart';
 
 /// 共享提示词模块：各生成模式（Chat / Agent Lv.1 / Agent Lv.2）**共用**的
@@ -116,7 +117,7 @@ class PromptSections {
   /// Markdown 兼容 → 推荐行动格式（共享输出契约）→
   /// [PromptFormatSpec.systemAfterIdentity] → Mod 系统提示词 →
   /// 书籍 / 角色层级与角色类别（含【角色状态完整性】）/ 世界书（含 Mod 世界书）/
-  /// 文笔 → [PromptFormatSpec.systemTail] → 共性收尾 [endPrompt]。
+  /// 文笔 → [PromptFormatSpec.systemTail] → 记忆合并策略 → 共性收尾 [endPrompt]。
   String buildSystemPrompt({
     required Book book,
     required String worldBookEntries,
@@ -231,6 +232,11 @@ class PromptSections {
     // —— Chat or Agent 槽位 3 ——
     _writeSlot(buf, format.systemTail);
 
+    // —— 共享段：记忆总结「轮次合并」策略（三个模式一致；档位 0 = 不合并）——
+    // 文案真源 = `prompt_formats.dart` 的 [memoryMergePolicyLines]；档位取自
+    // 本书配置（`Book.memorySummaryRounds`）。
+    _writeSlot(buf, memoryMergePolicyLines(book.memorySummaryRounds));
+
     // —— 共性收尾 ——
     buf.writeln(endPrompt);
     return buf.toString();
@@ -241,8 +247,8 @@ class PromptSections {
   ///
   /// 顺序：[PromptFormatSpec.userHead] → 前置词（书籍 + Mod，标签界定区域）→
   /// 上轮时间 → 文笔要求 → 用户输入内容（标签 + 空行界定边界）→
-  /// 后置词（标签界定区域）→ [PromptFormatSpec.userExecuteNote] →
-  /// 共性收尾 [endPrompt]。
+  /// 后置词（标签界定区域）→ [PromptFormatSpec.memoryMergeUserNote] →
+  /// [PromptFormatSpec.userExecuteNote] → 共性收尾 [endPrompt]。
   String buildUserPrompt({
     required Book book,
     required Round? lastRound,
@@ -308,6 +314,19 @@ class PromptSections {
     }
     buf.writeln('【后置词结束】');
     buf.writeln();
+
+    // —— 共享段：本轮记忆合并指令（仅 Chat 区块形态；Agent 由阶段帧承载）——
+    // 计划在**生成之前**算定：输入 = 上一轮落库的记忆总结全文 + 本书档位 + 本轮轮号。
+    _writeSlot(
+      buf,
+      format.memoryMergeUserNote(
+        planMemoryMerge(
+          memoryText: lastRound?.memorySummary ?? '',
+          tier: book.memorySummaryRounds,
+          newRoundIndex: (lastRound?.roundIndex ?? 0) + 1,
+        ),
+      ),
+    );
 
     // —— 槽位：模式【指令执行】——
     _writeSlot(buf, format.userExecuteNote);

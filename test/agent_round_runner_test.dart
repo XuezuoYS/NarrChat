@@ -7,6 +7,7 @@ import 'package:narrchat/services/agent/agent_round_runner.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/memory_merge_planner.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 auto /
@@ -57,6 +58,7 @@ void main() {
     required AgentStateWorkingCopy copy,
     required List<Object> script,
     AgentModeLevel level = AgentModeLevel.lv2,
+    MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
     bool supportsToolChoice = true,
     bool supportsThinkingEffort = true,
@@ -101,6 +103,7 @@ void main() {
       tools: buildStateTools(copy, sections: profile.toolSections),
       workingCopy: copy,
       profile: profile,
+      memoryMergePlan: memoryMergePlan,
       chaining: chaining,
       supportsToolChoice: supportsToolChoice,
       supportsThinkingEffort: supportsThinkingEffort,
@@ -1556,6 +1559,324 @@ void main() {
       ),
       throwsA(isA<AiCancelledException>()),
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // 记忆总结「轮次合并」（档位驱动）
+  // ---------------------------------------------------------------------------
+
+  /// 上一轮（第 9 轮）的记忆总结：散条目 1..9 → 档位 5 时第 10 轮达到 2T。
+  const mergeMemoryText = '- 1 | t1 | 第1轮。\n'
+      '- 2 | t2 | 第2轮。\n'
+      '- 3 | t3 | 第3轮。\n'
+      '- 4 | t4 | 第4轮。\n'
+      '- 5 | t5 | 第5轮。\n'
+      '- 6 | t6 | 第6轮。\n'
+      '- 7 | t7 | 第7轮。\n'
+      '- 8 | t8 | 第8轮。\n'
+      '- 9 | t9 | 第9轮。';
+  const mergeLastRound = Round(
+    id: 1,
+    bookUuid: 'b1',
+    roundIndex: 9,
+    worldState: '- 地点：青云宗\n- 天气：晴',
+    characterState: '# 主角\n## 林远\n- 气血：80',
+    memorySummary: mergeMemoryText,
+    currentTime: 't9',
+  );
+
+  /// 待合并区间 1-5 的原文（`op=set` 的多行 `before`）。
+  const mergeSourceLines = '- 1 | t1 | 第1轮。\n'
+      '- 2 | t2 | 第2轮。\n'
+      '- 3 | t3 | 第3轮。\n'
+      '- 4 | t4 | 第4轮。\n'
+      '- 5 | t5 | 第5轮。';
+
+  AgentStateWorkingCopy mergeCopy() => AgentStateWorkingCopy(
+        roundIndex: 10,
+        lastRound: mergeLastRound,
+        categoryNames: const ['主角'],
+      );
+
+  MemoryMergePlan mergePlan() => planMemoryMerge(
+        memoryText: mergeMemoryText,
+        tier: 5,
+        newRoundIndex: 10,
+      );
+
+  /// 记忆帧：一次调用同时完成「合并 1-5」与「追加第 10 轮条目」。
+  AiCallResult mergeHistoryTurn(String id) => AiCallResult(
+        content: '',
+        toolCalls: [
+          editCall(id, AgentStateSection.memorySummary, [
+            {
+              'op': 'set',
+              'before': mergeSourceLines,
+              'newLine': '- 1 - 5 | t1 ~ t5 | 前五轮要点。',
+            },
+            {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
+          ]),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_merge',
+      );
+
+  /// 只追加本轮条目、**不合并**的记忆帧。
+  AiCallResult appendOnlyTurn(String id) => AiCallResult(
+        content: '',
+        toolCalls: [
+          editCall(id, AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
+          ]),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_append',
+      );
+
+  String itemsText(List<Map<String, dynamic>> items) =>
+      items.map((i) => '${i['content']}').join('\n');
+
+  test('Lv.1：记忆阶段一帧内合并 1-5 + 追加本轮条目 → 满足门槛、零警告', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      memoryMergePlan: mergePlan(),
+      script: [lv1PrepareTurn(), mergeHistoryTurn('m1'), lv1StoryTurn()],
+    );
+
+    final result = await run(h.runner);
+
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.memory, AgentStage.story],
+      reason: '合并落地即满足记忆阶段门槛，不重复发帧',
+    );
+    final memoryItems = itemsText(h.requests[1].items);
+    expect(memoryItems, contains('【本轮记忆合并】'));
+    expect(memoryItems, contains('- 1 - 5 | t1 ~ t5 | {记忆内容}'));
+    expect(memoryItems, contains('op=set'));
+
+    expect(copy.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
+    expect(copy.memorySummary, isNot(contains('- 1 | t1 |')), reason: '被合并的下限行已替换');
+    expect(memoryEntryCount(copy.memorySummary, 10), 1);
+    expect(memoryEntryCount(copy.memorySummary, 3), 1);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：只追加不合并 → 记忆阶段重试（提示合并未完成），帧数用尽后常驻警告', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      memoryMergePlan: mergePlan(),
+      maxStateFrames: 1,
+      script: [
+        lv1PrepareTurn(),
+        appendOnlyTurn('h1'),
+        lv1EmptyTurn('（模型没动）'),
+        lv1EmptyTurn('（模型仍没合并）'),
+        lv1StoryTurn(),
+        // 记忆阶段用尽后维护轮兜底一次（同样带合并指令），仍不合并 → 常驻警告。
+        lv1EmptyTurn('（维护轮仍没合并）'),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    final memoryStages =
+        h.requests.where((r) => r.stage == AgentStage.memory).toList();
+    expect(memoryStages, hasLength(kAgentMaxMemoryFrames),
+        reason: '合并未落地 → 记忆帧循环到上限');
+    expect(itemsText(memoryStages[1].items), contains('合并还没完成'),
+        reason: '重试帧lead 要点明「条目已在、合并未完成」');
+    final stateStages =
+        h.requests.where((r) => r.stage == AgentStage.state).toList();
+    expect(stateStages, hasLength(1),
+        reason: '记忆阶段失败 → 维护轮兜底，且同样带合并指令');
+    expect(itemsText(stateStages.single.items), contains('【本轮记忆合并】'));
+    expect(result.warnings, contains('记忆总结未按档位（5）合并：应合并 1-5'));
+    expect(copy.memorySummary, contains('- 10 | t10 | 第十轮。'));
+    expect(copy.memorySummary, isNot(contains('- 1 - 5 |')), reason: '确实没合并');
+  });
+
+  test('Lv.2：维护轮问题清单带上合并指令，合并落地后零警告', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      memoryMergePlan: mergePlan(),
+      script: [
+        storyOnly(),
+        AiCallResult(
+          content: '',
+          toolCalls: [
+            editCall('s1_w', AgentStateSection.worldState, [
+              {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
+            ]),
+            editCall('s1_c', AgentStateSection.characterState, [
+              {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
+            ]),
+            editCall('s1_m', AgentStateSection.memorySummary, [
+              {
+                'op': 'set',
+                'before': mergeSourceLines,
+                'newLine': '- 1 - 5 | t1 ~ t5 | 前五轮要点。',
+              },
+              {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
+            ]),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_s1',
+        ),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    expect(h.requests.map((r) => r.stage).toList(),
+        [AgentStage.story, AgentStage.state]);
+    expect(itemsText(h.requests[1].items), contains('【本轮记忆合并】'));
+    expect(itemsText(h.requests[1].items), contains('- 1 - 5 | t1 ~ t5 | {记忆内容}'));
+    expect(copy.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.2：维护轮没合并 → 继续修复帧；用尽后常驻警告', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      memoryMergePlan: mergePlan(),
+      maxStateFrames: 2,
+      script: [
+        storyOnly(),
+        AiCallResult(
+          content: '',
+          toolCalls: [
+            editCall('s1_w', AgentStateSection.worldState, [
+              {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
+            ]),
+            editCall('s1_c', AgentStateSection.characterState, [
+              {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
+            ]),
+            editCall('s1_m', AgentStateSection.memorySummary, [
+              {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
+            ]),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_s1',
+        ),
+        AiCallResult(
+          content: '',
+          toolCalls: const [],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_s2',
+        ),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    final stateStages =
+        h.requests.where((r) => r.stage == AgentStage.state).toList();
+    expect(stateStages, hasLength(2),
+        reason: '合并未落地 → 维护轮继续修复（不再因「无缺口」提前返回）');
+    expect(result.warnings, contains('记忆总结未按档位（5）合并：应合并 1-5'));
+    expect(copy.memorySummary, isNot(contains('- 1 - 5 |')));
+  });
+
+  test('Lv.1：准备阶段漏读历史时，记忆阶段仍允许补读一次（合并没有锚点就落不了地）', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      memoryMergePlan: mergePlan(),
+      script: [
+        // 非合规流程：准备帧只有大纲、没读历史（无 `<memorySummary>` 锚点来源）。
+        lv1PrepareTurn(),
+        // 记忆帧 1：该栏目本轮尚未提供过 → 放行（否则合并无从锚定）。
+        AiCallResult(
+          content: '',
+          toolCalls: [readCall('m_read', AgentStateSection.memorySummary, round: 10)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_read',
+        ),
+        // 记忆帧 2：用读到的锚点合并 + 追加本轮条目。
+        mergeHistoryTurn('m1'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    final read = result.outcomes.firstWhere((o) => o.callId == 'm_read');
+    expect(read.applied, isTrue,
+        reason: '漏读的栏目必须允许补读一次，否则 op=set 没有逐字锚点');
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [
+        AgentStage.prepare,
+        AgentStage.memory,
+        AgentStage.memory,
+        AgentStage.story,
+      ],
+    );
+    expect(copy.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
+    expect(memoryEntryCount(copy.memorySummary, 10), 1);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('Lv.1：准备阶段已读过历史 → 记忆帧的重复读取仍被拒（护栏不变）', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      memoryMergePlan: mergePlan(),
+      script: [
+        lv1PrepareReadTurn('p_read'),
+        // 重复读取被拒（不消耗编辑机会），紧接着的合并帧照常落地。
+        AiCallResult(
+          content: '',
+          toolCalls: [readCall('m_read', AgentStateSection.memorySummary, round: 10)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_read2',
+        ),
+        mergeHistoryTurn('m1'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    final repeated = result.outcomes.firstWhere((o) => o.callId == 'm_read');
+    expect(repeated.applied, isFalse, reason: '已提供过全文的栏目重复读取仍被拒');
+    expect(copy.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
+    expect(result.warnings, isEmpty);
+  });
+
+  test('无待合并动作（档位 0 / 未到 2T）→ 不注入指令、不产生警告', () async {
+    final copy = mergeCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      memoryMergePlan: planMemoryMerge(
+        memoryText: mergeMemoryText,
+        tier: 0,
+        newRoundIndex: 10,
+      ),
+      script: [lv1PrepareTurn(), lv1HistoryTurn('h1', entry: '- 10 | t10 | 第十轮。'), lv1StoryTurn()],
+    );
+
+    final result = await run(h.runner);
+
+    expect(itemsText(h.requests[1].items), isNot(contains('【本轮记忆合并】')));
+    expect(result.warnings, isEmpty);
   });
 }
 
