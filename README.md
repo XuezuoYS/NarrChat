@@ -122,7 +122,7 @@
 
 ### 环境
 
-- Flutter 3.47.0+（Dart SDK `^3.12.2`），依赖见 [`pubspec.yaml`](pubspec.yaml)。
+- Flutter 3.47.0+（Dart SDK `^3.13.0`），依赖见 [`pubspec.yaml`](pubspec.yaml)。
 - 代码规范：`flutter_lints`；命名遵循小驼峰（函数 / 变量 / 文件）与大驼峰（类）。
 
 ### 常用命令
