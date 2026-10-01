@@ -17,6 +17,7 @@ import '../widgets/book_mod_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/markdown_editing_controller.dart';
+import '../widgets/memory_summary_round_selector.dart';
 import '../widgets/prompt_input_hint.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/uuid_display.dart';
@@ -25,7 +26,8 @@ import '../widgets/world_book_panel.dart';
 /// 全窗口书籍设置界面（新建 / 编辑书籍）。
 ///
 /// 6 个子模块：
-/// - 书籍概览：书名、分类、文笔要求描述（区别于文笔参考段落）、历史轮次数、全局前后置词；
+/// - 书籍概览：书名、分类、文笔要求描述（区别于文笔参考段落）、历史轮次数、
+///   记忆总结轮次合并、全局前后置词；
 /// - 角色类别与描述格式：可拖拽排序、增删、为每类设定描述格式；
 /// - 基础设定：世界观等不会变更的设定；
 /// - 世界书：关键词命中后自动注入 System Prompt；
@@ -55,6 +57,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   late final MarkdownEditingController _globalPrePrompt;
   late final MarkdownEditingController _globalPostPrompt;
   late int _historyRounds;
+  late int _memorySummaryRounds;
   late List<RoleCategory> _roleCategories;
 
   bool _isSaving = false;
@@ -69,6 +72,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   /// 避免覆盖用户进行中的输入（用户草稿优先，保存后以草稿为准）。
   final Set<TextEditingController> _dirtyControllers = {};
   bool _historyRoundsDirty = false;
+  bool _memorySummaryRoundsDirty = false;
   bool _rolesDirty = false;
 
   /// 程序化刷新守卫：区分「用户输入」与「外部（同步）写入」，
@@ -99,6 +103,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     _globalPrePrompt = MarkdownEditingController(text: b?.globalPrePrompt ?? '');
     _globalPostPrompt = MarkdownEditingController(text: b?.globalPostPrompt ?? '');
     _historyRounds = (b?.historyRounds ?? 1) < 1 ? 1 : (b?.historyRounds ?? 1);
+    // 模型已把越界档位收敛为 0（见 Book.memorySummaryRounds）。
+    _memorySummaryRounds = b?.memorySummaryRounds ?? 0;
     _roleCategories = List.of(
       b?.roleCategories ?? Constants.defaultRoleCategories,
     );
@@ -193,6 +199,9 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       if (!_historyRoundsDirty) {
         _historyRounds = book.historyRounds < 1 ? 1 : book.historyRounds;
       }
+      if (!_memorySummaryRoundsDirty) {
+        _memorySummaryRounds = book.memorySummaryRounds;
+      }
       if (!_rolesDirty) {
         _roleCategories = List.of(book.roleCategories);
       }
@@ -218,8 +227,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       globalPrePrompt: _globalPrePrompt.text,
       globalPostPrompt: _globalPostPrompt.text,
       historyRounds: _historyRounds,
-      // 本面板尚未提供该配置的编辑控件：原样带回既有档位，避免保存设置把它重置为关闭。
-      memorySummaryRounds: _book?.memorySummaryRounds ?? 0,
+      // 档位来自模型（库内脏数据已在 Book.fromMap 收敛为 0），保存即自愈库内值。
+      memorySummaryRounds: _memorySummaryRounds,
       roleHierarchy:
           Constants.joinRoleHierarchy(_roleCategories.map((c) => c.name).toList()),
       roleCategories: List.of(_roleCategories),
@@ -442,6 +451,14 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           onChanged: (v) {
             _historyRoundsDirty = true;
             setState(() => _historyRounds = v < 1 ? 1 : v);
+          },
+        ),
+        const SizedBox(height: 12),
+        MemorySummaryRoundSelector(
+          value: _memorySummaryRounds,
+          onChanged: (v) {
+            _memorySummaryRoundsDirty = true;
+            setState(() => _memorySummaryRounds = v);
           },
         ),
         const SizedBox(height: 12),

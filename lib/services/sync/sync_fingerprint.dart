@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../../models/book.dart';
+
 /// 云同步用内容指纹工具。
 ///
 /// 三向部件级合并需要**与行 id 无关、与内容强相关**的指纹：
@@ -31,7 +33,9 @@ class SyncFingerprint {
       row['global_pre_prompt'],
       row['global_post_prompt'],
       row['history_rounds'],
-      row['memory_summary_rounds'],
+      // 档位按「实际执行语义」参与比对：未支持的数值一律等同 0（见
+      // [Book.memorySummaryRounds]），避免脏数据在两台设备间造成假冲突。
+      Book.normalizeMemorySummaryRounds(row['memory_summary_rounds'] as int?),
       row['role_hierarchy'],
       row['role_hierarchy_detail'],
     ]);

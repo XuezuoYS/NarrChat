@@ -22,9 +22,19 @@ class Book {
   final String globalPostPrompt;
   final int historyRounds;
 
-  /// 记忆总结压缩轮次（每轮生成时把最近多少轮压进记忆总结）。
+  /// 「记忆总结轮次合并」受支持的档位（单一真源）：
+  /// 0 = 不开启；固定数值 = 每个合并项包含的轮次数（5 → 1-5、6-10）。
+  static const List<int> memorySummaryRoundTiers = [0, 5, 10];
+
+  /// 把库内原始值收敛为受支持档位：不属于 [memorySummaryRoundTiers] → 0。
+  static int normalizeMemorySummaryRounds(int? raw) =>
+      memorySummaryRoundTiers.contains(raw) ? raw! : 0;
+
+  /// 记忆总结轮次合并档位：0 = 不开启，5 / 10 = 每个合并项包含的轮次数。
   ///
-  /// 0 = 关闭（默认）；当前档位为 5 / 10，后续可增档，不存在负数。
+  /// 取值收敛发生在**库边界**（[fromMap] / [toMap]）：库中若存在未支持的数值
+  /// （脏数据 / 已移除的档位），读取即按 0 执行，写回一律为受支持档位。
+  /// 直接构造只接受受支持档位（UI 仅提供 0 / 5 / 10）。
   final int memorySummaryRounds;
 
   final String roleHierarchy;
@@ -58,7 +68,9 @@ class Book {
       globalPrePrompt: (map['global_pre_prompt'] as String?) ?? '',
       globalPostPrompt: (map['global_post_prompt'] as String?) ?? '',
       historyRounds: (map['history_rounds'] as int?) ?? 1,
-      memorySummaryRounds: (map['memory_summary_rounds'] as int?) ?? 0,
+      memorySummaryRounds: normalizeMemorySummaryRounds(
+        map['memory_summary_rounds'] as int?,
+      ),
       roleHierarchy: (map['role_hierarchy'] as String?) ?? '',
       roleCategories:
           Constants.decodeRoleCategories(map['role_hierarchy_detail'] as String?),
@@ -76,7 +88,7 @@ class Book {
       'global_pre_prompt': globalPrePrompt,
       'global_post_prompt': globalPostPrompt,
       'history_rounds': historyRounds,
-      'memory_summary_rounds': memorySummaryRounds,
+      'memory_summary_rounds': normalizeMemorySummaryRounds(memorySummaryRounds),
       'role_hierarchy': roleHierarchy,
       'role_hierarchy_detail': Constants.encodeRoleCategories(roleCategories),
     };

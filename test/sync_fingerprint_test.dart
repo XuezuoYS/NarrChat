@@ -266,6 +266,11 @@ void main() {
             bookRow(historyRounds: 1, memorySummaryRounds: 10))),
         reason: '5 / 10 两个档位互不相同',
       );
+      expect(
+        SyncFingerprint.bookSettings(bookRow(memorySummaryRounds: 7)),
+        SyncFingerprint.bookSettings(bookRow(memorySummaryRounds: 0)),
+        reason: '越界档位按 0 的执行语义比对，不制造假冲突',
+      );
     });
 
     test('失败条目不属于设置部件，属于轮次部件（随生成内容同步）', () {

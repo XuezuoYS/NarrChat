@@ -7,6 +7,7 @@ import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/book_settings_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
@@ -114,7 +115,7 @@ void main() {
     expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget);
   });
 
-  testWidgets('保存设置不重置面板外的配置项：记忆总结压缩轮次原样带回', (tester) async {
+  testWidgets('保存设置不重置未改动项：记忆总结轮次合并沿用既有档位', (tester) async {
     dao.books[0] = dao.books[0].copyWith(memorySummaryRounds: 10);
     await bookProvider.loadBooks();
     await pumpSettings(tester, book: bookProvider.currentBook);
@@ -128,8 +129,98 @@ void main() {
     expect(
       dao.books.single.memorySummaryRounds,
       10,
-      reason: '面板暂无该控件，保存设置必须原样带回既有档位（不得重置为 0）',
+      reason: '用户未改档位，保存必须沿用既有值（不得重置为 0）',
     );
+  });
+
+  testWidgets('概览页：记忆总结轮次合并控件在历史轮次数下方，含标题 / 小字注释 / 0-5-10 三档',
+      (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
+    expect(find.text(MemorySummaryRoundSelector.note), findsOneWidget);
+
+    final segmented = tester.widget<SegmentedButton<int>>(
+      find.byType(SegmentedButton<int>),
+    );
+    expect(segmented.segments.map((s) => s.value).toList(), [0, 5, 10]);
+    expect(segmented.selected, {0}, reason: '默认不开启');
+
+    // 位置：控件顶部在历史轮次数下方。
+    expect(
+      tester.getTopLeft(find.text(MemorySummaryRoundSelector.label)).dy,
+      greaterThan(tester.getTopLeft(find.text('历史轮次数')).dy),
+    );
+  });
+
+  testWidgets('选中 5 档并保存：库内落为 5', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    await tester.tap(find.descendant(
+      of: find.byType(SegmentedButton<int>),
+      matching: find.text('5'),
+    ));
+    await tester.pump();
+    expect(
+      tester
+          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
+          .selected,
+      {5},
+      reason: '选中态即时跟随',
+    );
+
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(dao.books.single.memorySummaryRounds, 5);
+  });
+
+  testWidgets('库内为非三档位（7）：控件按 0 展示，保存后按 0 落库', (tester) async {
+    // 真实链路上「库里有 7」= BookDao 用 fromMap 读出 → 模型在库边界收敛为 0。
+    dao.books[0] = Book.fromMap(const {
+      'uuid': 'b1',
+      'title': '当前标题',
+      'category': '当前分类',
+      'base_setting': '当前设定',
+      'memory_summary_rounds': 7,
+    });
+    await bookProvider.loadBooks();
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(
+      tester
+          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
+          .selected,
+      {0},
+      reason: '越界档位读取即按 0 执行',
+    );
+
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(dao.books.single.memorySummaryRounds, 0, reason: '落库只会是受支持档位');
+  });
+
+  testWidgets('窄屏（手机宽度）下档位控件不溢出且仍可选中', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1.0;
+    await tester.pumpAndSettle();
+
+    expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '窄屏布局不得溢出');
+
+    await tester.tap(find.descendant(
+      of: find.byType(SegmentedButton<int>),
+      matching: find.text('10'),
+    ));
+    await tester.pump();
+    expect(
+      tester
+          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
+          .selected,
+      {10},
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('每个子页都带 #/## 输入提示（灰字小字，文案单一真源）', (tester) async {

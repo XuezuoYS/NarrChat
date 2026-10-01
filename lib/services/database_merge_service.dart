@@ -748,7 +748,8 @@ class DatabaseMergeService {
       row['global_pre_prompt'],
       row['global_post_prompt'],
       row['history_rounds'],
-      row['memory_summary_rounds'],
+      // 与 sync_fingerprint 同口径：越界档位按 0 的实际执行语义参与比对。
+      Book.normalizeMemorySummaryRounds(row['memory_summary_rounds'] as int?),
       row['role_hierarchy'],
       row['role_hierarchy_detail'],
       worldBooksJson,
