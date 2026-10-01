@@ -4,6 +4,7 @@ import 'package:narrchat/screens/database_merge_screen.dart';
 import 'package:narrchat/services/database_merge_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/utils/formats.dart';
+import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 
 import 'helpers/merge_db.dart';
 import 'helpers/notice_harness.dart';
@@ -12,6 +13,8 @@ void main() {
   late DatabaseMergePlan plan;
   late DatabaseMergePlan modPlan;
   late DatabaseMergePlan tiePlan;
+  // 仅含「冲突书 A 两侧记忆总结轮次合并档位不同」的计划（见 [_buildTierPlan]）。
+  late DatabaseMergePlan tierPlan;
   // 两侧设置时间戳 / 轮次时间可定制的冲突计划（见 [_buildSettingsStampPlan]）。
   late DatabaseMergePlan importNewerSettingsPlan;
   late DatabaseMergePlan localNewerSettingsPlan;
@@ -83,6 +86,7 @@ void main() {
     }
     modPlan = await _buildModPlan();
     tiePlan = await _buildTiePlan();
+    tierPlan = await _buildTierPlan();
     importNewerSettingsPlan = await _buildSettingsStampPlan(
       localSettingsAt: 1000,
       backupSettingsAt: 5000,
@@ -349,6 +353,24 @@ void main() {
     expect(find.textContaining('轮次（'), findsOneWidget);
   });
 
+  testWidgets('预览展示「记忆总结轮次合并」档位（本地在左 10 / 导入在右 5）', (tester) async {
+    await _pumpScreen(tester, tierPlan);
+
+    // 约定：本地在左、导入在右 → 首个「预览」是本地侧。
+    await tester.tap(find.byTooltip('预览').first);
+    await tester.pumpAndSettle();
+    expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
+    expect(find.text('10'), findsOneWidget, reason: '本地侧档位');
+
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('预览').last);
+    await tester.pumpAndSettle();
+    expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
+    expect(find.text('5'), findsOneWidget, reason: '导入侧档位');
+  });
+
   testWidgets('左上返回取消导入并退出页面', (tester) async {
     await _pumpScreen(tester, plan);
     expect(find.text('数据库合并'), findsOneWidget);
@@ -580,6 +602,45 @@ Future<DatabaseMergePlan> _buildTiePlan() async {
     await backup.close();
   }
 }
+/// 构建一个「冲突书 A 两侧轮次相同、记忆总结轮次合并档位不同」的计划，
+/// 供合并预览展示该档位的用例使用（本地 10 / 导入 5）。
+Future<DatabaseMergePlan> _buildTierPlan() async {
+  final local = await createMergeDb();
+  final backup = await createMergeDb();
+  try {
+    await local.insert('books', {
+      'uuid': 'lok-a',
+      'title': 'A',
+      'category': '本地',
+      'memory_summary_rounds': 10,
+    });
+    await local.insert('rounds', {
+      'book_uuid': 'lok-a',
+      'round_index': 1,
+      'user_input': '本地内容',
+      'ai_narrative': '本地正文',
+      'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
+    await backup.insert('books', {
+      'uuid': 'bak-a',
+      'title': 'A',
+      'category': '备份',
+      'memory_summary_rounds': 5,
+    });
+    await backup.insert('rounds', {
+      'book_uuid': 'bak-a',
+      'round_index': 1,
+      'user_input': '备份内容',
+      'ai_narrative': '备份正文',
+      'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
+    return await DatabaseMergeService.buildPlan(backup, local);
+  } finally {
+    await local.close();
+    await backup.close();
+  }
+}
+
 /// 构建一个「冲突书 A 两侧设置时间戳可定制、轮次时间可定制」的计划，
 /// 供「默认按轮次时间最新」下设置部件按 settings_updated_at 决策的用例使用。
 Future<DatabaseMergePlan> _buildSettingsStampPlan({

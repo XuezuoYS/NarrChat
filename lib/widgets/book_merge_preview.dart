@@ -5,6 +5,7 @@ import '../services/database_merge_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formats.dart';
 import 'markdown_preview.dart';
+import 'memory_summary_round_selector.dart';
 
 /// 合并决策页的书籍预览对话框：查看某一侧的书籍设置与轮次内容。
 ///
@@ -138,6 +139,11 @@ class BookMergePreview extends StatelessWidget {
       ('全局后置提示', book.globalPostPrompt),
       ('角色层级', book.roleHierarchy),
       ('历史轮次数量', '${book.historyRounds}'),
+      // 档位文案与书籍设置页同一来源（0 = 不开启；档位永远展示，便于两侧对照）。
+      (
+        MemorySummaryRoundSelector.label,
+        MemorySummaryRoundSelector.tierText(book.memorySummaryRounds),
+      ),
     ].where((s) => s.$2.trim().isNotEmpty).toList();
 
     return Column(

@@ -15,6 +15,9 @@ class MemorySummaryRoundSelector extends StatelessWidget {
   static const String note = '压缩历史记忆，0为不开启，固定数值为压缩的每项包含轮次，'
       '如5对应1-5、6-10；已合并的条目在关闭后或调整其它档位后不会变更。';
 
+  /// 档位显示文案（本控件与合并预览同一口径）。
+  static String tierText(int tier) => tier == 0 ? '0（不开启）' : '$tier';
+
   /// 当前档位（未支持的数值按 0 展示）。
   final int value;
 
@@ -40,7 +43,7 @@ class MemorySummaryRoundSelector extends StatelessWidget {
             for (final tier in Book.memorySummaryRoundTiers)
               ButtonSegment<int>(
                 value: tier,
-                label: Text(tier == 0 ? '0（不开启）' : '$tier'),
+                label: Text(tierText(tier)),
               ),
           ],
           selected: {Book.normalizeMemorySummaryRounds(value)},
