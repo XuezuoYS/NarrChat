@@ -58,12 +58,31 @@ class PromptV2Sections {
       '不例外），新增条目按所属类别格式补全**全部**属性项，类别格式之外的额外条目'
       '同样保留，一律不得删除。';
 
-  /// 收尾（总模板「# 执行惩罚和奖励：」）。
-  static const String endNote =
+  /// 收尾固定句（总模板「# 执行惩罚和奖励：」的原本两条）。
+  static const String endNoteBody =
       '你应该严格按照主人的上述要求和描述进行创作，'
       '**不擅自增添、省略导致格式被破坏且输出不及预期**，'
       '否则将克扣你晚饭的 Token 小鱼干。\n'
       '当然，若你表现好，**完美遵循了主人的任务，可以给你加餐哦**。';
+
+  /// 文风口径收口句（排在最前，防注意力衰减后丢了文风依据）。
+  static const String stylePriorityClosing =
+      '文风一律以主人的指令、「文笔要求」与「文笔参考范文」（若有）为准；'
+      '照着上文 assistant 的腔调写算偷懒哦。';
+
+  /// 收尾（总模板「# 执行惩罚和奖励：」）：收口句 + 固定末尾句。
+  static String get endNote => '$stylePriorityClosing\n\n$endNoteBody';
+
+  /// 「# 文笔参考范文：」块内说明（无范文时随整个板块删除）。
+  static const String styleReferenceLead =
+      '**这是最高优先级的文风和文笔**：除非主人本轮明确说了别的文风要求，'
+      '否则写正文时照着它的句式、节奏、用词与标点习惯来写。';
+
+  /// user 侧文风口径（进「发送提示词注入字段」，写在两个 `{}` 词位之后）。
+  static const String stylePriorityUser =
+      '写文本前先记住文风口径的优先顺序：'
+      '**本轮主人的要求 > 文笔参考范文 > 文笔要求 > 其他**；'
+      '历史里 assistant 的文笔文风不作依据，符合格式且剧情与状态保持连贯即可。';
 
   /// 本轮区块契约行（按模式给实际区块清单）。
   static String sectionArrow(PromptMode mode) {

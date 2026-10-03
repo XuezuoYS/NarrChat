@@ -82,6 +82,11 @@ const PromptInterface promptInterface = PromptV2();
 - 撤销中英双语：简明中文、口语化；英文只保留工具名、状态块标签与
   `[State-maintenance turn]` 回合标记；
 - 不举例：只用 `{}` 占位符表达形状；
+- **文风口径**：文风依据排序 = 用户本轮指令 > 文笔参考范文 > 文笔要求 / Mod 文笔要求
+  > 其他；历史 assistant 文本只作剧情、格式与状态档案，不作效仿对象。落地三处：
+  文笔要求行的「冲突以此为准」标记、`# 文笔参考范文：` 块内的说明（**无范文随块删除**，
+  此时文风口径只剩 user 那句）、user 的「文风口径优先顺序」一句与收尾板块顶部的
+  收口句；system 侧不设独立的「文本口径」固定条目；
 - 不约束思考链格式（不要求思考语言、不要求把思考写出来），但保留功能性要求
   （读史一次、**先定大纲**、记忆先于正文、按序四步）。
 
@@ -90,7 +95,7 @@ const PromptInterface promptInterface = PromptV2();
 | 总模板槽位 | 内容来源 |
 |---|---|
 | 人设 / 沙箱位置 / 服从 / 收尾 | `PromptV2Sections` 固定行 |
-| 书籍名 / 分类 / 文笔要求 | `PromptRequest.book`（空则整行不注入） |
+| 书籍名 / 分类 / 文笔要求 | `PromptRequest.book`（空则整行不注入；文笔要求行带「冲突以此为准」标记） |
 | Mod system | `PromptRequest.mods.systemPrompts`（**抬升**到 `# 总协议：` 之前） |
 | `# 总协议：` | 共用契约 + 记忆条目格式 + 模式契约 +（Agent）状态工具契约 + 记忆合并策略 |
 | `# 书籍设定和要求：` / `# 世界书：` | `book.baseSetting` / `worldBookEntries` + `mods.worldBooks` |
@@ -146,7 +151,7 @@ system / user 文本；工具清单与阶段帧请在应用内用「预览请求
 
 | 测试文件 | 锁住什么 |
 |---|---|
-| `test/prompt_interface_test.dart` | 绑定实现；总模板区域 / `---` 分隔 / 空块即删 / 多行保留 / 模式契约差异 / Mod 抬升与顺序 / 记忆合并档位与注入 / 工具路由与替身 / 阶段帧文案 / 请求对象 |
+| `test/prompt_interface_test.dart` | 绑定实现；总模板区域 / `---` 分隔 / 空块即删 / 多行保留 / 模式契约差异 / **文风口径（system 固定行、范文说明在范文之前、收口句在最前、user 侧口径位置）** / Mod 抬升与顺序 / 记忆合并档位与注入 / 工具路由与替身 / 阶段帧文案 / 请求对象 |
 | `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一 |
 | `test/agent_tool_descriptions_test.dart` | 8 个工具的中文文案形态、联网指导落点、状态工具互指 |
 | `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态、占位、vision 图片） |

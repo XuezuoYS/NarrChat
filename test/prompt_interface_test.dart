@@ -14,6 +14,7 @@ import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/prompt_interface.dart';
 import 'package:narrchat/services/prompt_v2_build.dart';
+import 'package:narrchat/services/prompt_v2_sections.dart';
 
 /// `prompt_interface` 契约测试（当前唯一实现 = v2）。
 ///
@@ -97,7 +98,7 @@ void main() {
       expect(system, contains('你的位置：你在一个名为“narrchat”的沙箱笼子里。'));
       expect(system, contains('- 当前请求协议：Chat。'));
       expect(system, contains('- 当前书籍名：测试书'));
-      expect(system, contains('- 文笔要求：本书文笔要求：多用对话推进。'));
+      expect(system, contains('- 文笔要求 *（冲突以此为准）*：本书文笔要求：多用对话推进。'));
       for (final section in const [
         '# 总协议：',
         '# 书籍设定和要求：',
@@ -111,6 +112,38 @@ void main() {
       }
       expect(system, contains('\n\n---\n\n'), reason: '区域之间用 --- 分隔');
       expect(system, contains('角色层级排序规则：`主角 > 女主角 > NPC`'));
+    });
+
+    test('文风口径：范文说明在范文之前；历史 assistant 文风不作依据', () {
+      final system = promptInterface.system(requestOf(PromptMode.chat));
+      final referenceAt = system.indexOf('# 文笔参考范文：');
+      final leadAt = system.indexOf(PromptV2Sections.styleReferenceLead);
+      final sampleAt = system.indexOf('用户补充：多用短句。');
+      expect(referenceAt, greaterThan(0));
+      expect(leadAt, greaterThan(referenceAt), reason: '说明在范文板块标题之后');
+      expect(sampleAt, greaterThan(leadAt), reason: '说明在用户范文之前');
+      expect(system, contains('除非主人本轮明确说了别的文风要求'));
+      // system 侧不设独立的「文本口径」固定条目（文风口径只在范文说明、
+      // 文笔要求行的标记、收口句与 user 消息里）。
+      expect(system, isNot(contains('文本口径')));
+
+      // 收尾句提在「执行惩罚和奖励」最前，且仍带原本两条固定句。
+      final noteAt = system.indexOf('# 执行惩罚和奖励：');
+      final closingAt = system.indexOf(PromptV2Sections.stylePriorityClosing);
+      final bodyAt = system.indexOf(PromptV2Sections.endNoteBody);
+      expect(closingAt, greaterThan(noteAt), reason: '收口句在该板块内');
+      expect(bodyAt, greaterThan(closingAt), reason: '收口句排在固定末尾句之前');
+
+      // user 侧：口径写在两个 `{}` 词位（Mod / 前置后置词）之后、`# 总协议2` 之前。
+      final user = promptInterface.user(
+        requestOf(PromptMode.chat, modsBundle: mods),
+      );
+      final userPost = user.indexOf('用户后置词：留下钩子。');
+      final priorityAt = user.indexOf(PromptV2Sections.stylePriorityUser);
+      final contractAt = user.indexOf('# 总协议2');
+      expect(priorityAt, greaterThan(userPost));
+      expect(priorityAt, lessThan(contractAt));
+      expect(user, contains('文笔参考范文 > 文笔要求 > 其他'));
     });
 
     test('模式契约：Chat 6 区块 / Lv.1 5 区块 / Lv.2 3 小节，工具契约只进 Agent', () {
@@ -189,6 +222,15 @@ void main() {
       ]) {
         expect(system, contains(block), reason: '换行被折叠：$block');
       }
+
+      // 「# 文笔参考范文：」板块 = 标题 + 说明 + 用户范文（模板顺序）。
+      expect(
+        system,
+        contains(
+          '# 文笔参考范文：\n\n${PromptV2Sections.styleReferenceLead}\n\n'
+          '范例第一行\n范例第二行',
+        ),
+      );
 
       final user = promptInterface.user(const PromptRequest(
         book: multiBook,

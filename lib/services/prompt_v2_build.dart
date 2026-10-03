@@ -44,11 +44,14 @@ class PromptV2Build
     head.writeln('- ${PromptV2Sections.obedience}');
     _writeField(head, '- 当前书籍名：', book.title);
     _writeField(head, '- 当前书籍分类：', book.category);
-    // 文笔要求可能多行：保留换行（不折叠）。
+    // 文笔要求可能多行：保留换行（不折叠）；与「文笔参考范文」冲突时以本条为准。
     final writingRequirements = _block(book.writingRequirements);
     if (writingRequirements.isNotEmpty) {
-      head.writeln('- 文笔要求：$writingRequirements');
+      head.writeln(
+        '- 文笔要求 *（冲突以此为准）*：$writingRequirements',
+      );
     }
+    // Mod 抬升：排在书籍信息（含文笔要求）之后、`# 总协议：` 之前。
     final modSystem = _block(request.mods?.systemPrompts);
     if (modSystem.isNotEmpty) {
       head.writeln();
@@ -89,7 +92,11 @@ class PromptV2Build
 
     // —— 文笔参考范文（无内容 → 整个 `#` 板块删除）——
     final style = _block(book.writingStyle);
-    if (style.isNotEmpty) blocks.add('# 文笔参考范文：\n\n$style');
+    if (style.isNotEmpty) {
+      blocks.add(
+        '# 文笔参考范文：\n\n${PromptV2Sections.styleReferenceLead}\n\n$style',
+      );
+    }
 
     // —— 执行惩罚和奖励 ——
     blocks.add('# 执行惩罚和奖励：\n\n${PromptV2Sections.endNote}');
@@ -149,6 +156,9 @@ class PromptV2Build
       ));
       if (merge.isNotEmpty) blocks.add(merge.join('\n'));
     }
+
+    // —— 文风口径（恒定注入；写在两个 `{}` 词位之后，为 Mod 留出改口余地）——
+    blocks.add(PromptV2Sections.stylePriorityUser);
 
     // —— # 总协议2：模式专属「现在开始做什么」——
     blocks.add('# 总协议2\n\n${PromptV2Sections.userContract(mode)}');
