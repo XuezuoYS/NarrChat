@@ -6,7 +6,6 @@
 // 工具清单与阶段帧指令需要应用上下文，请在应用内用「预览请求体」查看。
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
-import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_text.dart';
 import 'package:narrchat/services/prompt_v2_build.dart';
 import 'package:narrchat/utils/constants.dart';

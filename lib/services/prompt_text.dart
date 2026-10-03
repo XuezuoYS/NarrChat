@@ -15,7 +15,21 @@ import '../models/mod.dart';
 import '../models/round.dart';
 import 'agent/state/agent_state_working_copy.dart';
 import 'memory_merge_planner.dart';
-import 'prompt_formats.dart';
+
+/// 生成模式：决定取用哪一份文本契约。
+///
+/// v1 提示词已移除后，本枚举是**唯一真源**：`prompt_v2_sections` /
+/// `prompt_v2_build` / `AgentModeProfile` 都由它分派（不再有格式规格对象）。
+enum PromptMode {
+  /// 聊天模式：6 个二级标题区块（剧情演绎 → … → 记忆总结）。
+  chat,
+
+  /// Agent **Lv.1**：5 个区块（排除 `## 记忆总结`）+ 历史工具契约。
+  agentLv1,
+
+  /// Agent **Lv.2**：正文三小节 + 六个状态工具按栏目读写。
+  agentLv2,
+}
 
 /// 取用 system / user 文本所需的全部上下文。
 ///
@@ -47,9 +61,6 @@ class PromptRequest {
 
   /// 本书启用的 Mod 束（system / 前置词 / 后置词 / 世界书）。
   final ModsBundle? mods;
-
-  /// 同模式下的格式生成要求（由 [mode] 派生，便捷访问）。
-  PromptFormatSpec get format => mode.format;
 }
 
 /// 取用 Agent 阶段帧指令所需的上下文（按阶段取用，未用到的字段忽略）。

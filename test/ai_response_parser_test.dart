@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/services/ai_response_parser.dart';
-import 'package:narrchat/services/prompt_builder.dart';
+import 'package:narrchat/services/prompt_v2_sections.dart';
 
 /// 完整 6 字段的解析结果（供 serialize 多组用例复用）。
 const _fullParsed = ParsedAiResponse(
@@ -293,7 +293,7 @@ void main() {
   });
 
   group('AiResponseParser serialize 反解析', () {
-    test('完整 6 字段反解析为原生 6 标题格式（顺序与 PromptBuilder 一致）', () {
+    test('完整 6 字段反解析为原生 6 标题格式（顺序与 v2 契约一致）', () {
       expect(
         AiResponseParser.serialize(_fullParsed),
         '## 剧情演绎\n主角踏入山门。\n\n'
@@ -305,13 +305,13 @@ void main() {
       );
     });
 
-    test('反解析区块顺序与 PromptBuilder.sectionOrder 一致', () {
+    test('反解析区块顺序与 PromptV2Sections.sectionOrder 一致', () {
       final raw = AiResponseParser.serialize(_fullParsed);
       final headings = RegExp(r'^## (.+)$', multiLine: true)
           .allMatches(raw)
           .map((m) => m.group(1)!)
           .toList();
-      expect(headings, PromptBuilder.sectionOrder);
+      expect(headings, PromptV2Sections.sectionOrder);
     });
 
     test('空字段输出对应的空 `## 标题` 区块，6 区块齐全', () {

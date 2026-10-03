@@ -6,7 +6,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/preset_mods.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/mod_provider.dart';
-import 'package:narrchat/services/prompt_builder.dart';
+import 'package:narrchat/services/prompt_interface.dart';
 
 void main() {
   group('Mod 模型', () {
@@ -386,7 +386,7 @@ void main() {
     });
   });
 
-  group('PromptBuilder Mod 注入', () {
+  group('提示词接口 Mod 注入（v2）', () {
     const book = Book(
       uuid: 'b1',
       title: '测试书',
@@ -397,6 +397,14 @@ void main() {
 
     const lastRound = Round(id: 1, bookUuid: 'b1', roundIndex: 1);
 
+    PromptRequest requestOf({ModsBundle? mods}) => PromptRequest(
+          book: book,
+          mode: PromptMode.chat,
+          lastRound: lastRound,
+          userInput: '输入',
+          mods: mods,
+        );
+
     test('启用 Mod 时注入前置词/后置词/系统提示词/世界书', () {
       const mods = ModsBundle(
         prePrompts: 'MOD_PRE',
@@ -404,51 +412,37 @@ void main() {
         systemPrompts: 'MOD_SYS',
         worldBooks: 'MOD_WB',
       );
-      final prompts = const PromptBuilder().build(
-        book: book,
-        lastRound: lastRound,
-        userInput: '输入',
-        mods: mods,
-      );
+      final system = promptInterface.system(requestOf(mods: mods));
+      final user = promptInterface.user(requestOf(mods: mods));
 
-      // System：Mod 系统提示词直接内联；Mod 世界书注入到「世界书追加」区。
-      expect(prompts.systemPrompt, contains('MOD_SYS'));
-      expect(prompts.systemPrompt, contains('世界书追加：'));
-      expect(prompts.systemPrompt, contains('MOD_WB'));
-
-      // User：前置词区与后置词区直接内联（无标签）。
-      expect(prompts.userPrompt, contains('MOD_PRE'));
-      expect(prompts.userPrompt, contains('MOD_POST'));
-
-      // 顺序：用户自定义前置词在 Mod 前置词之前；用户自定义后置词在 Mod 后置词之前
-      final userPrompt = prompts.userPrompt;
+      // System：Mod 系统提示词内联在 `# 总协议：` **之前**（位置抬升）；
+      // Mod 世界书并入「# 世界书：」章节。
+      expect(system, contains('MOD_SYS'));
+      expect(system, contains('MOD_WB'));
+      expect(system.indexOf('MOD_SYS'), lessThan(system.indexOf('# 总协议：')));
       expect(
-        userPrompt.indexOf('用户前置') < userPrompt.indexOf('MOD_PRE'),
-        isTrue,
+        system.indexOf('MOD_WB'),
+        greaterThan(system.indexOf('# 世界书：')),
       );
-      expect(
-        userPrompt.indexOf('用户后置') < userPrompt.indexOf('MOD_POST'),
-        isTrue,
-      );
+
+      // User：Mod 前置 / 后置词直接内联（v2 不给前后置词加标签）。
+      expect(user, contains('MOD_PRE'));
+      expect(user, contains('MOD_POST'));
+
+      // 顺序（v2）：前置词区 = 用户前置 → Mod 前置（Mod 更靠近主人的输入）；
+      // 后置词区 = Mod 后置 → 用户后置。
+      expect(user.indexOf('用户前置'), lessThan(user.indexOf('MOD_PRE')));
+      expect(user.indexOf('MOD_POST'), lessThan(user.indexOf('用户后置')));
     });
 
     test('未启用或空内容 Mod 不注入任何内容', () {
-      final noMods = const PromptBuilder().build(
-        book: book,
-        lastRound: lastRound,
-        userInput: '输入',
-      );
-      final emptyBundle = const PromptBuilder().build(
-        book: book,
-        lastRound: lastRound,
-        userInput: '输入',
-        mods: ModsBundle.empty,
-      );
-      for (final prompts in [noMods, emptyBundle]) {
-        expect(prompts.systemPrompt, isNot(contains('MOD_SYS')));
-        expect(prompts.systemPrompt, isNot(contains('MOD_WB')));
-        expect(prompts.userPrompt, isNot(contains('MOD_PRE')));
-        expect(prompts.userPrompt, isNot(contains('MOD_POST')));
+      for (final mods in <ModsBundle?>[null, ModsBundle.empty]) {
+        final system = promptInterface.system(requestOf(mods: mods));
+        final user = promptInterface.user(requestOf(mods: mods));
+        expect(system, isNot(contains('MOD_SYS')));
+        expect(system, isNot(contains('MOD_WB')));
+        expect(user, isNot(contains('MOD_PRE')));
+        expect(user, isNot(contains('MOD_POST')));
       }
     });
   });

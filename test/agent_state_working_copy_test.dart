@@ -3,7 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
-import 'package:narrchat/services/prompt_formats.dart';
+import 'package:narrchat/services/prompt_text.dart';
+import 'package:narrchat/services/prompt_v2_sections.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// `AgentStateWorkingCopy` 锚定式编辑单元测试。
@@ -347,14 +348,31 @@ void main() {
           baseRound.memorySummary);
     });
 
-    test('契约引用的标签与渲染器一致（改一处必须同步另一处）', () {
-      final contract = const AgentLv2PromptFormat().systemHead.join('\n');
+    test('读取器描述与 v2 契约引用的标签 / 工具名与渲染器一致（改一处必须同步另一处）', () {
       final c = copy(lastRound: baseRound);
+      final tools = {
+        for (final tool in buildStateTools(
+          c,
+          sections: AgentStateSection.values,
+        ))
+          tool.name: tool,
+      };
+      // v2 实发文本：Lv.2 正文契约 + 状态工具契约。
+      final contract = [
+        ...PromptV2Sections.modeContractLines(PromptMode.agentLv2),
+        ...PromptV2Sections.toolContractLines(),
+      ].join('\n');
       for (final section in AgentStateSection.values) {
         final tag = '<${section.tag}>';
         expect(c.renderSection(section), contains(tag),
             reason: '渲染器缺标签 $tag');
-        expect(contract, contains(tag), reason: 'Lv.2 契约未引用 $tag');
+        expect(
+          tools[agentReadToolName(section)]!.description,
+          contains(tag),
+          reason: '读取器描述未引用 $tag',
+        );
+        expect(contract, contains(agentReadToolName(section)),
+            reason: '契约未引用读取器');
       }
       // 时间在正文（## 当前时间），契约与快照都不再以 <time> 引用。
       final world = c.renderSection(AgentStateSection.worldState);
@@ -362,7 +380,7 @@ void main() {
       expect(contract, isNot(contains('<time>')));
       // 契约引用六个工具（读取器在前）。
       for (final name in kStateToolNames) {
-        expect(contract, contains(name), reason: 'Lv.2 契约未引用 $name');
+        expect(contract, contains(name), reason: 'v2 契约未引用 $name');
       }
     });
   });

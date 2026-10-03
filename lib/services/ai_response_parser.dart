@@ -44,7 +44,7 @@ class ParsedAiResponse {
 /// - 首个标题之后未匹配的杂散内容将被丢弃；首个标题之前的无标题内容
 ///   会被保留，仅在剧情演绎缺失时作为正文兜底；
 /// - `## 角色状态` 的正文允许整体包在 ```markdown 围栏内（输出契约形态，
-///   见 `ChatPromptFormat.characterStateFence`）：提取时剥离该围栏
+///   见 `PromptV2Sections.sharedContractLines` 的围栏要求）：提取时剥离该围栏
 ///   （无围栏同样兼容），入库 / 编辑器 / 面板一律只面对纯文本。
 ///
 /// 剧情演绎缺失时的正文兜底（应对 AI 幻觉放弃输出 `## 剧情演绎`）：
@@ -170,7 +170,7 @@ class AiResponseParser {
 
   /// 反解析：将 [ParsedAiResponse] 还原为「原生返回」格式的 Markdown 文本。
   ///
-  /// 区块顺序为 AI 被要求的输出顺序（与 PromptBuilder.sectionOrder 一致）：
+  /// 区块顺序为 AI 被要求的输出顺序（与 `PromptV2Sections.sectionOrder` 一致）：
   /// 剧情演绎 → 推荐行动 → 当前时间 → 世界状态 → 角色状态 → 记忆总结。
   /// 空字段也输出对应的空 `## 标题` 区块，保持 6 区块齐全形态；
   /// 字段值原样写入（[parse] 的产物字段均已 trim），因此

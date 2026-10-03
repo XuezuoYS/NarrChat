@@ -5,7 +5,6 @@ import '../../utils/memory_entry_format.dart';
 import '../ai_response_parser.dart';
 import '../ai_service.dart';
 import '../memory_merge_planner.dart';
-import '../prompt_formats.dart';
 import '../prompt_interface.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
@@ -524,7 +523,7 @@ class AgentRoundRunner {
   /// [_absorbFrame] 也只对正文阶段做分类）：搜索 / 读取帧的「我先查一下…」
   /// 与大纲都不该出现在正文块里。
   ///
-  /// 首帧先追加 [AgentLv1PromptFormat.prepareNote]（与系统契约同一真源），
+  /// 首帧先追加 `promptInterface.stagePrepare`（与系统契约同一真源），
   /// 把「本轮先做什么」说在最近处。
   ///
   /// 退出条件：本帧没有工具调用（= 模型给出大纲，准备完成）；或本帧工具
@@ -580,7 +579,7 @@ class AgentRoundRunner {
     _lastFallback = '';
     // 历史锚点来源：**准备阶段已读过**（`_noteSectionsProvided` 已登记）时，本阶段
     // 与维护阶段的重复读取一律被拒，锚点用对话中已有的 `<memorySummary>` 块；
-    // 模型**跳步漏读**时不在登记之列，本阶段仍允许读一次（[memoryMergeAgentDirectiveLines]
+    // 模型**跳步漏读**时不在登记之列，本阶段仍允许读一次（`prompt_v2_sections` 的合并指令行
     // 会点名这一情形）——否则「合并」这类需要逐字锚点的动作将无从落地。
     // 准备阶段若已把本轮条目落地（模型跳步抢写、或上一帧的编辑已生效），
     // **直接跳过本阶段**：再发一帧 `required` 只会逼模型重复 `op=append`
@@ -665,7 +664,7 @@ class AgentRoundRunner {
     _lastFallback = '';
     _modelProblems.clear();
     // Lv.1：把「历史与记忆条目已就位、现在只写五个区块」说在最近处
-    // （文案真源 = [AgentLv1PromptFormat.storyNote]，与系统契约口径一致）。
+    // （文案真源 = `promptInterface.stageStory`，与系统契约口径一致）。
     // Lv.2 保持原样：其正文契约已在系统指令里，不额外追加帧指令。
     if (profile.level == AgentModeLevel.lv1) {
       _items.add({

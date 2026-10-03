@@ -6,8 +6,8 @@
 /// 文件分工：
 /// - `prompt_text.dart`：**纯文本**契约与请求对象（不依赖 Flutter）；
 /// - 本文件：聚合门面 [PromptInterface]、**工具集**契约 [AgentToolSource]
-///   （工具类型依赖抓取服务，故带 Flutter 依赖）、以及版本绑定；
-/// - 实现：[PromptV2Build]（v2 文本）、`PromptInterfaceV1`（v1 回退）。
+///   （工具类型依赖抓取服务，故带 Flutter 依赖）、以及唯一实现绑定；
+/// - 实现：[PromptV2]（文本 = `prompt_v2_build.dart`，工具 = `prompt_v2_tools.dart`）。
 ///
 /// 【覆盖范围】只包含文本与其等价物：
 /// - [SystemPromptSource.system]：**拼合后**的 system（instructions）；
@@ -20,7 +20,8 @@
 /// vision 图片 content、世界书关键词扫描与 Mod 解析、工具的执行与 UI 回调。
 ///
 /// 【现状】[promptInterface] 绑定 [PromptV2]（文本 = `prompt_v2_build.dart`，
-/// 工具 = `prompt_v2_tools.dart`）；[PromptInterfaceV1] 保留为回退路径。
+/// 工具 = `prompt_v2_tools.dart`）：v1 提示词代码与回退实现已删除，本文件是
+/// 发送给 AI 的全部文本与工具的唯一来源。
 ///
 /// 【接入约定】调用方**只调用** [PromptInterface] 上的方法，不得绕过接口直接调用
 /// 被覆盖的实现器，否则换版时必然漏改。
@@ -111,11 +112,11 @@ class PromptV2 extends PromptV2Build implements PromptInterface {
 }
 
 // -----------------------------------------------------------------------------
-// 当前生效的实现（换版只改这一行）
+// 当前生效的实现
 // -----------------------------------------------------------------------------
 
 /// 全局唯一的取用入口（**当前绑定 v2**）。
 ///
-/// 换实现只改这一行：`PromptV2()` ↔ `PromptInterfaceV1()`（v1 回退路径）；
-/// 调用方代码与依赖都停留在本文件定义的接口上，不做任何选择 / 注册。
+/// 换实现只改这一行；调用方代码与依赖都停留在本文件定义的接口上，
+/// 不做任何选择 / 注册。
 const PromptInterface promptInterface = PromptV2();

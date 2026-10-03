@@ -3,12 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/wire_messages.dart';
 
-/// 历史轮次 messages 数组拼装（[buildHistoryMessages]）单元测试。
+/// 报文侧消息组装（[buildHistoryMessages]）单元测试。
 ///
-/// 该模块从 `prompt_builder.dart` 迁出（与提示词构建解耦）：历史 assistant 的
-/// 形态是模型的**模仿对象**，必须与各模式的输出契约一致，因此单独立档锁定。
-/// 提示词文案断言留在 `prompt_builder_test.dart` / `prompt_formats_test.dart`，
-/// 提示词取用路由断言在 `prompt_interface_test.dart`。
+/// 定位：**历史跟随报文**——历史 messages 与请求体同属请求组装侧，与提示词接口
+/// 产出的 system / 本轮 user / 工具清单解耦。历史 assistant 的形态是模型的
+/// **模仿对象**，必须与各模式的输出契约一致，因此单独立档锁定。
+/// 提示词文案断言在 `prompt_interface_test.dart` / `prompt_placeholders_test.dart`，
+/// 报文拼装路由断言在 `prompt_interface_test.dart`。
 void main() {
   const lastRound = Round(
     id: 1,

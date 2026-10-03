@@ -1,6 +1,6 @@
 import '../../models/agent_mode_level.dart';
 import '../wire_messages.dart';
-import '../prompt_formats.dart';
+import '../prompt_text.dart';
 import 'state/agent_state_working_copy.dart';
 
 /// 单个 Agent 档位的**语义档案**（档位 → 提示词模式 / 工具栏目 / 正文契约的
@@ -59,7 +59,7 @@ class AgentModeProfile {
 
   final AgentModeLevel level;
 
-  /// 本轮提示词的格式生成要求（[PromptBuilder] 的 `mode`）。
+  /// 本轮提示词的生成模式（[PromptMode]，分派到 v2 文本契约）。
   final PromptMode promptMode;
 
   /// 本档位启用的状态工具栏目（读取器在前、编辑器在后的注册顺序由此决定）。

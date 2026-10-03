@@ -6,27 +6,21 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/agent/agent_mode_profile.dart';
-import 'package:narrchat/services/agent/agent_stage_directives.dart';
 import 'package:narrchat/services/agent/fetch_page_tool.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/html_search_service.dart';
-import 'package:narrchat/services/prompt_builder.dart';
-import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_interface.dart';
-import 'package:narrchat/services/prompt_interface_v1.dart';
 import 'package:narrchat/services/prompt_v2_build.dart';
 
-/// `prompt_interface` 契约测试：**当前绑定（v2）** 的行为 + **v1 回退路径**的
-/// 逐字节一致性。
+/// `prompt_interface` 契约测试（当前唯一实现 = v2）。
 ///
-/// - v2 组：总模板区域 / `---` 分隔 / 空块即删 / 模式契约差异 / 阶段帧与工具路由；
-/// - v1 组：`PromptInterfaceV1` 必须与旧组装流程（`PromptBuilder`、
-///   `AgentStageDirectives`、`buildStateTools`）产出完全一致——它是回退路径，
-///   接口切换不得改动它的语义。
-/// 提示词文案本身的断言留在 `prompt_builder_test.dart` / `prompt_formats_test.dart`。
+/// 覆盖：总模板区域 / `---` 分隔 / 空块即删 / 多行保留 / 模式契约差异 / Mod 注入
+/// 与顺序 / 记忆合并注入 / 工具路由与替身 / 阶段帧文案 / 请求对象。
+/// 提示词文案本身的断言集中在 `test/prompt_v2_*`（v2 文案真源）与本文件；
+/// v1 提示词代码已删除，不再有回退路径断言。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -90,13 +84,9 @@ void main() {
       [for (final t in tools) '${t.name}|${t.description}|${t.parameters}'];
 
   group('绑定与版本', () {
-    test('当前唯一实现是 v2（PromptV2Build）', () {
+    test('当前唯一实现是 v2（PromptV2 聚合 = PromptV2Build 文本 + 工具清单）', () {
       expect(promptInterface, isA<PromptV2Build>());
-    });
-
-    test('v1 回退实现仍在，且满足同一套契约', () {
-      expect(const PromptInterfaceV1(), isA<PromptInterface>());
-      expect(const PromptInterfaceV1(), isNot(isA<PromptV2Build>()));
+      expect(promptInterface, isA<PromptInterface>());
     });
   });
 
@@ -349,6 +339,26 @@ void main() {
       ]);
     });
 
+    test('联网工具：替身优先 / 缺抓取服务报错（不静默回落真实服务）', () {
+      final web = WebSearchTool();
+      final fetch = FetchPageTool();
+      final tools = promptInterface.tools(AgentToolsRequest(
+        level: AgentModeLevel.lv2,
+        workingCopy: copyOf(),
+        useSearch: true,
+        webSearch: web,
+        fetchPage: fetch,
+      ));
+      expect(tools[tools.length - 2], same(web));
+      expect(tools.last, same(fetch));
+      expect(
+        () => promptInterface.tools(
+          const AgentToolsRequest(level: AgentModeLevel.off, useSearch: true),
+        ),
+        throwsArgumentError,
+      );
+    });
+
     test('阶段帧指令为 v2 文案（准备 / 记忆 / 正文 / 维护）', () {
       const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
       expect(promptInterface.stagePrepare(lv1), startsWith('【准备回合】'));
@@ -390,105 +400,11 @@ void main() {
     });
   });
 
-  group('v1（回退路径）· 与旧组装流程逐字节一致', () {
-    const v1 = PromptInterfaceV1();
-
-    for (final mode in PromptMode.values) {
-      test('${mode.name}：system、user 与 PromptBuilder 完全一致', () {
-        final request = requestOf(mode);
-        final online = const PromptBuilder().build(
-          book: book,
-          lastRound: lastRound,
-          userInput: request.userInput,
-          worldBookEntries: request.worldBookEntries,
-          mode: mode,
-        );
-        expect(v1.system(request), online.systemPrompt);
-        expect(v1.user(request), online.userPrompt);
-      });
-    }
-
-    test('工具集与 buildStateTools 同源（含指纹）', () {
-      final lv2 = v1.tools(
-        AgentToolsRequest(level: AgentModeLevel.lv2, workingCopy: copyOf()),
-      );
-      expect(
-        fingerprint(lv2),
-        fingerprint(
-          buildStateTools(copyOf(), sections: AgentModeProfile.lv2.toolSections),
-        ),
-      );
-    });
-
-    test('阶段帧指令与 AgentStageDirectives / AgentLv1PromptFormat 同源', () {
-      const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
-      expect(
-        v1.stagePrepare(lv1),
-        const AgentLv1PromptFormat().prepareNote().join('\n'),
-      );
-      expect(
-        v1.stageStory(lv1),
-        const AgentLv1PromptFormat().storyNote().join('\n'),
-      );
-
-      final copy = copyOf();
-      final memoryRequest = AgentStageRequest(
-        level: AgentModeLevel.lv1,
-        workingCopy: copy,
-        first: true,
-      );
-      expect(
-        v1.stageMemory(memoryRequest),
-        AgentStageDirectives().memoryDirective(
-          first: true,
-          workingCopy: copy,
-        )['content'] as String,
-      );
-
-      const problems = ['memorySummary栏目本轮既未编辑也未声明无变化'];
-      expect(
-        v1.stageState(const AgentStageRequest(
-          level: AgentModeLevel.lv2,
-          problems: problems,
-        )),
-        AgentStageDirectives().stateDirective(
-          problems: problems,
-          first: true,
-          level: AgentModeLevel.lv2,
-        )['content'] as String,
-      );
-      expect(
-        () => v1.stageMemory(lv1),
-        throwsArgumentError,
-      );
-    });
-
-    test('联网工具：替身优先 / 缺抓取服务报错', () {
-      final web = WebSearchTool();
-      final fetch = FetchPageTool();
-      final tools = v1.tools(AgentToolsRequest(
-        level: AgentModeLevel.lv2,
-        workingCopy: copyOf(),
-        useSearch: true,
-        webSearch: web,
-        fetchPage: fetch,
-      ));
-      expect(tools[tools.length - 2], same(web));
-      expect(tools.last, same(fetch));
-      expect(
-        () => v1.tools(
-          const AgentToolsRequest(level: AgentModeLevel.off, useSearch: true),
-        ),
-        throwsArgumentError,
-      );
-    });
-  });
-
-  test('PromptRequest.format 由 mode 派生（与 PromptMode.format 同源）', () {
+  test('PromptRequest.mode 覆盖三种模式，且不再携带格式规格对象', () {
     for (final mode in PromptMode.values) {
       final request = requestOf(mode);
-      expect(request.format, same(mode.format));
-      expect(request.format, isA<PromptFormatSpec>());
+      expect(request.mode, same(mode));
+      expect(requestOf(mode).mode, mode);
     }
   });
 }

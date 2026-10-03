@@ -18,7 +18,7 @@ import '../models/agent_mode_level.dart';
 import '../utils/memory_entry_format.dart';
 import 'agent/state/state_tool_names.dart';
 import 'memory_merge_planner.dart';
-import 'prompt_formats.dart';
+import 'prompt_text.dart';
 
 /// v2 文案与其组装约定的集合（无状态，可直接 `const` 复用）。
 class PromptV2Sections {
