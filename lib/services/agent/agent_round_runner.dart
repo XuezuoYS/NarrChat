@@ -8,6 +8,7 @@ import '../memory_merge_planner.dart';
 import '../prompt_formats.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
+import 'agent_stage_directives.dart';
 import 'narr_agent_tool.dart';
 import 'reasoning_replay.dart';
 import 'state/agent_state_working_copy.dart';
@@ -354,6 +355,10 @@ class AgentRoundRunner {
   final void Function(AgentToolOutcome outcome)? onToolStarted;
   final void Function(AgentToolOutcome outcome)? onToolFinished;
 
+  /// 阶段帧指令的**唯一真源**（与 `prompt_interface` 的实现共用同一份文案）：
+  /// 执行器只决定「何时发哪一帧」，文案构建全部收敛在 [AgentStageDirectives]。
+  static const AgentStageDirectives _stageDirectives = AgentStageDirectives();
+
   // ---- 运行期状态（每次 [run] 重置）----
   List<Map<String, dynamic>> _items = [];
   List<Map<String, dynamic>> _history = const [];
@@ -621,42 +626,22 @@ class AgentRoundRunner {
 
   /// 尚未落地的「记忆合并」指令行（无动作 / 已落地 → 空）。
   ///
-  /// Lv.1 记忆阶段帧与 Lv.2 维护轮问题清单共用同一判定：
-  /// 以**工作副本当前文本**为准，模型一旦合并成功即不再重复要求。
-  List<String> _pendingMemoryMergeLines() {
-    final plan = memoryMergePlan;
-    if (plan == null || !plan.hasAction) return const [];
-    if (isMemoryMergeApplied(workingCopy.memorySummary, plan)) return const [];
-    return memoryMergeAgentDirectiveLines(plan);
-  }
+  /// 判定真源 = [AgentStageDirectives.pendingMemoryMergeLines]：Lv.1 记忆阶段帧与
+  /// Lv.2 维护轮问题清单共用同一判定（以工作副本当前文本为准）。
+  List<String> _pendingMemoryMergeLines() =>
+      _stageDirectives.pendingMemoryMergeLines(
+        workingCopy: workingCopy,
+        memoryMergePlan: memoryMergePlan,
+      );
 
-  /// 记忆阶段指令：**正文取自 [AgentLv1PromptFormat.memoryNote]**（与系统契约、
-  /// 用户消息同一真源），加一行阶段说明、档位驱动的合并指令，以及失败重试的补充。
-  Map<String, dynamic> _memoryDirective({required bool first}) {
-    const format = AgentLv1PromptFormat();
-    final note = format.memoryNote().join('\n');
-    final mergeLines = _pendingMemoryMergeLines();
-    final entryWritten = memoryEntryCount(
-          workingCopy.memorySummary,
-          workingCopy.roundIndex,
-        ) ==
-        1;
-    final lead = first
-        ? '[History entry · before the story] Your outline for this round is '
-            'already in this conversation. '
-            '记忆阶段（正文之前）：本轮大纲已在上方。'
-        : entryWritten
-            ? '[History entry · merge still missing] This round\'s entry is in '
-                'place, but the memory merge required above is NOT done yet. '
-                '历史栏已有本轮条目，但上面要求的合并还没完成。'
-            : '[History entry · still missing] The history section still does '
-                'not hold this round\'s single entry. '
-                '历史栏仍没有本轮那一条。';
-    return {
-      'role': 'user',
-      'content': [lead, note, ...mergeLines].join('\n'),
-    };
-  }
+  /// 记忆阶段指令（真源 = [AgentStageDirectives.memoryDirective]，与系统契约、
+  /// 用户消息、`prompt_interface` 的实现同一份文案）。
+  Map<String, dynamic> _memoryDirective({required bool first}) =>
+      _stageDirectives.memoryDirective(
+        first: first,
+        workingCopy: workingCopy,
+        memoryMergePlan: memoryMergePlan,
+      );
 
   // ---------------------------------------------------------------------------
   // 正文阶段
@@ -764,14 +749,6 @@ class AgentRoundRunner {
   String get _storyForChecks =>
       _adopted.isNotEmpty ? _adopted : _lastFallback;
 
-  /// 本档位读取器名一览（维护轮指令与护栏文案共用）。
-  String get _readToolsText =>
-      [for (final s in profile.toolSections) agentReadToolName(s)].join(' / ');
-
-  /// 本档位编辑器名一览。
-  String get _editToolsText =>
-      [for (final s in profile.toolSections) agentEditToolName(s)].join(' / ');
-
   /// 本档位读取器名 → 栏目（维护轮重复读取护栏用）。
   late final Map<String, AgentStateSection> _readSectionByTool = {
     for (final s in profile.toolSections) agentReadToolName(s): s,
@@ -796,110 +773,12 @@ class AgentRoundRunner {
   Map<String, dynamic> _stateDirective(
     List<String> problems, {
     required bool first,
-  }) {
-    final head = profile.level == AgentModeLevel.lv1
-        ? _lv1StateHead(first: first)
-        : _lv2StateHead(first: first);
-    // 优先级排序：记忆（轮次义务）→ 角色 → 世界 → 其余（裁短提示也可以）：
-    // 模型按清单顺序执行，把最不该漏的项放最前。
-    final ordered = List<String>.from(problems)
-      ..sort((a, b) => _directivePriority(a).compareTo(_directivePriority(b)));
-    final trimmed = ordered.take(8).join('\n- ');
-    // 清单为空（理论上不会发生：本阶段只在确实有缺口时发起）时只发指令头，
-    // 避免出现「- 」空条目。
-    if (trimmed.isEmpty) return {'role': 'user', 'content': head};
-    return {
-      'role': 'user',
-      'content': '$head\n- $trimmed',
-    };
-  }
-
-  /// Lv.1 维护轮指令：**只补历史条目**（记忆阶段没落地时的兜底）。
-  ///
-  /// 记忆条目的写法取自 [AgentLv1PromptFormat.memoryEditLine]（与系统契约、
-  /// 记忆阶段指令同一真源），这里只补「为什么还在问这件事」与阶段纪律。
-  String _lv1StateHead({required bool first}) {
-    const reads = kReadHistoryToolName;
-    const edits = kEditHistoryToolName;
-    const entryLine = AgentLv1PromptFormat.memoryEditLine;
-    if (!first) {
-      return '[State-maintenance turn · fix] Fix ONLY the listed items, tool '
-          'calls only (no text). The reader ($reads) is DISABLED — the '
-          '<memorySummary> text is already in this conversation: copy `before` '
-          'anchors VERBATIM from there (op=append needs no anchor at all). '
-          '$entryLine '
-          '只修复下列各项，只调工具、不要输出文本。**读取器（$reads）已禁用**'
-          '——`<memorySummary>` 全文已在对话中，`before` 锚点从那里逐字复制'
-          '（op=append 本就不需要锚点）。$entryLine';
-    }
-    return '[State-maintenance turn] The story is FINISHED above and the '
-        'history (memory) section still does not hold this round\'s single '
-        'entry. This turn has NO text channel — emit nothing but tool calls. '
-        'The reader ($reads) is DISABLED here: its `<memorySummary>` result is '
-        'ALREADY in this conversation (writing the story changed nothing), so '
-        'do NOT read again — call $edits ONCE, copying its date from the '
-        'outline you already made. op=noChange is NOT accepted for history. Do '
-        'NOT touch world state or character state — they live in the story '
-        'text, and the story is already finished. '
-        '$entryLine '
-        '状态维护轮：正文已完成，但历史（记忆总结）栏仍没有本轮那一条。本回合'
-        '**不输出任何文本**，只调工具。**读取器（$reads）已禁用**：它的 '
-        '`<memorySummary>` 结果**已在对话中**（写正文不改变状态），不要重复读取'
-        '——直接调用**一次** $edits，时间用你已经定好的大纲。'
-        '历史栏**不接受** op=noChange。**不要**改动世界状态 / 角色状态——'
-        '它们在正文里，而正文已经写完。$entryLine';
-  }
-
-  /// Lv.2 维护轮指令：逐栏目编辑世界 / 角色 / 历史（缺口驱动）。
-  String _lv2StateHead({required bool first}) {
-    final reads = _readToolsText;
-    final edits = _editToolsText;
-    return first
-        ? '[State-maintenance turn] The story is FINISHED above. This turn '
-            'has NO text channel — emit nothing but tool calls. '
-            'The readers ($reads) are DISABLED here: their results from the '
-            'story turn are ALREADY in this conversation (writing the story '
-            'changed nothing), so do NOT read again — just call the editor '
-            '($edits) once per listed section, copying `before` anchors '
-            'VERBATIM from those results (or from the full text returned by a '
-            'previous edit call). The read results do NOT include the story '
-            'time, which lives in the story body as `## 当前时间`. '
-            'Fill in ALL listed items in this FIRST response; if the '
-            'output limit forces a split, do history (memory) and character '
-            'state FIRST, world state may follow in the next frame. '
-            'Prefer REAL EDITS over noChange: every line the story moved '
-            '(a reaction, a thought, a move) is one op=set; noChange is only '
-            'for what truly did not change. '
-            '状态维护轮：正文已在上方完成，本回合不产出任何文本，只调工具。'
-            '**读取器（$reads）在本回合已禁用**：正文回合读到的结果**已在对话中**'
-            '（写正文不改变状态），不要再读取——直接按清单逐栏目各调用一次对应'
-            '编辑器（$edits），`before` 锚点从那些结果（或此前编辑回传的栏目全文）'
-            '中逐字复制；结果**不含时间**——时间在正文 `## 当前时间` 小节里。'
-            '**第一个响应就完成清单全部项目**；若受输出限制装不下，'
-            '**先做历史（记忆）与角色状态**，世界状态留到下一帧。'
-            '**优先真实编辑而非 noChange**：正文里动过的一行（一句反应、一段心理、'
-            '一次移动）就是一条 op=set；noChange 只留给确实没变的内容。'
-        : '[State-maintenance turn · fix] Fix ONLY the items below, tool calls '
-            'only (no text). The readers ($reads) are DISABLED — reuse '
-            'the results already in this conversation and the failure-reply '
-            'full texts to re-copy anchors; only if an anchor cannot be '
-            'located in them, rewrite that whole section with op=reset. Fill in '
-            'ALL listed '
-            'items (history/memory and character state first if the output '
-            'limit forces a split). '
-            '只修复下列各项，只调工具、不要输出文本。**读取器（$reads）已禁用**'
-            '——锚点从对话中已有的结果块与失败回传的栏目全文中复制；'
-            '确实定位不到才用 op=reset 整栏重写。**清单必须全部完成**'
-            '（装不下时优先历史（记忆）与角色状态）。';
-  }
-
-  /// 指令项的优先级（数值越小越靠前）：记忆 > 角色 > 世界 > 其他。
-  static int _directivePriority(String line) {
-    if (line.contains('memorySummary')) return 0;
-    if (line.contains('characterState')) return 1;
-    if (line.contains('worldState')) return 2;
-    return 3;
-  }
+  }) =>
+      _stageDirectives.stateDirective(
+        problems: problems,
+        first: first,
+        level: profile.level,
+      );
 
   // ---------------------------------------------------------------------------
   // 帧调用（含协议兼容降级）

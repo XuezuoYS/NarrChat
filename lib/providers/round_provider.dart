@@ -13,6 +13,7 @@ import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../services/agent/agent_default_tools.dart';
 import '../services/agent/agent_mode_profile.dart';
 import '../services/agent/agent_round_runner.dart';
 import '../services/agent/agent_runner.dart';
@@ -1356,30 +1357,26 @@ class RoundProvider extends ChangeNotifier {
 
   /// 默认 Agent 工具列表（搜索 + 抓取）。
   ///
-  /// [gen] 为 null 时仅用于「预览请求体」读取工具 schema：全部过程回调置空
-  ///（工具只读 name/description/parameters，绝不执行 run，无副作用）。
-  /// 测试 / 调用方可注入工具（非 null 时 Agent 运行优先使用）。
+  /// 构造与回调接线收敛在 [buildDefaultAgentTools]（与 `prompt_interface` 的实现
+  /// 共用同一份，单一真源）。[gen] 为 null 时仅用于「预览请求体」读取工具 schema：
+  /// 全部过程回调置空（工具只读 name/description/parameters，绝不执行 run，
+  /// 无副作用）。测试 / 调用方可注入工具（非 null 时优先使用）。
   List<NarrAgentTool> _makeAgentTools(_BookGenState? gen) {
-    return [
-      _webSearchTool ??
-          WebSearchTool(
-            search: _searchService,
-            onResults: gen == null
-                ? null
-                : (r) => _handleSearchResults(r, gen),
-            onFail: gen == null ? null : () => _handleSearchFail(gen),
-          ),
-      _fetchPageTool ??
-          FetchPageTool(
-            search: _searchService,
-            onDone: gen == null ? null : () => _handleFetchDone(gen),
-            onFail: gen == null ? null : () => _handleFetchFail(gen),
-            onRefused: gen == null
-                ? null
-                : () => _handleFetchFail(gen, refused: true),
-            onHop: gen == null ? null : (h) => _handleFetchHop(h, gen),
-          ),
-    ];
+    return buildDefaultAgentTools(
+      search: _searchService,
+      webSearch: _webSearchTool,
+      fetchPage: _fetchPageTool,
+      handlers: gen == null
+          ? null
+          : AgentToolEventHandlers(
+              onResults: (r) => _handleSearchResults(r, gen),
+              onSearchFail: () => _handleSearchFail(gen),
+              onFetchDone: () => _handleFetchDone(gen),
+              onFetchFail: () => _handleFetchFail(gen),
+              onFetchRefused: () => _handleFetchFail(gen, refused: true),
+              onFetchHop: (h) => _handleFetchHop(h, gen),
+            ),
+    );
   }
 
   Future<AiCallResult> _runAgent({
