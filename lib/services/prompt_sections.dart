@@ -20,8 +20,8 @@ import 'prompt_formats.dart';
 ///   【角色状态完整性】）：三个模式的正文都含 `## 推荐行动`，角色状态也都按同一份
 ///   「角色类别描述格式」组织（Chat / Lv.1 由正文携带、Lv.2 由编辑工具维护），
 ///   契约逐字一致，故写在共享组装里一处维护、全局生效（见 [buildSystemPrompt]）；
-/// - 各模式的最终 Prompt 由 `PromptBuilder` + `PromptMode` 统一入口组装
-///   （调用共享组装并传入对应格式规格）。
+/// - 各模式的最终 Prompt 由提示词接口（`prompt_interface.dart`）统一取用；
+///   `PromptBuilder` 是 v1 回退路径的同源门面（调用共享组装并传入格式规格）。
 ///
 /// 【文案约定（只写在源码注释里，不写进提示词）】
 /// - 提示词文案**不使用 `#` / `##` 作为结构标记**（唯一例外 = 输出契约的区块名
@@ -242,7 +242,7 @@ class PromptSections {
     return buf.toString();
   }
 
-  /// 组装当前轮用户消息（历史轮次经 `PromptBuilder.buildHistoryMessages`
+  /// 组装当前轮用户消息（历史轮次经 `wire_messages.dart` 的 `buildHistoryMessages`
   /// 以 messages 数组原生传入，不拼入本段文本）。
   ///
   /// 顺序：[PromptFormatSpec.userHead] → 前置词（书籍 + Mod，标签界定区域）→

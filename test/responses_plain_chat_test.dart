@@ -68,8 +68,8 @@ void main() {
     final body = bodies.single;
     expect(body['model'], 'deepseek-flash');
     // Chat 模式提示词（6 区块要求），而非 AGENT 契约。
-    expect(body['instructions'], contains('【绝对服从】'));
-    expect(body['instructions'], isNot(contains('AGENT 模式契约')));
+    expect(body['instructions'], contains('# 总协议：'));
+    expect(body['instructions'], isNot(contains('这是 Agent 模式')));
     expect(body['input'], isA<List>());
     final input = (body['input'] as List).cast<Map<String, dynamic>>();
     expect(input.any((i) => i['role'] == 'user'), isTrue);
@@ -106,7 +106,7 @@ void main() {
     );
     final body = jsonDecode(preview) as Map<String, dynamic>;
     expect(body['model'], 'deepseek-flash');
-    expect(body['instructions'], contains('【绝对服从】'));
+    expect(body['instructions'], contains('# 总协议：'));
     expect(body['input'], isA<List>());
     expect(body.containsKey('tools'), isFalse);
     expect(body.containsKey('max_tokens'), isFalse); // 未设置 Max Tokens → 省略键

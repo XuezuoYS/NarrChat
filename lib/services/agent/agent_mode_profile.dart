@@ -1,5 +1,5 @@
 import '../../models/agent_mode_level.dart';
-import '../prompt_builder.dart';
+import '../wire_messages.dart';
 import '../prompt_formats.dart';
 import 'state/agent_state_working_copy.dart';
 

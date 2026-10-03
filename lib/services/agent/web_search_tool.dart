@@ -32,27 +32,17 @@ class WebSearchTool implements NarrAgentTool {
   @override
   String get name => 'narrchat_webSearch';
 
-  /// 工具说明：**英文详细要求在前、简短中文概述在后**（无语言标记分隔）。
+  /// 工具说明（v2 口径）：**简明中文**；英文只保留工具名与必要的标识。
   ///
   /// 联网工具的全部调用指导（何时调用、搜索后必须打开页面）只在这里声明，
   /// 不再向 system 注入任何联网指令——见 `RoundProvider` 的组装路径。
   @override
   String get description =>
-      'Search the internet to obtain the latest or real-world information '
-      '(such as place names, history, settings, proper nouns, etc.), and '
-      'return the titles, links and summaries of up to 20 results. After '
-      'enabling this tool, real-world information should be used actively '
-      'when needed, without waiting for the user to specifically name each '
-      'one; do not call it when no real-world fact is involved. After calling '
-      'this tool, it is necessary to immediately use narrchat_webFetchPage to '
-      'open the most relevant 1 to 3 result pages to read the main text to '
-      'obtain accurate details. The summary alone is not sufficient to '
-      'support creation, so never end the research phase after searching '
-      'only. '
-      '联网搜索获取真实世界信息（如地名、历史、名词等），返回最多 20 条结果的'
-      '标题、链接与摘要。涉及真实世界信息时应主动使用，不必等用户点名；'
-      '调用后必须紧接着用 narrchat_webFetchPage 打开最相关的 1~3 个结果页面'
-      '阅读正文。';
+      '联网搜索真实世界信息（地名、历史、名词、设定等），返回最多 20 条结果的'
+      '标题、链接与摘要。涉及真实世界信息时主动使用，不必等主人点名；'
+      '不涉及真实世界事实时不要调用。调用后必须紧接着用 narrchat_webFetchPage '
+      '打开最相关的 1~3 个结果页面阅读正文——只看摘要不足以支撑创作，'
+      '不许搜完就结束。';
 
   @override
   Map<String, dynamic> get parameters => {

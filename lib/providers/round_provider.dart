@@ -20,17 +20,17 @@ import '../services/agent/agent_runner.dart';
 import '../services/agent/fetch_page_tool.dart';
 import '../services/agent/narr_agent_tool.dart';
 import '../services/agent/state/agent_state_working_copy.dart';
-import '../services/agent/state/state_tools.dart';
 import '../services/agent/web_search_tool.dart';
 import '../services/agent/wire_adapters.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
 import '../services/html_search_service.dart';
+import '../services/wire_messages.dart';
 import '../services/image_store.dart';
 import '../services/memory_merge_planner.dart';
 import '../services/non_stream_replay.dart';
-import '../services/prompt_builder.dart';
+import '../services/prompt_interface.dart';
 import '../services/round_warnings_store.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
@@ -125,7 +125,6 @@ class RoundProvider extends ChangeNotifier {
     RoundDao? dao,
     BookDao? bookDao,
     AiService? aiService,
-    PromptBuilder? promptBuilder,
     WorldBookScanner? worldBookScanner,
     AiSettingsProvider? aiSettingsProvider,
     /// 实验性功能设置（Agent 模式开关；null = 视为关闭，仅测试/降级路径）。
@@ -153,7 +152,6 @@ class RoundProvider extends ChangeNotifier {
   })  : _dao = dao ?? RoundDao(),
         _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
-        _promptBuilder = promptBuilder ?? const PromptBuilder(),
         _worldBookScanner = worldBookScanner ?? const WorldBookScanner(),
         // ignore: prefer_initializing_formals
         _aiSettingsProvider = aiSettingsProvider,
@@ -180,7 +178,6 @@ class RoundProvider extends ChangeNotifier {
   final RoundDao _dao;
   final BookDao _bookDao;
   final AiService _aiService;
-  final PromptBuilder _promptBuilder;
   final WorldBookScanner _worldBookScanner;
   final AiSettingsProvider? _aiSettingsProvider;
   final ExperimentalSettingsProvider? _experimentalSettings;
@@ -566,7 +563,10 @@ class RoundProvider extends ChangeNotifier {
       firstBody = req.directBody;
     } else if (req.useSearch) {
       // 联网搜索工具循环：与实发共用同一线段（线路 / schema 形状一致）。
-      final searchTools = _makeAgentTools(null);
+      final searchTools = _agentTools(
+        level: AgentModeLevel.off,
+        useSearch: true,
+      );
       final runner = AgentRunner(
         buildBody: _makeBodyBuilder(
           _aiSettingsProvider,
@@ -637,26 +637,26 @@ class RoundProvider extends ChangeNotifier {
     final agentMode = profile.isOn;
     final responsesWire =
         settings?.selectedPlatform.apiType.isResponses ?? false;
-    // 按模式组装本轮提示词：Chat / Agent 各档位共享同一构建流程，
-    // 仅格式要求不同（Agent 模式下 systemPrompt 即 Response API 的
-    // instructions 字段）。
-    final prompts = _promptBuilder.build(
+    // 提示词取用**唯一入口**（`prompt_interface.dart`，当前绑定 v2）：
+    // 本轮 system / user 文本与工具集都只经接口取用；报文与历史消息不在此列。
+    final promptRequest = PromptRequest(
       book: book,
+      mode: profile.promptMode,
       lastRound: lastRound,
       userInput: userInput,
       worldBookEntries: worldBookEntries,
       mods: modsBundle,
-      mode: profile.promptMode,
     );
+    final systemPrompt = promptInterface.system(promptRequest);
 
     // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
-    // 而非拼入本次 Prompt 文本。
+    // 而非拼入本次 Prompt 文本（与提示词解耦：见 `wire_messages.dart`）。
     final supportsVision = settings?.supportsVision ?? false;
     // 预读取本轮及历史用户消息所需图片为 base64 data URL（仅识图模型）。
     final imageDataUrls = supportsVision
         ? await _collectImageDataUrls(recentRounds, userImages)
         : const <String, String>{};
-    final historyMessages = PromptBuilder.buildHistoryMessages(
+    final historyMessages = buildHistoryMessages(
       recentRounds,
       imagePartsFor: supportsVision
           ? (r) => _imagePartsFor(r, imageDataUrls)
@@ -665,7 +665,7 @@ class RoundProvider extends ChangeNotifier {
       // Lv.1 最新一轮带 5 区块（历史区块由工具提供）、Chat 维持原样。
       shape: profile.historyShape,
     );
-    final userText = prompts.userPrompt;
+    final userText = promptInterface.user(promptRequest);
     final userContent = supportsVision
         ? _userContentWithImages(
             userText,
@@ -715,24 +715,22 @@ class RoundProvider extends ChangeNotifier {
       // 何时调用、搜索后必须打开页面等要求全部写在工具 `description` 里
       //（档位提示词只负责本档位可用的工具与调用纪律）。
       final inputItems = <Map<String, dynamic>>[
-        if (!responsesWire) {'role': 'system', 'content': prompts.systemPrompt},
+        if (!responsesWire) {'role': 'system', 'content': systemPrompt},
         ...historyMessages,
         {'role': 'user', 'content': userContent},
       ];
       // 工具 schema 超集（档位对应的状态工具 + 可选搜索工具），
       // **各阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
       // 使服务商的上下文缓存整段失效。
-      final schemaTools = [
-        ...buildStateTools(
-          AgentStateWorkingCopy(
-            roundIndex: (lastRound?.roundIndex ?? 0) + 1,
-            lastRound: lastRound,
-            categoryNames: [for (final c in book.roleCategories) c.name],
-          ),
-          sections: profile.toolSections,
+      final schemaTools = _agentTools(
+        level: agentLevel,
+        workingCopy: AgentStateWorkingCopy(
+          roundIndex: (lastRound?.roundIndex ?? 0) + 1,
+          lastRound: lastRound,
+          categoryNames: [for (final c in book.roleCategories) c.name],
         ),
-        if (useSearch) ..._makeAgentTools(null),
-      ];
+        useSearch: useSearch,
+      );
       final agentValues = AiRequestValues(
         model: model,
         messages: inputItems,
@@ -742,7 +740,7 @@ class RoundProvider extends ChangeNotifier {
         maxTokens: maxTokens,
         stream: useStream,
         tools: agentToolSchemas(schemaTools, responses: responsesWire),
-        instructions: responsesWire ? prompts.systemPrompt : null,
+        instructions: responsesWire ? systemPrompt : null,
       );
       // 预览 = 正文轮首帧的**同一条**组装路径（单一真源）。
       final firstBody = responsesWire
@@ -769,7 +767,7 @@ class RoundProvider extends ChangeNotifier {
               ),
             );
       return _RoundRequest(
-        systemPrompt: prompts.systemPrompt,
+        systemPrompt: systemPrompt,
         historyMessages: historyMessages,
         userContent: userContent,
         model: model,
@@ -804,7 +802,7 @@ class RoundProvider extends ChangeNotifier {
         maxTokens: maxTokens,
         stream: useStream,
         tools: null,
-        instructions: prompts.systemPrompt,
+        instructions: systemPrompt,
       );
       final requestBody = settings == null
           ? AiRequestBodyBuilder.buildPresetBody(
@@ -813,7 +811,7 @@ class RoundProvider extends ChangeNotifier {
             )
           : settings.buildRequestBody(values);
       return _RoundRequest(
-        systemPrompt: prompts.systemPrompt,
+        systemPrompt: systemPrompt,
         historyMessages: historyMessages,
         userContent: userContent,
         model: model,
@@ -828,7 +826,7 @@ class RoundProvider extends ChangeNotifier {
     final values = AiRequestValues(
       model: model,
       messages: [
-        {'role': 'system', 'content': prompts.systemPrompt},
+        {'role': 'system', 'content': systemPrompt},
         ...historyMessages,
         {'role': 'user', 'content': userContent},
       ],
@@ -846,7 +844,7 @@ class RoundProvider extends ChangeNotifier {
           )
         : settings.buildRequestBody(values);
     return _RoundRequest(
-      systemPrompt: prompts.systemPrompt,
+      systemPrompt: systemPrompt,
       historyMessages: historyMessages,
       userContent: userContent,
       model: model,
@@ -1355,29 +1353,36 @@ class RoundProvider extends ChangeNotifier {
     };
   }
 
-  /// 默认 Agent 工具列表（搜索 + 抓取）。
+  /// 本轮工具集（**唯一入口 = `promptInterface.tools`**）：档位决定状态工具栏目，
+  /// [useSearch] 决定是否叠加联网工具（搜索 → 打开页）。
   ///
-  /// 构造与回调接线收敛在 [buildDefaultAgentTools]（与 `prompt_interface` 的实现
-  /// 共用同一份，单一真源）。[gen] 为 null 时仅用于「预览请求体」读取工具 schema：
-  /// 全部过程回调置空（工具只读 name/description/parameters，绝不执行 run，
-  /// 无副作用）。测试 / 调用方可注入工具（非 null 时优先使用）。
-  List<NarrAgentTool> _makeAgentTools(_BookGenState? gen) {
-    return buildDefaultAgentTools(
-      search: _searchService,
-      webSearch: _webSearchTool,
-      fetchPage: _fetchPageTool,
-      handlers: gen == null
-          ? null
-          : AgentToolEventHandlers(
-              onResults: (r) => _handleSearchResults(r, gen),
-              onSearchFail: () => _handleSearchFail(gen),
-              onFetchDone: () => _handleFetchDone(gen),
-              onFetchFail: () => _handleFetchFail(gen),
-              onFetchRefused: () => _handleFetchFail(gen, refused: true),
-              onFetchHop: (h) => _handleFetchHop(h, gen),
-            ),
-    );
-  }
+  /// [gen] 为 null 时仅用于「预览请求体」读取工具定义：过程回调全部置空
+  /// （工具只读 name/description/parameters，绝不执行 run，无副作用）。
+  /// 测试 / 调用方可注入的工具替身在 `promptInterface` 内优先使用。
+  List<NarrAgentTool> _agentTools({
+    required AgentModeLevel level,
+    AgentStateWorkingCopy? workingCopy,
+    bool useSearch = false,
+    _BookGenState? gen,
+  }) =>
+      promptInterface.tools(AgentToolsRequest(
+        level: level,
+        workingCopy: workingCopy,
+        useSearch: useSearch,
+        search: _searchService,
+        webSearch: _webSearchTool,
+        fetchPage: _fetchPageTool,
+        handlers: gen == null
+            ? null
+            : AgentToolEventHandlers(
+                onResults: (r) => _handleSearchResults(r, gen),
+                onSearchFail: () => _handleSearchFail(gen),
+                onFetchDone: () => _handleFetchDone(gen),
+                onFetchFail: () => _handleFetchFail(gen),
+                onFetchRefused: () => _handleFetchFail(gen, refused: true),
+                onFetchHop: (h) => _handleFetchHop(h, gen),
+              ),
+      ));
 
   Future<AiCallResult> _runAgent({
     required AiSettingsProvider? settings,
@@ -1390,7 +1395,11 @@ class RoundProvider extends ChangeNotifier {
     required bool Function() isCancelled,
     required bool responsesWire,
   }) async {
-    final tools = _makeAgentTools(gen);
+    final tools = _agentTools(
+      level: AgentModeLevel.off,
+      useSearch: true,
+      gen: gen,
+    );
     final runner = AgentRunner(
       // 与「预览请求体」共用同一构建器：规则构建器 / 自定义模板一致；
       // 线路（chat / responses）与工具 schema 形状都由协议选择决定。
@@ -1463,10 +1472,12 @@ class RoundProvider extends ChangeNotifier {
     final profile = AgentModeProfile.of(req.agentLevel);
     // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各阶段共用同一份**
     // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
-    final tools = <NarrAgentTool>[
-      ...buildStateTools(workingCopy, sections: profile.toolSections),
-      if (req.useSearch) ..._makeAgentTools(gen),
-    ];
+    final tools = _agentTools(
+      level: req.agentLevel,
+      workingCopy: workingCopy,
+      useSearch: req.useSearch,
+      gen: gen,
+    );
     final values = req.agentValues!;
     final runner = AgentRoundRunner(
       // 线路决定请求体形态（responses / chat），执行器结构与帧语义不变。

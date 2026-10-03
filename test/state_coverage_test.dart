@@ -63,10 +63,10 @@ void main() {
       sectionsOf(gaps, StateGapKind.sectionUntouched),
       AgentStateSection.values.toSet(),
     );
-    // 面向模型：英文指令在前 + 中文概述在后（**不加语言标记**）；面向用户：短提示。
+    // 面向模型：**简明中文**（不加语言标记）；面向用户：短提示。
     final first = gaps.first;
-    expect(first.modelText, startsWith('Section "worldState"'));
-    expect(first.modelText, contains('世界状态栏目本轮既未编辑也未声明无变化'));
+    expect(first.modelText, startsWith('「<worldState>」'));
+    expect(first.modelText, contains('「<worldState>」栏目本轮既没编辑、也没声明无变化'));
     for (final marker in const ['【中】', '[EN]']) {
       expect(first.modelText, isNot(contains(marker)), reason: marker);
     }
@@ -150,9 +150,9 @@ void main() {
     final unchangedText = gaps.firstWhere(
       (g) => g.kind == StateGapKind.sectionUnchanged,
     ).modelText;
-    expect(unchangedText, contains('byte-identical'));
+    expect(unchangedText, contains('逐字节相同'));
     // 中文概述跟在英文要求之后，无【中】/ [EN] 语言标记。
-    expect(unchangedText, contains('世界状态栏目与上一轮逐字节相同'));
+    expect(unchangedText, contains('「<worldState>」栏目与上一轮逐字节相同'));
     expect(unchangedText, isNot(contains('【中】')));
     expect(unchangedText, isNot(contains('[EN]')));
 

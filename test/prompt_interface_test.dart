@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/mod.dart';
+import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/agent/agent_mode_profile.dart';
 import 'package:narrchat/services/agent/agent_stage_directives.dart';
@@ -15,17 +17,16 @@ import 'package:narrchat/services/prompt_builder.dart';
 import 'package:narrchat/services/prompt_formats.dart';
 import 'package:narrchat/services/prompt_interface.dart';
 import 'package:narrchat/services/prompt_interface_v1.dart';
-import 'package:narrchat/services/prompt_sections.dart';
+import 'package:narrchat/services/prompt_v2_build.dart';
 
-/// `prompt_interface` 契约与 v1 转发层的**锁定测试**。
+/// `prompt_interface` 契约测试：**当前绑定（v2）** 的行为 + **v1 回退路径**的
+/// 逐字节一致性。
 ///
-/// 目的：接口是将来替换 v2 提示词的唯一替换点，接入前必须证明「接口输出 ==
-/// 线上现有输出」——
-/// - system / user 逐字节等于线上 `PromptBuilder` 的产物（三个模式）；
-/// - 工具集与档位栏目、注入替身、缺依赖报错的语义与现有一致；
-/// - 阶段帧指令与 `AgentStageDirectives` / `AgentLv1PromptFormat` 同源。
-/// 提示词文案本身的断言留在 `prompt_builder_test.dart` / `prompt_formats_test.dart`，
-/// 本文件只锁「取用路由」。
+/// - v2 组：总模板区域 / `---` 分隔 / 空块即删 / 模式契约差异 / 阶段帧与工具路由；
+/// - v1 组：`PromptInterfaceV1` 必须与旧组装流程（`PromptBuilder`、
+///   `AgentStageDirectives`、`buildStateTools`）产出完全一致——它是回退路径，
+///   接口切换不得改动它的语义。
+/// 提示词文案本身的断言留在 `prompt_builder_test.dart` / `prompt_formats_test.dart`。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -40,6 +41,9 @@ void main() {
     roleHierarchy: '主角 > 女主角 > NPC',
   );
 
+  /// 只有书名、其余全空的书籍：验证「无内容即删块」。
+  const minimalBook = Book(title: '空书');
+
   const lastRound = Round(
     id: 1,
     bookUuid: 'b1',
@@ -52,12 +56,27 @@ void main() {
     currentTime: '第三天 午时',
   );
 
-  PromptRequest requestOf(PromptMode mode) => PromptRequest(
-        book: book,
+  const mods = ModsBundle(
+    systemPrompts: 'MOD 系统提示词',
+    prePrompts: 'MOD 前置词',
+    postPrompts: 'MOD 后置词',
+    worldBooks: 'MOD 世界书',
+  );
+
+  PromptRequest requestOf(
+    PromptMode mode, {
+    Book target = book,
+    Round? last = lastRound,
+    ModsBundle? modsBundle,
+    String worldBook = '青云宗是北域第一大派。',
+  }) =>
+      PromptRequest(
+        book: target,
         mode: mode,
-        lastRound: lastRound,
+        lastRound: last,
         userInput: '我走向主殿，想要拜见掌门。',
-        worldBookEntries: '青云宗是北域第一大派。',
+        worldBookEntries: worldBook,
+        mods: modsBundle,
       );
 
   AgentStateWorkingCopy copyOf() => AgentStateWorkingCopy(
@@ -70,11 +89,310 @@ void main() {
   List<String> fingerprint(List<NarrAgentTool> tools) =>
       [for (final t in tools) '${t.name}|${t.description}|${t.parameters}'];
 
-  test('绑定：当前唯一实现是 v1 转发层', () {
-    expect(promptInterface, isA<PromptInterfaceV1>());
+  group('绑定与版本', () {
+    test('当前唯一实现是 v2（PromptV2Build）', () {
+      expect(promptInterface, isA<PromptV2Build>());
+    });
+
+    test('v1 回退实现仍在，且满足同一套契约', () {
+      expect(const PromptInterfaceV1(), isA<PromptInterface>());
+      expect(const PromptInterfaceV1(), isNot(isA<PromptV2Build>()));
+    });
   });
 
-  group('PromptInterface · system / user（逐字节等于线上 PromptBuilder）', () {
+  group('v2 · system（总模板）', () {
+    test('固定行 + 一级标题区域 + --- 分隔 + 模式标记', () {
+      final system = promptInterface.system(requestOf(PromptMode.chat));
+      expect(system, startsWith('你是一名喜爱创作，涉猎文学、艺术的作者'));
+      expect(system, contains('你的位置：你在一个名为“narrchat”的沙箱笼子里。'));
+      expect(system, contains('- 当前请求协议：Chat。'));
+      expect(system, contains('- 当前书籍名：测试书'));
+      expect(system, contains('- 文笔要求：本书文笔要求：多用对话推进。'));
+      for (final section in const [
+        '# 总协议：',
+        '# 书籍设定和要求：',
+        '# 世界书：',
+        '# 角色状态栏协议：',
+        '# 角色状态完整性要求：',
+        '# 文笔参考范文：',
+        '# 执行惩罚和奖励：',
+      ]) {
+        expect(system, contains(section), reason: section);
+      }
+      expect(system, contains('\n\n---\n\n'), reason: '区域之间用 --- 分隔');
+      expect(system, contains('角色层级排序规则：`主角 > 女主角 > NPC`'));
+    });
+
+    test('模式契约：Chat 6 区块 / Lv.1 5 区块 / Lv.2 3 小节，工具契约只进 Agent', () {
+      final chat = promptInterface.system(requestOf(PromptMode.chat));
+      final lv1 = promptInterface.system(requestOf(PromptMode.agentLv1));
+      final lv2 = promptInterface.system(requestOf(PromptMode.agentLv2));
+
+      expect(chat, contains('6 个二级标题'));
+      expect(lv1, contains('5 个二级标题'));
+      expect(lv2, contains('3 个二级标题'));
+
+      expect(chat, isNot(contains('【状态工具契约】')));
+      expect(lv1, contains('【状态工具契约】'));
+      expect(lv2, contains('【状态工具契约】'));
+
+      expect(lv1, contains('当前请求协议：Agent。'), reason: 'Agent 档位不写等级');
+      expect(lv2, contains('当前请求协议：Agent。'));
+      expect(lv1, isNot(contains('6 个二级标题')));
+    });
+
+    test('空块即删：只有书名时不留空的 `#` 板块', () {
+      final system = promptInterface.system(
+        requestOf(
+          PromptMode.chat,
+          target: minimalBook,
+          last: null,
+          worldBook: '',
+        ),
+      );
+      expect(system, contains('# 总协议：'));
+      expect(system, contains('# 角色状态完整性要求：'));
+      expect(system, contains('# 执行惩罚和奖励：'));
+      expect(system, isNot(contains('# 书籍设定和要求：')));
+      expect(system, isNot(contains('# 世界书：')));
+      expect(system, isNot(contains('# 角色状态栏协议：')));
+      expect(system, isNot(contains('# 文笔参考范文：')));
+      expect(system, isNot(contains('（无）')));
+      expect(system, isNot(contains('（未设置）')));
+      expect(system, isNot(contains('- 文笔要求：')));
+    });
+
+    test('多行内容保留换行（Mod / 书籍设定 / 世界书 / 文笔参考 / 类别格式）', () {
+      const multiBook = Book(
+        title: '多行书',
+        category: '玄幻',
+        baseSetting: '第一行设定\n第二行设定',
+        writingRequirements: '要求一\n要求二',
+        writingStyle: '范例第一行\n范例第二行',
+        roleHierarchy: '主角 > NPC',
+        roleCategories: [
+          RoleCategory(name: '主角', format: '姓名：\n年龄：\n性别：'),
+        ],
+      );
+      const multiMods = ModsBundle(
+        systemPrompts: 'MOD 第一行\nMOD 第二行',
+        worldBooks: 'MOD 世界书第一行\nMOD 世界书第二行',
+        prePrompts: 'MOD 前置第一行\nMOD 前置第二行',
+        postPrompts: 'MOD 后置第一行\nMOD 后置第二行',
+      );
+      const worldBook = '世界书第一行\n世界书第二行';
+
+      final system = promptInterface.system(const PromptRequest(
+        book: multiBook,
+        mode: PromptMode.chat,
+        worldBookEntries: worldBook,
+        mods: multiMods,
+      ));
+      for (final block in const [
+        '第一行设定\n第二行设定',
+        '要求一\n要求二',
+        '范例第一行\n范例第二行',
+        'MOD 第一行\nMOD 第二行',
+        '世界书第一行\n世界书第二行',
+        'MOD 世界书第一行\nMOD 世界书第二行',
+        '姓名：\n年龄：\n性别：',
+      ]) {
+        expect(system, contains(block), reason: '换行被折叠：$block');
+      }
+
+      final user = promptInterface.user(const PromptRequest(
+        book: multiBook,
+        mode: PromptMode.chat,
+        userInput: '继续',
+        mods: multiMods,
+      ));
+      expect(user, contains('MOD 前置第一行\nMOD 前置第二行'));
+      expect(user, contains('MOD 后置第一行\nMOD 后置第二行'));
+      expect(user, contains('【主人的输入】\n\n继续\n\n【主人的输入stop】'));
+    });
+
+    test('Mod：system 注入在总协议之前（抬升），世界书并入世界书章节', () {
+      final system = promptInterface.system(
+        requestOf(PromptMode.chat, modsBundle: mods),
+      );
+      final modAt = system.indexOf('MOD 系统提示词');
+      final contractAt = system.indexOf('# 总协议：');
+      expect(modAt, greaterThan(0));
+      expect(modAt, lessThan(contractAt), reason: 'Mod 抬升到总协议之前');
+      expect(system, contains('MOD 世界书'));
+      // 世界书章节里既有书籍世界书也有 Mod 世界书
+      final worldAt = system.indexOf('# 世界书：');
+      expect(system.indexOf('青云宗是北域第一大派。'), greaterThan(worldAt));
+    });
+
+    test('记忆合并策略随本书档位（0 / 5）', () {
+      final off = promptInterface.system(requestOf(PromptMode.chat));
+      expect(off, contains('档位 0（关闭）'));
+
+      const tier5 = Book(title: '档 5', memorySummaryRounds: 5);
+      final on = promptInterface.system(
+        requestOf(PromptMode.chat, target: tier5, last: null),
+      );
+      expect(on, contains('档位 5'));
+      expect(on, contains('2 × 5'));
+    });
+  });
+
+  group('v2 · user（新建轮注入）', () {
+    test('轮次 / 上轮时间 / 主人的输入 / 总协议2 / 模式专属指令', () {
+      final user = promptInterface.user(requestOf(PromptMode.chat));
+      expect(user, startsWith('你需要按照主人的要求，创作第 2 轮：'));
+      expect(user, contains('- 上轮时间：第三天 午时'));
+      expect(user, contains('【主人的输入】\n\n我走向主殿，想要拜见掌门。\n\n【主人的输入stop】'));
+      expect(user, contains('# 总协议2'));
+      expect(user, contains('格式已经约好了，现在就动笔'));
+
+      final lv2 = promptInterface.user(requestOf(PromptMode.agentLv2));
+      expect(lv2, contains('先把三栏各读一次'));
+    });
+
+    test('前置词 / 后置词：用户 + Mod 都在，顺序正确', () {
+      final user = promptInterface.user(
+        requestOf(PromptMode.chat, modsBundle: mods),
+      );
+      final userPre = user.indexOf('用户前置词：保持悬念。');
+      final modPre = user.indexOf('MOD 前置词');
+      final input = user.indexOf('【主人的输入】');
+      final modPost = user.indexOf('MOD 后置词');
+      final userPost = user.indexOf('用户后置词：留下钩子。');
+      expect(userPre, greaterThan(0));
+      expect(userPre, lessThan(modPre));
+      expect(modPre, lessThan(input), reason: 'Mod 前置词更靠近主人的输入');
+      expect(input, lessThan(modPost));
+      expect(modPost, lessThan(userPost), reason: 'Mod 后置词在用户后置词之前');
+    });
+
+    test('首轮：无上轮时间 → 该条整条不注入；空前置 / 后置词 → 整区不注入', () {
+      final user = promptInterface.user(
+        requestOf(PromptMode.chat, target: minimalBook, last: null),
+      );
+      expect(user, startsWith('你需要按照主人的要求，创作第 1 轮：'));
+      expect(user, isNot(contains('上轮时间')));
+      expect(user, isNot(contains('用户前置词')));
+      expect(user, isNot(contains('用户后置词')));
+      // 区域分隔符不因整区删除而出现连续空段
+      expect(user, isNot(contains('---\n\n---')));
+    });
+
+    test('Chat：本轮记忆合并指令注入用户消息（Agent 走阶段帧，不在这里）', () {
+      final memory = [
+        for (var i = 1; i <= 10; i++) '- $i | 第$i天 | 事件$i。',
+      ].join('\n');
+      const tier5 = Book(title: '档 5', memorySummaryRounds: 5);
+      final mergeRound = Round(
+        id: 10,
+        bookUuid: 'b1',
+        roundIndex: 10,
+        userInput: '上一轮输入',
+        aiNarrative: '上一轮正文',
+        memorySummary: memory,
+        currentTime: '第十天',
+      );
+
+      final user = promptInterface.user(PromptRequest(
+        book: tier5,
+        mode: PromptMode.chat,
+        lastRound: mergeRound,
+        userInput: '继续',
+      ));
+      expect(user, contains('创作第 11 轮：'));
+      expect(user, contains('【本轮记忆合并】'));
+      expect(user, contains('第 1~5 轮'));
+
+      // Agent 档位的合并要求走阶段帧指令，不在用户消息里
+      final agentUser = promptInterface.user(PromptRequest(
+        book: tier5,
+        mode: PromptMode.agentLv2,
+        lastRound: mergeRound,
+        userInput: '继续',
+      ));
+      expect(agentUser, isNot(contains('【本轮记忆合并】')));
+    });
+  });
+
+  group('v2 · 工具集与阶段帧', () {
+    test('工具路由与 v1 一致（Lv.1 两件 / Lv.2 六件 / Chat 联网两件）', () {
+      final lv1 = promptInterface.tools(
+        AgentToolsRequest(level: AgentModeLevel.lv1, workingCopy: copyOf()),
+      );
+      expect([for (final t in lv1) t.name], [
+        kReadHistoryToolName,
+        kEditHistoryToolName,
+      ]);
+
+      final lv2 = promptInterface.tools(
+        AgentToolsRequest(level: AgentModeLevel.lv2, workingCopy: copyOf()),
+      );
+      expect([for (final t in lv2) t.name], kStateToolNames);
+      expect(
+        fingerprint(lv2),
+        fingerprint(
+          buildStateTools(copyOf(), sections: AgentModeProfile.lv2.toolSections),
+        ),
+      );
+
+      final chatSearch = promptInterface.tools(
+        AgentToolsRequest(
+          level: AgentModeLevel.off,
+          useSearch: true,
+          search: HtmlSearchService(),
+        ),
+      );
+      expect([for (final t in chatSearch) t.name], [
+        'narrchat_webSearch',
+        'narrchat_webFetchPage',
+      ]);
+    });
+
+    test('阶段帧指令为 v2 文案（准备 / 记忆 / 正文 / 维护）', () {
+      const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
+      expect(promptInterface.stagePrepare(lv1), startsWith('【准备回合】'));
+      expect(promptInterface.stagePrepare(lv1), contains('大纲'));
+      expect(promptInterface.stageStory(lv1), startsWith('【正文回合】'));
+
+      final copy = copyOf();
+      final memory = promptInterface.stageMemory(AgentStageRequest(
+        level: AgentModeLevel.lv1,
+        workingCopy: copy,
+        first: true,
+      ));
+      expect(memory, contains('【记忆回合】'));
+      expect(memory, contains('op=append'));
+
+      final lv1State = promptInterface.stageState(const AgentStageRequest(
+        level: AgentModeLevel.lv1,
+        problems: ['memorySummary栏目本轮既未编辑也未声明无变化'],
+      ));
+      expect(lv1State, startsWith('[State-maintenance turn]'));
+      expect(lv1State, isNot(contains('narrchat_readWorldState')));
+
+      final lv2State = promptInterface.stageState(const AgentStageRequest(
+        level: AgentModeLevel.lv2,
+        problems: ['worldState栏目本轮未更新'],
+        first: false,
+      ));
+      expect(lv2State, contains('只修复下面列出的各项'));
+      expect(lv2State, contains('- worldState栏目本轮未更新'));
+    });
+
+    test('记忆帧缺工作副本 → 显式报错', () {
+      expect(
+        () => promptInterface.stageMemory(
+          const AgentStageRequest(level: AgentModeLevel.lv1),
+        ),
+        throwsArgumentError,
+      );
+    });
+  });
+
+  group('v1（回退路径）· 与旧组装流程逐字节一致', () {
+    const v1 = PromptInterfaceV1();
+
     for (final mode in PromptMode.values) {
       test('${mode.name}：system、user 与 PromptBuilder 完全一致', () {
         final request = requestOf(mode);
@@ -85,185 +403,84 @@ void main() {
           worldBookEntries: request.worldBookEntries,
           mode: mode,
         );
-
-        expect(promptInterface.system(request), online.systemPrompt);
-        expect(promptInterface.user(request), online.userPrompt);
-
-        // 内容锚点：确认不是空串 / 没有漏拼关键段。
-        expect(
-          promptInterface.system(request),
-          contains('当前模式：${mode.format.modeLabel}'),
-        );
-        expect(promptInterface.system(request), contains('测试书'));
-        expect(promptInterface.user(request), contains('我走向主殿，想要拜见掌门。'));
-        expect(promptInterface.user(request), contains('【上轮时间】'));
+        expect(v1.system(request), online.systemPrompt);
+        expect(v1.user(request), online.userPrompt);
       });
     }
 
-    test('Chat：system 含 6 个二级标题契约，Lv.1 只含 5 个（无记忆总结）', () {
-      final chat = promptInterface.system(requestOf(PromptMode.chat));
-      expect(chat, contains('6 个二级标题'));
-      expect(chat, contains('  - `## 记忆总结`'));
-
-      final lv1 = promptInterface.system(requestOf(PromptMode.agentLv1));
-      expect(lv1, contains('5 个二级标题'));
-      // Lv.1 只在「禁止输出」规则里提到记忆总结，不在允许输出的区块清单里。
-      expect(lv1, isNot(contains('  - `## 记忆总结`')));
-      expect(lv1, contains('  - `## 角色状态`'));
-    });
-  });
-
-  group('PromptInterface · 工具集路由', () {
-    test('Lv.1 = 历史一读一写（与 buildStateTools 同源）', () {
-      final tools = promptInterface.tools(
-        AgentToolsRequest(level: AgentModeLevel.lv1, workingCopy: copyOf()),
-      );
-      expect([for (final t in tools) t.name], [
-        kReadHistoryToolName,
-        kEditHistoryToolName,
-      ]);
-      expect(
-        fingerprint(tools),
-        fingerprint(
-          buildStateTools(copyOf(), sections: AgentModeProfile.lv1.toolSections),
-        ),
-      );
-    });
-
-    test('Lv.2 = 六个状态工具（读取器在前、编辑器在后）', () {
-      final tools = promptInterface.tools(
+    test('工具集与 buildStateTools 同源（含指纹）', () {
+      final lv2 = v1.tools(
         AgentToolsRequest(level: AgentModeLevel.lv2, workingCopy: copyOf()),
       );
-      expect([for (final t in tools) t.name], kStateToolNames);
       expect(
-        fingerprint(tools),
+        fingerprint(lv2),
         fingerprint(
           buildStateTools(copyOf(), sections: AgentModeProfile.lv2.toolSections),
         ),
       );
     });
 
-    test('Chat 联网循环 = 搜索 + 打开页（无工作副本 → 无状态工具）', () {
-      final tools = promptInterface.tools(
-        AgentToolsRequest(
-          level: AgentModeLevel.off,
-          useSearch: true,
-          search: HtmlSearchService(),
-        ),
-      );
-      expect([for (final t in tools) t.name], [
-        'narrchat_webSearch',
-        'narrchat_webFetchPage',
-      ]);
-    });
-
-    test('Lv.2 + 联网 = 六工具 + 两个联网工具（顺序稳定）', () {
-      final tools = promptInterface.tools(
-        AgentToolsRequest(
-          level: AgentModeLevel.lv2,
-          workingCopy: copyOf(),
-          useSearch: true,
-          search: HtmlSearchService(),
-        ),
-      );
-      expect(tools.length, kStateToolNames.length + 2);
-      expect([for (final t in tools) t.name], [
-        ...kStateToolNames,
-        'narrchat_webSearch',
-        'narrchat_webFetchPage',
-      ]);
-    });
-
-    test('注入的联网工具替身原样使用（same 实例）', () {
-      final web = WebSearchTool();
-      final fetch = FetchPageTool();
-      final tools = promptInterface.tools(
-        AgentToolsRequest(
-          level: AgentModeLevel.lv2,
-          workingCopy: copyOf(),
-          useSearch: true,
-          webSearch: web,
-          fetchPage: fetch,
-        ),
-      );
-      expect(tools[tools.length - 2], same(web));
-      expect(tools.last, same(fetch));
-    });
-
-    test('启用联网却没有抓取服务 → 显式报错（不静默回落真实服务）', () {
+    test('阶段帧指令与 AgentStageDirectives / AgentLv1PromptFormat 同源', () {
+      const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
       expect(
-        () => promptInterface.tools(
-          const AgentToolsRequest(level: AgentModeLevel.off, useSearch: true),
-        ),
-        throwsArgumentError,
-      );
-    });
-
-    test('不启用联网时只有状态工具', () {
-      final tools = promptInterface.tools(
-        AgentToolsRequest(level: AgentModeLevel.lv2, workingCopy: copyOf()),
-      );
-      expect(
-        [for (final t in tools) t.name].where((n) => n.contains('web')),
-        isEmpty,
-      );
-    });
-  });
-
-  group('PromptInterface · 阶段帧指令（与执行器同一真源）', () {
-    const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
-
-    test('准备 / 正文帧 = AgentLv1PromptFormat 的同一份文案', () {
-      expect(
-        promptInterface.stagePrepare(lv1),
+        v1.stagePrepare(lv1),
         const AgentLv1PromptFormat().prepareNote().join('\n'),
       );
       expect(
-        promptInterface.stageStory(lv1),
+        v1.stageStory(lv1),
         const AgentLv1PromptFormat().storyNote().join('\n'),
       );
-      expect(promptInterface.stagePrepare(lv1), contains('narrchat_readHistory'));
-      expect(promptInterface.stagePrepare(lv1), contains('大纲'));
-      expect(promptInterface.stageStory(lv1), contains('`## 世界状态`'));
-    });
 
-    test('记忆帧 = AgentStageDirectives 的同一份文案（缺工作副本报错）', () {
       final copy = copyOf();
-      final request = AgentStageRequest(
+      final memoryRequest = AgentStageRequest(
         level: AgentModeLevel.lv1,
         workingCopy: copy,
         first: true,
       );
       expect(
-        promptInterface.stageMemory(request),
-        AgentStageDirectives()
-            .memoryDirective(first: true, workingCopy: copy)['content'] as String,
+        v1.stageMemory(memoryRequest),
+        AgentStageDirectives().memoryDirective(
+          first: true,
+          workingCopy: copy,
+        )['content'] as String,
       );
-      expect(promptInterface.stageMemory(request), contains('【记忆阶段】'));
+
+      const problems = ['memorySummary栏目本轮既未编辑也未声明无变化'];
       expect(
-        () => promptInterface.stageMemory(lv1),
+        v1.stageState(const AgentStageRequest(
+          level: AgentModeLevel.lv2,
+          problems: problems,
+        )),
+        AgentStageDirectives().stateDirective(
+          problems: problems,
+          first: true,
+          level: AgentModeLevel.lv2,
+        )['content'] as String,
+      );
+      expect(
+        () => v1.stageMemory(lv1),
         throwsArgumentError,
       );
     });
 
-    test('维护帧 = AgentStageDirectives 的同一份文案', () {
-      const problems = ['memorySummary栏目本轮既未编辑也未声明无变化'];
-      const request = AgentStageRequest(
+    test('联网工具：替身优先 / 缺抓取服务报错', () {
+      final web = WebSearchTool();
+      final fetch = FetchPageTool();
+      final tools = v1.tools(AgentToolsRequest(
         level: AgentModeLevel.lv2,
-        problems: problems,
-      );
-      final content = promptInterface.stageState(request);
+        workingCopy: copyOf(),
+        useSearch: true,
+        webSearch: web,
+        fetchPage: fetch,
+      ));
+      expect(tools[tools.length - 2], same(web));
+      expect(tools.last, same(fetch));
       expect(
-        content,
-        AgentStageDirectives()
-            .stateDirective(
-              problems: problems,
-              first: true,
-              level: AgentModeLevel.lv2,
-            )['content'] as String,
+        () => v1.tools(
+          const AgentToolsRequest(level: AgentModeLevel.off, useSearch: true),
+        ),
+        throwsArgumentError,
       );
-      expect(content, startsWith('[State-maintenance turn]'));
-      expect(content, contains('- memorySummary栏目本轮既未编辑也未声明无变化'));
     });
   });
 
@@ -273,21 +490,5 @@ void main() {
       expect(request.format, same(mode.format));
       expect(request.format, isA<PromptFormatSpec>());
     }
-  });
-
-  test('未设置的 worldBookEntries / mods 不影响接口调用（空值可跑通）', () {
-    const request = PromptRequest(book: book, mode: PromptMode.chat);
-    expect(promptInterface.system(request), contains('当前模式：Chat'));
-    expect(promptInterface.user(request), isNotEmpty);
-    // 与显式传空值等价
-    expect(
-      promptInterface.system(request),
-      const PromptSections().buildSystemPrompt(
-        book: book,
-        worldBookEntries: '',
-        mods: null,
-        format: PromptMode.chat.format,
-      ),
-    );
   });
 }

@@ -82,17 +82,16 @@ void main() {
     expect((item['properties'] as Map).containsKey('line'), isFalse);
     expect((item['properties'] as Map).containsKey('before'), isTrue);
     // 描述明确「小幅改动用 set、noChange 是最后手段」（防模型用 noChange 偷懒）。
-    expect(edit.description, contains('one op per changed line'));
-    expect(edit.description, contains('LAST RESORT'));
+    expect(edit.description, contains('一条 `op` 对应一行改动'));
     expect(edit.description, contains('最后手段'));
     expect(edit.description, contains('narrchat_readCharacterState'));
     // 历史编辑器：每轮恰一条 + 不接受 noChange。
     final history = tools['narrchat_editHistory']!;
-    expect(history.description, contains('EXACTLY ONE entry'));
+    expect(history.description, contains('恰好一条'));
     expect(history.description, contains('不接受'));
     // 读取器描述点明「只回本栏」且时间不在快照里。
     expect(tools['narrchat_readWorldState']!.description, contains('<worldState>'));
-    expect(tools['narrchat_readWorldState']!.description, contains('ONLY'));
+    expect(tools['narrchat_readWorldState']!.description, contains('唯一正确的锚点来源'));
     expect(tools['narrchat_readHistory']!.description, contains('<memorySummary>'));
   });
 

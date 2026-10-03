@@ -15,14 +15,12 @@
 /// （可作为 v1 回退路径）。
 library;
 
-import 'agent/agent_default_tools.dart';
-import 'agent/agent_mode_profile.dart';
 import 'agent/agent_stage_directives.dart';
 import 'agent/narr_agent_tool.dart';
-import 'agent/state/state_tools.dart';
 import 'prompt_formats.dart';
 import 'prompt_interface.dart';
 import 'prompt_sections.dart';
+import 'prompt_v2_tools.dart';
 
 /// v1（现行）提示词实现的转发层。无状态，可安全复用。
 class PromptInterfaceV1 implements PromptInterface {
@@ -75,39 +73,32 @@ class PromptInterfaceV1 implements PromptInterface {
       const AgentLv1PromptFormat().storyNote().join('\n');
 
   @override
-  String stageState(AgentStageRequest request) =>
-      _directives.stateDirective(
-        problems: request.problems,
-        first: request.first,
-        level: request.level,
-      )['content'] as String;
+  String stageState(AgentStageRequest request) {
+    final workingCopy = request.workingCopy;
+    // 尚未落地的记忆合并指令行并入清单（与执行器旧行为一致：先并入、再排序截断）。
+    final problems = <String>[
+      ...request.problems,
+      if (workingCopy != null)
+        ..._directives.pendingMemoryMergeLines(
+          workingCopy: workingCopy,
+          memoryMergePlan: request.memoryMergePlan,
+        ),
+    ];
+    return _directives.stateDirective(
+      problems: problems,
+      first: request.first,
+      level: request.level,
+    )['content'] as String;
+  }
 
   @override
-  List<NarrAgentTool> tools(AgentToolsRequest request) {
-    final sections = AgentModeProfile.of(request.level).toolSections;
-    final workingCopy = request.workingCopy;
-    return [
-      if (workingCopy != null)
-        ...buildStateTools(workingCopy, sections: sections),
-      if (request.useSearch) ..._searchTools(request),
-    ];
-  }
-
-  /// 联网工具（搜索 → 打开页）：两个替身都注入时无需 [AgentToolsRequest.search]；
-  /// 否则必须给出抓取服务，避免静默回落真实 `HtmlSearchService`。
-  List<NarrAgentTool> _searchTools(AgentToolsRequest request) {
-    final needsService =
-        request.webSearch == null || request.fetchPage == null;
-    if (needsService && request.search == null) {
-      throw ArgumentError.notNull(
-        'AgentToolsRequest.search（启用联网工具时需要抓取服务）',
+  List<NarrAgentTool> tools(AgentToolsRequest request) => listPromptTools(
+        level: request.level,
+        workingCopy: request.workingCopy,
+        useSearch: request.useSearch,
+        search: request.search,
+        webSearch: request.webSearch,
+        fetchPage: request.fetchPage,
+        handlers: request.handlers,
       );
-    }
-    return buildDefaultAgentTools(
-      search: request.search,
-      webSearch: request.webSearch,
-      fetchPage: request.fetchPage,
-      handlers: request.handlers,
-    );
-  }
 }

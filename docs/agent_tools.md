@@ -38,13 +38,15 @@
 
 ### 工具描述文案规范（全部工具统一）
 
-- **形态**：`description` = **英文详细要求在前 + 简短中文概述在后**，两句之间
-  **不加【中】/ [EN] 一类语言标记**（旧状态工具用 `\n【中】…` 分隔的写法已废弃）；
-  英文给模型（长句、约束完整，遵从率更高），中文给用户核对；
-- **同一形态覆盖所有模型面向的双语文本**：除 8 个工具的 `description` 外，还包括
-  状态快照块头两行（`AgentStateWorkingCopy._renderSections`）、缺口指令
-  `StateGap.modelText`、维护轮指令与各类「本次未执行」拒绝说明
-  （`AgentRoundRunner`）——一律英文要求在前、中文概述在后、无语言标记；
+- **形态（v2 口径）**：`description` = **简明中文**——撤销中英双语，
+  英文只保留**工具名**（`narrchat_*`）、**状态块标签**
+  （`<worldState>` / `<characterState>` / `<memorySummary>`）、`op` 取值与参数名；
+  不出现成句英文，也不出现 `【中】` / `[EN]` 一类语言标记（旧的
+  「英文详细要求在前 + 简短中文概述在后」写法已废弃）；
+- **同一口径覆盖所有模型面向文本**：除 8 个工具的 `description` 外，还包括
+  状态快照块头（`AgentStateWorkingCopy._renderSections`，单行中文声明）、缺口指令
+  `StateGap.modelText`、各类「本次未执行」拒绝说明（`AgentRoundRunner`）——
+  一律中文、无语言标记；
 - **单一出处**：联网工具的**全部调用指导只在 `description` 里**
   （`narrchat_webSearch` 点明「调用后必须紧接着用 `narrchat_webFetchPage`
   打开最相关的 1~3 个结果页面读正文」，打开页工具点明「拒绝访问时换用其它
@@ -73,11 +75,11 @@
   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
   `<memorySummary>` 是读取结果的**字面块标签**；
   真源见 `prompt_formats.dart` 文件头「文案约定」（Mod 文案不受此约定约束）；
-- **参数 schema 文案**沿用同一「英文 + 中文」写法（如 `before` / `reason`）；
-- 契约由 `test/agent_tool_descriptions_test.dart`（工具描述）、
+- **参数 schema 文案**沿用同一简明中文写法（如 `before` / `reason` 的说明）；
+- 契约由 `test/agent_tool_descriptions_test.dart`（工具描述形态与调用指导）、
   `test/state_coverage_test.dart` / `test/agent_state_working_copy_test.dart`
-  （缺口指令、快照块无标记）、`test/memory_entry_format_test.dart`（条目解析 /
-  计数）与 `test/prompt_placeholders_test.dart`
+  （缺口指令、快照块为单行中文、无标记）、`test/memory_entry_format_test.dart`
+  （条目解析 / 计数）与 `test/prompt_placeholders_test.dart`
   （占位符写法与格式优先级行）守护。
 
 ### 状态工具（`state/state_tools.dart`，仅 Agent 档位注入）
@@ -113,8 +115,7 @@ Lv.1 的**记忆条目在正文之前**用 `op=append` 落入，{时间} = 准�
 
 ```
 <<<NARRCHAT_STATE round=N>>>
-… copy `before` anchors VERBATIM …（英文一行）
-… 禁止把本块重复输出到回复里 …（中文一行，无语言标记）
+这是应用侧状态真值（刚读取回来的）。`before` 锚点必须从本块逐字复制；禁止把本块重复输出到回复里。
 <worldState>…</worldState>       ← 只有被请求的那一栏
 <<<END_NARRCHAT_STATE>>>
 ```
@@ -144,19 +145,21 @@ Lv.1 的**记忆条目在正文之前**用 `op=append` 落入，{时间} = 准�
 
 `inspectState` 只看应用侧事实（`touchedSections` / `declaredUnchanged` /
 `sectionText` 与 `sectionBaseText` 比对 / 出场角色块是否逐字节未变），产出
-`StateGap` 列表：每个缺口同时给出面向模型的 `modelText`（英文指令在前 + 中文
-概述在后、**不加语言标记**，并**点名该栏对应的编辑器**）与面向用户的 `uiText`。
+`StateGap` 列表：每个缺口同时给出面向模型的 `modelText`（**简明中文**、
+不加语言标记，并**点名该栏对应的编辑器**；保留 `<worldState>` 一类小写块标签，
+维护帧清单的优先级排序依赖它）与面向用户的 `uiText`。
 模型说「已更新」不算更新。判定范围由
 调用方按档位传入：Lv.2 = 三栏 + 角色懒修改检查；Lv.1 = 仅历史且关闭懒修改检查
 （世界 / 角色由正文携带）。当前时间属于正文，不参与判定。
 
-## 提示词里的两条通用规则（仅 Agent 档位）
+## 提示词里的通用规则（仅 Agent 档位）
 
-- **思考用英文**（`agentReasoningRules`，`- ` 项目符号分条、两档共用）：reasoning 通道
-  一律英文书写；正文与工具参数保持原有语言，字面量与标题名永不翻译；
 - **读取只做一次**：Lv.1 在**准备回合**读（`narrchat_readHistory`），Lv.2 在正文
   回合读；读到的那一份结果即后续阶段的锚点来源，记忆 / 维护轮指令明示读取器
-  已禁用（重复读取被护栏拒绝），并要求**第一个维护响应就完成清单**（直接编辑）。
+  已禁用（重复读取被护栏拒绝），并要求**第一个维护响应就完成清单**（直接编辑）；
+- **不约束思考链**：任何模式都不限定思考的语言与写法；但功能性步骤照旧
+  （准备回合读史、**定下本轮大纲**、记忆先于正文、按序四步）。阶段帧指令文案
+  见 `prompt_v2_sections.dart`（v2）与 `agent_stage_directives.dart`（v1 回退）。
 
 ## 命名规范
 

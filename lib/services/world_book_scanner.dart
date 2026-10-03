@@ -7,7 +7,7 @@ import '../models/world_book_entry.dart';
 /// - 命中某条目任一关键词时，将该条目内容加入“精确匹配触发的世界书条目”；
 /// - 多个命中条目以空行分隔返回；无命中返回空字符串。
 ///
-/// 返回文本由 [PromptBuilder] 注入 System Prompt。
+/// 返回文本由提示词接口（`prompt_interface.dart`）注入 System Prompt。
 class WorldBookScanner {
   const WorldBookScanner();
 

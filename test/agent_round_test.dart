@@ -126,7 +126,7 @@ void main() {
     expect(bodies, hasLength(1));
     final body = bodies.single;
     expect(body['tool_choice'], 'auto');
-    expect(body['instructions'], contains('【AGENT 模式契约】'));
+    expect(body['instructions'], contains('这是 Agent 模式'));
     // 工具集 = 六个状态工具 + 强制开启的联网工具（时间属于正文，无时间工具）。
     final names = (body['tools'] as List)
         .cast<Map<String, dynamic>>()
@@ -258,7 +258,7 @@ void main() {
       input.any(
         (i) =>
             '${i['content']}'.contains('[State-maintenance turn]') &&
-            '${i['content']}'.contains('narrchat_readWorldState'),
+            '${i['content']}'.contains('编辑器'),
       ),
       isTrue,
     );
@@ -276,7 +276,7 @@ void main() {
       input.any(
         (i) =>
             '${i['content']}'.contains('[State-maintenance turn]') &&
-            '${i['content']}'.contains('状态维护轮'),
+            '${i['content']}'.contains('不产出任何文本'),
       ),
       isTrue,
     );
@@ -306,7 +306,7 @@ void main() {
     );
     final body = jsonDecode(preview) as Map<String, dynamic>;
     expect(body['model'], 'deepseek-flash');
-    expect(body['instructions'], contains('【AGENT 模式契约】'));
+    expect(body['instructions'], contains('这是 Agent 模式'));
     expect(body['input'], isA<List>());
     final tools = (body['tools'] as List).cast<Map<String, dynamic>>();
     expect(
@@ -691,7 +691,7 @@ void main() {
     // instructions = Lv.1 的 5 区块契约 + 历史工具契约；三帧共用同一前缀
     //（服务商上下文缓存依赖此）。
     expect('${capturedBodies.first['instructions']}',
-        contains('完整输出以下 5 个二级标题'));
+        contains('只输出 5 个二级标题'));
     expect('${capturedBodies.first['instructions']}',
         contains('narrchat_readHistory'));
     for (final b in capturedBodies.skip(1)) {

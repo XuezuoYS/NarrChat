@@ -92,7 +92,7 @@ class ChatPromptFormat implements PromptFormatSpec {
   @override
   String get modeLabel => 'Chat';
 
-  /// 6 个二级标题区块及其固定顺序（单一真源，见 [PromptBuilder.sectionOrder]）。
+  /// 6 个二级标题区块及其固定顺序（单一真源；`PromptBuilder.sectionOrder` 为其别名）。
   static const List<String> sectionOrder = [
     '剧情演绎',
     '推荐行动',

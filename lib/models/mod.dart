@@ -224,7 +224,7 @@ class Mod {
 
 /// 某本书启用 Mod 后，按置入顺序（自上而下）拼接好的四段内容。
 ///
-/// 由 [PromptBuilder] 分别注入 System Prompt 与 User Prompt。
+/// 由提示词接口（`prompt_interface.dart`）分别注入 System Prompt 与 User Prompt。
 class ModsBundle {
   final String prePrompts;
   final String postPrompts;

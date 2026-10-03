@@ -28,8 +28,8 @@ export 'state_tool_names.dart';
 /// 保留；`append` 追加到栏目末尾；`noChange` 必须附 `reason`。时间不属于任何
 /// 工具：它是正文的 `## 当前时间` 小节，由应用从正文解析写入工作副本。
 ///
-/// 工具 `description` 一律 **英文详细要求在前、简短中文概述在后**（两句之间
-/// 不加【中】一类语言标记；Agent 相关规则英文遵从率更高）。
+/// 工具 `description` 一律**简明中文**（v2 口径：撤销中英双语，英文只保留工具名
+/// `narrchat_*` 与状态块标签 `<worldState>` / `<characterState>` / `<memorySummary>`）。
 
 /// 栏目 → 读取工具名（单一真源：[state_tool_names.dart] 的常量）。
 String agentReadToolName(AgentStateSection section) => switch (section) {
@@ -99,8 +99,7 @@ abstract class _SectionReadTool implements NarrAgentTool {
         'properties': {
           'round': {
             'type': 'integer',
-            'description': 'Current story round number (used for verification '
-                'only). / 本轮轮号（仅供核对，可不传）。',
+            'description': '本轮轮号（仅供核对，可不传）。',
           },
         },
         'required': <String>[],
@@ -122,14 +121,9 @@ class NarrchatReadWorldStateTool extends _SectionReadTool {
 
   @override
   String get description =>
-      'Read back the CURRENT `<worldState>` block ONLY — the world/scene state '
-      'as of now. It is the ONLY correct anchor source for '
-      '$kEditWorldStateToolName: copy `before` VERBATIM from this result. '
-      'DO NOT echo the block in your reply (it is input, not an output '
-      'format). '
-      '只读取当前 `<worldState>` 块（截至此刻的世界/场景状态），'
-      '它是 $kEditWorldStateToolName 唯一正确的锚点来源（`before` 逐字复制）；'
-      '禁止把该块写进回复。';
+      '只读回当前 `<worldState>` 块（截至此刻的世界 / 场景状态）。'
+      '它是 $kEditWorldStateToolName 唯一正确的锚点来源，`before` 必须从这里逐字复制。'
+      '不要把这个块写进回复——它是给你读的材料，不是你要输出的格式。';
 }
 
 /// `narrchat_readCharacterState`：读取 `<characterState>` 块。
@@ -139,13 +133,9 @@ class NarrchatReadCharacterStateTool extends _SectionReadTool {
 
   @override
   String get description =>
-      'Read back the CURRENT `<characterState>` block ONLY — every character '
-      'with their `## 角色名` sub-block and attributes. It is the ONLY correct '
-      'anchor source for $kEditCharacterStateToolName: copy `before` VERBATIM '
-      'from this result. DO NOT echo the block in your reply. '
-      '只读取当前 `<characterState>` 块（各角色 `## 角色名` 小节与属性），'
-      '它是 $kEditCharacterStateToolName 唯一正确的锚点来源（`before` 逐字复制）；'
-      '禁止把该块写进回复。';
+      '只读回当前 `<characterState>` 块（每个角色的 `## 角色名` 小节与属性）。'
+      '它是 $kEditCharacterStateToolName 唯一正确的锚点来源，'
+      '`before` 必须从这里逐字复制。不要把这个块写进回复。';
 }
 
 /// `narrchat_readHistory`：读取 `<memorySummary>` 块（历史 / 记忆总结）。
@@ -155,20 +145,11 @@ class NarrchatReadHistoryTool extends _SectionReadTool {
 
   @override
   String get description =>
-      'Read back the CURRENT `<memorySummary>` block ONLY — the history: one '
-      'entry per round (`$kMemoryEntryFormat`). Read it ONCE per '
-      'round BEFORE writing anything (the past rounds are the basis of this '
-      'round\'s outline and of the new memory entry); it is the ONLY correct '
-      'anchor source for $kEditHistoryToolName, so copy `before` anchors '
-      'VERBATIM from this result. Reading it again in the same round is '
-      'refused — reuse the block already in this conversation. DO NOT echo the '
-      'block in your reply. '
-      '只读取当前 `<memorySummary>` 块（历史/记忆总结：每轮一条 '
-      '`$kMemoryEntryFormat`）：每轮**只在动笔前读一次**'
-      '（以往轮次是本轮大纲与新记忆条目的依据），'
-      '`before` 锚点必须逐字复制（$kEditHistoryToolName 唯一正确的锚点来源）；'
-      '同一轮内重复读取会被拒绝——复用对话中已有的块；'
-      '禁止把该块写进回复。\n$kMemoryEntryFormatPrecedence';
+      '只读回当前 `<memorySummary>` 块（历史 / 记忆总结：每轮一条 '
+      '`$kMemoryEntryFormat`）。每轮**只在动笔前读一次**——以往轮次是本轮大纲与'
+      '新记忆条目的依据；它是 $kEditHistoryToolName 唯一正确的锚点来源，'
+      '`before` 必须从这里逐字复制。同一轮里重复读取会被拒绝，'
+      '复用对话中已有的块；不要把这个块写进回复。\n$kMemoryEntryFormatPrecedence';
 }
 
 // -----------------------------------------------------------------------------
@@ -214,25 +195,17 @@ abstract class _SectionEditTool implements NarrAgentTool {
                 },
                 'before': {
                   'type': 'string',
-                  'description':
-                      'Verbatim anchor line(s) copied from the state snapshot '
-                          '("\\n" joins consecutive lines). Required by '
-                          'set/insertAfter/delete. 锚点：从状态快照逐字复制的行。',
+                  'description': '锚点：从该栏目读取结果里逐字复制的原文行'
+                      '（`\\n` 连接连续多行）；`set` / `insertAfter` / `delete` 必填。',
                 },
                 'newLine': {
                   'type': 'string',
-                  'description':
-                      'append/insertAfter: new line text; set: replacement; '
-                          'reset: the whole new section. '
-                          '新内容（append/insertAfter 新增行；set 替换文本；'
-                          'reset 整栏新全文）。',
+                  'description': '新内容：`append` / `insertAfter` 是新增行，'
+                      '`set` 是替换文本，`reset` 是整栏新全文。',
                 },
                 'reason': {
                   'type': 'string',
-                  'description':
-                      'Required for op=noChange: one short sentence why this '
-                          'section really did not change. '
-                          'op=noChange 必填：一句话说明本轮确实无变化的原因。',
+                  'description': '`op=noChange` 必填：一句话说明本轮确实没变的原因。',
                 },
               },
               'required': ['op'],
@@ -288,23 +261,13 @@ class NarrchatEditWorldStateTool extends _SectionEditTool {
 
   @override
   String get description =>
-      'Line-edit the WORLD STATE section (`<worldState>`). Provide ONLY '
-      'changed lines; unchanged lines are kept byte-for-byte, so NEVER '
-      're-type the whole section. Locate with a verbatim anchor, NEVER line '
-      'numbers: `before` must be copied CHARACTER-BY-CHARACTER from the '
-      '$kReadWorldStateToolName result — the tool requires a unique match and '
-      'returns this section\'s current full text on any failure, so you can '
-      're-anchor in one step. ops: append (add newLine at the END) / '
-      'set (before -> newLine) / insertAfter / delete / noChange (requires '
-      '`reason`) / reset (whole-section replace: empty section or explicit '
-      'restructure only). `edits` may carry one op PER CHANGED LINE — a new '
-      'in-story beat is a real edit, so pack the affected lines as `set` ops '
-      'instead of declaring noChange. '
-      '按行编辑**世界状态**栏目（`<worldState>`）：只提交变更行，未触及行原样保留，'
-      '禁止重抄整栏；`before` 必须从 $kReadWorldStateToolName 的结果逐字复制'
-      '（不准数行号，匹配失败会回传该栏当前全文供你重锚）；'
-      '`edits` 可放多条 op（每条对应一行改动）——正文里新发生的情节要点'
-      '就是真实编辑，不要用 noChange 回避。';
+      '按行编辑**世界状态**栏目（`<worldState>`）：只提交变更行，没动的行原样保留，'
+      '禁止重抄整栏；用原文锚点定位、**绝不数行号**：`before` 必须从 '
+      '$kReadWorldStateToolName 的结果里逐字复制（要求唯一命中，失败会回传该栏目'
+      '当前全文，让你一步重锚）。`edits` 可以放多条 `op`（每条对应一行改动）：'
+      '`append`（末尾追加）/ `set`（`before` 换成 `newLine`）/ `insertAfter` / '
+      '`delete` / `noChange`（必须写非空 `reason`）/ `reset`（仅空栏目或明确重排）。'
+      '正文里新发生的情节要点就是真实编辑，不要用 `noChange` 回避。';
 }
 
 /// `narrchat_editCharacterState`：角色状态栏目的锚定式行编辑。
@@ -314,29 +277,16 @@ class NarrchatEditCharacterStateTool extends _SectionEditTool {
 
   @override
   String get description =>
-      'Line-edit the CHARACTER STATE section (`<characterState>`). Provide '
-      'ONLY changed lines; unchanged lines (and untouched characters) are '
-      'kept byte-for-byte, so NEVER re-type the whole section. Locate with a '
-      'verbatim anchor, NEVER line numbers: `before` must be copied '
-      'CHARACTER-BY-CHARACTER from the $kReadCharacterStateToolName result '
-      '(one op per changed line). ops: append / set (before -> newLine) / '
-      'insertAfter / delete / noChange (requires `reason`) / reset (empty '
-      'section or explicit restructure only). IMPORTANT: for every named '
-      'character in this round\'s story walk their mutable lines (好感度 / '
-      '当前心理 / 当前状态 / 当前位置 / 伤势 / 物品 / 关系…): if the story shows '
-      'ANYTHING new — a reaction, a glance, a thought, a move, an item — `set` '
-      'that line as an op in ONE call; op=noChange is the LAST RESORT and only '
-      'correct for a character the story merely mentions with no new '
-      'information at all. A rejected edit returns the section\'s current '
-      'full text so you can re-anchor in one step. '
       '按行编辑**角色状态**栏目（`<characterState>`）：只提交变更行，'
-      '未触及的行与角色原样保留，禁止重抄整栏；`before` 必须从 '
-      '$kReadCharacterStateToolName 的结果逐字复制（一条 op 对应一行改动）。'
+      '没动的行与角色原样保留，禁止重抄整栏；用原文锚点定位、**绝不数行号**：'
+      '`before` 必须从 $kReadCharacterStateToolName 的结果里逐字复制'
+      '（一条 `op` 对应一行改动）。'
       '**禁止懒修改**：对本轮出场的每个具名角色逐行核对可变字段'
-      '（好感度/当前心理/当前状态/当前位置/伤势/物品/关系…），正文里有任何新信息'
-      '（一个反应、一句心理、一次移动）就要用 op=set 如实写入；'
-      'op=noChange 是最后手段，仅当该角色只是被提及、毫无新信息时才可用'
-      '（必须附 reason）。';
+      '（好感度 / 当前心理 / 当前状态 / 当前位置 / 伤势 / 物品 / 关系…），'
+      '正文里有任何新信息（一个反应、一句心理、一次移动）就用 `op=set` 如实写入；'
+      '`noChange` 是最后手段，只有该角色只是被提及、毫无新信息时才用'
+      '（必须写 `reason`）。`op` 取值同世界状态（`append` / `set` / `insertAfter` / '
+      '`delete` / `noChange` / `reset`）。';
 }
 
 /// `narrchat_editHistory`：历史（记忆总结）栏目的锚定式行编辑。
@@ -346,33 +296,14 @@ class NarrchatEditHistoryTool extends _SectionEditTool {
 
   @override
   String get description =>
-      'Line-edit the HISTORY section (`<memorySummary>`): one memory entry per '
-      'round, format `$kMemoryEntryFormat`. Every round must end '
-      'with EXACTLY ONE entry for this round — add it with op=append; the '
-      '{时间} is this round\'s planned in-story time, and the story\'s '
-      '`## 当前时间` must match it (whichever comes first, keep the two '
-      'consistent). op=noChange is NOT accepted here; '
-      'op=set / delete are for correcting existing entries — and, when this '
-      'round\'s instructions require a merge, for rewriting a range as ONE '
-      'range entry. Merging '
-      'several entries into ONE range entry uses the range form '
-      '`$kMemoryMergedEntryFormat` (a single op=set whose `before` is those '
-      'entry lines joined with \\n) — do it ONLY when this round\'s '
-      'instructions ask for a merge. Locate with a '
-      'verbatim anchor copied CHARACTER-BY-CHARACTER from the '
-      '$kReadHistoryToolName result — NEVER line numbers. A rejected edit '
-      'returns this section\'s current full text so you can re-anchor in one '
-      'step. '
-      '按行编辑**历史/记忆总结**栏目（`<memorySummary>`）：每轮一条 '
-      '`$kMemoryEntryFormat`，本轮必须用 op=append 追加'
-      '**恰好一条**（{轮次} = 本轮轮号（裸数字）；'
-      '{时间} = 本轮计划的故事内时间，正文 `## 当前时间` 与之一致，'
-      '二者谁先写出就以谁为准）；'
-      '本栏**不接受** op=noChange，op=set / delete 用于修正既有条目'
-      '——以及在本轮指令要求合并时把区间改写为一条合并条目；'
-      '把若干条合并为一条区间条目用 `$kMemoryMergedEntryFormat`'
-      '（一条 op=set，`before` = 那几行条目原文用 \\n 连接）——'
-      '**仅在本轮指令要求合并时才做**；'
-      '`before` 必须从 $kReadHistoryToolName 的结果逐字复制，绝不数行号'
+      '按行编辑**历史 / 记忆总结**栏目（`<memorySummary>`）：每轮一条 '
+      '`$kMemoryEntryFormat`，本轮必须用 `op=append` 追加**恰好一条**'
+      '（`{轮次}` = 本轮轮号的裸数字；`{时间}` = 本轮计划的故事内时间，'
+      '正文 `## 当前时间` 与它一致）；本栏**不接受** `op=noChange`；'
+      '`op=set` / `delete` 用于修正既有条目，以及在本轮指令要求合并时'
+      '把区间改成一条合并条目 `$kMemoryMergedEntryFormat`'
+      '（一条 `op=set`，`before` = 那几行条目原文用 \\n 连接）——'
+      '仅在本轮指令要求合并时才做。'
+      '`before` 必须从 $kReadHistoryToolName 的结果里逐字复制，绝不数行号'
       '（匹配失败会回传该栏当前全文供你重锚）。\n$kMemoryEntryFormatPrecedence';
 }

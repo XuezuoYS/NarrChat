@@ -338,7 +338,7 @@ void main() {
           i['type'] == 'function_call_output' &&
           i['call_id'] == 'rs2_worldState',
     );
-    expect('${rs2Output['output']}', contains('Nothing was read again'));
+    expect('${rs2Output['output']}', contains('本次不再重复读取'));
     expect('${rs2Output['output']}', contains(kEditWorldStateToolName));
     expect('${rs2Output['output']}', isNot(contains('NARRCHAT_STATE')));
     // 回传说明：中文概述在英文要求之后，无 [EN] / 【中】 语言标记。
@@ -681,11 +681,11 @@ void main() {
     final last = h.requests[1].items.last;
     expect(last['role'], 'user');
     expect('${last['content']}', contains('[State-maintenance turn]'));
-    expect('${last['content']}', contains(kReadWorldStateToolName));
+    expect('${last['content']}', contains('读取器已禁用'));
     expect('${last['content']}', contains(kEditHistoryToolName));
-    // 指令形态：英文要求在前、中文概述在后，**不加语言标记**。
+    // 指令形态：简明中文（必要英文只保留回合标记与工具名），不加语言标记。
     expect('${last['content']}', startsWith('[State-maintenance turn]'));
-    expect('${last['content']}', contains('状态维护轮：正文已在上方完成'));
+    expect('${last['content']}', contains('正文已在上方完成'));
     for (final marker in const ['[EN]', '【中】']) {
       expect('${last['content']}', isNot(contains(marker)), reason: marker);
     }
@@ -1145,7 +1145,7 @@ void main() {
     // 准备帧指令：本阶段先读历史一次（这里由脚本自己扮演模型）。
     expect(
       '${h.requests[0].items.last['content']}',
-      contains('[Prepare]'),
+      contains('【准备回合】'),
     );
     expect(
       '${h.requests[0].items.last['content']}',
@@ -1172,7 +1172,7 @@ void main() {
       (i) => i['type'] == 'function_call_output' && i['call_id'] == 'h1',
     );
     final storyNoteAt = storyItems.indexWhere(
-      (i) => '${i['content']}'.startsWith('[Story]'),
+      (i) => '${i['content']}'.startsWith('【正文回合】'),
     );
     expect(readAt, greaterThanOrEqualTo(0));
     expect(editAt, greaterThan(readAt));
@@ -1373,12 +1373,12 @@ void main() {
     // 每帧都重发记忆指令：首帧与「仍缺」帧的文案不同（不重复回传失败说明）。
     expect(
       '${h.requests[1].items.last['content']}',
-      contains('[History entry · before the story]'),
+      contains('【记忆回合】'),
     );
     for (final at in const [2, 3]) {
       expect(
         '${h.requests[at].items.last['content']}',
-        contains('[History entry · still missing]'),
+        contains('【记忆回合·仍缺本轮条目】'),
       );
       expect(
         '${h.requests[at].items.last['content']}',
@@ -1389,7 +1389,7 @@ void main() {
     final directive = '${h.requests[5].items.last['content']}';
     expect(directive, contains('[State-maintenance turn]'));
     expect(directive, contains(kEditHistoryToolName));
-    expect(directive, contains('op=noChange is NOT accepted'));
+    expect(directive, contains('历史栏不接受'));
     expect(directive, isNot(contains(kEditCharacterStateToolName)));
     expect(directive, isNot(contains(kEditWorldStateToolName)));
     // 条目由维护轮补上 → 无残留警告。

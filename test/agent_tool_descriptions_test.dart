@@ -7,8 +7,10 @@ import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 
-/// Agent 工具 `description` 的文案契约（联网 2 个 + 状态 6 个共用同一形态）：
-/// **英文详细要求在前、简短中文概述在后**，两者之间不加【中】一类语言标记。
+/// Agent 工具 `description` 的 **v2** 文案契约（联网 2 个 + 状态 6 个共用同一形态）：
+/// **简明中文**——撤销中英双语，英文只保留工具名（`narrchat_*`）、状态块标签
+/// （`<worldState>` / `<characterState>` / `<memorySummary>`）与参数 / `op` 取值；
+/// 不出现语言标记，也不出现成句英文。
 ///
 /// 联网工具的调用指导（何时调用、搜索后必须打开页面）只在这里声明——
 /// system 不再注入联网指令，故本文件的断言就是那条指令的落点。
@@ -38,22 +40,23 @@ void main() {
         ),
       ];
 
-  test('描述形态统一：英文详细要求在前、中文概述收尾，无语言标记', () {
+  test('描述形态统一：简明中文，英文只保留工具名 / 块标签 / 取值', () {
     for (final tool in allTools()) {
       final description = tool.description;
       final reason = '${tool.name}：$description';
-      // 旧的显式语言标记已全部移除。
+      // 旧的语言标记与成句英文都已移除。
       for (final marker in const ['【中】', '【EN】', '[中]', '[EN]']) {
         expect(description, isNot(contains(marker)), reason: reason);
       }
-      // 英文详细要求在前（以英文开头）、中文概述在后（以中文句号收尾）。
-      expect(RegExp(r'^[A-Za-z]').hasMatch(description), isTrue, reason: reason);
-      expect(description.trimRight(), endsWith('。'), reason: reason);
-      // 中英两段都在（英文词 + 中文句子）。
-      expect(RegExp(r'[A-Za-z]{3,}').hasMatch(description), isTrue,
-          reason: reason);
+      expect(
+        RegExp(r'[A-Za-z]+ [A-Za-z]+ [A-Za-z]+').hasMatch(description),
+        isFalse,
+        reason: '不应出现成句英文：$reason',
+      );
+      // 中文为主，并以中文句号收尾。
       expect(RegExp(r'[\u4e00-\u9fff]').hasMatch(description), isTrue,
           reason: reason);
+      expect(description.trimRight(), endsWith('。'), reason: reason);
     }
   });
 
@@ -62,19 +65,19 @@ void main() {
     final search = tools['narrchat_webSearch']!.description;
     final fetch = tools['narrchat_webFetchPage']!.description;
 
-    // 搜索：主动使用（不必等用户点名）+ 摘要不足以支撑创作 + 下一步工具。
-    expect(search, contains('without waiting for the user'));
-    expect(search, contains('summary alone is not sufficient'));
+    // 搜索：主动使用（不必等主人点名）+ 摘要不足以支撑创作 + 下一步工具。
+    expect(search, contains('主动使用'));
+    expect(search, contains('不必等主人点名'));
+    expect(search, contains('只看摘要不足以支撑创作'));
     expect(search, contains('narrchat_webFetchPage'));
-    expect(search, contains('联网搜索获取真实世界信息'));
     expect(search, contains('阅读正文'));
 
-    // 打开页面：搜索的配套下游 + 拒绝访问时换页 + 不得只依赖摘要。
+    // 打开页面：搜索的配套下游 + 拒绝访问时换页 + 不得只看摘要。
     expect(fetch, contains('narrchat_webSearch'));
-    expect(fetch, contains('MUST open'));
+    expect(fetch, contains('配套下游'));
+    expect(fetch, contains('只看摘要不算数'));
     expect(fetch, contains('HTTP 4xx/5xx'));
-    expect(fetch, contains('打开网页链接并返回页面正文'));
-    expect(fetch, contains('不得只凭摘要'));
+    expect(fetch, contains('改用其它结果页面'));
     // 截取长度随构造参数（默认 30000）出现在描述里。
     expect(fetch, contains('30000'));
   });
@@ -89,40 +92,47 @@ void main() {
     for (final (read, edit) in pairs) {
       // 读取器：只回本栏、是编辑器的唯一锚点来源。
       expect(tools[read]!.description, contains(edit), reason: read);
-      expect(tools[read]!.description, contains('ONLY'), reason: read);
+      expect(tools[read]!.description, contains('唯一正确的锚点来源'), reason: read);
       expect(tools[read]!.description, contains('逐字复制'), reason: read);
-      // 编辑器：逐字锚点、禁止行号（中英两边都点明）。
+      // 编辑器：逐字锚点、禁止数行号。
       expect(tools[edit]!.description, contains(read), reason: edit);
-      expect(tools[edit]!.description, contains('NEVER line numbers'),
-          reason: edit);
-      expect(tools[edit]!.description, contains('before'), reason: edit);
+      expect(tools[edit]!.description, contains('绝不数行号'), reason: edit);
+      expect(tools[edit]!.description, contains('`before`'), reason: edit);
     }
-    // 编辑器各自的英文硬要求（沿用原描述的措辞，防改写时丢失约束）。
+    // 编辑器各自的硬要求（防改写时丢失约束）。
     expect(
       tools[kEditWorldStateToolName]!.description,
-      contains('NEVER re-type the whole section'),
+      contains('禁止重抄整栏'),
     );
     expect(
       tools[kEditCharacterStateToolName]!.description,
-      contains('NEVER re-type the whole section'),
+      contains('禁止重抄整栏'),
     );
     expect(
       tools[kEditCharacterStateToolName]!.description,
-      contains('LAST RESORT'),
+      contains('禁止懒修改'),
+    );
+    expect(
+      tools[kEditCharacterStateToolName]!.description,
+      contains('最后手段'),
     );
     expect(
       tools[kEditHistoryToolName]!.description,
-      contains('EXACTLY ONE entry'),
-    );
-    // 状态类栏目「只改变更行」的中文概述同样保留。
-    expect(
-      tools[kEditWorldStateToolName]!.description,
-      contains('禁止重抄整栏'),
-    );
-    expect(
-      tools[kEditCharacterStateToolName]!.description,
-      contains('禁止重抄整栏'),
+      contains('恰好一条'),
     );
     expect(tools[kEditHistoryToolName]!.description, contains('不接受'));
+    // 状态块标签照旧出现在描述里（模型据此定位锚点来源）。
+    expect(
+      tools[kReadWorldStateToolName]!.description,
+      contains('<worldState>'),
+    );
+    expect(
+      tools[kReadCharacterStateToolName]!.description,
+      contains('<characterState>'),
+    );
+    expect(
+      tools[kReadHistoryToolName]!.description,
+      contains('<memorySummary>'),
+    );
   });
 }

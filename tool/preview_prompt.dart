@@ -1,8 +1,14 @@
 // 预览实际生成的 Prompt（仅用于核对，非应用运行）。
 // 运行：dart run tool/preview_prompt.dart
+//
+// 只用**纯 Dart** 的文本层（`prompt_v2_build.dart` + `prompt_text.dart`），
+// 因此可以在 Flutter 之外运行；这里打印的就是 v2 真实发送的 system / user 文本。
+// 工具清单与阶段帧指令需要应用上下文，请在应用内用「预览请求体」查看。
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
-import 'package:narrchat/services/prompt_builder.dart';
+import 'package:narrchat/services/prompt_formats.dart';
+import 'package:narrchat/services/prompt_text.dart';
+import 'package:narrchat/services/prompt_v2_build.dart';
 import 'package:narrchat/utils/constants.dart';
 
 void main() {
@@ -29,8 +35,12 @@ void main() {
         '- 2 | 第三天 午时 | 主角在宗门大比中获胜，苏清月担忧其伤势。',
     currentTime: '第三天 午时',
   );
-  final bundle = const PromptBuilder().build(
+  // 模式可改：chat / agentLv1 / agentLv2（Agent 档位的阶段帧指令在应用内查看）。
+  const mode = PromptMode.chat;
+  const builder = PromptV2Build();
+  final request = PromptRequest(
     book: book,
+    mode: mode,
     lastRound: lastRound,
     userInput: '我收剑而立，看向山门方向。',
     worldBookEntries: '青云宗是北域第一大派，护山大阵每十年开启一次。',
@@ -38,9 +48,9 @@ void main() {
   // ignore: avoid_print
   print('==================== SYSTEM ====================');
   // ignore: avoid_print
-  print(bundle.systemPrompt);
+  print(builder.system(request));
   // ignore: avoid_print
   print('\n==================== USER ====================');
   // ignore: avoid_print
-  print(bundle.userPrompt);
+  print(builder.user(request));
 }

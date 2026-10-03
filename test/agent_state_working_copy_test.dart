@@ -323,15 +323,15 @@ void main() {
         copy(roundIndex: 1).renderSection(AgentStateSection.worldState),
         contains('<worldState empty="true"></worldState>'),
       );
-      // 输入身份声明（防止把快照块当成输出模板复读）：块头之后**英文行在前、
-      // 中文行在后**，两行都不带 [EN] / 【中】 语言标记。
-      expect(world, contains('it is input, not an output format'));
+      // 输入身份声明（防止把快照块当成输出模板复读）：块头之后是**单行中文**声明，
+      // 不带 [EN] / 【中】 语言标记，也不再有英文行。
       expect(world, contains('它是输入，不是输出格式'));
       expect(world, isNot(contains('[EN]')));
       expect(world, isNot(contains('【中】')));
       final lines = world.split('\n');
-      expect(lines[1], startsWith('This is the app-side state truth'));
-      expect(lines[2], startsWith('这是应用侧状态真值'));
+      expect(lines[1], startsWith('这是应用侧状态真值'));
+      // 声明只有一行（v2 口径：撤销中英双语）。
+      expect(lines[2], startsWith('<worldState>'));
     });
 
     test('首轮渲染与库快照同源（工作副本基座 = 库内快照）', () {

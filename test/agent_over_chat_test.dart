@@ -180,7 +180,7 @@ void main() {
     expect(body1['tool_choice'], 'auto');
     final messages1 = (body1['messages'] as List).cast<Map<String, dynamic>>();
     expect(messages1.first['role'], 'system');
-    expect((messages1.first['content'] as String?), contains('【AGENT 模式契约】'));
+    expect((messages1.first['content'] as String?), contains('这是 Agent 模式'));
     final tools = toolSchemas(body1);
     expect(
       tools.map((t) => t['name']),
@@ -223,7 +223,7 @@ void main() {
           m['role'] == 'user' &&
           (m['content'] as String? ?? '').contains('State-maintenance turn'),
     );
-    expect((directive['content'] as String?), contains('narrchat_readWorldState'));
+    expect((directive['content'] as String?), contains('读取器已禁用'));
     expect((directive['content'] as String?), contains('narrchat_editHistory'));
 
     // 落库：状态来自工作副本合并（工具落地），正文为标题帧内容。
@@ -319,7 +319,7 @@ void main() {
     }
     final system = (bodies.first['messages'] as List).first as Map<String, dynamic>;
     expect(system['role'], 'system');
-    expect('${system['content']}', contains('完整输出以下 5 个二级标题'));
+    expect('${system['content']}', contains('只输出 5 个二级标题'));
     expect('${system['content']}', contains('narrchat_readHistory'));
 
     // 记忆帧的工具调用在 Chat 通道转为合法帧会话：assistant 携带 tool_calls、

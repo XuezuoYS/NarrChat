@@ -6,9 +6,9 @@ import '../ai_response_parser.dart';
 import '../ai_service.dart';
 import '../memory_merge_planner.dart';
 import '../prompt_formats.dart';
+import '../prompt_interface.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
-import 'agent_stage_directives.dart';
 import 'narr_agent_tool.dart';
 import 'reasoning_replay.dart';
 import 'state/agent_state_working_copy.dart';
@@ -355,9 +355,9 @@ class AgentRoundRunner {
   final void Function(AgentToolOutcome outcome)? onToolStarted;
   final void Function(AgentToolOutcome outcome)? onToolFinished;
 
-  /// 阶段帧指令的**唯一真源**（与 `prompt_interface` 的实现共用同一份文案）：
-  /// 执行器只决定「何时发哪一帧」，文案构建全部收敛在 [AgentStageDirectives]。
-  static const AgentStageDirectives _stageDirectives = AgentStageDirectives();
+  /// 阶段帧指令 / 工具集的**唯一取用入口**（`prompt_interface.dart`，当前绑定 v2）：
+  /// 执行器只决定「何时发哪一帧」，帧指令文案与工具清单都由接口层给出。
+  static const PromptInterface _prompt = promptInterface;
 
   // ---- 运行期状态（每次 [run] 重置）----
   List<Map<String, dynamic>> _items = [];
@@ -440,11 +440,11 @@ class AgentRoundRunner {
     final problems = [
       ..._modelProblems,
       for (final g in gaps) g.modelText,
-      // 档位驱动的记忆合并：正文之后仍未落地 → 并入维护轮问题清单
-      //（即使无缺口，也会因此强制发起一次维护轮）。
-      ..._pendingMemoryMergeLines(),
     ];
-    final needStateTurn = story.isNotEmpty && problems.isNotEmpty;
+    // 档位驱动的记忆合并：正文之后仍未落地 → 即使无缺口也强制发起一次维护轮
+    //（合并指令文案由接口层按 workingCopy + memoryMergePlan 生成）。
+    final needStateTurn =
+        story.isNotEmpty && (problems.isNotEmpty || _hasPendingMemoryMerge);
     if (needStateTurn) {
       await _runStateStage(
         stream: stream,
@@ -538,7 +538,9 @@ class AgentRoundRunner {
   ) async {
     _items.add({
       'role': 'user',
-      'content': const AgentLv1PromptFormat().prepareNote().join('\n'),
+      'content': _prompt.stagePrepare(
+        AgentStageRequest(level: profile.level),
+      ),
     });
     for (var i = 0; i < maxPrepFrames; i++) {
       final gate = _FrameGate(stage: AgentStage.prepare, sink: _sink);
@@ -624,24 +626,26 @@ class AgentRoundRunner {
         isMemoryMergeApplied(workingCopy.memorySummary, plan);
   }
 
-  /// 尚未落地的「记忆合并」指令行（无动作 / 已落地 → 空）。
+  /// 是否仍有未落地的「记忆合并」要求（仅用于维护轮**循环控制**）。
   ///
-  /// 判定真源 = [AgentStageDirectives.pendingMemoryMergeLines]：Lv.1 记忆阶段帧与
-  /// Lv.2 维护轮问题清单共用同一判定（以工作副本当前文本为准）。
-  List<String> _pendingMemoryMergeLines() =>
-      _stageDirectives.pendingMemoryMergeLines(
-        workingCopy: workingCopy,
-        memoryMergePlan: memoryMergePlan,
-      );
+  /// 合并指令的**文案**由 `_prompt.stageState` 按 `workingCopy` +
+  /// `memoryMergePlan` 生成（v1 / v2 各一份），这里只判「是否还要继续发帧」。
+  bool get _hasPendingMemoryMerge {
+    final plan = memoryMergePlan;
+    if (plan == null || !plan.hasAction) return false;
+    return !isMemoryMergeApplied(workingCopy.memorySummary, plan);
+  }
 
-  /// 记忆阶段指令（真源 = [AgentStageDirectives.memoryDirective]，与系统契约、
-  /// 用户消息、`prompt_interface` 的实现同一份文案）。
-  Map<String, dynamic> _memoryDirective({required bool first}) =>
-      _stageDirectives.memoryDirective(
-        first: first,
-        workingCopy: workingCopy,
-        memoryMergePlan: memoryMergePlan,
-      );
+  /// 记忆阶段指令（文案真源 = `promptInterface`；v1 = 双语帧指令，v2 = 中文帧指令）。
+  Map<String, dynamic> _memoryDirective({required bool first}) => {
+        'role': 'user',
+        'content': _prompt.stageMemory(AgentStageRequest(
+          level: profile.level,
+          workingCopy: workingCopy,
+          memoryMergePlan: memoryMergePlan,
+          first: first,
+        )),
+      };
 
   // ---------------------------------------------------------------------------
   // 正文阶段
@@ -666,7 +670,9 @@ class AgentRoundRunner {
     if (profile.level == AgentModeLevel.lv1) {
       _items.add({
         'role': 'user',
-        'content': const AgentLv1PromptFormat().storyNote().join('\n'),
+        'content': _prompt.stageStory(
+          AgentStageRequest(level: profile.level),
+        ),
       });
     }
     for (var i = 0; i < maxStoryFrames; i++) {
@@ -737,9 +743,9 @@ class AgentRoundRunner {
         final gaps = _gaps(_storyForChecks);
         pending = [for (final g in gaps) g.modelText];
       }
-      // 档位要求的记忆合并仍未落地 → 继续修复帧（与缺口同一循环、同一帧数上限）。
-      pending.addAll(_pendingMemoryMergeLines());
-      if (pending.isEmpty) return;
+      // 档位要求的记忆合并仍未落地 → 继续修复帧（与缺口同一循环、同一帧数上限）；
+      // 合并指令行由接口层生成（见 [_hasPendingMemoryMerge]）。
+      if (pending.isEmpty && !_hasPendingMemoryMerge) return;
       // 只要清单还有缺项就继续下一帧修复：模型「空手帧」（只回文本/只回读
       // 取器）不再提前结束整轮——记忆/角色这类缺项应得到补修机会，帧数
       // 上限（maxStateFrames）兜底。
@@ -774,11 +780,16 @@ class AgentRoundRunner {
     List<String> problems, {
     required bool first,
   }) =>
-      _stageDirectives.stateDirective(
-        problems: problems,
-        first: first,
-        level: profile.level,
-      );
+      {
+        'role': 'user',
+        'content': _prompt.stageState(AgentStageRequest(
+          level: profile.level,
+          workingCopy: workingCopy,
+          memoryMergePlan: memoryMergePlan,
+          first: first,
+          problems: problems,
+        )),
+      };
 
   // ---------------------------------------------------------------------------
   // 帧调用（含协议兼容降级）
@@ -1121,11 +1132,6 @@ class AgentRoundRunner {
     // 阶段不同，「该干什么」不同：记忆帧只接受历史编辑器；维护帧接受清单里的
     // 编辑器（Lv.1 只有历史，Lv.2 可能是其一）。
     final onlyHistory = stage == AgentStage.memory;
-    final action = onlyHistory
-        ? 'then call $editTool NOW in this same turn ($editTool is the only '
-            'call accepted here)'
-        : 'then call the editor for each listed section NOW in this same turn '
-            '($editTool for this one)';
     final actionZh = onlyHistory
         ? '并在本回合直接调用 $editTool（本回合只接受编辑器调用）'
         : '并在本回合直接按清单调用对应编辑器（本栏用 $editTool）';
@@ -1137,13 +1143,7 @@ class AgentRoundRunner {
       applied: false,
       message: '本轮已提供该栏目全文，本阶段不再重复读取',
       modelOutput:
-          'You ALREADY have this section\'s full text in this '
-              'conversation — it was returned by your own read earlier this '
-              'round (writing the story / the outline changed nothing), and the '
-              'section never changes except through your edits. Nothing was '
-              'read again: copy `before` anchors VERBATIM from the '
-              '`<${section.tag}>` block already above, $action. '
-              '该栏目的全文**已在对话中**（你本轮早先自己读取的结果；'
+          '该栏目的全文**已在对话中**（你本轮早先自己读取的结果；'
               '写正文 / 写大纲不会改变状态，只有编辑会），本次不再重复读取：'
               '请直接从上面已有的 `<${section.tag}>` 块**逐字复制** `before` 锚点，'
               '$actionZh。',
