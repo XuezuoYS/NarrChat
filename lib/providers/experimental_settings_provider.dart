@@ -7,9 +7,10 @@ import '../services/local_config_service.dart';
 ///
 /// 目前仅含「Agent 模式」档位（默认关闭 [AgentModeLevel.off]）：它是独立于
 /// 平台接入协议的生成功能档位——
-/// - **Lv.1**：仅历史（记忆总结）工具 + 联网；每轮四步——准备阶段先调用
-///   `narrchat_readHistory` 并定下本轮大纲 → 记忆阶段用 `narrchat_editHistory`
-///   补本轮记忆条目（**先于正文**落地）→ 正文阶段输出 5 个区块（排除
+/// - **Lv.1**：仅历史（记忆总结）工具 + 联网；每轮三段——调研阶段读一次
+///   `narrchat_readHistory`、需要时联网（不写大纲）→ 记忆阶段**同一回合**内推演
+///   剧情定大纲并用 `narrchat_editHistory` 补本轮记忆条目（**先于正文**落地）→
+///   正文阶段输出 5 个区块（排除
 ///   `## 记忆总结`）；维护轮只在记忆没落地时兜底；
 /// - **Lv.2**：完整 Agent（六个状态工具 `narrchat_readWorldState` /
 ///   `narrchat_editWorldState` / `narrchat_readCharacterState` /

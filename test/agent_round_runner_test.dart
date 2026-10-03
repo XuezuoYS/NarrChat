@@ -992,13 +992,13 @@ void main() {
   // ---------------------------------------------------------------------------
   // Lv.1（仅历史工具 + 5 区块正文）
   //
-  // 四步流程：准备（读史 + 大纲）→ 记忆（条目**先于正文**落地）→
+  // 三段流程：调研（读史 + 按需联网）→ 记忆（同回合推演 + 条目**先于正文**落地）→
   // 正文（唯一采纳 / 上屏阶段）→ 缺口驱动的维护轮（兜底）。
   // 工具调用靠帧指令驱动，任何帧都不发送 tool_choice。
   // ---------------------------------------------------------------------------
 
-  /// Lv.1 准备帧：只有大纲文本、**无工具调用** → 准备阶段立即结束
-  /// （准备阶段文本不上屏、不采纳）。
+  /// Lv.1 调研帧：无工具调用（联网结束）→ 调研阶段立即结束
+  /// （调研阶段文本不上屏、不采纳）。
   AiCallResult lv1PrepareTurn({
     String outline = '本轮大纲：主角前往主峰，结束时间 = 第二天 申时。',
     List<AiToolCall> toolCalls = const [],
@@ -1011,7 +1011,7 @@ void main() {
         responseId: 'resp_prep',
       );
 
-  /// Lv.1 准备帧：先读一次历史（读取器不是编辑器 → 准备阶段继续到下一帧）。
+  /// Lv.1 调研帧：先读一次历史（只读帧 → 调研阶段就此结束，直接进入记忆阶段）。
   AiCallResult lv1PrepareReadTurn(String id) => AiCallResult(
         content: '',
         toolCalls: [readCall(id, AgentStateSection.memorySummary)],
@@ -1067,9 +1067,7 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      // 把脚本钉在「准备恰好一帧」上：准备阶段本来会在模型继续调工具时循环，
-      // 这里用 maxPrepFrames = 1 让第一帧（读史）后即进入记忆阶段。
-      maxPrepFrames: 1,
+      // 无需 maxPrepFrames 限制：本帧只调了读取器（读史）→ 调研阶段立即结束。
       script: [
         lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
@@ -1080,7 +1078,7 @@ void main() {
 
     final result = await run(h.runner);
 
-    // 三帧固定顺序：准备 → 记忆（思考降为 low）→ 正文。
+    // 三帧固定顺序：调研 → 记忆（思考降为 low）→ 正文。
     expect(
       h.requests.map((r) => r.stage).toList(),
       [AgentStage.prepare, AgentStage.memory, AgentStage.story],
@@ -1088,10 +1086,10 @@ void main() {
     expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
     expect(h.requests[0].stateThinkingEffort, isNull);
     expect(h.requests[2].stateThinkingEffort, isNull);
-    // 准备帧指令：本阶段先读历史一次（这里由脚本自己扮演模型）。
+    // 调研帧指令：本阶段只做调研（读历史一次），不产出大纲。
     expect(
       '${h.requests[0].items.last['content']}',
-      contains('【准备回合】'),
+      contains('【调研回合】'),
     );
     expect(
       '${h.requests[0].items.last['content']}',
@@ -1150,12 +1148,75 @@ void main() {
     expect(copy.currentTime, '第二天 申时');
   });
 
+  test('Lv.1：调研阶段——本帧只读史即结束（无联网一轮恰好 3 帧）', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      script: [lv1PrepareReadTurn('p1'), lv1HistoryTurn('h1'), lv1StoryTurn()],
+    );
+
+    final result = await run(h.runner);
+
+    // 只读帧（读完历史、没有联网意图）⇒ 不再等模型「收手」：中间那一帧
+    // 正是模型复述大纲的地方，现在直接进入记忆阶段。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.memory, AgentStage.story],
+      reason: '无联网一轮 = 调研 1 帧 + 记忆 1 帧 + 正文 1 帧',
+    );
+    expect(result.frames, 3);
+    expect(result.warnings, isEmpty);
+    expect(copy.memorySummary, contains('第2轮'));
+  });
+
+  test('Lv.1：调研阶段——含联网调用的帧把阶段留住，直到本帧不再调工具', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      level: AgentModeLevel.lv1,
+      script: [
+        // 调研帧 1：读史 + 发起搜索（搜索不是读取器 → 调研阶段继续）。
+        AiCallResult(
+          content: '',
+          toolCalls: [
+            readCall('p1', AgentStateSection.memorySummary),
+            const AiToolCall(
+              id: 'w1',
+              name: 'narrchat_webSearch',
+              arguments: {'query': '青云宗'},
+            ),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_w',
+        ),
+        // 调研帧 2：不再调工具（联网结束）→ 调研阶段收束。
+        lv1PrepareTurn(),
+        lv1HistoryTurn('h1'),
+        lv1StoryTurn(),
+      ],
+    );
+
+    await run(h.runner);
+
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [
+        AgentStage.prepare,
+        AgentStage.prepare,
+        AgentStage.memory,
+        AgentStage.story,
+      ],
+      reason: '联网帧不结束调研阶段：留给模型多步搜索 / 打开页面',
+    );
+  });
+
   test('Lv.1：会话累积顺序——记忆条目先于正文 assistant 回传（续写帧可见）', () async {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      maxPrepFrames: 1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
@@ -1197,7 +1258,6 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      maxPrepFrames: 1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
@@ -1224,7 +1284,6 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      maxPrepFrames: 1,
       script: [
         lv1PrepareReadTurn('p1'),
         // 记忆帧违规抢写正文（`## 剧情演绎`）+ 正常追加本轮条目。
@@ -1285,7 +1344,6 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      maxPrepFrames: 1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1EmptyTurn('（记忆帧 1：只回文本）'),
@@ -1348,7 +1406,6 @@ void main() {
     final h = harness(
       copy: copy,
       level: AgentModeLevel.lv1,
-      maxPrepFrames: 1,
       script: [
         lv1PrepareReadTurn('p1'),
         // 记忆帧：多此一举地再读一遍历史（本轮已提供全文 → 被拒）+ 正常编辑。
@@ -1406,7 +1463,7 @@ void main() {
       copy: copy,
       level: AgentModeLevel.lv1,
       script: [
-        // 准备帧：工具**全是编辑器** → 准备阶段立即闭环（该帧文本不上屏）。
+        // 调研帧：工具**全是编辑器** → 调研阶段立即闭环（该帧文本不上屏）。
         lv1HistoryTurn('p1', entry: '- 第2轮｜日期：第二天 申时｜准备帧写入'),
         lv1StoryTurn(),
       ],
@@ -1731,7 +1788,7 @@ void main() {
     expect(copy.memorySummary, isNot(contains('- 1 - 5 |')));
   });
 
-  test('Lv.1：准备阶段漏读历史时，记忆阶段仍允许补读一次（合并没有锚点就落不了地）', () async {
+  test('Lv.1：调研阶段漏读历史时，记忆阶段仍允许补读一次（合并没有锚点就落不了地）', () async {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
@@ -1773,7 +1830,7 @@ void main() {
     expect(result.warnings, isEmpty);
   });
 
-  test('Lv.1：准备阶段已读过历史 → 记忆帧的重复读取仍被拒（护栏不变）', () async {
+  test('Lv.1：调研阶段已读过历史 → 记忆帧的重复读取仍被拒（护栏不变）', () async {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,

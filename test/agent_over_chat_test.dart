@@ -245,7 +245,7 @@ void main() {
         bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = bodies.length;
         if (idx == 1) {
-          // 准备帧：只有本轮大纲、无工具调用 → 准备阶段闭环（文本不采纳）。
+          // 调研帧：无工具调用（联网结束）→ 调研阶段闭环（文本不采纳）。
           return sse(
             chatFrame(content: '本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'),
           );

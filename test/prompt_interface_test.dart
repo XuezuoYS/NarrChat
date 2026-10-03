@@ -401,10 +401,15 @@ void main() {
       );
     });
 
-    test('阶段帧指令为 v2 文案（准备 / 记忆 / 正文 / 维护）', () {
+    test('阶段帧指令为 v2 文案（调研 / 记忆 / 正文 / 维护）', () {
       const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
-      expect(promptInterface.stagePrepare(lv1), startsWith('【准备回合】'));
-      expect(promptInterface.stagePrepare(lv1), contains('大纲'));
+      // 调研回合：只读史 + 按需联网，**不产出大纲**，且文本通道零输出。
+      final prepare = promptInterface.stagePrepare(lv1);
+      expect(prepare, startsWith('【调研回合】'));
+      expect(prepare, contains('narrchat_readHistory'));
+      expect(prepare, contains('不写大纲'), reason: '大纲改由记忆回合的思考通道定');
+      expect(prepare, isNot(contains('把本轮大纲定下来')));
+      expect(prepare, contains('不要'), reason: '明确禁止文本通道输出');
       expect(promptInterface.stageStory(lv1), startsWith('【正文回合】'));
 
       final copy = copyOf();
@@ -413,8 +418,12 @@ void main() {
         workingCopy: copy,
         first: true,
       ));
+      // 记忆回合：同一回合内「推演剧情定大纲 + 落条目」，文本通道零输出。
       expect(memory, contains('【记忆回合】'));
+      expect(memory, contains('大纲'));
+      expect(memory, contains('思考通道'));
       expect(memory, contains('op=append'));
+      expect(memory, contains('一次做完'));
 
       final lv1State = promptInterface.stageState(const AgentStageRequest(
         level: AgentModeLevel.lv1,

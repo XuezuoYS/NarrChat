@@ -107,10 +107,10 @@ abstract interface class UserPromptSource {
 /// 返回该帧 `role: user` 消息的正文（调用方包成消息条目）。各阶段帧指令是
 /// 「同一轮内追加的指令」，不属于 system / 用户输入本身。
 abstract interface class StageDirectiveSource {
-  /// 准备回合（仅 Lv.1）：读史 + 按需联网 + 定下本轮大纲。
+  /// 调研回合（仅 Lv.1）：读史一次 + 按需联网；不写大纲 / 记忆 / 正文，文本零输出。
   String stagePrepare(AgentStageRequest request);
 
-  /// 记忆回合（仅 Lv.1）：先落本轮记忆条目（只调工具、不输出文本）。
+  /// 记忆回合（仅 Lv.1）：同一回合内推演剧情（思考通道定大纲）+ 落本轮记忆条目。
   String stageMemory(AgentStageRequest request);
 
   /// 正文回合：Lv.1 需要（Lv.2 的正文契约在 system 里，不追加帧指令）。

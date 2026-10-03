@@ -20,7 +20,7 @@ import 'helpers/fakes.dart';
 /// RoundProvider Agent 档位（Response API 协议）集成测试。
 ///
 /// 覆盖：Lv.2（六工具 + 三小节正文）主响应落库 / 缺口修复轮 / 预览 /
-/// 强制选项；Lv.1（仅历史工具 + 5 区块正文）的四步流程（准备 → 记忆 → 正文）、
+/// 强制选项；Lv.1（仅历史工具 + 5 区块正文）的三段流程（调研 → 记忆 → 正文）、
 /// 混合落库与「合规一轮零额外请求」。
 void main() {
   const book = Book(
@@ -627,7 +627,7 @@ void main() {
     );
   });
 
-  test('AGENT Lv.1：准备 → 记忆(先落条目) → 正文 5 区块；维护轮不再是每轮必发', () async {
+  test('AGENT Lv.1：调研(读史) → 记忆(推演+先落条目) → 正文 5 区块；维护轮不再是每轮必发', () async {
     final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
@@ -635,11 +635,16 @@ void main() {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = capturedBodies.length;
         if (idx == 1) {
-          // 第 1 帧 = 准备阶段：定本轮大纲（文本不上屏、不采纳）。
-          return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
+          // 第 1 帧 = 调研阶段：读一次历史（只读 → 调研阶段立即结束）。
+          return sse([
+            callAdded('r1', 'narrchat_readHistory'),
+            callArgs('r1', {'round': 1}),
+            completed('resp_r'),
+            '',
+          ]);
         }
         if (idx == 2) {
-          // 第 2 帧 = 记忆阶段：本轮历史条目**先于正文**落地。
+          // 第 2 帧 = 记忆阶段：同回合推演 + 本轮历史条目**先于正文**落地。
           return sse([
             ...editLines('h1', AgentStateSection.memorySummary, [
               {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
@@ -666,14 +671,14 @@ void main() {
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
 
-    // 合规一轮 = 恰好 3 帧：准备 → 记忆 → 正文
+    // 合规一轮 = 恰好 3 帧：调研（读史）→ 记忆（推演+落条目）→ 正文
     //（维护轮只作兜底，不再「每轮必发」；工具调用靠帧指令驱动，不发 tool_choice）。
     expect(capturedBodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
     expect(
       capturedBodies.every((b) => !b.containsKey('tool_choice')),
       isTrue,
     );
-    // 记忆帧思考强度降为 low（用户开启思考时不硬关；正文 / 准备帧不覆盖）。
+    // 记忆帧思考强度降为 low（用户开启思考时不硬关；正文 / 调研帧不覆盖）。
     expect(capturedBodies[1]['reasoning'], {'effort': 'low'});
     expect('${capturedBodies[0]['reasoning']}', isNot(contains('none')));
 
@@ -716,7 +721,7 @@ void main() {
     expect(provider.rawExchangesFor(round.id!), hasLength(3));
   });
 
-  test('AGENT Lv.1 合规一轮不发维护请求：准备读史 + 大纲 → 记忆 → 正文（RAW 4 帧）', () async {
+  test('AGENT Lv.1 合规一轮不发维护请求：调研读史 → 推演+记忆 → 正文（RAW 3 帧）', () async {
     final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
@@ -724,7 +729,8 @@ void main() {
         capturedBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = capturedBodies.length;
         if (idx == 1) {
-          // 准备帧 1：读一次历史（读取器不是编辑器 → 准备阶段继续）。
+          // 调研帧：读一次历史 → **本帧只调读取器 → 调研阶段立即结束**
+          //（不再有「等模型收手」的中间帧，也就没有中途步复述大纲的机会）。
           return sse([
             callAdded('fc_r', 'narrchat_readHistory'),
             callArgs('fc_r', {'round': 1}),
@@ -733,11 +739,7 @@ void main() {
           ]);
         }
         if (idx == 2) {
-          // 准备帧 2：只有大纲文本、无工具调用 → 准备阶段闭环。
-          return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
-        }
-        if (idx == 3) {
-          // 记忆帧：追加本轮历史条目。
+          // 记忆帧：推演剧情（思考通道）与落条目在**同一回合**完成。
           return sse([
             ...editLines('fc_m', AgentStateSection.memorySummary, [
               {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
@@ -764,8 +766,15 @@ void main() {
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
 
-    // 准备 2 帧 + 记忆 1 帧 + 正文 1 帧；**没有维护请求**。
-    expect(capturedBodies, hasLength(4));
+    // 调研 1 帧 + 记忆 1 帧 + 正文 1 帧 = **恰好 3 次请求**；没有维护请求。
+    expect(capturedBodies, hasLength(3));
+    // 调研帧指令：本阶段只做调研（不写大纲、文本通道零输出）。
+    final prepareDirective = (capturedBodies.first['input'] as List)
+        .cast<Map<String, dynamic>>()
+        .lastWhere((i) => i['role'] == 'user')['content'] as String;
+    expect(prepareDirective, startsWith('【调研回合】'));
+    expect(prepareDirective, contains('不写大纲'));
+    expect(prepareDirective, isNot(contains('把本轮大纲定下来')));
     expect(
       capturedBodies.every((b) => !b.containsKey('tool_choice')),
       isTrue,
@@ -785,9 +794,9 @@ void main() {
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(round.worldState, '- 地点：青云宗主殿');
     expect(provider.agentWarnings, isEmpty);
-    // RAW：4 次交换，全为成功帧（可追溯）。
+    // RAW：3 次交换，全为成功帧（可追溯）。
     final exchanges = provider.rawExchangesFor(round.id!)!;
-    expect(exchanges, hasLength(4));
+    expect(exchanges, hasLength(3));
     expect(exchanges.where((e) => e.error.isNotEmpty), isEmpty);
   });
 
