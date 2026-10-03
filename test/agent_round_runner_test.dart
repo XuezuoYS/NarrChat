@@ -10,10 +10,10 @@ import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/memory_merge_planner.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 
-/// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 auto /
-/// 维护轮 required；Lv.1 = 准备 → 记忆 → 正文，维护轮仅兜底）、档位差异、
+/// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 → 缺口驱动的
+/// 维护轮；Lv.1 = 准备 → 记忆 → 正文，维护轮仅兜底）、档位差异、
 /// 帧级正文分类与「最后一个标题帧胜出」、门控上屏、读取器自取、
-/// 协议兼容降级、无进展止损。
+/// 协议兼容降级（思考强度覆盖 / 链式续接）、无进展止损。
 void main() {
   const lastRound = Round(
     id: 1,
@@ -60,7 +60,6 @@ void main() {
     AgentModeLevel level = AgentModeLevel.lv2,
     MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
-    bool supportsToolChoice = true,
     bool supportsThinkingEffort = true,
     bool reduceReasoningReplay = false,
     int maxPrepFrames = kAgentMaxPrepFrames,
@@ -77,13 +76,11 @@ void main() {
           stage: t.stage,
           items: List.of(t.items),
           previousResponseId: t.previousResponseId,
-          toolChoice: t.toolChoice,
           stateThinkingEffort: t.stateThinkingEffort,
         ));
         return {
           'input': t.items,
           'previous_response_id': ?t.previousResponseId,
-          'tool_choice': ?t.toolChoice,
         };
       },
       call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
@@ -105,7 +102,6 @@ void main() {
       profile: profile,
       memoryMergePlan: memoryMergePlan,
       chaining: chaining,
-      supportsToolChoice: supportsToolChoice,
       supportsThinkingEffort: supportsThinkingEffort,
       reduceReasoningReplay: reduceReasoningReplay,
       maxPrepFrames: maxPrepFrames,
@@ -201,7 +197,6 @@ void main() {
 
     expect(h.requests, hasLength(1));
     expect(h.requests.single.stage, AgentStage.story);
-    expect(h.requests.single.toolChoice, 'auto');
     expect(result.stateTurnUsed, isFalse);
     expect(result.frames, 1);
     expect(result.warnings, isEmpty);
@@ -212,7 +207,7 @@ void main() {
     expect(copy.memorySummary, contains('第2轮'));
   });
 
-  test('正文轮只写正文 → 自动发起维护轮（required + 维护轮思考降为 low）', () async {
+  test('正文轮只写正文 → 自动发起维护轮（维护轮思考降为 low）', () async {
     final copy = workingCopy();
     final h = harness(copy: copy, script: [storyOnly(), fullStateTurn('s')]);
 
@@ -221,8 +216,7 @@ void main() {
     expect(h.requests, hasLength(2));
     expect(h.requests[0].stage, AgentStage.story);
     expect(h.requests[1].stage, AgentStage.state);
-    // 维护轮：强制调工具 + 思考强度覆盖为 low（不硬关——状态维护要理解正文）。
-    expect(h.requests[1].toolChoice, 'required');
+    // 维护轮：思考强度覆盖为 low（不硬关——状态维护要理解正文）。
     expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
     // 正文轮不覆盖（沿用用户设置）。
     expect(h.requests[0].stateThinkingEffort, isNull);
@@ -707,51 +701,6 @@ void main() {
     expect(h.requests[1].items, hasLength(2));
   });
 
-  test('服务商拒绝 tool_choice → 就地降级重发同一帧（不额外计帧）', () async {
-    final copy = workingCopy();
-    var attempt = 0;
-    final requests = <_Request>[];
-    final profile = AgentModeProfile.of(AgentModeLevel.lv2);
-    final runner = AgentRoundRunner(
-      buildBody: (t) {
-        requests.add((
-          stage: t.stage,
-          items: List.of(t.items),
-          previousResponseId: t.previousResponseId,
-          toolChoice: t.toolChoice,
-          stateThinkingEffort: t.stateThinkingEffort,
-        ));
-        return {'input': t.items, 'tool_choice': ?t.toolChoice};
-      },
-      call: (body, stream, onChunk, onRequestBody, isCancelled) async {
-        attempt++;
-        if (attempt == 1) {
-          throw const AiException('Unsupported parameter: tool_choice');
-        }
-        return fullStateTurn('r', story: '正文');
-      },
-      tools: buildStateTools(copy, sections: profile.toolSections),
-      workingCopy: copy,
-      profile: profile,
-    );
-
-    final result = await runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-    // 降级重发的是**同一帧**：不计帧、正文照常采纳（旧行为：一次兼容性
-    // 4xx 直接判失败，白烧用户这一轮的钱）。
-    expect(result.frames, 1);
-    expect(result.content, contains('正文'));
-    expect(result.outcomes, hasLength(3));
-    expect(runner.supportsToolChoice, isFalse);
-    expect(requests, hasLength(2));
-    expect(requests.first.toolChoice, 'auto');
-    expect(requests.last.toolChoice, isNull);
-    // 降级重发的是同一帧：input 完全一致。
-    expect(requests.last.items, requests.first.items);
-  });
-
   test('维护轮空手帧不再提前止损：保留修复机会（帧数上限兜底）', () async {
     final copy = workingCopy();
     final h = harness(copy: copy, maxStateFrames: 2, script: [
@@ -957,9 +906,8 @@ void main() {
 
     expect(h.requests, hasLength(3));
     // 补救只走提示词与思考强度覆盖：请求体里的 max_output_tokens 由用户设置
-    // 决定，执行器不擅自抬高（帧间唯一的差异仍是 tool_choice / 思考覆盖）。
-    expect(h.requests[1].toolChoice, 'required');
-    expect(h.requests[2].toolChoice, 'required');
+    // 决定，执行器不擅自抬高（帧间唯一的差异仍是思考强度覆盖）。
+    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
     expect(h.requests[2].stateThinkingEffort, kAgentStateThinkingEffort);
     final capDirective = '${h.requests[2].items.last['content']}';
     expect(capDirective, contains('TRUNCATED'));
@@ -1033,8 +981,9 @@ void main() {
     expect(h.requests, hasLength(3));
     expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
     expect(h.requests[2].stateThinkingEffort, isNull);
-    expect(h.requests[2].toolChoice, 'required');
     expect(h.runner.supportsThinkingEffort, isFalse);
+    // 重发的是**同一帧**：input 完全一致（不重跑正文轮）。
+    expect(h.requests[2].items, h.requests[1].items);
     // 失败的那次尝试不计帧。
     expect(result.frames, 2);
     expect(copy.worldState, contains('- 地点：主峰'));
@@ -1043,8 +992,9 @@ void main() {
   // ---------------------------------------------------------------------------
   // Lv.1（仅历史工具 + 5 区块正文）
   //
-  // 四步流程：准备（读史 + 大纲，`auto`）→ 记忆（`required`，条目**先于正文**
-  // 落地）→ 正文（`auto`，唯一采纳 / 上屏阶段）→ 缺口驱动的维护轮（兜底）。
+  // 四步流程：准备（读史 + 大纲）→ 记忆（条目**先于正文**落地）→
+  // 正文（唯一采纳 / 上屏阶段）→ 缺口驱动的维护轮（兜底）。
+  // 工具调用靠帧指令驱动，任何帧都不发送 tool_choice。
   // ---------------------------------------------------------------------------
 
   /// Lv.1 准备帧：只有大纲文本、**无工具调用** → 准备阶段立即结束
@@ -1130,14 +1080,10 @@ void main() {
 
     final result = await run(h.runner);
 
-    // 三帧固定顺序：准备(auto) → 记忆(required + 思考降为 low) → 正文(auto)。
+    // 三帧固定顺序：准备 → 记忆（思考降为 low）→ 正文。
     expect(
       h.requests.map((r) => r.stage).toList(),
       [AgentStage.prepare, AgentStage.memory, AgentStage.story],
-    );
-    expect(
-      h.requests.map((r) => r.toolChoice).toList(),
-      ['auto', 'required', 'auto'],
     );
     expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
     expect(h.requests[0].stateThinkingEffort, isNull);
@@ -1365,8 +1311,8 @@ void main() {
       ],
     );
     expect(
-      h.requests.map((r) => r.toolChoice).toList(),
-      ['auto', 'required', 'required', 'required', 'auto', 'required'],
+      h.requests.map((r) => r.stateThinkingEffort).toList(),
+      [null, 'low', 'low', 'low', null, 'low'],
     );
     expect(result.frames, 6);
     expect(result.stateTurnUsed, isTrue);
@@ -1469,15 +1415,11 @@ void main() {
     final result = await run(h.runner);
 
     // 进入记忆阶段时本轮条目已在准备帧落地 → [_memorySatisfied] 成立 →
-    // **不再发** `required` 帧（否则会逼模型重复 `op=append`，第二条条目让
+    // **不再发**记忆帧（否则会逼模型重复 `op=append`，第二条条目让
     // applyEdits 整栏失败并多烧两帧修复）。
     expect(
       h.requests.map((r) => r.stage).toList(),
       [AgentStage.prepare, AgentStage.story],
-    );
-    expect(
-      h.requests.map((r) => r.toolChoice).toList(),
-      ['auto', 'auto'],
     );
     expect(result.frames, 2);
     // 准备帧落地的那一条没有被重复追加（历史栏恰好一条本轮条目）。
@@ -1880,11 +1822,10 @@ void main() {
   });
 }
 
-/// 一次帧调用的记录（阶段 / input 快照 / tool_choice / 维护轮思考覆盖）。
+/// 一次帧调用的记录（阶段 / input 快照 / 维护轮思考覆盖）。
 typedef _Request = ({
   AgentStage stage,
   List<Map<String, dynamic>> items,
   String? previousResponseId,
-  String? toolChoice,
   String? stateThinkingEffort,
 });

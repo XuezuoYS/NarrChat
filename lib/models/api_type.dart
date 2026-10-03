@@ -67,12 +67,6 @@ class ApiType {
   final bool supportsThinking;
   final bool supportsSearch;
 
-  // ---- 协议能力位（与 AGENT 模式开关正交：只描述协议本身的可用性） ----
-  /// 协议是否支持 `tool_choice`（`auto` / `required` / `none`）。
-  ///
-  /// 作为**能力初值**：AGENT 状态轮靠它强制调用工具；不支持的服务端会在
-  /// 运行中自动降级为「只发工具 + 提示词强制」，不消耗整轮预算。
-  final bool supportsToolChoice;
   // ---- 请求体动态组合规则 ----
   final RequestParamRules requestRules;
 
@@ -87,7 +81,6 @@ class ApiType {
     required this.supportsStreaming,
     required this.supportsThinking,
     required this.supportsSearch,
-    this.supportsToolChoice = false,
     required this.requestRules,
     this.temperatureNote,
     this.reasoningEffortNote,
@@ -98,8 +91,7 @@ class ApiType {
   ///
   /// DeepSeek 官方请求体动态组合规则（OpenAI 兼容）：
   /// - 始终注入：model / messages / stream / thinking（官方默认开启，必须显式声明）
-  ///   与 max_tokens（留空时移除该键）；tool_choice（值为 null 时移除该键，
-  ///   仅 AGENT 模式在记忆 / 维护帧中携带）；
+  ///   与 max_tokens（留空时移除该键）；
   /// - 思考模式：追加 reasoning_effort，不发送 temperature；
   /// - 非思考模式：追加 temperature，不发送 reasoning_effort；
   /// - 流式：追加 stream_options.include_usage 以统计 Token；
@@ -115,7 +107,6 @@ class ApiType {
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
-    supportsToolChoice: true,
     requestRules: RequestParamRules([
       ParamRule(ParamCondition.always, {
         'model': '{{model}}',
@@ -123,7 +114,6 @@ class ApiType {
         'stream': '{{stream}}',
         'thinking': {'type': '{{thinking_type}}'},
         'max_tokens': '{{max_tokens}}',
-        'tool_choice': '{{tool_choice}}',
       }),
       ParamRule(ParamCondition.thinking, {
         'reasoning_effort': '{{reasoning_effort}}',
@@ -168,7 +158,6 @@ class ApiType {
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
-    supportsToolChoice: true,
     requestRules: RequestParamRules([
       ParamRule(ParamCondition.always, {
         'model': '{{model}}',
@@ -176,11 +165,6 @@ class ApiType {
         'input': '{{messages}}',
         'stream': '{{stream}}',
         'max_output_tokens': '{{max_tokens}}',
-        // AGENT 工具帧：记忆 / 维护轮 required（强制调工具）。
-        // 放在 always（而非 search）：有状态续接帧不重发 tools，但仍需
-        // tool_choice；null（Chat 模式 / 服务商不支持）时整键省略 →
-        // Chat 请求体逐字节不变。
-        'tool_choice': '{{tool_choice}}',
       }),
       ParamRule(ParamCondition.thinking, {
         'reasoning': {'effort': '{{reasoning_effort}}'},

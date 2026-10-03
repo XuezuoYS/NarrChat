@@ -73,7 +73,8 @@ void main() {
     expect(body['input'], isA<List>());
     final input = (body['input'] as List).cast<Map<String, dynamic>>();
     expect(input.any((i) => i['role'] == 'user'), isTrue);
-    // 无工具 / 无 tool_choice / 无指令字段残留（协议无 Agent 状态机制）。
+    // 无工具 / 无 tool_choice / 无指令字段残留（协议无 Agent 状态机制，
+    // 且应用一律不发送 tool_choice）。
     expect(body.containsKey('tools'), isFalse);
     expect(body.containsKey('tool_choice'), isFalse);
     expect(body.containsKey('previous_response_id'), isFalse);
@@ -180,7 +181,7 @@ void main() {
       input2.any((i) => i['type'] == 'function_call_output'),
       isTrue,
     );
-    // 无 Agent 状态机制：不发送 tool_choice（搜索循环不需要）。
+    // 应用一律不发送 tool_choice（搜索循环同样不需要）。
     expect(body1.containsKey('tool_choice'), isFalse);
 
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);

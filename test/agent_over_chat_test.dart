@@ -18,7 +18,8 @@ import 'helpers/fakes.dart';
 /// 分阶段执行器在 Chat 通道运行（Lv.2 = 正文 / 维护两阶段；
 /// Lv.1 = 准备 → 记忆 → 正文）——帧转为合法的 Chat messages
 /// （assistant 携带 tool_calls、工具结果以 role:tool 回传），
-/// 无 instructions / previous_response_id，tool_choice 被拒时就地降级。
+/// 无 instructions / previous_response_id / tool_choice，
+/// 思考强度覆盖被拒时就地降级。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -171,13 +172,13 @@ void main() {
     );
     expect(bodies, hasLength(2));
 
-    // 第 1 帧：Chat 线路请求体（messages + 嵌套工具 schema + tool_choice），
-    // 无 instructions / input / previous_response_id。
+    // 第 1 帧：Chat 线路请求体（messages + 嵌套工具 schema），
+    // 无 instructions / input / previous_response_id / tool_choice。
     final body1 = bodies.first;
     expect(body1.containsKey('messages'), isTrue);
     expect(body1.containsKey('input'), isFalse);
     expect(body1.containsKey('instructions'), isFalse);
-    expect(body1['tool_choice'], 'auto');
+    expect(body1.containsKey('tool_choice'), isFalse);
     final messages1 = (body1['messages'] as List).cast<Map<String, dynamic>>();
     expect(messages1.first['role'], 'system');
     expect((messages1.first['content'] as String?), contains('这是 Agent 模式'));
@@ -206,9 +207,10 @@ void main() {
     expect((body1['tools'] as List).first.containsKey('name'), isFalse,
         reason: 'Chat 线路为嵌套 function 形态');
 
-    // 第 2 帧（维护轮）：required + 帧会话转为 chat 消息（tool_calls / role:tool）。
+    // 第 2 帧（维护轮）：帧会话转为 chat 消息（tool_calls / role:tool），
+    // 同样不发 tool_choice。
     final body2 = bodies[1];
-    expect(body2['tool_choice'], 'required');
+    expect(body2.containsKey('tool_choice'), isFalse);
     expect(body2.containsKey('previous_response_id'), isFalse);
     final messages2 = (body2['messages'] as List).cast<Map<String, dynamic>>();
     final assistant = messages2.firstWhere((m) => m['role'] == 'assistant');
@@ -249,7 +251,7 @@ void main() {
           );
         }
         if (idx == 2) {
-          // 记忆帧（required）：本轮历史条目**先于正文**落地。
+          // 记忆帧：本轮历史条目**先于正文**落地。
           return sse(
             chatFrame(
               tools: const [
@@ -285,12 +287,13 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
-    // 合规一轮 = 恰好 3 帧：准备 auto → 记忆 required → 正文 auto
-    //（维护轮只作兜底，不再「每轮必发」）。
+    // 合规一轮 = 恰好 3 帧：准备 → 记忆 → 正文
+    //（维护轮只作兜底，不再「每轮必发」；工具调用靠帧指令驱动）。
     expect(bodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
     expect(
-      bodies.map((b) => b['tool_choice']).toList(),
-      ['auto', 'required', 'auto'],
+      bodies.every((b) => !b.containsKey('tool_choice')),
+      isTrue,
+      reason: 'Agent 帧一律不发 tool_choice',
     );
 
     // Chat 线路形态：messages + 嵌套 function schema，无 instructions / input。
@@ -366,7 +369,7 @@ void main() {
     expect(body['model'], 'deepseek-flash');
     expect(body['messages'], isA<List>());
     expect(body.containsKey('instructions'), isFalse);
-    expect(body['tool_choice'], 'auto');
+    expect(body.containsKey('tool_choice'), isFalse);
     expect(
       toolSchemas(body).map((t) => t['name']),
       containsAll([
@@ -380,25 +383,27 @@ void main() {
     );
   });
 
-  test('Agent 开 + Chat 协议：tool_choice 被拒 → 就地降级重发同一帧', () async {
+  test('Agent 开 + Chat 协议：维护帧思考强度覆盖被拒 → 就地降级重发同一帧', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
+    var served = 0;
     final ai = AiService(
       client: MockClient((request) async {
-        bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-        final idx = bodies.length;
-        if (idx == 1) {
-          // 协议类 4xx：拒绝 tool_choice（运行中降级，不烧帧预算）。
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        bodies.add(body);
+        if (body['reasoning_effort'] == 'low') {
+          // 协议类 4xx：拒绝维护帧的思考强度覆盖（运行中降级，不烧帧预算）。
           return http.Response.bytes(
             utf8.encode(jsonEncode({
-              'error': {'message': 'tool_choice 参数不受支持'},
+              'error': {'message': 'reasoning_effort 参数不受支持'},
             })),
             400,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
         }
+        served++;
         return sse(
-          idx == 2
+          served == 1
               ? chatFrame(
                   content:
                       '## 剧情演绎\n正文。\n\n## 推荐行动\nx\n\n## 当前时间\n第一天 午时',
@@ -441,10 +446,14 @@ void main() {
     expect(ok, isTrue, reason: provider.failedAttempt.errorMessage);
     // 3 次底层请求（1 次被拒 + 重发同一帧 + 维护轮），2 帧计数。
     expect(bodies, hasLength(3));
-    expect(bodies[0]['tool_choice'], 'auto');
-    expect(bodies[1].containsKey('tool_choice'), isFalse,
-        reason: 'tool_choice 被拒后同一帧重发不再携带该字段');
-    expect(bodies[2].containsKey('tool_choice'), isFalse);
+    expect(bodies[0]['reasoning_effort'], 'high');
+    expect(bodies[1]['reasoning_effort'], 'low');
+    expect(bodies[2]['reasoning_effort'], 'high',
+        reason: '覆盖被拒后同一帧回落用户设置重发');
+    expect(bodies[2]['messages'], bodies[1]['messages'],
+        reason: '降级重发的是同一帧：messages 完全一致');
+    // Chat 线路同样一律不发 tool_choice。
+    expect(bodies.every((b) => !b.containsKey('tool_choice')), isTrue);
 
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('正文。'));

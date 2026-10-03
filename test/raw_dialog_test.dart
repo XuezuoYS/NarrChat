@@ -548,12 +548,12 @@ void main() {
       // 拒绝（随后同一帧重发），原因写在 exchange.error 里而不是含糊的「无返回」。
       final exchanges = [
         RawExchange(
-          requestBody: '{"tool_choice":"required"}',
-          error: 'API 请求失败（HTTP 400）：tool_choice 参数不受支持',
+          requestBody: '{"reasoning":{"effort":"low"}}',
+          error: 'API 请求失败（HTTP 400）：reasoning_effort 参数不受支持',
         ),
         RawExchange(
-          requestBody: '{"tool_choice":null}',
-          content: '第二轮（去掉 tool_choice 后重发成功）',
+          requestBody: '{"reasoning":{"effort":"high"}}',
+          content: '第二轮（回落用户设置后重发成功）',
         ),
       ];
       await tester.pumpWidget(
@@ -562,7 +562,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.text('请求失败：API 请求失败（HTTP 400）：tool_choice 参数不受支持'),
+        find.text('请求失败：API 请求失败（HTTP 400）：reasoning_effort 参数不受支持'),
         findsOneWidget,
       );
       // 有正常返回的那一条照常展示三块，不受影响。
@@ -582,8 +582,8 @@ void main() {
 
     testWidgets('失败信息可选中复制，并参与关键词检索定位', (tester) async {
       const reason =
-          'API 请求失败（HTTP 400）：{"error":{"message":"Thinking mode does '
-          'not support this tool_choice"}}';
+          'API 请求失败（HTTP 400）：{"error":{"message":"The reasoning_text in '
+          'the thinking mode must be passed back to the API"}}';
       final exchanges = [RawExchange(requestBody: '{}', error: reason)];
       await tester.pumpWidget(
         MaterialApp(home: Scaffold(body: RawDialog(exchanges: exchanges))),
@@ -601,7 +601,7 @@ void main() {
       // 参与检索定位（块序号与渲染一一对应）：只出现在失败原因里的关键词可命中。
       await tester.enterText(
         find.byKey(const Key('raw_search_field')),
-        'Thinking mode',
+        'reasoning_text',
       );
       await tester.pumpAndSettle();
       expect(find.text('1/1'), findsOneWidget);

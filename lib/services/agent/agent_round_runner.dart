@@ -23,7 +23,7 @@ const int kAgentMaxStateFrames = 4;
 const int kAgentMaxPrepFrames = 6;
 
 /// **记忆阶段**的最大帧数（仅 Lv.1）：1 主帧 + 2 次提醒。
-/// 每帧都以 `tool_choice = required` 强制调用历史编辑器，正常 1 帧即完成。
+/// 每帧都要求模型在本回合直接调用历史编辑器，正常 1 帧即完成。
 const int kAgentMaxMemoryFrames = 3;
 
 /// 正文轮的最大帧数（联网搜索会消耗多帧：开场白 → 搜索 → 打开页 → 正文）。
@@ -39,12 +39,12 @@ const String kIncompleteMaxOutputTokens = 'max_output_tokens';
 
 /// 执行器运行阶段。
 enum AgentStage {
-  /// **准备阶段**（仅 Lv.1，`tool_choice = auto`）：读历史（`narrchat_readHistory`
+  /// **准备阶段**（仅 Lv.1）：读历史（`narrchat_readHistory`
   /// 一次）+ 按需联网，随后在思考通道写出本轮大纲。文本通道在此阶段**不上屏、
   /// 不采纳**（无标题的开场白 / 大纲一律丢弃）。
   prepare,
 
-  /// **记忆阶段**（仅 Lv.1，`tool_choice = required`）：按大纲用
+  /// **记忆阶段**（仅 Lv.1）：按大纲用
   /// `narrchat_editHistory`（`op=append`）追加本轮**恰好一条**记忆条目。
   /// 记忆条目**先于正文**落地，成为正文的既定约束；文本通道同样关闭
   /// （模型若在本帧抢写正文，一律丢弃，交给正文阶段重写）。
@@ -64,7 +64,6 @@ class AgentTurnRequest {
     required this.stage,
     required this.items,
     this.previousResponseId,
-    this.toolChoice,
     this.stateThinkingEffort,
   });
 
@@ -73,10 +72,6 @@ class AgentTurnRequest {
   /// 本次要发送的 input（无状态平台 = 全量累积；有状态续接 = 仅新增项）。
   final List<Map<String, dynamic>> items;
   final String? previousResponseId;
-
-  /// `tool_choice`（准备 / 正文阶段 `auto`；记忆 / 维护轮 `required`；
-  /// null = 不发送）。
-  final String? toolChoice;
 
   /// 思考强度**覆盖**（[kAgentStateThinkingEffort] = `low`；null = 沿用用户
   /// 设置）。仅当用户开启了思考模式时生效：思考 token 占用输出上限，但记忆 /
@@ -203,14 +198,19 @@ class AgentRoundResult {
 /// 1. **准备阶段**（[AgentStage.prepare]，仅 Lv.1）：读史 + 联网 + 大纲。
 /// 2. **记忆阶段**（[AgentStage.memory]，仅 Lv.1）：只调历史编辑器，不输出文本
 ///    （模型抢写正文也会被丢弃，正文只在正文阶段产生）。
-/// 3. **正文阶段**（[AgentStage.story]，`tool_choice = auto`）：基于**上一轮
+/// 3. **正文阶段**（[AgentStage.story]）：基于**上一轮
 ///    状态 + 已落地的记忆 + 大纲**写正文；`## 当前时间` 是正文小节
 ///    （时间不属于工具）。
 /// 4. **完整性判定**（[inspectState]，范围 = [AgentModeProfile.toolSections]）：
 ///    栏目是否都处理、本轮是否恰好一条记忆、正文提及的角色小节是否一动未动。
-/// 5. **维护轮**（[AgentStage.state]，`tool_choice = required`；两档位都在有
+/// 5. **维护轮**（[AgentStage.state]；两档位都在有
 ///    缺口时发起）：按缺口清单逐栏目编辑；该阶段模型输出的任何文本
 ///    **不会到达界面**——「一次请求多份正文」在新结构下不可能发生。
+///
+/// 工具调用完全靠**提示词纪律 + 工具描述**驱动（帧指令明确要求本回合直接调用
+/// 对应编辑器），**不发送 `tool_choice`**：部分服务商在思考模式下以 400 拒绝该
+/// 参数（`Thinking mode does not support this tool_choice`），而帧语义并不依赖
+/// 它——缺项由完整性判定与维护轮兜底。
 ///
 /// ## 状态自取（快照不作预置）
 ///
@@ -271,10 +271,10 @@ class AgentRoundResult {
 ///
 /// ## 兼容性降级（绝不消耗用户的整轮预算）
 ///
-/// [supportsToolChoice] / [supportsThinkingEffort] 是能力**初值**，运行中遇到
+/// [supportsThinkingEffort] 是能力**初值**，运行中遇到
 /// 协议类失败就地重发同一帧（同一帧至多连降 3 项）：
-/// 拒绝 `tool_choice` → 去掉该字段；拒绝 `previous_response_id` → 本轮全量
-/// 重发；拒绝中途调整思考强度 → 该帧回落用户设置。
+/// 拒绝 `previous_response_id` → 本轮全量重发；
+/// 拒绝中途调整思考强度 → 该帧回落用户设置。
 /// 只有内容校验类失败才走修复帧。
 ///
 /// ## 截断（`response.incomplete`）
@@ -295,7 +295,6 @@ class AgentRoundRunner {
     required this.profile,
     this.memoryMergePlan,
     this.chaining = false,
-    this.supportsToolChoice = true,
     this.supportsThinkingEffort = true,
     this.maxPrepFrames = kAgentMaxPrepFrames,
     this.maxMemoryFrames = kAgentMaxMemoryFrames,
@@ -333,7 +332,6 @@ class AgentRoundRunner {
   final MemoryMergePlan? memoryMergePlan;
 
   final bool chaining;
-  bool supportsToolChoice;
 
   /// 服务商是否接受「工具帧思考强度覆盖」（[AgentTurnRequest.stateThinkingEffort]）。
   /// 部分服务商不允许中途调整推理强度 → 就地回落用户设置重发同一帧。
@@ -342,7 +340,7 @@ class AgentRoundRunner {
   /// 准备阶段（仅 Lv.1）的最大帧数：读史 + 联网 + 大纲。
   final int maxPrepFrames;
 
-  /// 记忆阶段（仅 Lv.1）的最大帧数：`required` 强制调用历史编辑器。
+  /// 记忆阶段（仅 Lv.1）的最大帧数：帧指令要求本回合直接调用历史编辑器。
   final int maxMemoryFrames;
 
   final int maxStoryFrames;
@@ -545,7 +543,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.prepare, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.prepare,
-        toolChoice: supportsToolChoice ? 'auto' : null,
         gate: gate,
         stream: stream,
         onRequestBody: onRequestBody,
@@ -562,7 +559,8 @@ class AgentRoundRunner {
   // 记忆阶段（仅 Lv.1：按大纲先写本轮记忆条目）
   // ---------------------------------------------------------------------------
 
-  /// 记忆阶段：`required` 强制模型调用历史编辑器，把本轮条目**先于正文**落地。
+  /// 记忆阶段：帧指令要求模型在本回合直接调用历史编辑器，把本轮条目
+  /// **先于正文**落地。
   ///
   /// 进入阶段先判一次 [_memorySatisfied]（准备阶段已跳步落地时**零帧**直接跳过）；
   /// 否则每帧追加 [_memoryDirective]（恰一条、只调工具不输出文本）再给一帧，
@@ -591,7 +589,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.memory, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.memory,
-        toolChoice: supportsToolChoice ? 'required' : null,
         stateThinkingEffort: kAgentStateThinkingEffort,
         gate: gate,
         stream: stream,
@@ -678,7 +675,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.story, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.story,
-        toolChoice: supportsToolChoice ? 'auto' : null,
         gate: gate,
         stream: stream,
         onRequestBody: onRequestBody,
@@ -728,7 +724,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.state, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.state,
-        toolChoice: supportsToolChoice ? 'required' : null,
         stateThinkingEffort: kAgentStateThinkingEffort,
         gate: gate,
         stream: stream,
@@ -796,14 +791,12 @@ class AgentRoundRunner {
 
   Future<AiCallResult> _callFrame({
     required AgentStage stage,
-    required String? toolChoice,
     required _FrameGate gate,
     required bool stream,
     void Function(String requestBody)? onRequestBody,
     bool Function()? isCancelled,
     String? stateThinkingEffort,
   }) async {
-    var choice = toolChoice;
     var effort = supportsThinkingEffort ? stateThinkingEffort : null;
     for (var attempt = 0;; attempt++) {
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
@@ -819,7 +812,6 @@ class AgentRoundRunner {
           stage: stage,
           items: _sendItems(),
           previousResponseId: chaining ? _previousResponseId : null,
-          toolChoice: choice,
           stateThinkingEffort: effort,
         ),
       );
@@ -844,11 +836,6 @@ class AgentRoundRunner {
           rethrow;
         }
         final msg = e.message.toLowerCase();
-        if (choice != null && msg.contains('tool_choice')) {
-          supportsToolChoice = false;
-          choice = null;
-          continue;
-        }
         if (effort != null &&
             (msg.contains('reasoning') ||
                 msg.contains('thinking') ||

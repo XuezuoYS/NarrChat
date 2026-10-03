@@ -8,7 +8,7 @@
 - `AgentToolResult` 两面输出：`content`（**回传模型**的全文，状态编辑器含该栏目当前全文）与 `summary`（**UI 一行**摘要，缺省时回退 `content` 首行）。
 - 循环器有两种：
   - `AgentRunner`（`agent_runner.dart`）：Chat 模式「联网搜索」循环（首轮带工具 → 搜索/抓取 → 回传 → 再生成），`maxIterations = 30`；
-  - `AgentRoundRunner`（`agent_round_runner.dart`）：Agent 档位单轮**分阶段**执行器（`AgentStage{prepare, memory, state, story}`）。**Lv.1 四步**：准备轮（`stage=prepare`，`tool_choice=auto`，≤6 帧；读一次 `narrchat_readHistory` → 需要时联网搜索 / 打开页 → 在思考通道写本轮大纲，**文本不上屏**）→ 记忆轮（`stage=memory`，`tool_choice=required`，≤3 帧；按大纲 `op=append` 落入**恰好一条**本轮条目，**先于正文落地**、成为正文的既定约束）→ 正文轮（`stage=story`，`tool_choice=auto`，≤8 帧，**唯一上屏阶段**，5 区块，禁止 `## 记忆总结`）→ **维护轮兜底**（`stage=state`，`tool_choice=required`，≤4 帧 = 1 主帧 + 3 修复帧，文本通道关闭，**读取器禁用**；只在记忆未落地 / 校验失败 / 截断等缺口出现时发起，合规流程**零额外请求**）。**Lv.2 维持两阶段**：正文轮（`tool_choice=auto`，≤8 帧）→ 应用侧缺口判定 → 维护轮（`tool_choice=required`，1 主帧 + 3 修复帧，读取器禁用；指令优先级：历史 → 角色 → 世界，空手帧不提前止损）。**正文采纳制**：本轮正文 = 最后一个含标题帧的原始内容，开场白与维护轮文本一律不上屏（`_FrameGate` + `narrativeReset`）。**档位**（`AgentModeProfile`）决定正文契约、工具集与维护轮是否必发：Lv.2 = 三小节正文 + 六工具 + 缺口驱动；Lv.1 = 五区块正文 + 仅历史工具 + 记忆先于正文（原先「正文轮的 `narrchat_editHistory` 调用被**拒绝执行**」的护栏**已删除**——记忆已在记忆阶段落地，次序本身已消解重复条目风险）。**读取只做一次**：读到的那一份结果就是后续阶段的锚点来源（写正文不改变状态），记忆 / 维护帧对「已提供过全文的栏目」的重复读取被**拒绝执行**（未提供过的栏目照常放行，非合规流程不失明）。协议类 4xx（`tool_choice` / `previous_response_id` / 中途调整思考强度）**就地降级重发同一帧**（同一轮内生效、跨轮重新探测）：不计帧、不计失败轮、不计 token，失败帧在 RAW 显示服务商报错原文（含 HTTP 码）；只有内容校验失败才走修复帧。输出触顶（`response.incomplete`）**不算失败**：保留截断前的部分结果，维护帧收到「拆短调用」指令（程序**不改写**用户设置的 `max_output_tokens`），末帧仍截断时黄框提示用户调高「最大 token」。详见 `docs/agent_mode.md`。
+  - `AgentRoundRunner`（`agent_round_runner.dart`）：Agent 档位单轮**分阶段**执行器（`AgentStage{prepare, memory, state, story}`）。**Lv.1 四步**：准备轮（`stage=prepare`，≤6 帧；读一次 `narrchat_readHistory` → 需要时联网搜索 / 打开页 → 在思考通道写本轮大纲，**文本不上屏**）→ 记忆轮（`stage=memory`，≤3 帧；按大纲 `op=append` 落入**恰好一条**本轮条目，**先于正文落地**、成为正文的既定约束）→ 正文轮（`stage=story`，≤8 帧，**唯一上屏阶段**，5 区块，禁止 `## 记忆总结`）→ **维护轮兜底**（`stage=state`，≤4 帧 = 1 主帧 + 3 修复帧，文本通道关闭，**读取器禁用**；只在记忆未落地 / 校验失败 / 截断等缺口出现时发起，合规流程**零额外请求**）。**Lv.2 维持两阶段**：正文轮（≤8 帧）→ 应用侧缺口判定 → 维护轮（1 主帧 + 3 修复帧，读取器禁用；指令优先级：历史 → 角色 → 世界，空手帧不提前止损）。**正文采纳制**：本轮正文 = 最后一个含标题帧的原始内容，开场白与维护轮文本一律不上屏（`_FrameGate` + `narrativeReset`）。**档位**（`AgentModeProfile`）决定正文契约、工具集与维护轮是否必发：Lv.2 = 三小节正文 + 六工具 + 缺口驱动；Lv.1 = 五区块正文 + 仅历史工具 + 记忆先于正文（原先「正文轮的 `narrchat_editHistory` 调用被**拒绝执行**」的护栏**已删除**——记忆已在记忆阶段落地，次序本身已消解重复条目风险）。**读取只做一次**：读到的那一份结果就是后续阶段的锚点来源（写正文不改变状态），记忆 / 维护帧对「已提供过全文的栏目」的重复读取被**拒绝执行**（未提供过的栏目照常放行，非合规流程不失明）。协议类 4xx（`previous_response_id` / 中途调整思考强度）**就地降级重发同一帧**（同一轮内生效、跨轮重新探测）：不计帧、不计失败轮、不计 token，失败帧在 RAW 显示服务商报错原文（含 HTTP 码）；只有内容校验失败才走修复帧。输出触顶（`response.incomplete`）**不算失败**：保留截断前的部分结果，维护帧收到「拆短调用」指令（程序**不改写**用户设置的 `max_output_tokens`），末帧仍截断时黄框提示用户调高「最大 token」。详见 `docs/agent_mode.md`。
 - 失败语义：
   - `success: false`：普通工具故障（网络/超时/校验失败/无结果），错误信息回传模型**继续执行**（状态编辑器失败即校验失败 → 列入维护轮待修项）；
   - `refused: true`：页面拒绝访问（HTTP 4xx/5xx），**不计入**工具连续失败次数（UI 黄色 ✕）；
@@ -188,7 +188,7 @@ Lv.1 的**记忆条目在正文之前**用 `op=append` 落入，{时间} = 准�
    工具栏目、正文禁用标题、历史消息形态都从档案取）；若新增**栏目**，还需扩展
    `AgentStateSection`（工作副本字段 / 渲染 / 校验）与提示词契约；
 4. 新增 / 更新测试：`test/agent_runner_test.dart`（Chat 循环与失败语义）、
-   `test/agent_round_runner_test.dart`（分阶段流程 / 档位 / `tool_choice` / 降级 /
+   `test/agent_round_runner_test.dart`（分阶段流程 / 档位 / 降级 /
    链式 / 正文采纳制）、`test/agent_state_working_copy_test.dart`（锚点唯一匹配 /
    字节级保留 / `noChange`+`reason`）、`test/state_tools_test.dart`（六工具契约）、
    `test/state_coverage_test.dart`（缺口与档位范围）、`test/agent_round_test.dart`

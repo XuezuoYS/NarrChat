@@ -125,7 +125,8 @@ void main() {
     // 请求体形态：单次请求闭环（正文轮把状态补齐 → 不发起维护轮）。
     expect(bodies, hasLength(1));
     final body = bodies.single;
-    expect(body['tool_choice'], 'auto');
+    expect(body.containsKey('tool_choice'), isFalse,
+        reason: '不再发送 tool_choice（工具调用靠帧指令 + 工具描述驱动）');
     expect(body['instructions'], contains('这是 Agent 模式'));
     // 工具集 = 六个状态工具 + 强制开启的联网工具（时间属于正文，无时间工具）。
     final names = (body['tools'] as List)
@@ -237,11 +238,11 @@ void main() {
     final body1 = capturedBodies[0];
     final body2 = capturedBodies[1];
     expect(body2.containsKey('previous_response_id'), isFalse);
+    // 两阶段共用同一 instructions / tools 前缀；都不发送 tool_choice。
     expect(body2['instructions'], body1['instructions']);
     expect(jsonEncode(body2['tools']), jsonEncode(body1['tools']));
-    // 正文轮 auto，维护轮 required（模型无法只回文本逃避维护状态）。
-    expect(body1['tool_choice'], 'auto');
-    expect(body2['tool_choice'], 'required');
+    expect(body1.containsKey('tool_choice'), isFalse);
+    expect(body2.containsKey('tool_choice'), isFalse);
     final input = (body2['input'] as List).cast<Map<String, dynamic>>();
     // 状态**不再预置**：应用侧没有任何伪造的读取轨迹。
     expect(
@@ -569,7 +570,11 @@ void main() {
     // 正文轮 1 帧 + 维护轮 4 帧（维护帧只回文本 → 空手帧不再立即止损，
     // 继续给修复机会直到帧数上限，缺项转常驻警告）。
     expect(capturedBodies, hasLength(5));
-    expect(capturedBodies[1]['tool_choice'], 'required');
+    expect(
+      capturedBodies.every((b) => !b.containsKey('tool_choice')),
+      isTrue,
+      reason: '任何帧都不发送 tool_choice',
+    );
     // 未落地的缺项转为常驻警告（时间属正文，不再出现在缺项里）。
     expect(provider.agentWarnings, isNotEmpty);
     expect(provider.agentWarnings.join(), contains('世界状态'));
@@ -634,7 +639,7 @@ void main() {
           return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
         }
         if (idx == 2) {
-          // 第 2 帧 = 记忆阶段（required）：本轮历史条目**先于正文**落地。
+          // 第 2 帧 = 记忆阶段：本轮历史条目**先于正文**落地。
           return sse([
             ...editLines('h1', AgentStateSection.memorySummary, [
               {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
@@ -661,12 +666,12 @@ void main() {
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
 
-    // 合规一轮 = 恰好 3 帧：准备 auto → 记忆 required → 正文 auto
-    //（维护轮只作兜底，不再「每轮必发」）。
+    // 合规一轮 = 恰好 3 帧：准备 → 记忆 → 正文
+    //（维护轮只作兜底，不再「每轮必发」；工具调用靠帧指令驱动，不发 tool_choice）。
     expect(capturedBodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
     expect(
-      capturedBodies.map((b) => b['tool_choice']).toList(),
-      ['auto', 'required', 'auto'],
+      capturedBodies.every((b) => !b.containsKey('tool_choice')),
+      isTrue,
     );
     // 记忆帧思考强度降为 low（用户开启思考时不硬关；正文 / 准备帧不覆盖）。
     expect(capturedBodies[1]['reasoning'], {'effort': 'low'});
@@ -732,7 +737,7 @@ void main() {
           return sse(storyOnlyLines('本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'));
         }
         if (idx == 3) {
-          // 记忆帧（required）：追加本轮历史条目。
+          // 记忆帧：追加本轮历史条目。
           return sse([
             ...editLines('fc_m', AgentStateSection.memorySummary, [
               {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
@@ -762,8 +767,9 @@ void main() {
     // 准备 2 帧 + 记忆 1 帧 + 正文 1 帧；**没有维护请求**。
     expect(capturedBodies, hasLength(4));
     expect(
-      capturedBodies.map((b) => b['tool_choice']).toList(),
-      ['auto', 'auto', 'required', 'auto'],
+      capturedBodies.every((b) => !b.containsKey('tool_choice')),
+      isTrue,
+      reason: 'Agent 帧一律不发 tool_choice',
     );
     for (final b in capturedBodies) {
       final input = (b['input'] as List).cast<Map<String, dynamic>>();
@@ -792,21 +798,25 @@ void main() {
       client: MockClient((request) async {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         bodies.add(body);
-        // 模拟「只接受 auto、不接受 required」的兼容实现：维护帧探测被拒（HTTP 400）。
-        if (body['tool_choice'] == 'required') {
+        // 维护帧（指令含 [State-maintenance turn]）用 `reasoning.effort = low`
+        // 覆盖思考强度：该兼容实现拒绝这一覆盖（HTTP 400），正文帧不受影响。
+        final isStateFrame =
+            jsonEncode(body['input']).contains('[State-maintenance turn]');
+        if (isStateFrame &&
+            jsonEncode(body['reasoning']) == jsonEncode({'effort': 'low'})) {
           return http.Response.bytes(
             utf8.encode(jsonEncode({
-              'error': {'message': 'tool_choice 参数不受支持'},
+              'error': {'message': 'reasoning effort 参数不受支持'},
             })),
             400,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
         }
-        // 正文帧（带 auto）→ 只写正文；维护帧重发（无 tool_choice）→ 补齐三栏。
+        // 正文帧 → 只写正文（触发维护轮）；维护帧重发（回落用户设置）→ 补齐三栏。
         return sse(
-          body.containsKey('tool_choice')
-              ? storyOnlyLines('## 剧情演绎\n正文。\n\n## 推荐行动\n行动')
-              : happySse(),
+          isStateFrame
+              ? happySse()
+              : storyOnlyLines('## 剧情演绎\n正文。\n\n## 推荐行动\n行动'),
         );
       }),
     );
@@ -822,12 +832,12 @@ void main() {
 
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
 
-    // 三次底层请求：正文帧(auto) → 维护帧探测(required，被 400 拒绝) → 同一帧重发(无 tool_choice)。
+    // 三次底层请求：正文帧 → 维护帧探测（low，被 400 拒绝）→ 同一帧重发（回落用户设置）。
     expect(bodies, hasLength(3));
-    expect(bodies[0]['tool_choice'], 'auto');
-    expect(bodies[1]['tool_choice'], 'required');
-    expect(bodies[2].containsKey('tool_choice'), isFalse,
-        reason: '降级后就地重发同一帧：不再携带 tool_choice');
+    expect(bodies[0]['reasoning'], {'effort': 'high'});
+    expect(bodies[1]['reasoning'], {'effort': 'low'});
+    expect(bodies[2]['reasoning'], bodies[0]['reasoning'],
+        reason: '思考强度覆盖被拒后就地回落用户设置重发同一帧');
     // 重发的是**同一帧**：input 完全一致（帧序号不变、不重跑正文轮）。
     expect(bodies[2]['input'], bodies[1]['input']);
 
@@ -851,7 +861,7 @@ void main() {
     final failed = exchanges.where((e) => e.error.isNotEmpty).toList();
     expect(failed, hasLength(1), reason: '只有探测帧没有返回');
     expect(failed.single.error, contains('HTTP 400'));
-    expect(failed.single.error, contains('tool_choice'));
+    expect(failed.single.error, contains('reasoning'));
     // 它确实没有返回内容（三个块全空）——RAW 就是靠 error 说明原因。
     expect(failed.single.thinking, isEmpty);
     expect(failed.single.toolCalls, isEmpty);
@@ -861,7 +871,7 @@ void main() {
     expect(exchanges.last.content, contains('主角踏门而入'));
   });
 
-  test('维护帧请求体：required + 思考降为 low + 不改 max_output_tokens', () async {
+  test('维护帧请求体：思考降为 low + 不发 tool_choice + 不改 max_output_tokens', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     var calls = 0;
@@ -890,13 +900,13 @@ void main() {
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
     expect(bodies, hasLength(2));
 
-    // 正文轮：沿用用户设置（保留思考）。
-    expect(bodies[0]['tool_choice'], 'auto');
+    // 正文轮：沿用用户设置（保留思考）；两帧都不发送 tool_choice。
+    expect(bodies[0].containsKey('tool_choice'), isFalse);
     expect('${bodies[0]['reasoning']}', isNot(contains('none')));
 
-    // 维护帧：强制调工具 + 思考强度降为 low（用户开启思考时不硬关）；
+    // 维护帧：思考强度降为 low（用户开启思考时不硬关）；
     // `max_output_tokens` 与正文轮**完全一致**——程序不擅自抬高。
-    expect(bodies[1]['tool_choice'], 'required');
+    expect(bodies[1].containsKey('tool_choice'), isFalse);
     expect(
       bodies[1]['max_output_tokens'],
       bodies[0]['max_output_tokens'],
@@ -946,7 +956,8 @@ void main() {
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
     expect(bodies, hasLength(5)); // 1 正文 + 4 维护（空手帧不再提前止损）
     // 截断不再让整轮失败：正文照常落库 + 黄框给出可操作提示。
-    expect(bodies[1]['tool_choice'], 'required');
+    expect(bodies[1].containsKey('tool_choice'), isFalse,
+        reason: '维护帧同样不发 tool_choice');
     expect(
       provider.roundWarningsFor(1).any((w) => w.contains('最大 token')),
       isTrue,

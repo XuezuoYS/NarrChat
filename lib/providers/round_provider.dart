@@ -750,9 +750,6 @@ class RoundProvider extends ChangeNotifier {
               t: AgentTurnRequest(
                 stage: AgentStage.story,
                 items: inputItems,
-                toolChoice: settings.selectedPlatform.apiType.supportsToolChoice
-                    ? 'auto'
-                    : null,
               ),
             )
           : _agentChatBody(
@@ -761,9 +758,6 @@ class RoundProvider extends ChangeNotifier {
               t: AgentTurnRequest(
                 stage: AgentStage.story,
                 items: inputItems,
-                toolChoice: settings.selectedPlatform.apiType.supportsToolChoice
-                    ? 'auto'
-                    : null,
               ),
             );
       return _RoundRequest(
@@ -780,7 +774,6 @@ class RoundProvider extends ChangeNotifier {
         agentValues: agentValues,
         agentChaining:
             responsesWire && settings.selectedPlatform.supportsResponseChaining,
-        agentToolChoice: settings.selectedPlatform.apiType.supportsToolChoice,
         memoryMergePlan: memoryMergePlan,
       );
     }
@@ -1509,7 +1502,6 @@ class RoundProvider extends ChangeNotifier {
       profile: profile,
       memoryMergePlan: req.memoryMergePlan,
       chaining: req.agentChaining,
-      supportsToolChoice: req.agentToolChoice,
       reduceReasoningReplay: _reduceReasoningReplay,
       // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
       // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
@@ -1594,8 +1586,6 @@ class RoundProvider extends ChangeNotifier {
   /// 帧间差异只有这几处，其余前缀逐字节一致（服务商上下文缓存依赖此）：
   /// - [AgentTurnRequest.items]：本轮累积 input（各阶段追加 assistant / 工具
   ///   条目与阶段指令，维护轮再追加缺口清单）；
-  /// - [AgentTurnRequest.toolChoice]：准备 / 正文阶段 `auto`、记忆 / 维护轮
-  ///   `required`；平台不支持时 null；
   /// - [AgentTurnRequest.previousResponseId]：有状态续接帧不重发
   ///   instructions / tools；
   /// - [AgentTurnRequest.stateThinkingEffort]：记忆 / 维护帧把思考强度降为
@@ -1636,8 +1626,7 @@ class RoundProvider extends ChangeNotifier {
   /// 执行器内部的「Responses 形状」items 经 [chatItemsFromAgentItems] 转换
   /// 为合法的 Chat messages：assistant 携带 `tool_calls`、工具结果以
   /// `role: tool` 回传；无 `previous_response_id`（Chat 协议没有有状态
-  /// 续接，每帧全量重发）。`tool_choice` 由 Chat 规则注入（值为 null 时
-  /// 整键省略），被服务商拒绝时执行器就地降级重发同一帧。
+  /// 续接，每帧全量重发）。
   static Map<String, dynamic> _agentChatBody({
     required AiSettingsProvider? settings,
     required AiRequestValues base,
@@ -1674,7 +1663,6 @@ class RoundProvider extends ChangeNotifier {
       stream: base.stream,
       tools: chained ? null : base.tools,
       instructions: chained ? null : base.instructions,
-      toolChoice: t.toolChoice,
     );
   }
 
@@ -1697,7 +1685,6 @@ class RoundProvider extends ChangeNotifier {
       stream: frame.stream,
       tools: frame.tools,
       instructions: null,
-      toolChoice: frame.toolChoice,
     );
   }
 
@@ -1726,7 +1713,7 @@ class RoundProvider extends ChangeNotifier {
         isCancelled: isCancelled,
       );
     } catch (e) {
-      // 失败原因留在 RAW 里：协议兼容降级前的探测帧（tool_choice / 思考强度）
+      // 失败原因留在 RAW 里：协议兼容降级前的探测帧（如思考强度覆盖）
       // 被服务商拒绝时，RAW 会显示「请求失败：<报错原文>」而不是含糊的「无返回」。
       exchange.error = '$e';
       rethrow;
@@ -2213,16 +2200,13 @@ class _RoundRequest {
 
   /// AGENT 模式请求取值模板（model / 初始 input items / instructions /
   /// 工具 schema 超集 / 思考与温度 / max tokens）；每帧在此基础上替换
-  /// `messages`（累积 input）与 `toolChoice`，见 [_agentBody]。
+  /// `messages`（累积 input），见 [_agentBody]。
   final AiRequestValues? agentValues;
 
   /// 平台是否支持有状态链式续接（previous_response_id）。默认关：
   /// 许多 OpenAI 兼容实现无此字段，关闭时全量重发（前缀不变仍可命中缓存）；
   /// Chat 线路不支持续接，恒为 false。
   final bool agentChaining;
-
-  /// 协议是否支持 `tool_choice`（能力初值；运行中被拒时执行器自动降级）。
-  final bool agentToolChoice;
 
   /// 本轮应执行的「记忆总结轮次合并」动作（档位 0 / 无动作时为 null）。
   ///
@@ -2243,7 +2227,6 @@ class _RoundRequest {
     this.responsesWire = false,
     this.agentValues,
     this.agentChaining = false,
-    this.agentToolChoice = true,
     this.memoryMergePlan,
   });
 }
