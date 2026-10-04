@@ -333,6 +333,10 @@ RoundProvider.activeGenerationBookUuids ─┘
 `widgets/generation_banner.dart`、`theme/app_theme.dart` 的 `snackBarTheme`，
 以及 `SyncToastKind`（由 `NoticeKind` 取代）。
 
+> 上表为迁移当时的记录。`widgets/edit_text_images_dialog.dart`（3 处）此后被删除：
+> 「修改并重新提问」改走输入卡「临时用途」灰条形态（见
+> `widgets/composer_input_mode.dart`），该对话框的能力已被输入卡自身覆盖。
+
 ## 8. 测试
 
 | 文件 | 覆盖 |

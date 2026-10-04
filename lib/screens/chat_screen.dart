@@ -36,7 +36,7 @@ import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
-import '../widgets/edit_text_images_dialog.dart';
+import '../widgets/composer_input_mode.dart';
 import '../widgets/failed_attempt_bubble.dart';
 import '../widgets/floor_jump_bar.dart';
 import '../widgets/image_preview.dart';
@@ -158,6 +158,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 当前待发送的用户消息附件（图片，相对路径 `img/<hash>.<ext>`）。
   final List<String> _pendingImages = [];
+
+  /// 输入框当前的「临时用途」（顶部灰条）；null = 普通发送新一轮。
+  ///
+  /// 用途由 [ComposerInputMode] 描述（文案 + 提交动作），按发送键时取代
+  /// 普通发送（见 [_send]）；退出（恢复普通发送）见 [_exitInputMode]。
+  ComposerInputMode? _inputMode;
 
   /// 已发送、正在生成中的用户消息附件（图片相对路径）。
   ///
@@ -967,7 +973,13 @@ class _ChatScreenState extends State<ChatScreen>
     _inputFocus.requestFocus();
   }
 
+  /// 发送入口：处于「临时用途」（灰条）时提交该用途，否则发送新一轮。
   Future<void> _send() async {
+    final mode = _inputMode;
+    if (mode != null) {
+      await _submitInputMode(mode);
+      return;
+    }
     final input = _inputController.text.trim();
     if (input.isEmpty) return;
     final book = context.read<BookProvider>().currentBook;
@@ -998,6 +1010,169 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     _endGeneration();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 输入框「临时用途」（灰条）：一次借主输入框输入并提交的会话
+  // ---------------------------------------------------------------------------
+
+  /// 进入输入框的一次「临时用途」：把 [text] / [images] 载入主输入框并亮出灰条。
+  ///
+  /// 载入即替换当前草稿与待发送附件（退出用途时一并清空，不保留旧草稿）。
+  /// **后续形态（如「按要求修改」）的接入点**：构造 [ComposerInputMode] 后
+  /// 调用本方法即可，其余（提交 / 退出 / 灰条 UI）由本页统一处理。
+  void _enterInputMode(
+    ComposerInputMode mode, {
+    required String text,
+    List<String> images = const [],
+  }) {
+    setState(() {
+      _inputMode = mode;
+      _pendingImages
+        ..clear()
+        ..addAll(images);
+    });
+    _inputController.value = TextEditingValue(
+      text: text,
+      // 光标落在末尾，便于直接续写。
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _inputFocus.requestFocus();
+  }
+
+  /// 退出当前「临时用途」（灰条右侧删除键）：灰条消失，输入框与待发送附件
+  /// 一并清空，回到普通发送。
+  void _exitInputMode() {
+    if (_inputMode == null) return;
+    setState(() {
+      _inputMode = null;
+      _pendingImages.clear();
+    });
+    _inputController.clear();
+    _inputFocus.requestFocus();
+  }
+
+  /// 提交当前「临时用途」：内容交 [ComposerInputMode.onSubmit] 处理。
+  ///
+  /// 被消费（onSubmit 返回 true）即收起灰条并清空输入框 / 附件；未被消费
+  /// （如用户在确认框取消）则原样保留，便于继续修改。
+  Future<void> _submitInputMode(ComposerInputMode mode) async {
+    final text = _inputController.text.trim();
+    final roundProvider = context.read<RoundProvider>();
+    if (text.isEmpty || roundProvider.isSending) return;
+    final images = List<String>.from(_pendingImages);
+    final consumed = await mode.onSubmit(text: text, images: images);
+    if (!consumed || !mounted) return;
+    setState(() {
+      _inputMode = null;
+      _pendingImages.clear();
+    });
+    _inputController.clear();
+  }
+
+  /// 用户气泡「修改并重新提问」：把该轮输入（识图模型含图片）载入输入框、
+  /// 灰条亮起；按发送键后删除该轮及后续所有轮次，再以修改后的输入重新生成。
+  void _startEditAndReAsk(Round round) {
+    final ai = context.read<AiSettingsProvider>();
+    _enterInputMode(
+      ComposerInputMode(
+        label: '修改并重新提问（第 ${round.roundIndex} 轮）',
+        onSubmit: ({required text, required images}) =>
+            _submitEditAndReAsk(round, text: text, images: images),
+      ),
+      text: round.userInput,
+      // 非识图模型不携带图片：与发送路径的能力门控一致。
+      images: ai.supportsVision ? round.userImages : const [],
+    );
+  }
+
+  /// 「修改并重新提问」的提交动作；返回是否已消费本次用途。
+  Future<bool> _submitEditAndReAsk(
+    Round round, {
+    required String text,
+    required List<String> images,
+  }) async {
+    final roundProvider = context.read<RoundProvider>();
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) {
+      context.notices.warning('尚未选择书籍');
+      return false;
+    }
+    // 目标轮次可能已在会话中被删除：该用途失去意义，收起灰条并提示。
+    if (round.id == null ||
+        !roundProvider.rounds.any((r) => r.id == round.id)) {
+      context.notices.warning('该轮次已不存在，已退出修改');
+      return true;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('修改并重新提问'),
+        content: Text(
+          '将删除本轮及之后的所有轮次，并以修改后的输入重新生成第 ${round.roundIndex} 轮。是否继续？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return false;
+    // 重新生成开始即把图片送入「生成中」用户气泡（替换修改后的图片）。
+    _startGeneration(images: images);
+    await roundProvider.editAndReAsk(round, text, book: book, images: images);
+    _endGeneration();
+    return true;
+  }
+
+  /// 失败条目「修改并重新提问」：把失败时的输入（识图模型含图片）载入输入框、
+  /// 灰条亮起；按发送键后以修改后的输入重新生成（sendRound 先清空失败条目）。
+  void _startEditAndRetryFailure() {
+    final roundProvider = context.read<RoundProvider>();
+    final input = roundProvider.failedUserInput;
+    if (input.isEmpty) return;
+    final ai = context.read<AiSettingsProvider>();
+    _enterInputMode(
+      ComposerInputMode(
+        // 失败条目「本该产生」的那一轮。
+        label: '修改并重新提问（第 ${roundProvider.nextRoundIndex} 轮）',
+        onSubmit: ({required text, required images}) =>
+            _submitEditAndRetryFailure(text: text, images: images),
+      ),
+      text: input,
+      images: ai.supportsVision ? roundProvider.failedUserImages : const [],
+    );
+  }
+
+  /// 失败条目「修改并重新提问」的提交动作；返回是否已消费本次用途。
+  Future<bool> _submitEditAndRetryFailure({
+    required String text,
+    required List<String> images,
+  }) async {
+    final roundProvider = context.read<RoundProvider>();
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) {
+      context.notices.warning('尚未选择书籍');
+      return false;
+    }
+    if (!roundProvider.hasFailureEntry) {
+      context.notices.warning('失败条目已不存在，已退出修改');
+      return true;
+    }
+    _startGeneration(images: images);
+    await roundProvider.sendRound(
+      userInput: text,
+      book: book,
+      userImages: images,
+    );
+    _endGeneration();
+    return true;
   }
 
   /// 打开平台文件选择器导入图片（仅识图模型可用）。
@@ -1176,45 +1351,6 @@ class _ChatScreenState extends State<ChatScreen>
     _endGeneration();
   }
 
-  /// 修改并重新提问失败条目：编辑失败时的输入后重新生成（识图模型可增删图片）。
-  Future<void> _editAndRetryFailure() async {
-    final rp = context.read<RoundProvider>();
-    final input = rp.failedUserInput;
-    if (input.isEmpty || rp.isSending) return;
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) return;
-    final ai = context.read<AiSettingsProvider>();
-    EditTextImagesResult? result;
-    if (ai.supportsVision) {
-      result = await showEditTextImagesDialog(
-        context,
-        title: '修改并重新提问',
-        initial: input,
-        initialImages: rp.failedUserImages,
-        allowImages: true,
-        imageImport: context.read<ImageImportService>(),
-        maxImageSizeMB: ai.maxImageSizeMB,
-        convertJpgToJpeg: ai.convertJpgToJpeg,
-      );
-    } else {
-      String? edited;
-      await _showEditTextDialog(
-        title: '修改并重新提问',
-        initial: input,
-        onSave: (text) async => edited = text,
-      );
-      if (edited != null) result = EditTextImagesResult(edited!, const []);
-    }
-    if (result == null || !mounted) return;
-    _startGeneration(images: result.images);
-    await rp.sendRound(
-      userInput: result.text,
-      book: book,
-      userImages: result.images,
-    );
-    _endGeneration();
-  }
-
   /// 清除失败条目。
   Future<void> _clearFailure() async {
     await context.read<RoundProvider>().clearFailedAttempt();
@@ -1325,7 +1461,7 @@ class _ChatScreenState extends State<ChatScreen>
                 context.read<RoundProvider>().updateUserInput(round.id!, text),
           );
         case 'editReask':
-          _handleEditAndReAsk(round);
+          _startEditAndReAsk(round);
         case 'copy':
           _copyBubbleText(round, isAi);
         case 'reask':
@@ -1444,66 +1580,6 @@ class _ChatScreenState extends State<ChatScreen>
     if (result != null && mounted) {
       await onSave(result);
     }
-  }
-
-  /// 修改用户输入并重新提问：先编辑该轮输入（识图模型可增删图片），保存后
-  /// 删除本轮及后续所有轮次，再以修改后的输入重新生成（替换而非追加）。
-  Future<void> _handleEditAndReAsk(Round round) async {
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) return;
-    final ai = context.read<AiSettingsProvider>();
-    EditTextImagesResult? result;
-    if (ai.supportsVision) {
-      result = await showEditTextImagesDialog(
-        context,
-        title: '修改并重新提问（第 ${round.roundIndex} 轮）',
-        initial: round.userInput,
-        initialImages: round.userImages,
-        allowImages: true,
-        imageImport: context.read<ImageImportService>(),
-        maxImageSizeMB: ai.maxImageSizeMB,
-        convertJpgToJpeg: ai.convertJpgToJpeg,
-      );
-    } else {
-      String? edited;
-      await _showEditTextDialog(
-        title: '修改并重新提问（第 ${round.roundIndex} 轮）',
-        initial: round.userInput,
-        // 仅记录修改后的文本；落库由 editAndReAsk 统一处理，避免重复写库。
-        onSave: (text) async => edited = text,
-      );
-      if (edited != null) result = EditTextImagesResult(edited!, const []);
-    }
-    if (result == null || !mounted) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('修改并重新提问'),
-        content: Text(
-          '将删除本轮及之后的所有轮次，并以修改后的输入重新生成第 ${round.roundIndex} 轮。是否继续？',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('继续'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    // 重新生成开始即把图片送入「生成中」用户气泡（替换修改后的图片）。
-    _startGeneration(images: result.images);
-    await context.read<RoundProvider>().editAndReAsk(
-      round,
-      result.text,
-      book: book,
-      images: result.images,
-    );
-    _endGeneration();
   }
 
   /// 重新提问（与「刷新本轮」合并）：删除本轮及后续所有轮次，
@@ -1876,7 +1952,7 @@ class _ChatScreenState extends State<ChatScreen>
                   FailedAttemptBubble(
                     attempt: roundProvider.failedAttempt,
                     onRetry: _retryFailure,
-                    onEditAndRetry: _editAndRetryFailure,
+                    onEditAndRetry: _startEditAndRetryFailure,
                     onClear: _clearFailure,
                     onViewRaw: roundProvider.failedRawExchanges != null
                         ? _showFailedRawDialog
@@ -2317,10 +2393,19 @@ class _ChatScreenState extends State<ChatScreen>
           ),
         ],
       ),
+      // 裁剪：顶部灰条（临时用途）全宽铺满，圆角由卡片提供。
+      clipBehavior: Clip.antiAlias,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 临时用途灰条（见 [ComposerInputMode]）：置于卡片最顶部，
+          // 与图片条 / 文本区同宽，按发送键即提交该用途而非发出新一轮。
+          if (_inputMode != null)
+            ComposerInputModeBar(
+              label: _inputMode!.label,
+              onCancel: _exitInputMode,
+            ),
           // 待发送图片缩略条 + 导入进度：置于输入框上方、靠左，
           // 避免图片卡片在输入框下方居中而显得突兀。
           if (_isImportingImages)

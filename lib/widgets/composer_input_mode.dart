@@ -1,0 +1,103 @@
+import 'package:flutter/material.dart';
+
+import '../theme/app_theme.dart';
+
+/// 输入卡「临时用途」的提交回调（按发送键 / Ctrl+Enter 时触发）。
+///
+/// - [text]：提交瞬间的主输入框文本（已 trim，非空）；
+/// - [images]：提交瞬间的待发送图片（相对路径，只读副本）；
+/// - 返回 `true` = 本次用途已被消费：调用方收起灰条并清空输入框与附件；
+///   返回 `false` = 未消费（如用户在确认框点了取消）：灰条与编辑内容保留。
+typedef ComposerInputSubmit =
+    Future<bool> Function({
+      required String text,
+      required List<String> images,
+    });
+
+/// 底部输入卡的一次「临时用途」（灰条形态，对齐 DeepSeek APP 的「修改输入」）。
+///
+/// 形态：输入卡顶部一条浅灰横条，左侧写明这次输入要干什么、右侧一个删除键
+/// 退出；正文区仍是同一个主输入框——Markdown 高亮、图片条、粘贴 / 拖拽 /
+/// 快捷键全部复用——按发送键才执行本次用途，而不是发出新一轮。
+///
+/// **新增一个用途（如后续的「按要求修改」）只需三步**：
+/// 1. 构造本对象：给出灰条文案 [label] 与提交动作 [onSubmit]；
+/// 2. 调用 `_ChatScreenState._enterInputMode(mode, text:, images:)`，
+///    把已有内容载入输入框并亮出灰条；
+/// 3. 在气泡菜单 / 悬浮按钮等处挂入口（退出统一由 [ComposerInputModeBar]
+///    的删除键触发，无需自己实现）。
+@immutable
+class ComposerInputMode {
+  const ComposerInputMode({required this.label, required this.onSubmit});
+
+  /// 灰条左侧文案（如「修改并重新提问（第 3 轮）」）。
+  final String label;
+
+  /// 提交动作；返回是否已消费本次用途（见 [ComposerInputSubmit]）。
+  final ComposerInputSubmit onSubmit;
+}
+
+/// 输入卡顶部的「临时用途」灰条：左侧文案 + 右侧删除键。
+///
+/// 全宽铺满输入卡顶部（卡片圆角由外层裁剪），与下方输入区以一条细线分隔。
+class ComposerInputModeBar extends StatelessWidget {
+  /// 灰条本体（测试定位）。
+  static const Key barKey = Key('composer_input_mode_bar');
+
+  /// 右侧删除键（测试定位）。
+  static const Key cancelKey = Key('composer_input_mode_cancel');
+
+  /// 灰条左侧文案。
+  final String label;
+
+  /// 删除键回调：退出本次临时用途。
+  final VoidCallback onCancel;
+
+  const ComposerInputModeBar({
+    super.key,
+    required this.label,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      key: barKey,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        border: Border(bottom: BorderSide(color: context.narrColors.divider)),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 6, 8, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: context.narrColors.textSecondary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            key: cancelKey,
+            onPressed: onCancel,
+            tooltip: '退出',
+            iconSize: 16,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            style: IconButton.styleFrom(
+              backgroundColor: scheme.surface,
+              foregroundColor: scheme.onSurfaceVariant,
+            ),
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+    );
+  }
+}
