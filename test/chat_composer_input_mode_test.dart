@@ -88,7 +88,7 @@ void main() {
     expect(bar.bottom, lessThanOrEqualTo(field.top));
   });
 
-  testWidgets('提交修改：确认后删除本轮及后续轮次并以新输入重新生成', (tester) async {
+  testWidgets('提交修改：直接上屏（无二次确认），删除本轮及后续轮次并以新输入重新生成', (tester) async {
     // 正文短：两轮同时可见，可直接对第 1 轮气泡操作（列表打开时已滚到底部）。
     final rp = await pumpChatScreen(
       tester,
@@ -100,12 +100,12 @@ void main() {
     await tester.enterText(composerField(), '改后的输入');
     await tester.pump();
     await tester.tap(sendButton());
-    await tester.pumpAndSettle();
-
-    // 破坏性操作先确认（文案说明影响范围）。
-    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsOneWidget);
-    await tester.tap(find.text('继续'));
     await tester.pump();
+
+    // 灰条用途直接上屏：不弹确认框（旧行为的对话框文案永不出现）。
+    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsNothing);
+    expect(find.byType(AlertDialog), findsNothing);
+
     await waitSendDone(tester, rp);
 
     // 第 1 轮被替换为新输入、第 2 轮被删除；轮次清空后第零轮按既有规则重建。
@@ -115,24 +115,6 @@ void main() {
     // 用途已被消费：灰条收起、输入框清空。
     expect(modeBar(), findsNothing);
     expect(fieldText(tester), '');
-  });
-
-  testWidgets('提交修改：确认框取消则不发请求，灰条与编辑内容保留', (tester) async {
-    final rp = await pumpChatScreen(tester, seedRounds: 1);
-
-    await tapEditAndReAsk(tester, '第 1 轮的用户输入');
-    await tester.enterText(composerField(), '改后的输入');
-    await tester.pump();
-    await tester.tap(sendButton());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-
-    // 未消费：轮次未被改动，用途仍在、文本仍在，可继续编辑。
-    expect(rp.rounds.single.userInput, '第 1 轮的用户输入');
-    expect(modeBar(), findsOneWidget);
-    expect(fieldText(tester), '改后的输入');
   });
 
   testWidgets('灰条右侧删除键：退出用途并清空输入与待发送图片', (tester) async {
@@ -210,10 +192,27 @@ void main() {
     await tester.tap(sendButton(), warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    // 未提交：无确认框、轮次不变、用途保留。
-    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsNothing);
+    // 未提交：不发请求（也不会有任何确认框）、轮次不变、用途保留。
+    expect(find.byType(AlertDialog), findsNothing);
     expect(rp.rounds.single.userInput, '第 1 轮的用户输入');
     expect(modeBar(), findsOneWidget);
+  });
+
+  testWidgets('灰条以外的破坏性入口（刷新本轮）依旧二次确认：取消即不生成', (tester) async {
+    final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
+
+    // 底部「刷新本轮」不经输入框：保留二次确认（与灰条用途的区别就在这）。
+    await tester.tap(find.text('刷新本轮'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('重新提问'), findsOneWidget, reason: '弹出的是重新提问确认框');
+    expect(find.textContaining('将删除本轮及后续所有轮次'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    expect(rp.isSending, isFalse);
+    expect(rp.rounds.last.userInput, '第 1 轮的用户输入');
+    expect(rp.rounds.last.aiNarrative, contains('第 1 轮的剧情正文'));
   });
 
   testWidgets('退出用途后回到普通发送：新输入作为新一轮追加', (tester) async {

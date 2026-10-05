@@ -1074,7 +1074,11 @@ class _ChatScreenState extends State<ChatScreen>
   /// 提交当前「临时用途」：内容交 [ComposerInputMode.onSubmit] 处理。
   ///
   /// 被消费（onSubmit 返回 true）即收起灰条并清空输入框 / 附件；未被消费
-  /// （如用户在确认框取消）则原样保留，便于继续修改。
+  /// （如尚未选书）则原样保留，便于继续修改。
+  ///
+  /// **灰条用途一律直接上屏、不弹二次确认**：用户已用一次「进入用途 + 填写 +
+  /// 按发送」表达了明确意图，再拦一道确认只是多一次点击（需要确认的是
+  /// 「刷新本轮 / 重新提问」这类不经输入框的破坏性入口，见 `_handleReAsk`）。
   Future<void> _submitInputMode(ComposerInputMode mode) async {
     final text = _inputController.text.trim();
     final roundProvider = context.read<RoundProvider>();
@@ -1106,6 +1110,8 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 「修改并重新提问」的提交动作；返回是否已消费本次用途。
+  ///
+  /// **直接上屏**（灰条用途一律不弹二次确认）：删除该轮及其后投影行后立刻生成。
   Future<bool> _submitEditAndReAsk(
     Round round, {
     required String text,
@@ -1123,26 +1129,6 @@ class _ChatScreenState extends State<ChatScreen>
       context.notices.warning('该轮次已不存在，已退出修改');
       return true;
     }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('修改并重新提问'),
-        content: Text(
-          '将删除本轮及之后的所有轮次，并以修改后的输入重新生成第 ${round.roundIndex} 轮。是否继续？',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('继续'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return false;
     // 重新生成开始即把图片送入「生成中」用户气泡（替换修改后的图片）。
     _startGeneration(images: images);
     await roundProvider.editAndReAsk(round, text, book: book, images: images);
@@ -1168,6 +1154,8 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 「按意见修改」的提交动作；返回是否已消费本次用途。
+  ///
+  /// **直接上屏**（灰条用途一律不弹二次确认）。
   Future<bool> _submitModifyByOpinion(
     Round round, {
     required String text,
@@ -1185,8 +1173,6 @@ class _ChatScreenState extends State<ChatScreen>
       context.notices.warning('该轮次已不存在，已退出修改');
       return true;
     }
-    final confirmed = await showModifyByOpinionConfirmDialog(context, round);
-    if (!confirmed || !mounted) return false;
     // 新版本沿用该轮原输入与原图：生成期间的用户气泡照此上屏（与落库一致）。
     _startGeneration(images: round.userImages);
     await roundProvider.modifyRoundByOpinion(

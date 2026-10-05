@@ -11,8 +11,8 @@ import 'helpers/fakes.dart';
 
 /// AI 气泡「按意见修改」的 UI 入口测试（灰条复用 + 落库口径）。
 ///
-/// 形态与「刷新本轮 / 修改并重新提问」一致：灰条亮起 → 填写意见 → 二次确认 →
-/// 同轮新增一代（旧代留在版本树，代次控件可切回）。
+/// 形态与「修改并重新提问」一致（两者都是灰条用途）：灰条亮起 → 填写意见 →
+/// **直接上屏（不再二次确认）** → 同轮新增一代（旧代留在版本树，代次控件可切回）。
 void main() {
   /// 主输入框（按占位文案定位，与 chat_composer_test 一致）。
   Finder composerField() => find.byWidgetPredicate(
@@ -31,7 +31,7 @@ void main() {
   String fieldText(WidgetTester tester) =>
       tester.widget<TextField>(composerField()).controller!.text;
 
-  /// 走完一次「按意见修改」：填意见 → 发送 → 确认 → 等生成收尾。
+  /// 走完一次「按意见修改」：填意见 → 发送（直接上屏）→ 等生成收尾。
   Future<void> submitOpinion(
     WidgetTester tester,
     RoundProvider provider,
@@ -40,10 +40,8 @@ void main() {
     await tester.enterText(composerField(), opinion);
     await tester.pump();
     await tester.tap(sendButton());
-    await tester.pumpAndSettle();
-    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsOneWidget);
-    await tester.tap(find.text('继续'));
     await tester.pump();
+    expect(find.byType(AlertDialog), findsNothing, reason: '灰条用途不再二次确认');
     await waitSendDone(tester, provider);
   }
 
@@ -105,7 +103,7 @@ void main() {
     expect(fieldText(tester), '');
   });
 
-  testWidgets('提交：二次确认后同轮新增一代；原输入 / 原图沿用，意见只进请求', (tester) async {
+  testWidgets('提交：直接上屏（无二次确认）并同轮新增一代；原输入 / 原图沿用，意见只进请求', (tester) async {
     final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
     await tester.tap(modifyButton());
@@ -113,10 +111,11 @@ void main() {
     await tester.enterText(composerField(), '把这段写紧凑些');
     await tester.pump();
     await tester.tap(sendButton());
-    await tester.pumpAndSettle();
-    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsOneWidget);
-    await tester.tap(find.text('继续'));
     await tester.pump();
+
+    // 灰条用途直接上屏：没有任何确认框，生成立刻开始。
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsNothing);
     await waitSendDone(tester, rp);
 
     // 同轮号新增一代：第 1 轮仍是第 1 轮，正文换成新生成的内容。
@@ -134,25 +133,7 @@ void main() {
     expect(fieldText(tester), '');
   });
 
-  testWidgets('确认框取消：不发请求，灰条与已填意见保留', (tester) async {
-    final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
-
-    await tester.tap(modifyButton());
-    await tester.pumpAndSettle();
-    await tester.enterText(composerField(), '把这段写紧凑些');
-    await tester.pump();
-    await tester.tap(sendButton());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-
-    expect(rp.rounds.last.aiNarrative, contains('第 1 轮的剧情正文'));
-    expect(modeBar(), findsOneWidget);
-    expect(fieldText(tester), '把这段写紧凑些');
-  });
-
-  testWidgets('意见为空：发送键置灰、不弹确认框', (tester) async {
+  testWidgets('意见为空：发送键置灰、不提交', (tester) async {
     await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
     await tester.tap(modifyButton());
@@ -163,7 +144,7 @@ void main() {
     await tester.tap(sendButton(), warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('将删除本轮及之后的所有轮次'), findsNothing);
+    expect(find.byType(AlertDialog), findsNothing);
     expect(modeBar(), findsOneWidget);
   });
 

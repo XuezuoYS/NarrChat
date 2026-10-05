@@ -64,37 +64,6 @@ Future<bool> showReAskConfirmDialog(BuildContext context, Round round) async {
   return result ?? false;
 }
 
-/// 「按意见修改」二次确认对话框。
-///
-/// 说明影响范围：删除本轮及后续所有轮次（旧版本保留在版本树，可用代次控件切回），
-/// 并以用户填写的意见重写该轮。
-Future<bool> showModifyByOpinionConfirmDialog(
-  BuildContext context,
-  Round round,
-) async {
-  final result = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('按意见修改'),
-      content: Text(
-        '将删除本轮及之后的所有轮次，并按你填写的意见重写第 ${round.roundIndex} 轮。'
-        '修改前的版本会保留，可用代次控件的 ← / → 切回。是否继续？',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(ctx).pop(true),
-          child: const Text('继续'),
-        ),
-      ],
-    ),
-  );
-  return result ?? false;
-}
-
 /// 删除书籍确认对话框。
 Future<bool> showDeleteBookConfirmDialog(BuildContext context, String title) async {
   final result = await showDialog<bool>(
