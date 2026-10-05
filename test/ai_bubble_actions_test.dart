@@ -38,6 +38,7 @@ Future<void> _pump(
               onDelete: () {},
               onRefresh: () {},
               onModifyByOpinion: () {},
+              onViewRaw: () {},
             ),
           ),
         ),
@@ -144,5 +145,20 @@ void main() {
 
     expect(find.text(_model), findsNothing);
     expect(find.text(_tokens), findsOneWidget);
+  });
+
+  testWidgets('RAW 入口恒在：不按数据有无显隐（历史回归守护）', (tester) async {
+    await _pump(tester, width: 700);
+
+    expect(find.text('RAW'), findsOneWidget);
+    // 入口顺序：查看侧边栏 → RAW → 刷新本轮（RAW 不再被代次控件挤掉）。
+    expect(
+      tester.getCenter(find.text('RAW')).dx,
+      greaterThan(tester.getCenter(find.text('查看侧边栏')).dx),
+    );
+    expect(
+      tester.getCenter(find.text('RAW')).dx,
+      lessThan(tester.getCenter(find.text('刷新本轮')).dx),
+    );
   });
 }

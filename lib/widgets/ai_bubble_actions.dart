@@ -8,10 +8,14 @@ import 'token_usage_pill.dart';
 /// - 代次控件（修改还原：`← x/y →`，仅 ≥2 存活代时由调用方传入）
 /// - Token 栏（模型名 + 输入 / 输出 Token，整块可点 → 弹出计费明细气泡）
 /// - 查看本轮侧边栏
-/// - RAW（查看请求/返回原始数据，仅存在数据时显示）
+/// - RAW（查看请求/返回原始数据；**入口恒在**，无数据时由调用方给出提示）
 /// - 刷新本轮
 /// - 按意见修改（紧邻「刷新本轮」右侧）
 /// - 删除本轮
+///
+/// RAW 入口**不按数据有无显隐**：历史上它被数据门控，结果「代次切换 / 投影重载」
+/// 之后入口整块消失（用户观感就是「RAW 没了」）。数据有无交由 [onViewRaw] 的
+/// 实现提示，入口本身永远可见。
 class AiBubbleActions extends StatelessWidget {
   final Round round;
   final VoidCallback onViewSidebar;
@@ -21,8 +25,8 @@ class AiBubbleActions extends StatelessWidget {
   /// 「按意见修改」回调（以填写的意见重写本轮；新增一代，旧代可切回）。
   final VoidCallback onModifyByOpinion;
 
-  /// RAW 查看回调（null = 本轮无 RAW 数据，不显示按钮）。
-  final VoidCallback? onViewRaw;
+  /// RAW 查看回调（必传）：有数据即打开 RAW 对话框，无数据由实现给出提示。
+  final VoidCallback onViewRaw;
 
   /// 代次控件（null = 不显示）；恒占 `Wrap` 首位（控件自身不换行）。
   final Widget? versionStepper;
@@ -34,7 +38,7 @@ class AiBubbleActions extends StatelessWidget {
     required this.onDelete,
     required this.onRefresh,
     required this.onModifyByOpinion,
-    this.onViewRaw,
+    required this.onViewRaw,
     this.versionStepper,
   });
 
@@ -58,12 +62,11 @@ class AiBubbleActions extends StatelessWidget {
               label: '查看侧边栏',
               onPressed: onViewSidebar,
             ),
-            if (onViewRaw != null)
-              ActionButton(
-                icon: Icons.raw_on,
-                label: 'RAW',
-                onPressed: onViewRaw!,
-              ),
+            ActionButton(
+              icon: Icons.raw_on,
+              label: 'RAW',
+              onPressed: onViewRaw,
+            ),
             ActionButton(
               icon: Icons.refresh,
               label: '刷新本轮',

@@ -68,6 +68,12 @@
 - 🟡 **双存储**：每代一份全文；随整库快照上云（`keepVersions` 默认 5）→ 存储乘性增长。
 - 🟡 投影重建会改变 `rounds.id`：任何以 `rounds.id` 为键的内存缓存（RAW 时间线）必须随
   每次 `loadRounds` 清空。
+  - **2026-10-05 更新（本条要求作废）**：RAW 时间线改为**按"代"（`use_stack_uuid`）保存**
+    （`_rawByGeneration`），另用「行 id → 代键」索引（`_rawKeyByRoundId`，随投影更新重建）
+    对外维持按行 id 取用的接口——因此**只有换书才清理**（重载 / 编辑 / 切代都不必清）。
+    原因：投影重建本来就换行 id，按 id 存 + 每次全清会让「入口随数据一起消失」（表现为
+    RAW 入口被取消）。口径见 `docs/database.md` §5.3，测试见
+    `test/round_return_versions_test.dart` 的 RAW 归属用例。
 - **刻意不建**：`father_uuid` 自引用外键（删除是物理删除，自引用会阻碍删父行 / 级联掉要保留的分支）、
   `round_state='delete'` 墓碑态、`format` 列、`round_stack.updated_at`。
 - 归属：`round_stack` **不新增同步部件**，与 `rounds` 一起构成「轮次部件」（摘要 `stackDigest` 折入）。

@@ -238,8 +238,19 @@ class RoundProvider extends ChangeNotifier {
   /// 各书运行时生成状态（key = 书籍 uuid；支持多本书并发生成互不干扰）。
   final Map<String, _BookGenState> _gens = {};
 
-  /// 各成功轮次的 RAW 时间线（内存，key = roundId；切换书籍时清理）。
-  final Map<int, List<RawExchange>> _rawDataByRound = {};
+  /// 各成功轮的 RAW 时间线（内存）：**按「代」归属**，不按投影行 id。
+  ///
+  /// 投影重建（切换 / 采纳 / 编辑 / 重写）会换 `rounds.id`（见 `docs/database.md`
+  /// §5.3），但同一代的 `use_stack_uuid` 跨设备与跨重建都稳定——因此以它为键，
+  /// 切代 / 编辑 / 重载投影都不丢 RAW；只有**换书**才整体清理（避免跨书误配）。
+  /// 键见 [_rawGenerationKey]。
+  final Map<String, List<RawExchange>> _rawByGeneration = {};
+
+  /// 投影行 id → 代键（每次 `_setRounds` 后按当前投影重建）。
+  ///
+  /// 对外接口 [rawExchangesFor] 仍按投影行 id 取用（UI 只拿得到投影行 id），
+  /// 由本索引把 id 映射到稳定的代键。
+  final Map<int, String> _rawKeyByRoundId = {};
 
   String? _error;
 
@@ -385,10 +396,20 @@ class RoundProvider extends ChangeNotifier {
   (int, int)? get retryStatus => _curGen?.retryStatus;
 
   /// 指定轮次的 RAW 时间线（无数据返回 null）。
+  ///
+  /// 取用口径：`rounds.id`（投影行）→ 代键 → 该代的交换记录；代键由 [_setRounds]
+  /// 在每次投影更新后重建，因此投影重建换了行 id 也照样命中。
   List<RawExchange>? rawExchangesFor(int roundId) {
-    final data = _rawDataByRound[roundId];
+    final data = _rawByGeneration[_rawKeyByRoundId[roundId]];
     return (data == null || data.isEmpty) ? null : data;
   }
+
+  /// 一代的 RAW 归属键：优先 `use_stack_uuid`（跨投影重建稳定）；老库尚无锚点
+  /// （未采纳）时回落到「书 + 轮号」，行为与按轮号归属一致。
+  static String _rawGenerationKey(Round round) =>
+      round.useStackUuid.isEmpty
+          ? 'round:${round.bookUuid}:${round.roundIndex}'
+          : 'gen:${round.useStackUuid}';
 
   /// 失败条目的 RAW 时间线（无数据返回 null）。
   List<RawExchange>? get failedRawExchanges {
@@ -474,10 +495,19 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 更新轮次列表并刷新缓存的不可变视图。
+  /// 更新轮次列表并刷新缓存的不可变视图 + **重建 RAW 的代键索引**。
+  ///
+  /// 投影重建（切换 / 采纳 / 编辑 / 重写）会换 `rounds.id`：索引必须跟着投影走，
+  /// 否则按行 id 取 RAW 会命中不到（RAW 本体按代键保存，见 [_rawByGeneration]）。
   void _setRounds(List<Round> rounds) {
     _rounds = rounds;
     _roundsView = List.unmodifiable(rounds);
+    _rawKeyByRoundId
+      ..clear()
+      ..addEntries([
+        for (final r in rounds)
+          if (r.id != null) MapEntry(r.id!, _rawGenerationKey(r)),
+      ]);
   }
 
   /// 加载指定书籍的全部轮次（按 round_index 升序）。
@@ -487,10 +517,15 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// v19（修改还原）：加载后跑一次**廉价**版本树采纳（老库懒建根 / 悬空锚点自愈），
   /// 并重建本机版本索引；采纳可能改写 `use_stack_uuid`，故随后重读投影行。
+  ///
+  /// RAW 时间线**不随加载清空**（它按「代」保存，见 [_rawByGeneration]）；
+  /// 仅换书时整体清理，避免跨书误配。
   Future<void> loadRounds(String bookUuid) async {
+    if (_bookUuid.isNotEmpty && _bookUuid != bookUuid) {
+      _rawByGeneration.clear();
+      _rawKeyByRoundId.clear();
+    }
     _bookUuid = bookUuid;
-    // 投影重建会换 `rounds.id`：每次重载都清该书的 RAW 内存缓存（不再只在换书时清）。
-    _rawDataByRound.clear();
     try {
       _setRounds(await _dao.getRoundsByBook(bookUuid));
       if (_rounds.isEmpty) {
@@ -652,8 +687,8 @@ class RoundProvider extends ChangeNotifier {
       );
       if (!switched) return false;
       _bumpVersions();
-      // 投影重建后 `rounds.id` 变化 → 清 RAW 内存缓存。
-      _rawDataByRound.clear();
+      // RAW **不随切换清空**：它按「代」归属，切到哪一代就看哪一代的记录
+      //（本机内存只保留本次运行捕获过的代；换书才整体清理）。
       final gen = _gen(bookUuid);
       // 该轮及其后轮次的常驻黄框随切换撤销（本地提示，不入库）。
       _dropRoundWarningsFrom(gen, roundIndex);
@@ -678,8 +713,8 @@ class RoundProvider extends ChangeNotifier {
     final changed = await _adoptStack(bookUuid, force: force);
     if (!changed) return;
     try {
+      // 采纳只改投影锚点（RAW 按代保存，索引随 [_setRounds] 重建即可）。
       _setRounds(await _dao.getRoundsByBook(bookUuid));
-      _rawDataByRound.clear();
     } catch (e) {
       _error = e.toString();
     }
@@ -1278,7 +1313,7 @@ class RoundProvider extends ChangeNotifier {
       );
       // 版本树：本轮 = 同分组内新的一代（父 = 上一轮当前代），投影行同事务写入。
       // 该轮若曾被重写，旧代已作为同父兄弟代保留在库中（可 `← / →` 切回）。
-      final newRoundId = await _stack.attachNewGeneration(
+      await _stack.attachNewGeneration(
         bookUuid: b.uuid,
         round: newRound,
         fatherUuid: _fatherAnchorFor(newRound.roundIndex),
@@ -1299,8 +1334,8 @@ class RoundProvider extends ChangeNotifier {
         ...gen.agentWarnings,
         ...chatMergeWarnings,
       ]);
-      // 成功轮次：RAW 时间线先取出缓冲，待投影重载后再按**实际行 id**归位
-      //（`loadRounds` 会清空本书 RAW 缓存，而投影重建可能改变 `rounds.id`）。
+      // 成功轮次：RAW 时间线先取出缓冲，待投影重载后再按**代键**归位
+      //（`loadRounds` 不丢 RAW，但会换投影行 id，故必须以稳定代键保存）。
       final rawExchanges = List.of(gen.rawExchanges);
       gen.rawExchanges.clear();
       // 自动云同步：所有生成结束路径（成功 / 失败 / 中断）统一在 finally 触发，
@@ -1313,7 +1348,7 @@ class RoundProvider extends ChangeNotifier {
               .where((r) => r.roundIndex == newRound.roundIndex)
               .firstOrNull
           : null;
-      _rawDataByRound[liveRound?.id ?? newRoundId] = rawExchanges;
+      _rawByGeneration[_rawGenerationKey(liveRound ?? newRound)] = rawExchanges;
       // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
       onGenerationCompleted?.call(b.uuid, b.title);
       return true;

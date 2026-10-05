@@ -1531,17 +1531,32 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 查看指定轮次的 RAW 数据（请求 JSON + AI 返回三块）。
+  ///
+  /// RAW 是**本机内存**数据（按「代」保存，换书即清理）：能取到就开对话框，
+  /// 取不到也**不隐藏入口**，而是明确告知原因（入口消失比没数据更让人困惑）。
   void _showRawDialog(Round round) {
     final exchanges = context.read<RoundProvider>().rawExchangesFor(round.id!);
-    if (exchanges == null) return;
+    if (exchanges == null) {
+      context.notices.info(
+        '本轮暂无 RAW 记录：RAW 只保留本次运行捕获的请求 / 返回'
+        '（重开应用或换书后不再保留）。',
+      );
+      return;
+    }
     showRawDataDialog(context, exchanges: exchanges);
   }
 
-  /// 查看失败条目的 RAW 数据（请求 JSON + 失败原因）。
+  /// 查看失败条目的 RAW 数据（请求 JSON + 失败原因）；无记录时给出说明。
   void _showFailedRawDialog() {
     final rp = context.read<RoundProvider>();
     final exchanges = rp.failedRawExchanges;
-    if (exchanges == null) return;
+    if (exchanges == null) {
+      context.notices.info(
+        '本次失败暂无 RAW 记录：RAW 只保留本次运行捕获的请求 / 返回'
+        '（重开应用或换书后不再保留）。',
+      );
+      return;
+    }
     showRawDataDialog(
       context,
       exchanges: exchanges,
@@ -1653,10 +1668,10 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 构建气泡上下文菜单项（AI / 用户气泡的入口差异集中于此）。
+  ///
+  /// RAW 入口**恒在**（AI 气泡）：无数据时点击弹出说明，而不是把入口藏起来
+  /// （历史教训：入口曾按数据显隐，代次切换 / 投影重载后整块消失）。
   List<PopupMenuEntry<String>> _buildMenuItems(Round round, bool isAi) {
-    final hasRaw = isAi &&
-        round.id != null &&
-        context.read<RoundProvider>().rawExchangesFor(round.id!) != null;
     return <PopupMenuEntry<String>>[
       if (isAi) ...[
         const PopupMenuItem(
@@ -1696,11 +1711,10 @@ class _ChatScreenState extends State<ChatScreen>
             label: '查看侧边栏',
           ),
         ),
-        if (hasRaw)
-          const PopupMenuItem(
-            value: 'raw',
-            child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
-          ),
+        const PopupMenuItem(
+          value: 'raw',
+          child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
+        ),
         const PopupMenuItem(
           value: 'delete',
           child: AppMenuAction(
@@ -2140,9 +2154,8 @@ class _ChatScreenState extends State<ChatScreen>
                     onEditAndRetry: _startEditAndRetryFailure,
                     onClear: _clearFailure,
                     versionStepper: _failureVersionStepper(pendingIndex),
-                    onViewRaw: roundProvider.failedRawExchanges != null
-                        ? _showFailedRawDialog
-                        : null,
+                    // RAW 入口恒在（无数据时由对话框前的提示说明）。
+                    onViewRaw: _showFailedRawDialog,
                   ),
                   if (notes.isNotEmpty) ...[
                     const SizedBox(height: 8),
@@ -2225,10 +2238,8 @@ class _ChatScreenState extends State<ChatScreen>
                         onRefresh: () => _handleReAsk(round),
                         onModifyByOpinion: () => _startModifyByOpinion(round),
                         versionStepper: _versionStepperFor(round.roundIndex),
-                        onViewRaw:
-                            roundProvider.rawExchangesFor(round.id!) != null
-                            ? () => _showRawDialog(round)
-                            : null,
+                        // RAW 入口恒在（无数据时由提示说明原因，不隐藏入口）。
+                        onViewRaw: () => _showRawDialog(round),
                       ),
                     ],
                   ),

@@ -60,8 +60,8 @@ void main() {
         .map((b) => b.label)
         .toList();
 
-    expect(labels, contains('刷新本轮'));
-    expect(labels, contains('按意见修改'));
+    // 整行顺序固定（RAW 入口恒在，不随后续增删而丢）。
+    expect(labels, ['查看侧边栏', 'RAW', '刷新本轮', '按意见修改', '删除本轮']);
     // 位置口径：就在「刷新本轮」右侧一位（删除本轮仍在最后）。
     expect(labels.indexOf('按意见修改'), labels.indexOf('刷新本轮') + 1);
     expect(labels.indexOf('删除本轮'), greaterThan(labels.indexOf('按意见修改')));

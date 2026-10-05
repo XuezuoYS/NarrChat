@@ -9,17 +9,18 @@ import 'bubble_pointer_listener.dart';
 import 'chat_bubble.dart';
 
 /// 「失败条目」气泡：用户输入气泡 + AI 红色提示框（已截断 / 生成失败 + 原因）
-/// + 底部操作（代次控件 / 重新提问 / 修改并重新提问 / 清除失败条目）。
+/// + 底部操作（代次控件 / 重新提问 / 修改并重新提问 / RAW / 清除失败条目）。
 ///
-/// 整块支持右键 / 长按弹出上下文菜单（复制输入 / 重新提问 / 修改并重新提问 / 清除）。
+/// 整块支持右键 / 长按弹出上下文菜单（复制输入 / 重新提问 / 修改并重新提问 /
+/// RAW / 清除）。RAW 入口**恒在**（无数据时由调用方的提示说明），不随数据显隐。
 class FailedAttemptBubble extends StatelessWidget {
   final FailedAttempt attempt;
   final VoidCallback onRetry;
   final VoidCallback onEditAndRetry;
   final VoidCallback onClear;
 
-  /// RAW 查看回调（null = 无 RAW 数据，不显示按钮）。
-  final VoidCallback? onViewRaw;
+  /// RAW 查看回调（必传）：有数据即打开 RAW 对话框，无数据由实现给出提示。
+  final VoidCallback onViewRaw;
 
   /// 代次控件（失败态：`current = null` + 只给 `← 还原上一代`）；
   /// null = 该分组没有可还原的存活代，不显示。
@@ -31,7 +32,7 @@ class FailedAttemptBubble extends StatelessWidget {
     required this.onRetry,
     required this.onEditAndRetry,
     required this.onClear,
-    this.onViewRaw,
+    required this.onViewRaw,
     this.versionStepper,
   });
 
@@ -52,11 +53,10 @@ class FailedAttemptBubble extends StatelessWidget {
           value: 'copy',
           child: AppMenuAction(icon: Icons.copy_outlined, label: '复制输入'),
         ),
-        if (onViewRaw != null)
-          const PopupMenuItem(
-            value: 'raw',
-            child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
-          ),
+        const PopupMenuItem(
+          value: 'raw',
+          child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
+        ),
         const PopupMenuItem(
           value: 'clear',
           child: AppMenuAction(
@@ -79,7 +79,7 @@ class FailedAttemptBubble extends StatelessWidget {
             context.notices.success('已复制', dwell: const Duration(seconds: 1));
           }
         case 'raw':
-          onViewRaw?.call();
+          onViewRaw();
         case 'clear':
           onClear();
       }
@@ -120,12 +120,11 @@ class FailedAttemptBubble extends StatelessWidget {
                 label: '修改并重新提问',
                 onPressed: onEditAndRetry,
               ),
-              if (onViewRaw != null)
-                ActionButton(
-                  icon: Icons.raw_on,
-                  label: 'RAW',
-                  onPressed: onViewRaw!,
-                ),
+              ActionButton(
+                icon: Icons.raw_on,
+                label: 'RAW',
+                onPressed: onViewRaw,
+              ),
               ActionButton(
                 icon: Icons.delete_outline,
                 label: '清除失败条目',

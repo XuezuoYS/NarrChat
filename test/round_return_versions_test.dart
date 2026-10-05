@@ -9,8 +9,8 @@ import 'helpers/fakes.dart';
 /// [RoundProvider] 的「修改还原」接线契约（内存替身，不触碰真实数据库）。
 ///
 /// 覆盖：失败态严格按 v18（OP-7）、同步版本索引（UI-1 的取数口径）、
-/// 切换编排（切换后不滚不生成、清 RAW / 黄框 / 失败态）、采纳入口、
-/// 失败条目重试下沉。
+/// 切换编排（切换后不滚不生成、清黄框 / 失败态；**RAW 按代保留、不随切换清**）、
+/// 采纳入口、失败条目重试下沉、RAW 的「代」归属（换书才清）。
 void main() {
   const book = Book(uuid: 'b1', title: '测试书');
 
@@ -98,7 +98,7 @@ void main() {
     expect(info.prevUuid, isNull);
   });
 
-  test('切换：目标由 forward 决定；成功后清 RAW 与黄框，不发起生成、不滚屏（Provider 侧无滚屏）', () async {
+  test('切换：目标由 forward 决定；不发起生成、不滚屏（Provider 侧无滚屏）', () async {
     final env = build();
     await env.provider.loadRounds('b1');
     await env.provider.sendRound(userInput: '第一章', book: book);
@@ -241,19 +241,81 @@ void main() {
     expect(env.provider.versionsRevision, revision);
   });
 
-  test('loadRounds 每次都清本书 RAW 缓存（投影重建会换行 id）', () async {
+  test('RAW 按代归属：投影重建换行 id 也能命中；同书重载不丢', () async {
+    final env = build();
+    await env.provider.loadRounds('b1');
+    await env.provider.sendRound(userInput: '第一章', book: book);
+    final oldId = env.provider.rounds.last.id!;
+    final anchor = env.provider.rounds.last.useStackUuid;
+    expect(env.provider.rawExchangesFor(oldId), isNotNull);
+    expect(anchor, isNotEmpty, reason: 'v19 投影行必带代锚点');
+
+    // 模拟真实库的投影重建（切换 / 采纳会换行 id）：删旧行 → 以同一代锚点重新插入。
+    final old = env.provider.rounds.last;
+    await env.dao.deleteRound(old.id!);
+    await env.dao.insertRound(
+      Round(
+        bookUuid: 'b1',
+        roundIndex: 1,
+        userInput: old.userInput,
+        aiNarrative: old.aiNarrative,
+        useStackUuid: anchor,
+        createdAt: old.createdAt,
+      ),
+    );
+    await env.provider.loadRounds('b1');
+    final newId = env.provider.rounds.last.id!;
+    expect(newId, isNot(oldId), reason: '前置条件：行 id 已变');
+
+    expect(
+      env.provider.rawExchangesFor(newId),
+      isNotNull,
+      reason: 'RAW 以「代」为键：换行 id 照样取得到',
+    );
+    expect(env.provider.rawExchangesFor(oldId), isNull, reason: '旧行 id 已不在投影');
+  });
+
+  test('RAW 归属到「代」：同一行指向别的代时取不到，指回来又可见', () async {
+    final env = build();
+    await env.provider.loadRounds('b1');
+    await env.provider.sendRound(userInput: '第一章', book: book);
+    final round = env.provider.rounds.last;
+    final ownAnchor = round.useStackUuid;
+    expect(env.provider.rawExchangesFor(round.id!), isNotNull);
+
+    // 同一行 id 改指另一代（等价于切到旧代后投影重建的结果）。
+    await env.dao.updateRoundFields(round.id!, {'use_stack_uuid': 'g-old'});
+    await env.provider.loadRounds('b1');
+    expect(
+      env.provider.rawExchangesFor(round.id!),
+      isNull,
+      reason: '那是另一代：不应把这一代的 RAW 冒充给它',
+    );
+
+    // 指回原代 → 记录仍在（本机内存只丢换书 / 进程结束）。
+    await env.dao.updateRoundFields(round.id!, {'use_stack_uuid': ownAnchor});
+    await env.provider.loadRounds('b1');
+    expect(env.provider.rawExchangesFor(round.id!), isNotNull);
+  });
+
+  test('RAW 只在换书时清空（避免跨书误配）；同书重载不清', () async {
     final env = build();
     await env.provider.loadRounds('b1');
     await env.provider.sendRound(userInput: '第一章', book: book);
     final roundId = env.provider.rounds.last.id!;
     expect(env.provider.rawExchangesFor(roundId), isNotNull);
 
+    // 同一本书重载：保留。
     await env.provider.loadRounds('b1');
+    expect(env.provider.rawExchangesFor(roundId), isNotNull);
 
+    // 换到另一本书：清理；切回原书也不复活（内存态，仅本次运行捕获）。
+    await env.provider.loadRounds('b2');
+    await env.provider.loadRounds('b1');
     expect(
       env.provider.rawExchangesFor(roundId),
       isNull,
-      reason: '重载即失效（行 id 可能变化）',
+      reason: '换书即整体清空（RAW 为本机内存数据）',
     );
   });
 }

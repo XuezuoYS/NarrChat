@@ -173,8 +173,12 @@
 **投影重建**（切换后）：单事务内 `DELETE rounds WHERE book_uuid=? AND round_index>=i`
 → 按活动链插入（内容取版本树行、`use_stack_uuid` = 该行 uuid、`created_at` = `round_created_at`、
 `updated_at` = now）→ `touchBook(rounds: true)`。
-**注意**：投影重建会改变 `rounds.id`，因此 `DatabaseHelper` 之外的内存缓存
-（RAW 时间线 `_rawDataByRound`）在每次 `loadRounds` 都要清。
+**注意**：投影重建会改变 `rounds.id`，因此 `DatabaseHelper` 之外的内存缓存**不得以 `rounds.id`
+为键**。RAW 时间线的落法：本体按**代**保存（`use_stack_uuid`，`_rawByGeneration`），另用
+「行 id → 代键」的索引（`_rawKeyByRoundId`，随每次投影更新重建）对外维持按行 id 取用的接口；
+因此**重载 / 编辑 / 切代都不再需要清空 RAW**，只有**换书**才整体清理（跨书误配防护）。
+（v19 早期实现是"每次 `loadRounds` 全清"，代价是入口随数据一起消失——见
+`test/round_return_versions_test.dart` 的 RAW 归属用例。）
 
 ### 5.4 `world_book_entries`
 
