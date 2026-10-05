@@ -37,6 +37,7 @@ Future<void> _pump(
               onViewSidebar: () {},
               onDelete: () {},
               onRefresh: () {},
+              onModifyByOpinion: () {},
             ),
           ),
         ),

@@ -773,23 +773,46 @@ class RoundProvider extends ChangeNotifier {
   /// worldBook / Mod / 提示词 / 历史消息与图片 / 发送参数与请求体。
   ///
   /// 供 [sendRound] 与「预览请求体」共用：不读写任何生成状态、不落库、不发网络。
+  ///
+  /// [rewrite] 非 null 时按**修改轮**组装（见 [sendRound]）：
+  /// - 生成基座 [PromptRequest.lastRound] = 被重写轮的上一轮（工具 / 状态快照停在那里）；
+  /// - 历史 = 预设 n 轮 + **被重写轮自身**（= 该轮生成时 AI 收到的轮 + 自身，共 n+1）；
+  /// - user 消息走修改轮模板，「主人的输入」= 用户填写的修改意见。
   Future<_RoundRequest> _assembleRoundRequest({
     required Book book,
     required String userInput,
     List<String>? userImages,
+    RoundRewrite? rewrite,
   }) async {
     final settings = _aiSettingsProvider;
-    final lastRound = latestRound;
-    // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 上一轮落库的记忆总结 +
+    // 生成基座轮：新建轮 = 投影末轮；修改轮 = 被重写轮的上一轮（严格更早的最近一轮）。
+    final lastRound = rewrite == null ? latestRound : rewrite.base;
+    final targetRoundIndex =
+        rewrite?.target.roundIndex ?? (lastRound?.roundIndex ?? 0) + 1;
+    // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 基座轮落库的记忆总结 +
     // 本书档位），随后下发给提示词 / Agent 执行器，并用于生成后判定。
     final memoryMergePlan = planMemoryMerge(
       memoryText: lastRound?.memorySummary ?? '',
       tier: book.memorySummaryRounds,
-      newRoundIndex: (lastRound?.roundIndex ?? 0) + 1,
+      newRoundIndex: targetRoundIndex,
     );
-    final recentRounds = _takeRecent(book.historyRounds);
+    // 历史轮次：新建轮 = 最近 n 轮；修改轮 = 被重写轮之前 n 轮 + **被重写轮自身**
+    //（该轮生成时 AI 收到的 n 轮 + 该轮，供 AI 照着它做定向重写）。按轮号过滤是
+    // 冗余保险：调用方已先删该轮起的投影行，这里只保证「自身恰好出现一次、且在最后」。
+    final recentRounds = rewrite == null
+        ? _takeRecent(book.historyRounds)
+        : [
+            ..._takeRecent(book.historyRounds)
+                .where((r) => r.roundIndex < rewrite.target.roundIndex),
+            rewrite.target,
+          ];
+    // 世界书 / Mod 世界书的关键词扫描输入：修改轮 = 被重写轮的原输入（原文需要的
+    // 设定）+ 修改意见（新出现的词），两边该命中的都命中。
+    final scanInput = rewrite == null
+        ? userInput
+        : '${rewrite.target.userInput}\n$userInput';
     final worldBookEntries = _worldBookScanner.scan(
-      userInput: userInput,
+      userInput: scanInput,
       historyRounds: recentRounds,
       entries: _worldBookProvider?.activeEntries ?? const [],
     );
@@ -799,7 +822,7 @@ class RoundProvider extends ChangeNotifier {
         ? null
         : await _modProvider.resolveModsBundle(
             bookUuid: book.uuid,
-            userInput: userInput,
+            userInput: scanInput,
             historyRounds: recentRounds,
           );
     // 模式与协议**正交**（全解耦）：
@@ -818,19 +841,30 @@ class RoundProvider extends ChangeNotifier {
     final promptRequest = PromptRequest(
       book: book,
       mode: profile.promptMode,
+      // 修改轮：基座 = 被重写轮的上一轮；新建轮：上一轮。
       lastRound: lastRound,
-      userInput: userInput,
+      // 修改轮：本轮 user 消息的【主人的输入】= 用户填写的修改意见。
+      userInput: rewrite?.opinion ?? userInput,
       worldBookEntries: worldBookEntries,
       mods: modsBundle,
+      rewrite: rewrite == null
+          ? null
+          : RewriteTarget(
+              roundIndex: targetRoundIndex,
+              roundTime: rewrite.target.currentTime,
+            ),
     );
     final systemPrompt = promptInterface.system(promptRequest);
 
     // 历史轮次按 API 要求以原生 messages 数组（user/assistant 交替）传入，
     // 而非拼入本次 Prompt 文本（与提示词解耦：见 `wire_messages.dart`）。
     final supportsVision = settings?.supportsVision ?? false;
+    // 本轮随 user 消息发出的图片：修改轮 = 意见里附带的图片（**不落库**，
+    // 新版本沿用原图），新建轮 = 待发送附件。
+    final currentImages = rewrite?.images ?? userImages;
     // 预读取本轮及历史用户消息所需图片为 base64 data URL（仅识图模型）。
     final imageDataUrls = supportsVision
-        ? await _collectImageDataUrls(recentRounds, userImages)
+        ? await _collectImageDataUrls(recentRounds, currentImages)
         : const <String, String>{};
     final historyMessages = buildHistoryMessages(
       recentRounds,
@@ -845,7 +879,7 @@ class RoundProvider extends ChangeNotifier {
     final userContent = supportsVision
         ? _userContentWithImages(
             userText,
-            userImages,
+            currentImages,
             imageDataUrls,
           )
         : userText;
@@ -901,7 +935,9 @@ class RoundProvider extends ChangeNotifier {
       final schemaTools = _agentTools(
         level: agentLevel,
         workingCopy: AgentStateWorkingCopy(
-          roundIndex: (lastRound?.roundIndex ?? 0) + 1,
+          // 修改轮：工作副本 = 被重写轮（轮号 = 目标轮，基座 = 其上一轮）——
+          // 工具读取 / 编辑都停在「上一轮的状态」。
+          roundIndex: targetRoundIndex,
           lastRound: lastRound,
           categoryNames: [for (final c in book.roleCategories) c.name],
         ),
@@ -951,6 +987,8 @@ class RoundProvider extends ChangeNotifier {
         agentChaining:
             responsesWire && settings.selectedPlatform.supportsResponseChaining,
         memoryMergePlan: memoryMergePlan,
+        targetRoundIndex: targetRoundIndex,
+        baseRound: lastRound,
       );
     }
 
@@ -989,6 +1027,8 @@ class RoundProvider extends ChangeNotifier {
         directBody: requestBody,
         responsesWire: true,
         memoryMergePlan: memoryMergePlan,
+        targetRoundIndex: targetRoundIndex,
+        baseRound: lastRound,
       );
     }
 
@@ -1021,6 +1061,8 @@ class RoundProvider extends ChangeNotifier {
       useSearch: useSearch,
       directBody: requestBody,
       memoryMergePlan: memoryMergePlan,
+      targetRoundIndex: targetRoundIndex,
+      baseRound: lastRound,
     );
   }
 
@@ -1031,6 +1073,11 @@ class RoundProvider extends ChangeNotifier {
   /// 3. 容错解析 6 个区块；
   /// 4. 写入数据库。
   ///
+  /// [rewrite] 非 null 时走**修改轮**（按意见重写某一轮）：历史 = 该轮生成时收到的
+  /// n 轮 + 该轮自身（n+1），状态工具读到的是该轮的**上一轮**；落库为该轮的**新一
+  /// 代**（[userInput] / [userImages] 沿用原值，意见只进请求）。调用前须先
+  /// `_rewriteRound(roundIndex)` 清掉该轮起的投影行（见 [modifyRoundByOpinion]）。
+  ///
   /// 返回是否成功。请求失败 / 用户中断时保留用户输入到「失败条目」
   /// （AI 输出以红色提示框占位），不再以消息提示；
   /// 仅当失败条目落库也失败时通过 [error] 暴露原因。
@@ -1038,6 +1085,7 @@ class RoundProvider extends ChangeNotifier {
     required String userInput,
     Book? book,
     List<String>? userImages,
+    RoundRewrite? rewrite,
   }) async {
     final b = book;
     if (b == null || b.uuid.isEmpty) {
@@ -1085,6 +1133,7 @@ class RoundProvider extends ChangeNotifier {
         book: b,
         userInput: userInput,
         userImages: userImages,
+        rewrite: rewrite,
       );
       // 非流式 + 多轮（AGENT / 联网搜索）：启用「展示回放」——一次性响应
       // 切成合成流式块，按 AI 轮次展示每个块（思考 / 工具过程 → 结果 / 正文）。
@@ -1206,7 +1255,8 @@ class RoundProvider extends ChangeNotifier {
 
       final newRound = Round(
         bookUuid: b.uuid,
-        roundIndex: nextRoundIndex,
+        // 新建轮 = 投影尾号 +1；修改轮 = **被重写的那一轮**（投影行同号替换为新代）。
+        roundIndex: req.targetRoundIndex,
         userInput: userInput,
         aiNarrative: parsed.aiNarrative,
         worldState: agentSnapshot?.worldState ?? parsed.worldState,
@@ -1647,8 +1697,9 @@ class RoundProvider extends ChangeNotifier {
     required bool Function() isCancelled,
   }) async {
     final workingCopy = AgentStateWorkingCopy(
-      roundIndex: (latestRound?.roundIndex ?? 0) + 1,
-      lastRound: latestRound,
+      // 修改轮：轮号 = 被重写轮，基座 = 其上一轮（工具查询 / 编辑停在上一轮）。
+      roundIndex: req.targetRoundIndex,
+      lastRound: req.baseRound,
       categoryNames: [for (final c in book.roleCategories) c.name],
     );
     // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
@@ -2289,6 +2340,56 @@ class RoundProvider extends ChangeNotifier {
     await sendRound(userInput: editedInput, book: b, userImages: images);
   }
 
+  /// 按意见修改：以用户填写的修改意见**重写某一轮**（AI 气泡的「按意见修改」）。
+  ///
+  /// 与 [refreshRound] / [editAndReAsk] 同一套「重写」骨架，差别只在请求：
+  /// 1. 取被重写轮 [round] 与其**上一轮**的快照（内容来自内存投影）；
+  /// 2. 删除该轮起的投影行（旧代保留在版本树，`← / →` 可切回；后续轮次随旧代
+  ///    一起从视图隐藏——分支模型既定语义，与「刷新本轮」一致）；
+  /// 3. 以「修改轮」提示词重新请求 AI（见 [sendRound]）：
+  ///    - 历史 = 该轮生成时收到的 n 轮 + 该轮自身（n+1）；
+  ///    - 状态 / 记忆等工具读取到的信息全部停在**上一轮**；
+  ///    - 用户输入与图片沿用该轮原值（新版本与修改前一致），意见只进请求。
+  ///
+  /// [images] 是随意见附带的图片（仅本次请求，不落库）。
+  /// 返回是否成功；失败按既有「重新生成」规则写入失败条目（见 [sendRound]）。
+  Future<bool> modifyRoundByOpinion(
+    Round round,
+    String opinion, {
+    Book? book,
+    List<String>? images,
+  }) async {
+    final b = book;
+    if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return false;
+    final text = opinion.trim();
+    if (text.isEmpty) return false;
+    // 基座 = 严格早于被重写轮的最近一轮（须在删投影行之前快照）。
+    final base = _roundBefore(round.roundIndex);
+    await _rewriteRound(round.roundIndex);
+    return sendRound(
+      // 新版本沿用该轮原输入与原图（意见不落库）。
+      userInput: round.userInput,
+      book: b,
+      userImages: round.userImages,
+      rewrite: RoundRewrite(
+        target: round,
+        base: base,
+        opinion: text,
+        images: images ?? const [],
+      ),
+    );
+  }
+
+  /// 严格早于 [roundIndex] 的最近一轮（轮号可断裂；含第零轮 = 初始状态）。
+  Round? _roundBefore(int roundIndex) {
+    Round? found;
+    for (final r in _rounds) {
+      if (r.roundIndex >= roundIndex) break;
+      found = r;
+    }
+    return found;
+  }
+
   /// 「重写某轮」的准备：清失败态 → 删该轮起的投影行（`round_stack` 旧代保留）
   /// → 立刻重载投影。
   ///
@@ -2367,6 +2468,31 @@ class RoundProvider extends ChangeNotifier {
   }
 }
 
+/// 「按意见修改」（修改轮）的一次请求上下文。
+///
+/// 由 [RoundProvider.modifyRoundByOpinion] 构造：目标轮与其上一轮的快照都取自
+/// **内存投影**（此时该轮起的投影行已被删除），因此这里必须自带全部内容。
+class RoundRewrite {
+  const RoundRewrite({
+    required this.target,
+    required this.base,
+    required this.opinion,
+    this.images = const [],
+  });
+
+  /// 被重写的那一轮（内容 = 修改前的当前代）。
+  final Round target;
+
+  /// 生成基座 = 被重写轮的上一轮（历史 / 状态工作副本都停在它上面）。
+  final Round? base;
+
+  /// 用户填写的修改意见（本轮 user 消息的【主人的输入】）。
+  final String opinion;
+
+  /// 随意见附带的图片：仅用于本次请求（**不落库**，新版本沿用该轮原图）。
+  final List<String> images;
+}
+
 /// 一轮请求的组装结果（供 `sendRound` 与「预览请求体」共用）。
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
@@ -2422,6 +2548,14 @@ class _RoundRequest {
   /// Agent 交执行器；两者都在生成后用它判定是否落地（未落地 → 常驻警告）。
   final MemoryMergePlan? memoryMergePlan;
 
+  /// 本轮落库的轮号：新建轮 = 投影尾号 +1；修改轮 = **被重写的那一轮**。
+  final int targetRoundIndex;
+
+  /// 本轮的状态基座轮（修改轮 = 被重写轮的上一轮）。
+  ///
+  /// Agent 工作副本以它铺设（工具读取 / 编辑都停在上一轮）。
+  final Round? baseRound;
+
   const _RoundRequest({
     required this.systemPrompt,
     required this.historyMessages,
@@ -2436,5 +2570,7 @@ class _RoundRequest {
     this.agentValues,
     this.agentChaining = false,
     this.memoryMergePlan,
+    required this.targetRoundIndex,
+    this.baseRound,
   });
 }

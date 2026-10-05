@@ -31,6 +31,22 @@ enum PromptMode {
   agentLv2,
 }
 
+/// 修改轮（按意见重写某一轮）的目标描述（见 `docs/ai_prompt_v2.md` 修改轮模板）。
+///
+/// 与 [PromptRequest.lastRound] 的分工：
+/// - [PromptRequest.lastRound] = **生成基座**，即被重写轮的**上一轮**——上轮时间、
+///   状态快照与记忆总结都取自它（工具读取到的信息也停在上一轮）；
+/// - 本对象 = **被重写的是哪一轮**，只提供头部「重写第 {轮次} 轮」与「此轮时间」。
+class RewriteTarget {
+  const RewriteTarget({required this.roundIndex, this.roundTime = ''});
+
+  /// 被重写的轮号（裸数字）。
+  final int roundIndex;
+
+  /// 被重写轮的「此轮时间」= 该轮**当前代**的 `## 当前时间`（空则整行不注入）。
+  final String roundTime;
+}
+
 /// 取用 system / user 文本所需的全部上下文。
 ///
 /// 所有字段都是**已经取好的数据**：接口不查数据库、不扫世界书、不解析 Mod。
@@ -42,6 +58,7 @@ class PromptRequest {
     this.userInput = '',
     this.worldBookEntries = '',
     this.mods,
+    this.rewrite,
   });
 
   /// 本书（书籍名 / 分类 / 设定 / 文笔 / 角色类别 / 记忆合并档位等全在内）。
@@ -50,10 +67,11 @@ class PromptRequest {
   /// 提示词模式：Chat / Agent Lv.1 / Agent Lv.2。
   final PromptMode mode;
 
-  /// 上一轮（首轮为 null）：上轮时间、状态快照与记忆总结的来源。
+  /// 生成基座轮（首轮为 null）：上轮时间、状态快照与记忆总结的来源。
+  /// 修改轮下 = 被重写轮的上一轮（工具读取到的信息也停在上一轮）。
   final Round? lastRound;
 
-  /// 本轮用户输入。
+  /// 本轮用户输入（修改轮下 = 用户填写的修改意见）。
   final String userInput;
 
   /// 已按关键词命中筛好的世界书条目文本（扫描在调用方完成）。
@@ -61,6 +79,12 @@ class PromptRequest {
 
   /// 本书启用的 Mod 束（system / 前置词 / 后置词 / 世界书）。
   final ModsBundle? mods;
+
+  /// 修改轮目标（null = 新建轮）。
+  ///
+  /// 非 null 时 [lastRound] 是**被重写轮的上一轮**（生成基座），[userInput] 是用户
+  /// 填写的修改意见；`user()` 因此走「重写第 {轮次} 轮」模板，其余与新建轮同构。
+  final RewriteTarget? rewrite;
 }
 
 /// 取用 Agent 阶段帧指令所需的上下文（按阶段取用，未用到的字段忽略）。

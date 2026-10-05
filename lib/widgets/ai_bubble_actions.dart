@@ -10,12 +10,16 @@ import 'token_usage_pill.dart';
 /// - 查看本轮侧边栏
 /// - RAW（查看请求/返回原始数据，仅存在数据时显示）
 /// - 刷新本轮
+/// - 按意见修改（紧邻「刷新本轮」右侧）
 /// - 删除本轮
 class AiBubbleActions extends StatelessWidget {
   final Round round;
   final VoidCallback onViewSidebar;
   final VoidCallback onDelete;
   final VoidCallback onRefresh;
+
+  /// 「按意见修改」回调（以填写的意见重写本轮；新增一代，旧代可切回）。
+  final VoidCallback onModifyByOpinion;
 
   /// RAW 查看回调（null = 本轮无 RAW 数据，不显示按钮）。
   final VoidCallback? onViewRaw;
@@ -29,6 +33,7 @@ class AiBubbleActions extends StatelessWidget {
     required this.onViewSidebar,
     required this.onDelete,
     required this.onRefresh,
+    required this.onModifyByOpinion,
     this.onViewRaw,
     this.versionStepper,
   });
@@ -63,6 +68,11 @@ class AiBubbleActions extends StatelessWidget {
               icon: Icons.refresh,
               label: '刷新本轮',
               onPressed: onRefresh,
+            ),
+            ActionButton(
+              icon: Icons.edit_note,
+              label: '按意见修改',
+              onPressed: onModifyByOpinion,
             ),
             ActionButton(
               icon: Icons.delete_outline,

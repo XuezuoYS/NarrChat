@@ -44,7 +44,9 @@ SystemPromptSource, UserPromptSource, StageDirectiveSource, AgentToolSource {}`�
 ### 请求对象（只搬运已取好的数据，不负责取数）
 
 - `PromptRequest`：`book` / `mode`（`PromptMode`：Chat、Lv.1、Lv.2）/ `lastRound` /
-  `userInput` / `worldBookEntries`（已按关键词筛好）/ `mods`；
+  `userInput` / `worldBookEntries`（已按关键词筛好）/ `mods` /
+  `rewrite`（`RewriteTarget`，非 null = **修改轮**：`lastRound` 即被重写轮的上一轮，
+  `userInput` 即用户填写的修改意见）；
 - `AgentStageRequest`：`level` / `workingCopy`（记忆与维护帧判定条目与合并）/ `memoryMergePlan` /
   `first`（主帧 / 修复帧）/ `problems`（维护帧待修清单）；
 - `AgentToolsRequest`：`level` / `workingCopy`（状态工具绑定对象，null = 不构造）/
@@ -69,7 +71,7 @@ const PromptInterface promptInterface = PromptV2();
 | 文件 | 职责 |
 |---|---|
 | `prompt_v2_sections.dart` | **全部文案**：固定行（人设 / 沙箱位置 / 服从 / 完整性 / 收尾）、共用契约、记忆条目格式与合并策略、三模式 system 与 user 契约、阶段帧指令、状态工具契约 |
-| `prompt_v2_build.dart` | **拼接顺序与空块删除**：按总模板拼 system、按新建轮模板拼 user、按阶段给帧指令；实现 `prompt_text.dart` 的三个文本源（纯 Dart 依赖） |
+| `prompt_v2_build.dart` | **拼接顺序与空块删除**：按总模板拼 system、按新建轮 / 修改轮模板拼 user、按阶段给帧指令；实现 `prompt_text.dart` 的三个文本源（纯 Dart 依赖） |
 | `prompt_v2_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表 |
 
 设计口径（与 `docs/ai_prompt_v2.md` 一致）：
@@ -105,8 +107,11 @@ const PromptInterface promptInterface = PromptV2();
 | user：轮次 / 上轮时间 / 前置词 / 主人输入 / 后置词 / `# 总协议2` | `lastRound`、`book.globalPre/PostPrompt`、`mods.pre/postPrompts`、`userInput`、三模式 user 契约 |
 | user（Chat）：本轮记忆合并指令 | `planMemoryMerge(...)`（Agent 走阶段帧） |
 
-> 「修改轮」（按轮定向重写）暂无实现；落地时复用 `PromptV2Build.user`，只把标题换成
-> 「重写第 {轮次} 轮」、上轮时间换成本轮时间。
+> 「修改轮」（按意见重写某一轮，见 `docs/ai_prompt_v2.md` 的修改轮注入提示词）由
+> `PromptRequest.rewrite`（`RewriteTarget`）触发：**复用同一套 user 组装**，只有头部
+> 两处不同——标题 `创作第 {轮次} 轮` → `重写第 {轮次} 轮`、时间行 `上轮时间` →
+> `此轮时间`（取被重写轮当前代的时间）；`lastRound` 语义相应变为被重写轮的**上一轮**
+> （生成基座），因此记忆合并、`# 总协议2` 与前置 / 后置词一律照旧。
 
 ## 四、工具清单
 
@@ -130,6 +135,10 @@ const PromptInterface promptInterface = PromptV2();
 | `RoundProvider` 历史消息 | `buildHistoryMessages(...)`（`wire_messages.dart`，与报文同侧、不经提示词模块） |
 | `AgentRoundRunner._runPrepareStage` / `_runMemoryStage` / `_runStoryStage` / `_runStateStage` | `_prompt.stagePrepare / stageMemory / stageStory / stageState` |
 
+修改轮（按意见重写某一轮）走**同一条**组装路径（`RoundProvider.sendRound(rewrite:)` ←
+`modifyRoundByOpinion`）：提示词只多一个 `RewriteTarget`，历史 / 状态基座由调用方给
+（历史 = 被重写轮生成时收到的 n 轮 + 该轮自身；基座 = 该轮的上一轮）。
+
 报文层（`_agentBody` / `_agentChatBody` / `_makeBodyBuilder` / `wire_adapters`）只接收
 接口产出的**纯文本与工具清单**，不认识提示词模块——即「报文拼装与提示词解耦」。
 
@@ -152,7 +161,8 @@ system / user 文本；工具清单与阶段帧请在应用内用「预览请求
 | 测试文件 | 锁住什么 |
 |---|---|
 | `test/prompt_interface_test.dart` | 绑定实现；总模板区域 / `---` 分隔 / 空块即删 / 多行保留 / 模式契约差异 / **文风口径（system 固定行、范文说明在范文之前、收口句在最前、user 侧口径位置）** / Mod 抬升与顺序 / 记忆合并档位与注入 / 工具路由与替身 / 阶段帧文案 / 请求对象 |
-| `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一 |
+| `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一（含修改轮模板） |
+| `test/prompt_v2_rewrite_test.dart` | 修改轮 user 注入：头部两处差异、与新建轮逐字同构、空时间不注入、模式合同一致、记忆合并按被重写轮号 |
 | `test/agent_tool_descriptions_test.dart` | 8 个工具的中文文案形态、联网指导落点、状态工具互指 |
 | `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态、占位、vision 图片） |
 
@@ -163,7 +173,7 @@ system / user 文本；工具清单与阶段帧请在应用内用「预览请求
 | `lib/services/prompt_text.dart` | **文本契约**（`PromptMode` + 请求对象 + 文本三源，纯 Dart，脚本 / CLI 可直接引用） |
 | `lib/services/prompt_interface.dart` | 工具契约 + `PromptInterface` 聚合 + `PromptV2` 聚合实现 + 唯一绑定 |
 | `lib/services/prompt_v2_sections.dart` | 文案真源 |
-| `lib/services/prompt_v2_build.dart` | 文本实现（总模板 / 新建轮模板 / 阶段帧；纯 Dart 依赖） |
+| `lib/services/prompt_v2_build.dart` | 文本实现（总模板 / 新建轮 + 修改轮模板 / 阶段帧；纯 Dart 依赖） |
 | `lib/services/prompt_v2_tools.dart` | 工具清单 |
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |

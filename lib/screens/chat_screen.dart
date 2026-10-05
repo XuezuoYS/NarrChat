@@ -1150,6 +1150,56 @@ class _ChatScreenState extends State<ChatScreen>
     return true;
   }
 
+  /// AI 气泡「按意见修改」：灰条亮起、输入框留空（只填意见）；按发送键后
+  /// 删除该轮及后续所有轮次，并以该意见重写第 N 轮（新增一代，旧代可切回）。
+  ///
+  /// 与「刷新本轮 / 修改并重新提问」共用同一灰条形态与同一「重写」骨架，差别只在
+  /// 提交动作把 [ComposerInputSubmit.text] 当作**修改意见**（不落库）。
+  void _startModifyByOpinion(Round round) {
+    _enterInputMode(
+      ComposerInputMode(
+        label: '按意见修改（第 ${round.roundIndex} 轮）',
+        onSubmit: ({required text, required images}) =>
+            _submitModifyByOpinion(round, text: text, images: images),
+      ),
+      // 只填意见：原输入已在历史里（该轮自身会作为最后一轮历史提交给 AI）。
+      text: '',
+    );
+  }
+
+  /// 「按意见修改」的提交动作；返回是否已消费本次用途。
+  Future<bool> _submitModifyByOpinion(
+    Round round, {
+    required String text,
+    required List<String> images,
+  }) async {
+    final roundProvider = context.read<RoundProvider>();
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) {
+      context.notices.warning('尚未选择书籍');
+      return false;
+    }
+    // 目标轮次可能已在会话中被删除：该用途失去意义，收起灰条并提示。
+    if (round.id == null ||
+        !roundProvider.rounds.any((r) => r.id == round.id)) {
+      context.notices.warning('该轮次已不存在，已退出修改');
+      return true;
+    }
+    final confirmed = await showModifyByOpinionConfirmDialog(context, round);
+    if (!confirmed || !mounted) return false;
+    // 新版本沿用该轮原输入与原图：生成期间的用户气泡照此上屏（与落库一致）。
+    _startGeneration(images: round.userImages);
+    await roundProvider.modifyRoundByOpinion(
+      round,
+      text,
+      book: book,
+      // 意见附带的图片仅进本次请求（不落库）。
+      images: images,
+    );
+    _endGeneration();
+    return true;
+  }
+
   /// 失败条目「修改并重新提问」：把失败时的输入（识图模型含图片）载入输入框、
   /// 灰条亮起；按发送键后以修改后的输入重新生成（sendRound 先清空失败条目）。
   void _startEditAndRetryFailure() {
@@ -1586,6 +1636,8 @@ class _ChatScreenState extends State<ChatScreen>
           );
         case 'editReask':
           _startEditAndReAsk(round);
+        case 'modify':
+          _startModifyByOpinion(round);
         case 'copy':
           _copyBubbleText(round, isAi);
         case 'reask':
@@ -1633,6 +1685,10 @@ class _ChatScreenState extends State<ChatScreen>
         child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
       ),
       if (isAi) ...[
+        const PopupMenuItem(
+          value: 'modify',
+          child: AppMenuAction(icon: Icons.edit_note, label: '按意见修改'),
+        ),
         const PopupMenuItem(
           value: 'sidebar',
           child: AppMenuAction(
@@ -2167,6 +2223,7 @@ class _ChatScreenState extends State<ChatScreen>
                         onViewSidebar: () => _onViewSidebar(round),
                         onDelete: () => _handleDelete(round),
                         onRefresh: () => _handleReAsk(round),
+                        onModifyByOpinion: () => _startModifyByOpinion(round),
                         versionStepper: _versionStepperFor(round.roundIndex),
                         onViewRaw:
                             roundProvider.rawExchangesFor(round.id!) != null

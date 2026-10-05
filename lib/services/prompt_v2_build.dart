@@ -105,28 +105,39 @@ class PromptV2Build
   }
 
   // ---------------------------------------------------------------------------
-  // user（新建轮注入）
+  // user（新建轮 / 修改轮注入）
   // ---------------------------------------------------------------------------
 
-  /// 新建轮注入模板。
+  /// 本轮 user 注入模板：新建轮与**修改轮**（按意见重写某一轮）同构，只有头部两处
+  /// 不同——标题「创作第 {轮次} 轮」↔「重写第 {轮次} 轮」、时间标签
+  /// 「上轮时间」↔「此轮时间」（取自 [PromptRequest.rewrite]，见 v2 格式模板）。
   ///
-  /// 「修改轮」（按轮定向重写）目前无实现；将来落地时复用本方法，只把标题换成
-  /// 「重写第 {轮次} 轮」并把上轮时间换成本轮时间，其余照抄（见 v2 格式模板）。
+  /// 修改轮的 [PromptRequest.lastRound] 是**被重写轮的上一轮**（生成基座），因此
+  /// 记忆合并等一律以它为基准；`userInput` 是用户填写的修改意见。
   @override
   String user(PromptRequest request) {
     final book = request.book;
     final mode = request.mode;
-    final roundIndex = (request.lastRound?.roundIndex ?? 0) + 1;
+    final rewrite = request.rewrite;
+    final roundIndex =
+        rewrite?.roundIndex ?? (request.lastRound?.roundIndex ?? 0) + 1;
     final blocks = <String>[];
 
-    // —— 头部：轮次 + 上轮时间（首轮无 → 整条不注入）——
-    final head = StringBuffer('你需要按照主人的要求，创作第 $roundIndex 轮：');
-    final lastTime = _line(request.lastRound?.currentTime);
-    if (lastTime.isNotEmpty) {
+    // —— 头部：轮次 + 上轮 / 此轮时间（无时间 → 整条不注入）——
+    final head = StringBuffer(
+      rewrite == null
+          ? PromptV2Sections.newRoundHead(roundIndex)
+          : PromptV2Sections.rewriteHead(roundIndex),
+    );
+    final time = _line(
+      rewrite == null ? request.lastRound?.currentTime : rewrite.roundTime,
+    );
+    if (time.isNotEmpty) {
       head.writeln();
       head.writeln();
-      head.writeln('- 上轮时间：$lastTime（`## 当前时间` 必须沿用此格式，'
-          '仅按剧情推进更新时间内容，不得随意改变格式）');
+      head.writeln(
+        PromptV2Sections.timeLine(rewrite: rewrite != null, time: time),
+      );
     }
     blocks.add(_trimRight(head.toString()));
 

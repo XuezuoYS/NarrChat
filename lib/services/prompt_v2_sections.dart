@@ -278,6 +278,25 @@ class PromptV2Sections {
             '世界 / 角色 / 记忆的修改都在随后的维护回合完成。',
       };
 
+  // ---------------------------------------------------------------------------
+  // user 头部（新建轮 / 修改轮；见 `docs/ai_prompt_v2.md` 的「发送提示词注入字段」）
+  // ---------------------------------------------------------------------------
+
+  /// 新建轮头部首行（`{轮次}` = 本轮轮号）。
+  static String newRoundHead(int roundIndex) =>
+      '你需要按照主人的要求，创作第 $roundIndex 轮：';
+
+  /// 修改轮头部首行（`{轮次}` = **被重写**的轮号）。
+  static String rewriteHead(int roundIndex) =>
+      '你并没有按照主人的要求完成，你需要按照主人的要求，重写第 $roundIndex 轮：';
+
+  /// user 头部的「时间」行：新建轮写「上轮时间」，修改轮写「此轮时间」。
+  ///
+  /// [time] 为空时整行不注入（首轮 / 该轮当前代没有时间）。
+  static String timeLine({required bool rewrite, required String time}) =>
+      '- ${rewrite ? '此轮时间' : '上轮时间'}：$time'
+      '（`## 当前时间` 必须沿用此格式，仅按剧情推进更新时间内容，不得随意改变格式）';
+
   /// Chat 模式的本轮记忆合并指令（用户消息，后置词之后）。
   static List<String> memoryMergeChatNote(MemoryMergePlan? plan) {
     if (plan == null || !plan.hasAction) return const [];

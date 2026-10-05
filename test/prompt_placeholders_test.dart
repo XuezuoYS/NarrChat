@@ -79,7 +79,19 @@ void main() {
         ..addAll(PromptV2Sections.modeContractLines(mode))
         ..add(PromptV2Sections.userContract(mode))
         ..add(const PromptV2Build().system(request))
-        ..add(const PromptV2Build().user(request));
+        ..add(const PromptV2Build().user(request))
+        // 修改轮（按意见重写某轮）：与新建轮同构的另一份 user 模板，同样受
+        // 「不举例 / 只用中文占位符」约束。
+        ..add(const PromptV2Build().user(PromptRequest(
+          book: book,
+          mode: mode,
+          lastRound: lastRound,
+          userInput: '输入',
+          rewrite: RewriteTarget(
+            roundIndex: 2,
+            roundTime: lastRound.currentTime,
+          ),
+        )));
     }
     final copy = workingCopy();
     texts
