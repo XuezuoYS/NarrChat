@@ -40,15 +40,23 @@ Future<DeleteRoundChoice?> showDeleteRoundDialog(
   );
 }
 
-/// “重新提问”二次确认对话框。
+/// 「刷新本轮」二次确认对话框（**唯一入口的确认框**）。
 ///
-/// 与「刷新本轮」合并：删除本轮及后续所有轮次，再以该轮的用户输入重新请求 AI。
-Future<bool> showReAskConfirmDialog(BuildContext context, Round round) async {
+/// 「刷新本轮」= 删除该轮起的投影行，再以该轮的用户输入重新请求 AI（新增一代，
+/// 旧代留在版本树可切回）。气泡底部按钮、气泡右键菜单、失败条目按钮/菜单都走这一处
+/// 文案：**不提示「会丢失后续内容」**——旧版本与后续轮次都保留在版本树里，
+/// 切换代次即可取回，喊「丢失」只会吓人。
+Future<bool> showRefreshRoundConfirmDialog(
+  BuildContext context,
+  int roundIndex,
+) async {
   final result = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text('重新提问'),
-      content: Text('将删除本轮及后续所有轮次，并以“第 ${round.roundIndex} 轮”的用户输入重新请求 AI。是否继续？'),
+      title: const Text('刷新本轮'),
+      content: Text(
+        '将重新生成第 $roundIndex 轮，并以该轮的用户输入重新请求 AI。是否继续？',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(false),

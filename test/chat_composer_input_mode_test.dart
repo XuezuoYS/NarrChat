@@ -205,8 +205,19 @@ void main() {
     await tester.tap(find.text('刷新本轮'));
     await tester.pumpAndSettle();
 
-    expect(find.text('重新提问'), findsOneWidget, reason: '弹出的是重新提问确认框');
-    expect(find.textContaining('将删除本轮及后续所有轮次'), findsOneWidget);
+    final dialog = find.byType(AlertDialog);
+    expect(dialog, findsOneWidget);
+    expect(
+      find.descendant(of: dialog, matching: find.text('刷新本轮')),
+      findsOneWidget,
+      reason: '确认框与入口同名（全栈统一为一个入口名）',
+    );
+    expect(find.textContaining('将重新生成第 1 轮'), findsOneWidget);
+    expect(
+      find.textContaining('将删除本轮'),
+      findsNothing,
+      reason: '旧版本与后续轮次都保留在版本树，不再喊会丢内容',
+    );
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 

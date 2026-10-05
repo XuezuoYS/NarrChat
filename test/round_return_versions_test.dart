@@ -194,7 +194,7 @@ void main() {
     expect(env.provider.hasFailureEntry, isFalse, reason: '还原即清除失败态');
   });
 
-  test('retryFailedRound：以失败条目的输入与图片重新生成，输入为空直接拒绝', () async {
+  test('刷新本轮（失败条目载体）：以失败条目的输入与图片重刷那一轮', () async {
     final env = build();
     await env.provider.loadRounds('b1');
     env.ai.fail = true;
@@ -204,21 +204,26 @@ void main() {
       userImages: const ['img/a.png'],
     );
     expect(env.provider.hasFailureEntry, isTrue);
-    expect(
-      await env.provider.retryFailedRound(book: book),
-      isFalse,
-      reason: 'AI 仍失败 → 重试失败（失败条目保留）',
-    );
-    expect(env.provider.hasFailureEntry, isTrue);
-    env.ai.fail = false;
 
-    expect(await env.provider.retryFailedRound(book: book), isTrue);
+    // 与 UI 同口径（`ChatScreen._handleRefreshFailure`）：失败条目现构一个
+    // 「本该产生的那一轮」载体，交给**唯一入口** `refreshRound`。
+    Round carrier() => Round(
+          bookUuid: 'b1',
+          roundIndex: env.provider.nextRoundIndex,
+          userInput: env.provider.failedUserInput,
+          userImages: env.provider.failedUserImages,
+        );
+
+    // AI 仍失败 → 刷新失败，失败条目保留。
+    await env.provider.refreshRound(carrier(), book: book);
+    expect(env.provider.hasFailureEntry, isTrue);
+
+    env.ai.fail = false;
+    await env.provider.refreshRound(carrier(), book: book);
+    expect(env.provider.rounds.last.roundIndex, 1, reason: '重刷的是「本该产生」的那一轮');
     expect(env.provider.rounds.last.userInput, '第一章');
     expect(env.provider.rounds.last.userImages, ['img/a.png']);
-    expect(env.provider.hasFailureEntry, isFalse, reason: 'sendRound 先清失败条目');
-
-    // 无失败条目（输入为空）时拒绝。
-    expect(await env.provider.retryFailedRound(book: book), isFalse);
+    expect(env.provider.hasFailureEntry, isFalse, reason: '刷新前先清失败条目');
   });
 
   test('adoptRoundStack：按 force 透传并在有变化时重载投影 + 自增版本计数', () async {

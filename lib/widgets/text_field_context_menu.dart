@@ -8,7 +8,7 @@ import '../services/clipboard_paste_service.dart';
 /// 为任意 `TextField` 提供样式一致的右键 / 长按菜单（全选、复制、粘贴、剪切），
 /// 并把「粘贴」（含剪贴板图片）统一委托给 [pasteIntoTextInput] 处理。
 ///
-/// 用法（聊天输入框 / 重新提问对话框等）：
+/// 用法（聊天输入框 / 各类编辑对话框等）：
 /// ```dart
 /// CallbackShortcuts(
 ///   bindings: textFieldPasteBindings(onPaste: _pasteFromClipboard),
@@ -73,7 +73,7 @@ Map<ShortcutActivator, VoidCallback> textFieldPasteBindings({
 /// - 图片按 [acceptImages] 门控（识图模型）：成功经 [onImageAdded] 回调交给
 ///   调用方更新附件状态，超限 / 非识图经 [onNotice] 给出提示。
 ///
-/// 通过回调注入字段状态更新，使聊天输入框与重新提问对话框复用同一套逻辑。
+/// 通过回调注入字段状态更新，使聊天输入框与各编辑对话框复用同一套逻辑。
 Future<void> pasteIntoTextInput({
   required ClipboardPasteService service,
   required TextEditingController controller,

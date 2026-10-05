@@ -162,7 +162,7 @@ class DatabaseHelper {
           );
         }
         if (oldVersion < 11) {
-          // 失败条目随书持久化其用户消息图片：失败后气泡保留展示并供重新提问复用。
+          // 失败条目随书持久化其用户消息图片：失败后气泡保留展示并供刷新本轮复用。
           await _addColumnIfMissing(
             db,
             'books',

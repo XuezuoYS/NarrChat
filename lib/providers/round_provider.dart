@@ -722,28 +722,6 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 失败条目重试：以失败时的输入与图片重新生成（[sendRound] 会先清空失败条目）。
-  ///
-  /// 供 UI「重新提问」调用（逻辑下沉自 `chat_screen`，统一走生成的新增代路径）。
-  Future<bool> retryFailedRound({
-    Book? book,
-    String? userInput,
-    List<String>? userImages,
-  }) async {
-    var b = book;
-    if (b == null && _bookUuid.isNotEmpty) {
-      b = await _bookDao.getBookByUuid(_bookUuid);
-    }
-    if (b == null || b.uuid.isEmpty) return false;
-    final input = userInput ?? failedAttempt.userInput;
-    if (input.isEmpty) return false;
-    return sendRound(
-      userInput: input,
-      book: b,
-      userImages: userImages ?? failedAttempt.userImages,
-    );
-  }
-
   /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
   ///
   /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
@@ -2344,9 +2322,14 @@ class RoundProvider extends ChangeNotifier {
     }
   }
 
-  /// 刷新本轮：
-  /// 1. 清失败态，删除本轮起的**投影行**（旧代保留，可切换回来）；
-  /// 2. 以当前轮次的用户输入重新请求 AI（本轮被新结果替换为新的一代）。
+  /// 「刷新本轮」——**唯一入口**（气泡底部按钮 / 气泡菜单 / 失败条目按钮与菜单共用）：
+  /// 1. 清失败态，删除该轮起的**投影行**（旧代保留在版本树，可 `← / →` 切回）；
+  /// 2. 以该轮的用户输入 / 图片重新请求 AI（该轮被新结果替换为新的一代）。
+  ///
+  /// [round] 只作**载体**：真正被读的是 [Round.roundIndex] / [Round.userInput] /
+  /// [Round.userImages]。失败条目场景由调用方按「本该产生的那一轮」现构一个载体
+  /// （轮号 = `nextRoundIndex`，输入 / 图片取失败条目）——它与正常刷新是同一条路径，
+  /// 差别只是输入来自哪里；[sendRound] 前会先清掉失败条目（见 `_clearFailureForRoundOp`）。
   Future<void> refreshRound(Round round, {Book? book}) async {
     final b = book;
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;

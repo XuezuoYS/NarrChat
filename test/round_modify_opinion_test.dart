@@ -204,7 +204,7 @@ void main() {
 
       expect(ok, isFalse);
       expect(provider.hasFailureEntry, isTrue);
-      // 失败条目与「刷新本轮 / 重新提问」同规则：保留该轮**原**输入与原图，
+      // 失败条目与「刷新本轮」同规则：保留该轮**原**输入与原图，
       // 重试即重刷该轮；意见只留在失败尝试的 RAW 里。
       expect(provider.failedAttempt.userInput, '第 1 轮输入');
       expect(provider.failedAttempt.userImages, const ['img/old.png']);

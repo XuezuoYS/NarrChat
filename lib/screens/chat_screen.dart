@@ -965,7 +965,7 @@ class _ChatScreenState extends State<ChatScreen>
   /// 开始一次生成：把本次应携带的图片设为「生成中」用户气泡的内容，
   /// 并复位自动跟随 / 新内容状态、滚动到底部。
   ///
-  /// 供 发送 / 修改并重新提问 / 重新提问 / 失败重试 等所有生成入口复用，
+  /// 供 发送 / 修改并重新提问 / 刷新本轮（含失败条目）等所有生成入口复用，
   /// 确保「生成一开始气泡就带图片」。不触碰待发送附件 [_pendingImages]
   /// （发送方由调用处自行清空，其它场景保留未发送的图片）。
   void _startGeneration({required List<String> images}) {
@@ -1078,7 +1078,7 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// **灰条用途一律直接上屏、不弹二次确认**：用户已用一次「进入用途 + 填写 +
   /// 按发送」表达了明确意图，再拦一道确认只是多一次点击（需要确认的是
-  /// 「刷新本轮 / 重新提问」这类不经输入框的破坏性入口，见 `_handleReAsk`）。
+  /// 「刷新本轮」这类不经输入框的破坏性入口，见 `_handleRefreshRound`）。
   Future<void> _submitInputMode(ComposerInputMode mode) async {
     final text = _inputController.text.trim();
     final roundProvider = context.read<RoundProvider>();
@@ -1391,18 +1391,41 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 重新提问失败条目：以失败时的输入与图片重新生成（sendRound 会先清空失败条目）。
+  /// 「刷新本轮」——气泡底部按钮 / 气泡右键菜单 / 失败条目都走这一处：
+  /// 二次确认（[showRefreshRoundConfirmDialog]，文案统一、不喊「丢失后续内容」）→
+  /// 删除该轮起的投影行并以该轮输入重新生成一版（旧代保留，代次控件可切回）。
   ///
-  /// 失败条目携带图片（识图模型）时，「生成中」气泡随之带图；不触碰待发送附件。
-  Future<void> _retryFailure() async {
-    final rp = context.read<RoundProvider>();
-    if (rp.failedUserInput.isEmpty || rp.isSending) return;
+  /// [round] 只作载体：轮号 / 输入 / 图片是它真正被读的三项（失败条目场景见
+  /// [_handleRefreshFailure]）。
+  Future<void> _handleRefreshRound(Round round) async {
+    final ok = await showRefreshRoundConfirmDialog(context, round.roundIndex);
+    if (!ok || !mounted) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    _startGeneration(images: rp.failedUserImages);
-    // 重试逻辑已下沉到 Provider（统一走「新增一代」的版本树路径）。
-    await rp.retryFailedRound(book: book);
+    // 重新生成开始即把该轮图片送入「生成中」用户气泡。
+    _startGeneration(images: round.userImages);
+    await context.read<RoundProvider>().refreshRound(round, book: book);
     _endGeneration();
+  }
+
+  /// 失败条目的「刷新本轮」：与正常刷新**同一条路径**，差别只是输入 / 图片取自
+  /// 失败条目、轮号取「本该产生的那一轮」（[RoundProvider.nextRoundIndex]）。
+  ///
+  /// 失败条目携带图片（识图模型）时，「生成中」气泡随之带图；不触碰待发送附件。
+  Future<void> _handleRefreshFailure() async {
+    final rp = context.read<RoundProvider>();
+    final input = rp.failedUserInput;
+    if (input.isEmpty || rp.isSending) return;
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) return;
+    await _handleRefreshRound(
+      Round(
+        bookUuid: book.uuid,
+        roundIndex: rp.nextRoundIndex,
+        userInput: input,
+        userImages: rp.failedUserImages,
+      ),
+    );
   }
 
   /// 切换当前轮的版本（`← / →`）：**直接切换，不弹任何提示**。
@@ -1641,8 +1664,8 @@ class _ChatScreenState extends State<ChatScreen>
           _startModifyByOpinion(round);
         case 'copy':
           _copyBubbleText(round, isAi);
-        case 'reask':
-          _handleReAsk(round);
+        case 'refresh':
+          _handleRefreshRound(round);
         case 'sidebar':
           _onViewSidebar(round);
         case 'raw':
@@ -1682,8 +1705,8 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       ),
       const PopupMenuItem(
-        value: 'reask',
-        child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
+        value: 'refresh',
+        child: AppMenuAction(icon: Icons.replay, label: '刷新本轮'),
       ),
       if (isAi) ...[
         const PopupMenuItem(
@@ -1762,19 +1785,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
-  /// 重新提问（与「刷新本轮」合并）：删除本轮及后续所有轮次，
-  /// 再以该轮的用户输入重新请求 AI（替换而非追加）。
-  Future<void> _handleReAsk(Round round) async {
-    final ok = await showReAskConfirmDialog(context, round);
-    if (!ok || !mounted) return;
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) return;
-    // 重新生成开始即把该轮图片送入「生成中」用户气泡。
-    _startGeneration(images: round.userImages);
-    await context.read<RoundProvider>().refreshRound(round, book: book);
-    _endGeneration();
-  }
-
+  /// 是否宽屏（宽屏：右侧栏固定槽位；窄屏：抽屉 + 吞滑手势）。
   bool get _isWide {
     final size = MediaQuery.sizeOf(context);
     return size.width >= _kWideBreakpoint;
@@ -2136,7 +2147,8 @@ class _ChatScreenState extends State<ChatScreen>
                 children: [
                   FailedAttemptBubble(
                     attempt: roundProvider.failedAttempt,
-                    onRetry: _retryFailure,
+                    // 「刷新本轮」：与正常轮次同一入口（确认框 / Provider 路径都同一处）。
+                    onRefresh: _handleRefreshFailure,
                     onEditAndRetry: _startEditAndRetryFailure,
                     onClear: _clearFailure,
                     versionStepper: _failureVersionStepper(pendingIndex),
@@ -2221,7 +2233,7 @@ class _ChatScreenState extends State<ChatScreen>
                         round: round,
                         onViewSidebar: () => _onViewSidebar(round),
                         onDelete: () => _handleDelete(round),
-                        onRefresh: () => _handleReAsk(round),
+                        onRefresh: () => _handleRefreshRound(round),
                         onModifyByOpinion: () => _startModifyByOpinion(round),
                         versionStepper: _versionStepperFor(round.roundIndex),
                         // RAW 入口恒在（无数据时由提示说明原因，不隐藏入口）。

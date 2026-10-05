@@ -9,13 +9,18 @@ import 'bubble_pointer_listener.dart';
 import 'chat_bubble.dart';
 
 /// 「失败条目」气泡：用户输入气泡 + AI 红色提示框（已截断 / 生成失败 + 原因）
-/// + 底部操作（代次控件 / 重新提问 / 修改并重新提问 / RAW / 清除失败条目）。
+/// + 底部操作（代次控件 / 刷新本轮 / 修改并重新提问 / RAW / 清除失败条目）。
 ///
-/// 整块支持右键 / 长按弹出上下文菜单（复制输入 / 重新提问 / 修改并重新提问 /
+/// 整块支持右键 / 长按弹出上下文菜单（复制输入 / 刷新本轮 / 修改并重新提问 /
 /// RAW / 清除）。RAW 入口**恒在**（无数据时由调用方的提示说明），不随数据显隐。
+///
+/// 「刷新本轮」与正常轮次是**同一入口**（同一确认框、同一 Provider 路径），
+/// 这里只是宿主不同：输入 / 图片来自失败条目、轮号取「本该产生的那一轮」。
 class FailedAttemptBubble extends StatelessWidget {
   final FailedAttempt attempt;
-  final VoidCallback onRetry;
+
+  /// 「刷新本轮」回调（失败条目：以失败时的输入重刷那一轮）。
+  final VoidCallback onRefresh;
   final VoidCallback onEditAndRetry;
   final VoidCallback onClear;
 
@@ -29,7 +34,7 @@ class FailedAttemptBubble extends StatelessWidget {
   const FailedAttemptBubble({
     super.key,
     required this.attempt,
-    required this.onRetry,
+    required this.onRefresh,
     required this.onEditAndRetry,
     required this.onClear,
     required this.onViewRaw,
@@ -42,8 +47,8 @@ class FailedAttemptBubble extends StatelessWidget {
       position: position,
       items: [
         const PopupMenuItem(
-          value: 'retry',
-          child: AppMenuAction(icon: Icons.replay, label: '重新提问'),
+          value: 'refresh',
+          child: AppMenuAction(icon: Icons.replay, label: '刷新本轮'),
         ),
         const PopupMenuItem(
           value: 'editRetry',
@@ -69,8 +74,8 @@ class FailedAttemptBubble extends StatelessWidget {
     ).then((value) {
       if (value == null) return;
       switch (value) {
-        case 'retry':
-          onRetry();
+        case 'refresh':
+          onRefresh();
         case 'editRetry':
           onEditAndRetry();
         case 'copy':
@@ -112,8 +117,8 @@ class FailedAttemptBubble extends StatelessWidget {
               ?versionStepper,
               ActionButton(
                 icon: Icons.replay,
-                label: '重新提问',
-                onPressed: onRetry,
+                label: '刷新本轮',
+                onPressed: onRefresh,
               ),
               ActionButton(
                 icon: Icons.edit_note,
