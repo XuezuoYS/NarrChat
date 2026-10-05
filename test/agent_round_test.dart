@@ -4,7 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
+import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
@@ -691,9 +693,16 @@ void main() {
       capturedBodies.every((b) => !b.containsKey('tool_choice')),
       isTrue,
     );
-    // 记忆帧思考强度降为 low（用户开启思考时不硬关；正文 / 调研帧不覆盖）。
-    expect(capturedBodies[1]['reasoning'], {'effort': 'low'});
-    expect('${capturedBodies[0]['reasoning']}', isNot(contains('none')));
+    // 思考强度全帧沿用用户设置：调研 / 记忆 / 正文三帧完全一致
+    //（不再中途把记忆帧降为 low）。
+    expect(
+      capturedBodies.map((b) => jsonEncode(b['reasoning'])).toSet(),
+      hasLength(1),
+    );
+    expect(
+      jsonDecode(jsonEncode(capturedBodies[0]['reasoning'])),
+      {'effort': 'high'},
+    );
 
     // 工具集 = 历史一读一写 + 联网（世界 / 角色不在其中）。
     final names = (capturedBodies.first['tools'] as List)
@@ -814,28 +823,28 @@ void main() {
     expect(exchanges.where((e) => e.error.isNotEmpty), isEmpty);
   });
 
-  test('兼容降级重发：400 探测帧**不计失败轮**、不计 token，RAW 写明 HTTP 码', () async {
+  test('兼容降级重发：拒绝 previous_response_id 的 400 探测帧**不计失败轮**、不计 token，RAW 写明 HTTP 码', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         bodies.add(body);
-        // 维护帧（指令含 [State-maintenance turn]）用 `reasoning.effort = low`
-        // 覆盖思考强度：该兼容实现拒绝这一覆盖（HTTP 400），正文帧不受影响。
-        final isStateFrame =
-            jsonEncode(body['input']).contains('[State-maintenance turn]');
-        if (isStateFrame &&
-            jsonEncode(body['reasoning']) == jsonEncode({'effort': 'low'})) {
+        // 该兼容实现不支持有状态续接：带 `previous_response_id` 的维护帧被拒
+        // （HTTP 400）；正文帧不受影响。执行器就地丢弃续接基点、同一帧全量重发。
+        if (body.containsKey('previous_response_id')) {
           return http.Response.bytes(
             utf8.encode(jsonEncode({
-              'error': {'message': 'reasoning effort 参数不受支持'},
+              'error': {
+                'message': 'Unsupported parameter: previous_response_id',
+              },
             })),
             400,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
         }
-        // 正文帧 → 只写正文（触发维护轮）；维护帧重发（回落用户设置）→ 补齐三栏。
+        final isStateFrame =
+            jsonEncode(body['input']).contains('[State-maintenance turn]');
         return sse(
           isStateFrame
               ? happySse()
@@ -848,7 +857,7 @@ void main() {
       roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
-      aiSettingsProvider: AiSettingsProvider(),
+      aiSettingsProvider: _ChainingSettings(),
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
@@ -856,14 +865,32 @@ void main() {
 
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
 
-    // 三次底层请求：正文帧 → 维护帧探测（low，被 400 拒绝）→ 同一帧重发（回落用户设置）。
+    // 三次底层请求：正文帧 → 维护帧续接（带 previous_response_id，被 400 拒绝）
+    // → 同一帧全量重发（不带续接基点、重新带上 instructions / tools）。
     expect(bodies, hasLength(3));
-    expect(bodies[0]['reasoning'], {'effort': 'high'});
-    expect(bodies[1]['reasoning'], {'effort': 'low'});
-    expect(bodies[2]['reasoning'], bodies[0]['reasoning'],
-        reason: '思考强度覆盖被拒后就地回落用户设置重发同一帧');
-    // 重发的是**同一帧**：input 完全一致（帧序号不变、不重跑正文轮）。
-    expect(bodies[2]['input'], bodies[1]['input']);
+    expect(bodies[0].containsKey('previous_response_id'), isFalse);
+    expect(bodies[1]['previous_response_id'], 'resp_s');
+    expect(bodies[1].containsKey('tools'), isFalse, reason: '续接帧不重发前缀');
+    expect(bodies[2].containsKey('previous_response_id'), isFalse);
+    expect(bodies[2]['tools'], bodies[0]['tools'], reason: '重发回落到全量前缀');
+    // 重发的是**同一帧**的内容：续接帧只带的新增项原样落在「全量重发」的末尾
+    //（不重跑正文轮、不追加额外指令）。
+    final chainedInput = (bodies[1]['input'] as List).cast<Object>();
+    final fullInput = (bodies[2]['input'] as List).cast<Object>();
+    expect(fullInput.length, greaterThan(chainedInput.length));
+    expect(
+      fullInput.sublist(fullInput.length - chainedInput.length),
+      chainedInput,
+    );
+    // 思考强度全帧沿用用户设置：降级不改写强度。
+    expect(
+      bodies.map((b) => jsonEncode(b['reasoning'])).toSet(),
+      hasLength(1),
+    );
+    expect(
+      jsonDecode(jsonEncode(bodies[0]['reasoning'])),
+      {'effort': 'high'},
+    );
 
     // 本轮照常成功落库（正文 + 状态齐备），且**没有被记为失败**：
     final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
@@ -885,7 +912,7 @@ void main() {
     final failed = exchanges.where((e) => e.error.isNotEmpty).toList();
     expect(failed, hasLength(1), reason: '只有探测帧没有返回');
     expect(failed.single.error, contains('HTTP 400'));
-    expect(failed.single.error, contains('reasoning'));
+    expect(failed.single.error, contains('previous_response_id'));
     // 它确实没有返回内容（三个块全空）——RAW 就是靠 error 说明原因。
     expect(failed.single.thinking, isEmpty);
     expect(failed.single.toolCalls, isEmpty);
@@ -895,7 +922,7 @@ void main() {
     expect(exchanges.last.content, contains('主角踏门而入'));
   });
 
-  test('维护帧请求体：思考降为 low + 不发 tool_choice + 不改 max_output_tokens', () async {
+  test('维护帧请求体：思考强度与输出上限均沿用用户设置 + 不发 tool_choice', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     var calls = 0;
@@ -929,15 +956,15 @@ void main() {
     expect(bodies[0].containsKey('tool_choice'), isFalse);
     expect('${bodies[0]['reasoning']}', isNot(contains('none')));
 
-    // 维护帧：思考强度降为 low（用户开启思考时不硬关）；
-    // `max_output_tokens` 与正文轮**完全一致**——程序不擅自抬高。
+    // 维护帧：思考强度与正文帧**完全一致**（全帧沿用户设置，不再降为 low）；
+    // `max_output_tokens` 同样与正文轮一致——程序不擅自改动。
     expect(bodies[1].containsKey('tool_choice'), isFalse);
     expect(
       bodies[1]['max_output_tokens'],
       bodies[0]['max_output_tokens'],
       reason: '维护帧不得改写用户设置的输出上限',
     );
-    expect(bodies[1]['reasoning'], {'effort': 'low'});
+    expect(bodies[1]['reasoning'], bodies[0]['reasoning']);
     // 两阶段共用同一 instructions / tools（前缀缓存依赖此）。
     expect(bodies[1]['instructions'], bodies[0]['instructions']);
     expect(bodies[1]['tools'], bodies[0]['tools']);
@@ -1077,4 +1104,14 @@ void main() {
     await provider.clearFailedAttempt();
     expect(provider.roundWarningsFor(provider.nextRoundIndex), isEmpty);
   });
+}
+
+/// Response 线路 + **开启有状态续接**（`previous_response_id`）的设置替身。
+///
+/// 供「续接被服务商拒绝 → 同一帧全量重发」的兼容降级用例复用（默认平台
+/// `supportsResponseChaining = false`，不续接就测不到这条降级）。
+class _ChainingSettings extends AiSettingsProvider {
+  @override
+  AiPlatform get selectedPlatform =>
+      AiPlatforms.defaultPlatform.copyWith(supportsResponseChaining: true);
 }

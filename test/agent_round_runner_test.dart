@@ -60,7 +60,6 @@ void main() {
     AgentModeLevel level = AgentModeLevel.lv2,
     MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
-    bool supportsThinkingEffort = true,
     bool reduceReasoningReplay = false,
     int maxPrepFrames = kAgentMaxPrepFrames,
     int maxMemoryFrames = kAgentMaxMemoryFrames,
@@ -76,7 +75,6 @@ void main() {
           stage: t.stage,
           items: List.of(t.items),
           previousResponseId: t.previousResponseId,
-          stateThinkingEffort: t.stateThinkingEffort,
         ));
         return {
           'input': t.items,
@@ -102,7 +100,6 @@ void main() {
       profile: profile,
       memoryMergePlan: memoryMergePlan,
       chaining: chaining,
-      supportsThinkingEffort: supportsThinkingEffort,
       reduceReasoningReplay: reduceReasoningReplay,
       maxPrepFrames: maxPrepFrames,
       maxMemoryFrames: maxMemoryFrames,
@@ -207,7 +204,7 @@ void main() {
     expect(copy.memorySummary, contains('第2轮'));
   });
 
-  test('正文轮只写正文 → 自动发起维护轮（维护轮思考降为 low）', () async {
+  test('正文轮只写正文 → 自动发起维护轮补齐缺口', () async {
     final copy = workingCopy();
     final h = harness(copy: copy, script: [storyOnly(), fullStateTurn('s')]);
 
@@ -216,11 +213,8 @@ void main() {
     expect(h.requests, hasLength(2));
     expect(h.requests[0].stage, AgentStage.story);
     expect(h.requests[1].stage, AgentStage.state);
-    // 维护轮：思考强度覆盖为 low（不硬关——状态维护要理解正文）。
-    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
-    // 正文轮不覆盖（沿用用户设置）。
-    expect(h.requests[0].stateThinkingEffort, isNull);
-    // 两阶段前缀完全一致（instructions / tools 由 provider 保证，这里比 input 前缀）。
+    // 帧间差异只有 input / 续接基点：执行器不覆盖思考强度（全帧沿用户设置）。
+    expect(h.requests[1].previousResponseId, isNull);
     expect(h.requests[1].items.length, greaterThan(h.requests[0].items.length));
     // 状态**不再预置注入**：request 里的 input 不含任何读取结果。
     final readItems = h.requests[1].items.where(
@@ -905,10 +899,12 @@ void main() {
     final result = await run(h.runner);
 
     expect(h.requests, hasLength(3));
-    // 补救只走提示词与思考强度覆盖：请求体里的 max_output_tokens 由用户设置
-    // 决定，执行器不擅自抬高（帧间唯一的差异仍是思考强度覆盖）。
-    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
-    expect(h.requests[2].stateThinkingEffort, kAgentStateThinkingEffort);
+    // 补救只走提示词：请求体里的 max_output_tokens 与思考强度都由用户设置决定，
+    // 执行器一概不擅自改动（帧间差异只有 input 与续接基点）。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.story, AgentStage.state, AgentStage.state],
+    );
     final capDirective = '${h.requests[2].items.last['content']}';
     expect(capDirective, contains('TRUNCATED'));
     // 「拆短调用」提示：中文概述紧跟英文要求之后，无 [EN] / 【中】 语言标记。
@@ -964,7 +960,7 @@ void main() {
     );
   });
 
-  test('服务商拒绝中途调整思考强度 → 回落用户设置重发同一帧（不额外烧帧）', () async {
+  test('服务商拒绝用户设置的思考强度 → 不重试、不做任何强度回落', () async {
     final copy = workingCopy();
     final h = harness(copy: copy, script: [
       storyOnly(),
@@ -972,21 +968,12 @@ void main() {
         "Unsupported parameter: 'reasoning.effort' is not supported",
         kind: AiExceptionKind.api,
       ),
-      fullStateTurn('b'),
     ]);
 
-    final result = await run(h.runner);
-
-    // 维护帧第 1 次尝试覆盖为 low → 被拒 → 同帧重发时不再覆盖（沿用户设置）。
-    expect(h.requests, hasLength(3));
-    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
-    expect(h.requests[2].stateThinkingEffort, isNull);
-    expect(h.runner.supportsThinkingEffort, isFalse);
-    // 重发的是**同一帧**：input 完全一致（不重跑正文轮）。
-    expect(h.requests[2].items, h.requests[1].items);
-    // 失败的那次尝试不计帧。
-    expect(result.frames, 2);
-    expect(copy.worldState, contains('- 地点：主峰'));
+    // 该帧就是「用户设置」的那一帧：没有可回落的覆盖，因此直接失败（不重发）。
+    await expectLater(run(h.runner), throwsA(isA<AiException>()));
+    expect(h.requests, hasLength(2));
+    expect(h.requests[1].stage, AgentStage.state);
   });
 
   // ---------------------------------------------------------------------------
@@ -1078,14 +1065,11 @@ void main() {
 
     final result = await run(h.runner);
 
-    // 三帧固定顺序：调研 → 记忆（思考降为 low）→ 正文。
+    // 三帧固定顺序：调研 → 记忆 → 正文（思考强度无覆盖，全帧沿用户设置）。
     expect(
       h.requests.map((r) => r.stage).toList(),
       [AgentStage.prepare, AgentStage.memory, AgentStage.story],
     );
-    expect(h.requests[1].stateThinkingEffort, kAgentStateThinkingEffort);
-    expect(h.requests[0].stateThinkingEffort, isNull);
-    expect(h.requests[2].stateThinkingEffort, isNull);
     // 调研帧指令：本阶段只做调研（读历史一次），不产出大纲。
     expect(
       '${h.requests[0].items.last['content']}',
@@ -1368,12 +1352,10 @@ void main() {
         AgentStage.state,
       ],
     );
-    expect(
-      h.requests.map((r) => r.stateThinkingEffort).toList(),
-      [null, 'low', 'low', 'low', null, 'low'],
-    );
     expect(result.frames, 6);
     expect(result.stateTurnUsed, isTrue);
+    // 帧间差异只有 input：执行器不为任何帧覆盖思考强度
+    //（请求体层面的锁定见 agent_over_chat_test「思考强度全程沿用用户设置」）。
     // 每帧都重发记忆指令：首帧与「仍缺」帧的文案不同（不重复回传失败说明）。
     expect(
       '${h.requests[1].items.last['content']}',
@@ -1879,10 +1861,12 @@ void main() {
   });
 }
 
-/// 一次帧调用的记录（阶段 / input 快照 / 维护轮思考覆盖）。
+/// 一次帧调用的记录（阶段 / input 快照 / 有状态续接基点）。
+///
+/// **不含思考强度**：执行器不为任何阶段覆盖它，帧上下文只有这三项
+/// （见 [AgentTurnRequest]）。
 typedef _Request = ({
   AgentStage stage,
   List<Map<String, dynamic>> items,
   String? previousResponseId,
-  String? stateThinkingEffort,
 });

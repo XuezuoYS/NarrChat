@@ -2008,13 +2008,11 @@ class RoundProvider extends ChangeNotifier {
   /// - [AgentTurnRequest.items]：本轮累积 input（各阶段追加 assistant / 工具
   ///   条目与阶段指令，维护轮再追加缺口清单）；
   /// - [AgentTurnRequest.previousResponseId]：有状态续接帧不重发
-  ///   instructions / tools；
-  /// - [AgentTurnRequest.stateThinkingEffort]：记忆 / 维护帧把思考强度降为
-  ///   `low`——不硬关（需要读懂大纲与最新快照），只在用户开启思考模式时生效；
-  ///   服务商不接受时由执行器回落用户设置。
+  ///   instructions / tools。
   ///
-  /// `max_output_tokens` **一律沿用用户设置**：程序不为工具帧擅自抬高上限，
-  /// 触顶时由执行器下发「拆短调用」指令 + 黄框提示用户自行调高。
+  /// **思考强度 / 思考开关 / `max_output_tokens` 一律沿用用户设置**：
+  /// 程序不为任何帧覆盖它们（触顶时由执行器下发「拆短调用」指令 +
+  /// 黄框提示用户自行调高上限）。
   static Map<String, dynamic> _agentBody({
     required AiSettingsProvider? settings,
     required AiRequestValues base,
@@ -2062,24 +2060,22 @@ class RoundProvider extends ChangeNotifier {
         : settings.buildRequestBody(values);
   }
 
-  /// 两阶段帧的公共取值（协议无关部分）：状态帧思考覆盖（[kAgentStateThinkingEffort]
-  /// = `low`，仅用户开启思考时生效）、温度 / 强度 / 上限 / 流式沿用户设置，
-  /// 有状态续接（[chained]）时省略 tools / instructions（responses 专用）。
+  /// 各阶段帧的公共取值（协议无关部分）：**思考开关与强度全帧沿用用户设置**
+  /// （执行器不为任何阶段覆盖；见 [AgentTurnRequest]），温度 / 上限 / 流式同样
+  /// 沿用户设置；有状态续接（[chained]）时省略 tools / instructions
+  /// （responses 专用）。
   static AiRequestValues _frameValues(
     AiRequestValues base,
     AgentTurnRequest t, {
     bool chained = false,
     List<Map<String, dynamic>>? items,
   }) {
-    final stateEffort = (t.stateThinkingEffort != null && base.thinking)
-        ? t.stateThinkingEffort!
-        : null;
     return AiRequestValues(
       model: base.model,
       messages: items ?? t.items,
       temperature: base.temperature,
-      thinking: stateEffort != null ? true : base.thinking,
-      reasoningEffort: stateEffort ?? base.reasoningEffort,
+      thinking: base.thinking,
+      reasoningEffort: base.reasoningEffort,
       maxTokens: base.maxTokens,
       stream: base.stream,
       tools: chained ? null : base.tools,
@@ -2134,8 +2130,9 @@ class RoundProvider extends ChangeNotifier {
         isCancelled: isCancelled,
       );
     } catch (e) {
-      // 失败原因留在 RAW 里：协议兼容降级前的探测帧（如思考强度覆盖）
-      // 被服务商拒绝时，RAW 会显示「请求失败：<报错原文>」而不是含糊的「无返回」。
+      // 失败原因留在 RAW 里：协议兼容降级前的探测帧（如 `previous_response_id`
+      // 有状态续接）被服务商拒绝时，RAW 会显示「请求失败：<报错原文>」
+      // 而不是含糊的「无返回」。
       exchange.error = '$e';
       rethrow;
     }

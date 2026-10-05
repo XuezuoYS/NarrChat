@@ -187,9 +187,12 @@ void main() {
         preview.subsequentFrames.map((f) => f.label).toList(),
         ['记忆帧', '正文帧', '维护帧'],
       );
-      // 后续帧只列增量：本帧追加的都是 input 条目。
+      // 后续帧只列增量：本帧追加的都是 input 条目，且**不改思考强度**
+      // （所有帧一律沿用用户设置）。
       for (final frame in preview.subsequentFrames) {
         expect(frame.addedFields.keys, contains('input'));
+        expect(frame.addedFields.keys, isNot(contains('reasoning')));
+        expect(frame.addedFields.keys, isNot(contains('reasoning_effort')));
       }
 
       expect(

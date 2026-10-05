@@ -31,11 +31,6 @@ const int kAgentMaxMemoryFrames = 3;
 /// 正文轮的最大帧数（联网搜索会消耗多帧：开场白 → 搜索 → 打开页 → 正文）。
 const int kAgentMaxStoryFrames = 8;
 
-/// 维护轮的思考强度覆盖值：用户开启思考时，维护帧不硬关思考（`none`），
-/// 而是降到 `low`——状态维护需要理解正文与快照，完全关闭会让模型「看不懂」
-/// 缺项清单与锚点；同时思考 token 计入输出上限，`low` 把预算尽量留给参数。
-const String kAgentStateThinkingEffort = 'low';
-
 /// 输出触顶的原因标识（Responses `incomplete_details.reason`）。
 const String kIncompleteMaxOutputTokens = 'max_output_tokens';
 
@@ -64,12 +59,15 @@ enum AgentStage {
 }
 
 /// 一次帧请求的上下文（由 `buildBody` 组装成实际请求体）。
+///
+/// **思考强度不在帧上下文中**：本执行器不为任何阶段覆盖 `reasoning_effort` /
+/// 思考开关，全部帧一律沿用用户设置（帧间差异只有 [items] 与
+/// [previousResponseId]，见类文档「前缀一致性」）。
 class AgentTurnRequest {
   const AgentTurnRequest({
     required this.stage,
     required this.items,
     this.previousResponseId,
-    this.stateThinkingEffort,
   });
 
   final AgentStage stage;
@@ -77,12 +75,6 @@ class AgentTurnRequest {
   /// 本次要发送的 input（无状态平台 = 全量累积；有状态续接 = 仅新增项）。
   final List<Map<String, dynamic>> items;
   final String? previousResponseId;
-
-  /// 思考强度**覆盖**（[kAgentStateThinkingEffort] = `low`；null = 沿用用户
-  /// 设置）。仅当用户开启了思考模式时生效：思考 token 占用输出上限，但记忆 /
-  /// 维护帧需要读懂大纲与最新状态，`low` 在「不完全关掉理解力」与「省预算」
-  /// 之间折中；服务商不接受覆盖时由执行器就地回落用户设置。
-  final String? stateThinkingEffort;
 }
 
 /// 单个工具调用的执行结果（UI 事件 + 回传模型依据）。
@@ -284,21 +276,22 @@ class AgentRoundResult {
 ///
 /// ## 兼容性降级（绝不消耗用户的整轮预算）
 ///
-/// [supportsThinkingEffort] 是能力**初值**，运行中遇到
-/// 协议类失败就地重发同一帧（同一帧至多连降 3 项）：
-/// 拒绝 `previous_response_id` → 本轮全量重发；
-/// 拒绝中途调整思考强度 → 该帧回落用户设置。
+/// 运行中遇到协议类失败就地重发同一帧（同一帧至多连降 3 项）：
+/// 拒绝 `previous_response_id` → 本轮全量重发。
 /// 只有内容校验类失败才走修复帧。
+///
+/// **思考强度全程沿用用户设置**：本执行器不覆盖 `reasoning_effort` / 思考开关
+/// （历史上记忆 / 维护帧曾降到 `low`，现取消——用户设置就是唯一真源），
+/// 因此也不存在「服务商拒绝中途调整强度」这类降级分支。
 ///
 /// ## 截断（`response.incomplete`）
 ///
 /// 记忆 / 维护轮输出的是逐字锚点的工具参数 JSON，而思考 token 同样计入输出
 /// 上限，极易触顶。触顶**不是失败**：底层保留截断前的部分结果并标记
 /// [AiCallResult.incomplete]，本执行器据此（1）给下一帧补一条「拆短输出」
-/// 指令，（2）记忆 / 维护轮思考降为 `low`（用户开启思考时，不硬关——维护状态
-/// 需要理解正文与快照），（3）末帧仍截断时
-/// 给用户一条可操作提示（由用户在设置里调高「最大 token」，程序不擅自改动
-/// 请求体的 `max_output_tokens`）。绝不因一帧截断赔掉整轮正文。
+/// 指令，（2）末帧仍截断时给用户一条可操作提示（由用户在设置里调高
+/// 「最大 token」，程序不擅自改动请求体的 `max_output_tokens`，也不擅自改
+/// 思考强度）。绝不因一帧截断赔掉整轮正文。
 class AgentRoundRunner {
   AgentRoundRunner({
     required this.buildBody,
@@ -308,7 +301,6 @@ class AgentRoundRunner {
     required this.profile,
     this.memoryMergePlan,
     this.chaining = false,
-    this.supportsThinkingEffort = true,
     this.maxPrepFrames = kAgentMaxPrepFrames,
     this.maxMemoryFrames = kAgentMaxMemoryFrames,
     this.maxStoryFrames = kAgentMaxStoryFrames,
@@ -345,10 +337,6 @@ class AgentRoundRunner {
   final MemoryMergePlan? memoryMergePlan;
 
   final bool chaining;
-
-  /// 服务商是否接受「工具帧思考强度覆盖」（[AgentTurnRequest.stateThinkingEffort]）。
-  /// 部分服务商不允许中途调整推理强度 → 就地回落用户设置重发同一帧。
-  bool supportsThinkingEffort;
 
   /// 调研阶段（仅 Lv.1）的最大帧数：读史 + 联网搜索 / 打开页。
   final int maxPrepFrames;
@@ -476,7 +464,7 @@ class AgentRoundRunner {
     if (_lastFrameTruncated) {
       _warnings.add(
         _truncateReason == kIncompleteMaxOutputTokens
-            ? '模型输出触顶被截断（工具帧思考已降为 low 并要求拆短调用重试）：'
+            ? '模型输出触顶被截断（已要求模型拆短调用重试）：'
                   '请在设置里调高「最大 token」'
             : '模型响应被服务端提前结束（$_truncateReason）',
       );
@@ -612,7 +600,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.memory, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.memory,
-        stateThinkingEffort: kAgentStateThinkingEffort,
         gate: gate,
         stream: stream,
         onRequestBody: onRequestBody,
@@ -744,7 +731,6 @@ class AgentRoundRunner {
       final gate = _FrameGate(stage: AgentStage.state, sink: _sink);
       final result = await _callFrame(
         stage: AgentStage.state,
-        stateThinkingEffort: kAgentStateThinkingEffort,
         gate: gate,
         stream: stream,
         onRequestBody: onRequestBody,
@@ -815,9 +801,7 @@ class AgentRoundRunner {
     required bool stream,
     void Function(String requestBody)? onRequestBody,
     bool Function()? isCancelled,
-    String? stateThinkingEffort,
   }) async {
-    var effort = supportsThinkingEffort ? stateThinkingEffort : null;
     for (var attempt = 0;; attempt++) {
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
       onActivity?.call(
@@ -827,7 +811,7 @@ class AgentRoundRunner {
           iteration: _frames,
         ),
       );
-      final body = _frameBody(stage, stateThinkingEffort: effort);
+      final body = _frameBody(stage);
       final sentCursor = _items.length;
       try {
         final result = await call(
@@ -844,20 +828,11 @@ class AgentRoundRunner {
         rethrow;
       } catch (e) {
         // 协议类失败：就地降级重发同一帧（同一帧至多连降 3 项），
-        // 不赔上整轮预算。
+        // 不赔上整轮预算。当前唯一可降级项是「服务商不接受有状态续接」。
         if (attempt >= 3 || e is! AiException || e.kind != AiExceptionKind.api) {
           rethrow;
         }
         final msg = e.message.toLowerCase();
-        if (effort != null &&
-            (msg.contains('reasoning') ||
-                msg.contains('thinking') ||
-                msg.contains('effort'))) {
-          // 服务商不接受中途调整思考强度 → 回落用户设置（不再覆盖）。
-          effort = null;
-          supportsThinkingEffort = false;
-          continue;
-        }
         if (_previousResponseId != null &&
             chaining &&
             msg.contains('previous_response_id')) {
@@ -877,16 +852,13 @@ class AgentRoundRunner {
 
   /// 本阶段当前帧的请求体：**实发 [_callFrame] 与「预览请求体」共用**，
   /// 保证预览给出的首帧就是真正会发出的那一帧。
-  Map<String, dynamic> _frameBody(
-    AgentStage stage, {
-    String? stateThinkingEffort,
-  }) =>
-      buildBody(
+  ///
+  /// 思考强度不在帧上下文里——所有帧一律沿用用户设置（见 [AgentTurnRequest]）。
+  Map<String, dynamic> _frameBody(AgentStage stage) => buildBody(
         AgentTurnRequest(
           stage: stage,
           items: _sendItems(),
           previousResponseId: chaining ? _previousResponseId : null,
-          stateThinkingEffort: stateThinkingEffort,
         ),
       );
 
@@ -950,12 +922,8 @@ class AgentRoundRunner {
       frames.add(
         RequestFrameOutline(
           label: '记忆帧',
-          note: '调研结束、且本轮记忆条目尚未落地时发出'
-              '（思考强度降为 $kAgentStateThinkingEffort 省预算）。',
-          body: _frameBody(
-            AgentStage.memory,
-            stateThinkingEffort: kAgentStateThinkingEffort,
-          ),
+          note: '调研结束、且本轮记忆条目尚未落地时发出（思考强度沿用用户设置）。',
+          body: _frameBody(AgentStage.memory),
         ),
       );
       _appendStageDirective(AgentStage.story);
@@ -980,12 +948,8 @@ class AgentRoundRunner {
       RequestFrameOutline(
         label: '维护帧',
         note: '正文之后仍有缺项、或档位要求的记忆合并未落地时发出'
-            '（思考强度降为 $kAgentStateThinkingEffort 省预算；'
-            '缺项清单由当时的缺项决定）。',
-        body: _frameBody(
-          AgentStage.state,
-          stateThinkingEffort: kAgentStateThinkingEffort,
-        ),
+            '（思考强度沿用用户设置；缺项清单由当时的缺项决定）。',
+        body: _frameBody(AgentStage.state),
       ),
     );
     return frames;

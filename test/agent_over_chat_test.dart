@@ -388,7 +388,7 @@ void main() {
     );
   });
 
-  test('Agent 开 + Chat 协议：维护帧思考强度覆盖被拒 → 就地降级重发同一帧', () async {
+  test('Agent 开 + Chat 协议：思考强度全程沿用用户设置（维护帧不再降为 low）', () async {
     final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     var served = 0;
@@ -396,16 +396,6 @@ void main() {
       client: MockClient((request) async {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         bodies.add(body);
-        if (body['reasoning_effort'] == 'low') {
-          // 协议类 4xx：拒绝维护帧的思考强度覆盖（运行中降级，不烧帧预算）。
-          return http.Response.bytes(
-            utf8.encode(jsonEncode({
-              'error': {'message': 'reasoning_effort 参数不受支持'},
-            })),
-            400,
-            headers: {'content-type': 'application/json; charset=utf-8'},
-          );
-        }
         served++;
         return sse(
           served == 1
@@ -450,14 +440,19 @@ void main() {
 
     final ok = await provider.sendRound(userInput: '第一章', book: book);
     expect(ok, isTrue, reason: provider.failedAttempt.errorMessage);
-    // 3 次底层请求（1 次被拒 + 重发同一帧 + 维护轮），2 帧计数。
-    expect(bodies, hasLength(3));
-    expect(bodies[0]['reasoning_effort'], 'high');
-    expect(bodies[1]['reasoning_effort'], 'low');
-    expect(bodies[2]['reasoning_effort'], 'high',
-        reason: '覆盖被拒后同一帧回落用户设置重发');
-    expect(bodies[2]['messages'], bodies[1]['messages'],
-        reason: '降级重发的是同一帧：messages 完全一致');
+    // 2 帧（正文 + 维护）：两帧的思考强度**都**来自用户设置（默认 high），
+    // 维护帧不再中途降为 low。
+    expect(bodies, hasLength(2));
+    expect(
+      bodies.map((b) => b['reasoning_effort']).toSet(),
+      {'high'},
+      reason: '任何帧都不覆盖用户设置的思考强度',
+    );
+    expect(
+      (bodies[1]['messages'] as List).length,
+      greaterThan((bodies[0]['messages'] as List).length),
+      reason: '维护帧是续接的新一帧（不是重发）',
+    );
     // Chat 线路同样一律不发 tool_choice。
     expect(bodies.every((b) => !b.containsKey('tool_choice')), isTrue);
 
