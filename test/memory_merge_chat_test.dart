@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
 
@@ -48,10 +49,11 @@ void main() {
     final provider = providerFor(book);
     await provider.loadRounds(bookUuid);
 
-    final preview = await provider.previewRequestBody(
-      userInput: '继续',
+    final preview = (await provider.previewRequestBody(
+      intent: RoundSendIntent.newRound(userInput: '继续'),
       book: book,
-    );
+    ))
+        .firstFrameJson;
 
     expect(preview, contains('【本轮记忆合并】'));
     expect(preview, contains('- 1 - 5 | t1 ~ t5 | {记忆内容}'));
@@ -63,10 +65,11 @@ void main() {
     final provider = providerFor(book);
     await provider.loadRounds(bookUuid);
 
-    final preview = await provider.previewRequestBody(
-      userInput: '继续',
+    final preview = (await provider.previewRequestBody(
+      intent: RoundSendIntent.newRound(userInput: '继续'),
       book: book,
-    );
+    ))
+        .firstFrameJson;
 
     expect(preview, contains('不要主动合并'));
     expect(preview, isNot(contains('【本轮记忆合并】')));
@@ -77,10 +80,11 @@ void main() {
     service.memory = '$nineEntries\n- 10 | t10 | 第十轮。';
     final provider = providerFor(book);
     await provider.loadRounds(bookUuid);
-    final preview = await provider.previewRequestBody(
-      userInput: '继续',
+    final preview = (await provider.previewRequestBody(
+      intent: RoundSendIntent.newRound(userInput: '继续'),
       book: book,
-    );
+    ))
+        .firstFrameJson;
     expect(preview, contains('【本轮记忆合并】'), reason: '前置：本轮确实要求合并');
 
     final ok = await provider.sendRound(userInput: '继续', book: book);

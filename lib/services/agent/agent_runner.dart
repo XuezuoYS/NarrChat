@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'agent_activity.dart';
 import '../ai_service.dart';
+import '../request_frame_outline.dart';
 import 'narr_agent_tool.dart';
 import 'reasoning_replay.dart';
 import 'wire_adapters.dart';
@@ -121,22 +122,21 @@ class AgentRunner {
       for (var i = 0; i < result.toolCalls.length; i++) {
         messages.add(reasoningItemFrom(AiReasoningItem(text: replayed)));
       }
-      messages.add({
-        'role': 'assistant',
-        'content': result.content.isEmpty ? null : result.content,
-        if (replayed.isNotEmpty) 'reasoning_content': replayed,
-        'tool_calls': [
-          for (final tc in result.toolCalls)
-            {
-              'id': tc.id,
-              'type': 'function',
-              'function': {
-                'name': tc.name,
-                'arguments': jsonEncode(tc.arguments),
-              },
-            },
-        ],
-      });
+      messages.add(
+        assistantToolCallMessage(
+          content: result.content.isEmpty ? null : result.content,
+          replayedReasoning: replayed,
+          toolCalls: [
+            for (final tc in result.toolCalls)
+              toolCallJson(
+                id: tc.id,
+                name: tc.name,
+                // 参数按 JSON 编码后回传（OpenAI 兼容形态）。
+                arguments: jsonEncode(tc.arguments),
+              ),
+          ],
+        ),
+      );
 
       // 逐个执行工具；结果（含失败/空结果）追加 tool 消息。
       for (final tc in result.toolCalls) {
@@ -146,12 +146,13 @@ class AgentRunner {
         final tool = _byName(tc.name);
         // 已连续失败 3 次：不再执行该工具，直接告知模型停用，继续基于已有信息创作。
         if ((toolFailures[tc.name] ?? 0) >= 3) {
-          messages.add({
-            'role': 'tool',
-            'tool_call_id': tc.id,
-            'content': '工具 ${tc.name} 已连续失败 3 次，请勿再使用该工具，'
-                '直接基于已有信息继续创作。',
-          });
+          messages.add(
+            toolResultMessage(
+              callId: tc.id,
+              content: '工具 ${tc.name} 已连续失败 3 次，请勿再使用该工具，'
+                  '直接基于已有信息继续创作。',
+            ),
+          );
           continue;
         }
         // 活动主体：搜索为关键词、打开网页为链接、状态工具为工具名+参数摘要。
@@ -176,11 +177,9 @@ class AgentRunner {
         if (!toolResult.success && !toolResult.refused) {
           toolFailures[tc.name] = (toolFailures[tc.name] ?? 0) + 1;
         }
-        messages.add({
-          'role': 'tool',
-          'tool_call_id': tc.id,
-          'content': toolResult.content,
-        });
+        messages.add(
+          toolResultMessage(callId: tc.id, content: toolResult.content),
+        );
       }
     }
 
@@ -199,6 +198,45 @@ class AgentRunner {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 续接帧的消息形态（**唯一构造源**：实发与「预览请求体」的后续帧共用）
+  // ---------------------------------------------------------------------------
+
+  /// 助手「带工具调用」消息（Chat 形态；`reasoning` 条目另由 [reasoningItemFrom] 追加）。
+  ///
+  /// [content] 为 null（模型只调工具没写正文）时照 OpenAI 兼容形态发 `null`。
+  static Map<String, dynamic> assistantToolCallMessage({
+    required String? content,
+    required String replayedReasoning,
+    required List<Map<String, dynamic>> toolCalls,
+  }) =>
+      {
+        'role': 'assistant',
+        'content': content,
+        if (replayedReasoning.isNotEmpty)
+          'reasoning_content': replayedReasoning,
+        'tool_calls': toolCalls,
+      };
+
+  /// 单个 Chat 形态的工具调用（[arguments] = 已编码的 JSON 文本）。
+  static Map<String, dynamic> toolCallJson({
+    required String id,
+    required String name,
+    required String arguments,
+  }) =>
+      {
+        'id': id,
+        'type': 'function',
+        'function': {'name': name, 'arguments': arguments},
+      };
+
+  /// 工具结果消息（回传模型）。
+  static Map<String, dynamic> toolResultMessage({
+    required String callId,
+    required String content,
+  }) =>
+      {'role': 'tool', 'tool_call_id': callId, 'content': content};
+
   /// 工具参数短摘要（含中文引号未转义的多值截断，供 UI 提示）。
   static String _shortArgs(Map<String, dynamic> args) {
     if (args.isEmpty) return '';
@@ -213,12 +251,52 @@ class AgentRunner {
     return s.length <= 24 ? s : '${s.substring(0, 24)}…';
   }
 
-  /// 预览用：返回首轮实际会发出的请求体（当前 messages + 工具 schema）。
+  /// 预览：本轮会发出 / 可能发出的帧骨架（**不发起任何调用**）。
   ///
-  /// 与 `run` 首帧走完全相同的 `buildBody(messages, _toolSchemas)`，
-  /// 只构建、不发起任何调用，无副作用。
-  Map<String, dynamic> previewFirstBody(List<Map<String, dynamic>> messages) =>
-      buildBody(messages, _toolSchemas);
+  /// 首帧与 [run] 的首帧走完全相同的 `buildBody(messages, _toolSchemas)`；
+  /// 续接帧由同一批消息构造器（[assistantToolCallMessage] / [toolResultMessage]）
+  /// 以占位取值给出——只有形态是确定的，具体内容取决于模型响应与工具返回。
+  List<RequestFrameOutline> outlineFrames(
+    List<Map<String, dynamic>> initialMessages,
+  ) {
+    const replay = '<模型思考（按设置回传原文）>';
+    final continuation = [
+      ...initialMessages,
+      reasoningItemFrom(const AiReasoningItem(text: replay)),
+      assistantToolCallMessage(
+        content: null,
+        replayedReasoning: replay,
+        toolCalls: [
+          toolCallJson(
+            id: '<call_id>',
+            name: '<工具名>',
+            arguments: '<参数 JSON>',
+          ),
+        ],
+      ),
+      toolResultMessage(callId: '<call_id>', content: '<工具返回内容>'),
+    ];
+    final toolNames = [for (final t in tools) t.name];
+    // initialMessages = system + 历史 + 当前输入。
+    final historyCount = initialMessages.length >= 2
+        ? initialMessages.length - 2
+        : 0;
+    return [
+      RequestFrameOutline(
+        label: '工具循环首帧',
+        note: '本轮第一步：system + $historyCount 条历史 + 当前输入'
+            '，注入工具 schema（工具调用指导全部写在 description 里）。',
+        body: buildBody(initialMessages, _toolSchemas),
+      ),
+      RequestFrameOutline(
+        label: '工具循环续接帧',
+        note: '模型请求工具调用时才有：追加思考条目 + assistant(tool_calls) + '
+            'tool 结果后重发（最多 $maxIterations 帧）。'
+            '可用工具：${toolNames.join('、')}。',
+        body: buildBody(continuation, _toolSchemas),
+      ),
+    ];
+  }
 
   /// 工具 schema 数组（调用方定制优先；缺省 Chat 嵌套形态）。
   List<Map<String, dynamic>> get _toolSchemas {

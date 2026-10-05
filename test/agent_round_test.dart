@@ -8,6 +8,7 @@ import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
@@ -305,10 +306,10 @@ void main() {
     await provider.loadRounds('b1');
 
     final preview = await provider.previewRequestBody(
-      userInput: '第一章',
+      intent: RoundSendIntent.newRound(userInput: '第一章'),
       book: book,
     );
-    final body = jsonDecode(preview) as Map<String, dynamic>;
+    final body = preview.firstFrame;
     expect(body['model'], 'deepseek-flash');
     expect(body['instructions'], contains('这是 Agent 模式'));
     expect(body['input'], isA<List>());
@@ -357,9 +358,11 @@ void main() {
         retryDelay: Duration.zero,
       );
       await provider.loadRounds('b1');
-      return jsonDecode(
-        await provider.previewRequestBody(userInput: '第一章', book: book),
-      ) as Map<String, dynamic>;
+      return (await provider.previewRequestBody(
+        intent: RoundSendIntent.newRound(userInput: '第一章'),
+        book: book,
+      ))
+          .firstFrame;
     }
 
     // Agent 开：思考照旧发送（不再被用户选项关掉），联网工具同批注入。

@@ -13,6 +13,7 @@ import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../models/round_send_intent.dart';
 import '../models/round_stack.dart';
 import '../services/agent/agent_default_tools.dart';
 import '../services/agent/agent_mode_profile.dart';
@@ -32,6 +33,7 @@ import '../services/image_store.dart';
 import '../services/memory_merge_planner.dart';
 import '../services/non_stream_replay.dart';
 import '../services/prompt_interface.dart';
+import '../services/request_frame_outline.dart';
 import '../services/round_stack_service.dart';
 import '../services/round_warnings_store.dart';
 import '../services/world_book_scanner.dart';
@@ -43,7 +45,7 @@ import 'world_book_provider.dart';
 
 /// 单本书的运行时生成状态（支持多本书并发生成互不干扰）。
 ///
-/// 生成令牌 [token]：每次 `sendRound` 自增。旧一轮的残留流回调（onChunk /
+/// 生成令牌 [token]：每次 `sendIntent` 自增。旧一轮的残留流回调（onChunk /
 /// isCancelled）捕获发起时的令牌，一旦与当前 [token] 不一致即丢弃 / 中止，
 /// 从根源上杜绝「上一轮流式输出注入本轮」与双流式并存。
 class _BookGenState {
@@ -722,84 +724,193 @@ class RoundProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
+  /// 预览「此刻若点击发送将实际发出」的请求体（不发送、**无任何副作用**）。
   ///
-  /// 与 [sendRound] 共用同一组装逻辑，保证与实发完全一致：
-  /// - Agent 档位（Lv.1 / Lv.2，实验性功能）：返回本轮首帧（Lv.1 = 准备帧、
-  ///   Lv.2 = 正文帧；线路形态由协议决定）；
-  /// - 联网搜索开启：返回工具循环首帧（工具 schema；system 不追加联网指令，
-  ///   调用指导全在工具 `description` 里）；
-  /// - 联网搜索关闭：返回直发请求体（无工具）。
+  /// 与 [sendIntent] 共用同一份组装（[_planSend]）与同一批执行器：预览不是
+  /// 「真实发送的镜像」，不会另拼一套字段——界面所见的状态（灰条用途、历史、
+  /// 档位、图片、参数）与实发完全同源。
   ///
-  /// 无任何副作用（不落库 / 不发网络 / 不改生成状态）。
-  Future<String> previewRequestBody({
-    required String userInput,
+  /// 返回 [RoundRequestPreview]：
+  /// - `firstFrame` = 真正会发出的**首帧**（Agent 档位 = 该档位实际的第一步，
+  ///   Lv.1 为准备帧而非正文帧）；
+  /// - `subsequentFrames` = 后续**可能**发出的帧（仅增量字段，取决于模型响应）。
+  ///
+  /// 不落库、不发网络、不改生成状态（不新增轮次、不触发预热 / 云同步）。
+  Future<RoundRequestPreview> previewRequestBody({
+    required RoundSendIntent intent,
     Book? book,
-    List<String>? userImages,
   }) async {
     final b = book;
     if (b == null || b.uuid.isEmpty) {
       throw StateError('尚未选择书籍');
     }
-    final req = await _assembleRoundRequest(
-      book: b,
-      userInput: userInput,
-      userImages: userImages,
-    );
-    final Map<String, dynamic> firstBody;
-    if (req.agent) {
-      // AGENT 模式：预览本轮首帧（与实发同一条组装路径）。
-      firstBody = req.directBody;
-    } else if (req.useSearch) {
-      // 联网搜索工具循环：与实发共用同一线段（线路 / schema 形状一致）。
-      final searchTools = _agentTools(
-        level: AgentModeLevel.off,
-        useSearch: true,
-      );
-      final runner = AgentRunner(
-        buildBody: _makeBodyBuilder(
-          _aiSettingsProvider,
-          req.useStream,
-          responsesWire: req.responsesWire,
-        ),
-        // 预览只构建首帧，不发起任何 AI 调用（call 永不被触发）。
-        call: (_, _, _, _, _) => throw UnsupportedError('预览不发起 AI 调用'),
-        // 仅用于读取工具 schema（name/description/parameters），绝不执行 run。
-        tools: searchTools,
-        toolSchemas: agentToolSchemas(searchTools, responses: req.responsesWire),
-      );
-      firstBody = runner.previewFirstBody([
-        {
-          'role': 'system',
-          'content': req.systemPrompt,
-        },
-        ...req.historyMessages,
-        {'role': 'user', 'content': req.userContent},
-      ]);
-    } else {
-      firstBody = req.directBody;
+    final invalid = validateSendIntent(intent);
+    if (invalid != null) {
+      throw StateError(invalid);
     }
-    return const JsonEncoder.withIndent('  ').convert(firstBody);
+    final plan = await _planSend(intent: intent, book: b);
+    return _previewPlan(plan: plan, book: b);
   }
+
+  /// 校验发送意图能否在当前状态下执行；返回原因（null = 可执行）。
+  ///
+  /// 预览与实发共用：灰条「按意见修改」指向的轮次若已被删除，两边给出同一句提示。
+  ///
+  /// [RoundSendKind.reaskRound] **不要求目标轮仍存在**——它只表达「从该轮号起截断
+  /// 后重发」，投影里本就没有该轮时截断即为无操作（失败条目「本该产生的那一轮」
+  /// 载体正是这种情况，见 [refreshRound]）；该用途指向的轮次是否还在，由界面侧
+  /// 灰条守卫（`ComposerInputMode.guard`）按行身份判定。
+  String? validateSendIntent(RoundSendIntent intent) {
+    if (intent.kind != RoundSendKind.rewriteByOpinion) return null;
+    return _targetRoundOf(intent) == null ? '该轮次已不存在，已退出修改' : null;
+  }
+
+  /// 意图指向的目标轮次（[RoundSendKind.newRound] 返回 null；不存在也返回 null）。
+  Round? _targetRoundOf(RoundSendIntent intent) {
+    final index = intent.targetRoundIndex;
+    if (index == null) return null;
+    for (final r in _rounds) {
+      if (r.roundIndex == index) return r;
+    }
+    return null;
+  }
+
+  /// 本轮要保留的「用户输入 + 图片」（生成期间气泡 / 失败条目）。
+  ///
+  /// 修改轮沿用被重写轮的原输入与原图（意见不落库），其余取意图本身。
+  ({String input, List<String> images}) _retainedOf(RoundSendIntent intent) {
+    if (intent.kind != RoundSendKind.rewriteByOpinion) {
+      return (input: intent.userInput, images: intent.images);
+    }
+    final target = _targetRoundOf(intent);
+    return target == null
+        ? (input: intent.userInput, images: intent.images)
+        : (input: target.userInput, images: target.userImages);
+  }
+
+  /// 意图 → 本次请求计划（**纯组装**：不读写生成状态、不落库、不发网络）。
+  ///
+  /// 「先删轮再发」的用途（[RoundSendKind.reaskRound] / [RoundSendKind.rewriteByOpinion]）
+  /// 在这里用**虚拟投影**表达截断语义，从而不必真的删库就能算出实发请求体：
+  /// 执行阶段再按 [_SendPlan.trimFromRoundIndex] 真删（见 [sendIntent]）。
+  Future<_SendPlan> _planSend({
+    required RoundSendIntent intent,
+    required Book book,
+  }) async {
+    switch (intent.kind) {
+      case RoundSendKind.newRound:
+        return _SendPlan(
+          req: await _assembleRoundRequest(
+            book: book,
+            projection: _rounds,
+            userInput: intent.userInput,
+            userImages: intent.images,
+          ),
+        );
+      case RoundSendKind.reaskRound:
+        // 目标轮可以不在投影里（失败条目「本该产生的那一轮」载体）：截断即无操作。
+        final index = intent.requiredTargetRoundIndex;
+        return _SendPlan(
+          trimFromRoundIndex: index,
+          req: await _assembleRoundRequest(
+            book: book,
+            // 与执行时 `_rewriteRound` 删该轮起投影行的结果一致。
+            projection: _projectionBefore(index),
+            userInput: intent.userInput,
+            userImages: intent.images,
+          ),
+        );
+      case RoundSendKind.rewriteByOpinion:
+        final target = _targetRoundOf(intent)!;
+        return _SendPlan(
+          trimFromRoundIndex: target.roundIndex,
+          req: await _assembleRoundRequest(
+            book: book,
+            // **截断后的**投影：历史 n 轮必须是被重写轮之前最近 n 轮（与实发
+            // 先删该轮起投影行的结果一致）；被重写轮自身由 `rewrite` 追加。
+            projection: _projectionBefore(target.roundIndex),
+            userInput: target.userInput,
+            userImages: target.userImages,
+            // 基座 = 严格早于被重写轮的最近一轮（须在删投影行之前取）。
+            rewrite: RoundRewrite(
+              target: target,
+              base: _roundBefore(target.roundIndex),
+              opinion: intent.opinion,
+              images: intent.images,
+            ),
+          ),
+        );
+    }
+  }
+
+  /// 计划 → 预演结果：直发 = 单帧；联网 / Agent = 对应执行器给出的帧骨架。
+  ///
+  /// 帧骨架由执行器自己产出（`outlineFrames`），首帧走与实发同一组装路径；
+  /// Provider 不做任何二次拼合，因此不存在「预览与实发两套规则」。
+  Future<RoundRequestPreview> _previewPlan({
+    required _SendPlan plan,
+    required Book book,
+  }) async {
+    final req = plan.req;
+    if (req.agent) {
+      final runner = _makeAgentRoundRunner(
+        req: req,
+        book: book,
+        // 预览：不接任何过程回调，绝不改动生成状态。
+        gen: null,
+        call: _previewNeverCalled,
+      );
+      return RoundRequestPreview.fromOutline(
+        runner.outlineFrames(req.agentValues!.messages),
+      );
+    }
+    if (req.useSearch) {
+      final runner = _makeSearchRunner(
+        req: req,
+        gen: null,
+        call: _previewNeverCalled,
+      );
+      return RoundRequestPreview.fromOutline(
+        runner.outlineFrames(_searchInitialMessages(req)),
+      );
+    }
+    return RoundRequestPreview.single(firstFrame: req.directBody);
+  }
+
+  /// 预览专用 `call`：帧骨架只构建、不调用，因此这里永不被触发。
+  static Future<AiCallResult> _previewNeverCalled(
+    Map<String, dynamic> requestBody,
+    bool stream,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  ) =>
+      throw StateError('预览请求体不发起任何 AI 调用');
 
   /// 组装本轮「将要发出」的请求要素（纯组装，无副作用）：
   /// worldBook / Mod / 提示词 / 历史消息与图片 / 发送参数与请求体。
   ///
-  /// 供 [sendRound] 与「预览请求体」共用：不读写任何生成状态、不落库、不发网络。
+  /// 供 [sendIntent] 与「预览请求体」共用：不读写任何生成状态、不落库、不发网络。
   ///
-  /// [rewrite] 非 null 时按**修改轮**组装（见 [sendRound]）：
+  /// [projection] 是本次请求生效的**轮次投影**（按 `roundIndex` 升序）：普通发送
+  /// = 当前投影；「先删轮再发」的用途 = 截断后的虚拟投影。所有依赖轮次的部分
+  /// （末轮基座、历史 n 轮、图片）都只读它，不再直接读 `_rounds`。
+  ///
+  /// [rewrite] 非 null 时按**修改轮**组装（见 [RoundRewrite]）：
   /// - 生成基座 [PromptRequest.lastRound] = 被重写轮的上一轮（工具 / 状态快照停在那里）；
   /// - 历史 = 预设 n 轮 + **被重写轮自身**（= 该轮生成时 AI 收到的轮 + 自身，共 n+1）；
   /// - user 消息走修改轮模板，「主人的输入」= 用户填写的修改意见。
   Future<_RoundRequest> _assembleRoundRequest({
     required Book book,
+    required List<Round> projection,
     required String userInput,
     List<String>? userImages,
     RoundRewrite? rewrite,
   }) async {
     final settings = _aiSettingsProvider;
     // 生成基座轮：新建轮 = 投影末轮；修改轮 = 被重写轮的上一轮（严格更早的最近一轮）。
-    final lastRound = rewrite == null ? latestRound : rewrite.base;
+    final lastRound =
+        rewrite == null ? projection.lastOrNull : rewrite.base;
     final targetRoundIndex =
         rewrite?.target.roundIndex ?? (lastRound?.roundIndex ?? 0) + 1;
     // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 基座轮落库的记忆总结 +
@@ -813,9 +924,9 @@ class RoundProvider extends ChangeNotifier {
     //（该轮生成时 AI 收到的 n 轮 + 该轮，供 AI 照着它做定向重写）。按轮号过滤是
     // 冗余保险：调用方已先删该轮起的投影行，这里只保证「自身恰好出现一次、且在最后」。
     final recentRounds = rewrite == null
-        ? _takeRecent(book.historyRounds)
+        ? _takeRecent(projection, book.historyRounds)
         : [
-            ..._takeRecent(book.historyRounds)
+            ..._takeRecent(projection, book.historyRounds)
                 .where((r) => r.roundIndex < rewrite.target.roundIndex),
             rewrite.target,
           ];
@@ -1079,17 +1190,7 @@ class RoundProvider extends ChangeNotifier {
     );
   }
 
-  /// 发送新一轮：
-  /// 0. 清空本书「失败条目」（成功则保持为空，失败则重新写入）；
-  /// 1. 组装 System/User Prompt；
-  /// 2. 按 AI 设置调用大模型（支持流式/思考/温度/模型）；
-  /// 3. 容错解析 6 个区块；
-  /// 4. 写入数据库。
-  ///
-  /// [rewrite] 非 null 时走**修改轮**（按意见重写某一轮）：历史 = 该轮生成时收到的
-  /// n 轮 + 该轮自身（n+1），状态工具读到的是该轮的**上一轮**；落库为该轮的**新一
-  /// 代**（[userInput] / [userImages] 沿用原值，意见只进请求）。调用前须先
-  /// `_rewriteRound(roundIndex)` 清掉该轮起的投影行（见 [modifyRoundByOpinion]）。
+  /// 发送新一轮（[RoundSendIntent.newRound] 的便捷入口；语义见 [sendIntent]）。
   ///
   /// 返回是否成功。请求失败 / 用户中断时保留用户输入到「失败条目」
   /// （AI 输出以红色提示框占位），不再以消息提示；
@@ -1098,7 +1199,31 @@ class RoundProvider extends ChangeNotifier {
     required String userInput,
     Book? book,
     List<String>? userImages,
-    RoundRewrite? rewrite,
+  }) =>
+      sendIntent(
+        intent: RoundSendIntent.newRound(
+          userInput: userInput,
+          images: userImages ?? const [],
+        ),
+        book: book,
+      );
+
+  /// 按**发送意图**实发（界面「发送 / 提交灰条用途」的唯一实发入口）。
+  ///
+  /// 与「预览请求体」（[previewRequestBody]）共用同一份组装（[_planSend]）与同一
+  /// 批执行器：预览给出的首帧就是这里真正发出的那一帧，不存在两套拼合规则。
+  ///
+  /// 流程：
+  /// 0. 校验意图（「按意见修改」要求目标轮仍存在）→ 清空本书「失败条目」
+  ///    （失败则稍后重新写入）；
+  /// 1. 组装请求计划（纯组装；「先删轮再发」的用途用虚拟投影算截断后的请求）；
+  /// 2. 需要时先删该轮起的投影行（[RoundSendKind.reaskRound] /
+  ///    [RoundSendKind.rewriteByOpinion]），再按计划调用大模型；
+  /// 3. 容错解析 6 个区块；
+  /// 4. 写入数据库。
+  Future<bool> sendIntent({
+    required RoundSendIntent intent,
+    Book? book,
   }) async {
     final b = book;
     if (b == null || b.uuid.isEmpty) {
@@ -1109,6 +1234,12 @@ class RoundProvider extends ChangeNotifier {
     final gen = _gen(b.uuid);
     if (gen.isSending) {
       _error = '正在请求中，请稍候';
+      return false;
+    }
+    final invalid = validateSendIntent(intent);
+    if (invalid != null) {
+      _error = invalid;
+      notifyListeners();
       return false;
     }
 
@@ -1123,13 +1254,16 @@ class RoundProvider extends ChangeNotifier {
     gen.cancelRequested = false;
     _error = null;
     // 记录本次用户输入：生成期间在消息列表中展示，结束/中断后清除。
-    gen.pendingUserInput = userInput;
+    // 修改轮沿用被重写轮的原输入（意见不落库）。
+    final retained = _retainedOf(intent);
+    gen.pendingUserInput = retained.input;
     // 重置 Agent 过程时间线、重试状态、状态钳制警告与 RAW 时间线。
     gen.agentEvents.clear();
     gen.contentBoundaryIndex = -1;
     gen.agentWarnings.clear();
-    // 本轮（含上一次失败尝试留下的）常驻警告随重生成清除。
-    _dropRoundWarningsFrom(gen, nextRoundIndex);
+    // 本轮（含上一次失败尝试留下的）常驻警告随重生成清除。目标轮号在组装前后
+    // 一致（截断语义由计划内的虚拟投影表达），故这里先按意图推算轮号。
+    _dropRoundWarningsFrom(gen, _planTargetRoundIndex(intent));
     gen.newReasoningBlockPending = true;
     gen.retryStatus = null;
     gen.rawExchanges.clear();
@@ -1142,12 +1276,14 @@ class RoundProvider extends ChangeNotifier {
       await _setFailedAttempt(b.uuid, const FailedAttempt());
       // 组装本轮请求要素（worldBook / Mod / 提示词 / 历史消息与图片 / 参数与请求体）：
       // 与「预览请求体」共用同一逻辑，保证预览与实发完全一致。
-      final req = await _assembleRoundRequest(
-        book: b,
-        userInput: userInput,
-        userImages: userImages,
-        rewrite: rewrite,
-      );
+      final plan = await _planSend(intent: intent, book: b);
+      final req = plan.req;
+      // 「重写某轮」：先删该轮起的投影行（旧代保留在版本树，可 `← / →` 切回）。
+      // 必须在首次 AI 调用前完成——请求体已按截断后的投影组装好（见 [_planSend]）。
+      final trimFrom = plan.trimFromRoundIndex;
+      if (trimFrom != null) {
+        await _rewriteRound(trimFrom);
+      }
       // 非流式 + 多轮（AGENT / 联网搜索）：启用「展示回放」——一次性响应
       // 切成合成流式块，按 AI 轮次展示每个块（思考 / 工具过程 → 结果 / 正文）。
       final displayReplay = !req.useStream && (req.agent || req.useSearch);
@@ -1166,6 +1302,12 @@ class RoundProvider extends ChangeNotifier {
       // 取消闭包：用户显式中断，或本轮令牌已过期（新一轮已发起）都视为取消，
       // 使上一轮残留流自行中止，绝不继续向本轮注入内容。
       bool isCancelled() => gen.cancelRequested || genToken != gen.token;
+      // 真实执行器：网络调用 + RAW 捕获（与预览共用同一分派，差别只在它）。
+      final call = _makeRealCall(
+        gen: gen,
+        req: req,
+        settings: settings,
+      );
       // 模式与协议正交分派：
       // - Agent 模式（开关开）→ 两阶段执行器（线路由 req.responsesWire 决定）；
       // - 联网搜索 → Agent 工具循环（线路同样由 protocol 决定）；
@@ -1174,12 +1316,9 @@ class RoundProvider extends ChangeNotifier {
           ? await _callWithRetry(
               () => _runAgentRound(
                 req: req,
-                settings: settings,
                 book: b,
                 gen: gen,
-                apiBaseUrl:
-                    settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
-                apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
+                call: call,
                 onChunk: onChunk,
                 isCancelled: isCancelled,
               ),
@@ -1192,50 +1331,23 @@ class RoundProvider extends ChangeNotifier {
           : req.useSearch
           ? await _callWithRetry(
               () => _runAgent(
-                settings: settings,
-                apiBaseUrl:
-                    settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective,
-                apiKey: settings?.apiKey ?? AppConfig.defaultApiKeyEffective,
-                initialMessages: [
-                  {'role': 'system', 'content': req.systemPrompt},
-                  ...req.historyMessages,
-                  {'role': 'user', 'content': req.userContent},
-                ],
-                useStream: req.useStream,
-                onChunk: onChunk,
+                req: req,
                 gen: gen,
+                call: call,
+                onChunk: onChunk,
                 isCancelled: isCancelled,
-                responsesWire: req.responsesWire,
               ),
               gen: gen,
               genToken: genToken,
             )
           : await _callWithRetry(
-              () => req.responsesWire
-                  ? _responsesCapturing(
-                      gen: gen,
-                      requestBody: req.directBody,
-                      apiBaseUrl:
-                          settings?.baseUrl ??
-                          AppConfig.defaultApiBaseUrlEffective,
-                      apiKey: settings?.apiKey ??
-                          AppConfig.defaultApiKeyEffective,
-                      stream: req.useStream,
-                      onChunk: onChunk,
-                      isCancelled: isCancelled,
-                    )
-                  : _chatCapturing(
-                      gen: gen,
-                      requestBody: req.directBody,
-                      apiBaseUrl:
-                          settings?.baseUrl ??
-                          AppConfig.defaultApiBaseUrlEffective,
-                      apiKey: settings?.apiKey ??
-                          AppConfig.defaultApiKeyEffective,
-                      stream: req.useStream,
-                      onChunk: onChunk,
-                      isCancelled: isCancelled,
-                    ),
+              () => call(
+                req.directBody,
+                req.useStream,
+                onChunk,
+                null,
+                isCancelled,
+              ),
               gen: gen,
               genToken: genToken,
             );
@@ -1249,8 +1361,8 @@ class RoundProvider extends ChangeNotifier {
         await _setFailedAttempt(
           b.uuid,
           FailedAttempt(
-            userInput: userInput,
-            userImages: userImages ?? const [],
+            userInput: retained.input,
+            userImages: retained.images,
           ),
         );
         return false;
@@ -1270,7 +1382,7 @@ class RoundProvider extends ChangeNotifier {
         bookUuid: b.uuid,
         // 新建轮 = 投影尾号 +1；修改轮 = **被重写的那一轮**（投影行同号替换为新代）。
         roundIndex: req.targetRoundIndex,
-        userInput: userInput,
+        userInput: retained.input,
         aiNarrative: parsed.aiNarrative,
         worldState: agentSnapshot?.worldState ?? parsed.worldState,
         characterState:
@@ -1286,7 +1398,7 @@ class RoundProvider extends ChangeNotifier {
         // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
         modelName: req.model,
         // 用户消息附带的图片（相对路径），随轮次落库，供气泡展示与历史回放。
-        userImages: userImages ?? const [],
+        userImages: retained.images,
         createdAt: DateTime.now(),
       );
       // 版本树：本轮 = 同分组内新的一代（父 = 上一轮当前代），投影行同事务写入。
@@ -1342,8 +1454,8 @@ class RoundProvider extends ChangeNotifier {
       await _setFailedAttempt(
         b.uuid,
         FailedAttempt(
-          userInput: userInput,
-          userImages: userImages ?? const [],
+          userInput: retained.input,
+          userImages: retained.images,
         ),
       );
       return false;
@@ -1357,9 +1469,9 @@ class RoundProvider extends ChangeNotifier {
       final saved = await _setFailedAttempt(
         b.uuid,
         FailedAttempt(
-          userInput: userInput,
+          userInput: retained.input,
           errorMessage: e.toString(),
-          userImages: userImages ?? const [],
+          userImages: retained.images,
         ),
       );
       // 仅当失败条目落库也失败时才暴露原因（UI 兜底提示并恢复输入）。
@@ -1630,63 +1742,64 @@ class RoundProvider extends ChangeNotifier {
               ),
       ));
 
+  /// 联网工具循环执行（本轮开启联网搜索时）。
+  ///
+  /// 首轮带 `narrchat_webSearch` 工具调用模型；若模型请求搜索则执行并把结果
+  /// 回传，直至模型返回最终内容（6 区块）或达到最大迭代次数。
+  ///
+  /// [call] 由调用方注入：实发 = 网络 + RAW 捕获（见 [_makeRealCall]）；预览不调用
+  /// 本方法，只取 [AgentRunner.outlineFrames] 给出的帧骨架。
   Future<AiCallResult> _runAgent({
-    required AiSettingsProvider? settings,
-    required String apiBaseUrl,
-    required String apiKey,
-    required List<Map<String, dynamic>> initialMessages,
-    required bool useStream,
+    required _RoundRequest req,
+    required _AiCall call,
+    required _BookGenState? gen,
     required void Function(AiStreamChunk chunk)? onChunk,
-    required _BookGenState gen,
     required bool Function() isCancelled,
-    required bool responsesWire,
   }) async {
+    final runner = _makeSearchRunner(req: req, gen: gen, call: call);
+    return runner.run(
+      initialMessages: _searchInitialMessages(req),
+      stream: req.useStream,
+      onChunk: onChunk,
+      isCancelled: isCancelled,
+      onActivity: gen == null ? null : (a) => _handleAgentActivity(a, gen),
+    );
+  }
+
+  /// 联网工具循环的初始 messages（system + 历史 + 当前输入）。
+  static List<Map<String, dynamic>> _searchInitialMessages(_RoundRequest req) => [
+        {'role': 'system', 'content': req.systemPrompt},
+        ...req.historyMessages,
+        {'role': 'user', 'content': req.userContent},
+      ];
+
+  /// 工具循环执行器（**实发与预览共用同一构造**：同一帧体构建器与工具集）。
+  ///
+  /// [gen] 为 null = 预览：工具过程回调全部置空（工具只读 name/description/
+  /// parameters，绝不执行 run，也不改生成状态）。
+  AgentRunner _makeSearchRunner({
+    required _RoundRequest req,
+    required _BookGenState? gen,
+    required _AiCall call,
+  }) {
     final tools = _agentTools(
       level: AgentModeLevel.off,
       useSearch: true,
       gen: gen,
     );
-    final runner = AgentRunner(
-      // 与「预览请求体」共用同一构建器：规则构建器 / 自定义模板一致；
-      // 线路（chat / responses）与工具 schema 形状都由协议选择决定。
+    return AgentRunner(
+      // 规则构建器 / 自定义模板与线路（chat / responses）都按当前设置决定。
       buildBody: _makeBodyBuilder(
-        settings,
-        useStream,
-        responsesWire: responsesWire,
+        _aiSettingsProvider,
+        req.useStream,
+        responsesWire: req.responsesWire,
       ),
-      call: (requestBody, stream, onChunk, onRequestBody, isCancelled) =>
-          responsesWire
-              ? _responsesCapturing(
-                  gen: gen,
-                  requestBody: requestBody,
-                  apiBaseUrl: apiBaseUrl,
-                  apiKey: apiKey,
-                  stream: stream,
-                  onChunk: onChunk,
-                  isCancelled: isCancelled ?? () => false,
-                )
-              : _chatCapturing(
-                  gen: gen,
-                  requestBody: requestBody,
-                  apiBaseUrl: apiBaseUrl,
-                  apiKey: apiKey,
-                  stream: stream,
-                  onChunk: onChunk,
-                  isCancelled: isCancelled ?? () => false,
-                ),
+      call: call,
       // 每个 Agent 运行使用绑定到本书生成状态的工具实例：多本书并发生成时，
       // 搜索 / 抓取过程事件（UI 展示）互不串书；测试注入的工具优先。
       tools: tools,
-      toolSchemas: agentToolSchemas(tools, responses: responsesWire),
+      toolSchemas: agentToolSchemas(tools, responses: req.responsesWire),
       reduceReasoningReplay: _reduceReasoningReplay,
-    );
-
-    return runner.run(
-      initialMessages: initialMessages,
-      stream: useStream,
-      onChunk: onChunk,
-      isCancelled: isCancelled,
-      onActivity: (a) => _handleAgentActivity(a, gen),
     );
   }
 
@@ -1701,73 +1814,20 @@ class RoundProvider extends ChangeNotifier {
         AgentRoundResult agent,
       })> _runAgentRound({
     required _RoundRequest req,
-    required AiSettingsProvider? settings,
     required Book book,
+    required _AiCall call,
     required _BookGenState gen,
-    required String apiBaseUrl,
-    required String apiKey,
     required void Function(AiStreamChunk chunk)? onChunk,
     required bool Function() isCancelled,
   }) async {
-    final workingCopy = AgentStateWorkingCopy(
-      // 修改轮：轮号 = 被重写轮，基座 = 其上一轮（工具查询 / 编辑停在上一轮）。
-      roundIndex: req.targetRoundIndex,
-      lastRound: req.baseRound,
-      categoryNames: [for (final c in book.roleCategories) c.name],
-    );
-    // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
-    final profile = AgentModeProfile.of(req.agentLevel);
-    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各阶段共用同一份**
-    // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
-    final tools = _agentTools(
-      level: req.agentLevel,
-      workingCopy: workingCopy,
-      useSearch: req.useSearch,
+    final runner = _makeAgentRoundRunner(
+      req: req,
+      book: book,
       gen: gen,
+      call: call,
     );
+    final workingCopy = runner.workingCopy;
     final values = req.agentValues!;
-    final runner = AgentRoundRunner(
-      // 线路决定请求体形态（responses / chat），执行器结构与帧语义不变。
-      buildBody: (t) => req.responsesWire
-          ? _agentBody(settings: settings, base: values, t: t)
-          : _agentChatBody(settings: settings, base: values, t: t),
-      call: (body, stream, onChunk, onRequestBody, isCancelled) =>
-          req.responsesWire
-              ? _responsesCapturing(
-                  gen: gen,
-                  requestBody: body,
-                  apiBaseUrl: apiBaseUrl,
-                  apiKey: apiKey,
-                  stream: stream,
-                  onChunk: onChunk,
-                  isCancelled: isCancelled ?? () => false,
-                )
-              : _chatCapturing(
-                  gen: gen,
-                  requestBody: body,
-                  apiBaseUrl: apiBaseUrl,
-                  apiKey: apiKey,
-                  stream: stream,
-                  onChunk: onChunk,
-                  isCancelled: isCancelled ?? () => false,
-                ),
-      tools: tools,
-      workingCopy: workingCopy,
-      profile: profile,
-      memoryMergePlan: req.memoryMergePlan,
-      chaining: req.agentChaining,
-      reduceReasoningReplay: _reduceReasoningReplay,
-      // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
-      // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
-      // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。
-      onActivity: (a) {
-        if (a.type == AgentActivityType.turn) {
-          _handleAgentActivity(a, gen);
-        }
-      },
-      onToolStarted: (o) => _handleToolStarted(o, gen),
-      onToolFinished: (o) => _handleToolFinished(o, gen),
-    );
 
     final roundResult = await runner.run(
       initialInputItems: values.messages,
@@ -1805,10 +1865,117 @@ class RoundProvider extends ChangeNotifier {
         cachedTokensIn: roundResult.cachedTokensIn,
         responseId: roundResult.responseId,
       ),
-      snapshot: _mergedSnapshot(profile, workingCopy, roundResult.content),
+      snapshot: _mergedSnapshot(
+        AgentModeProfile.of(req.agentLevel),
+        workingCopy,
+        roundResult.content,
+      ),
       agent: roundResult,
     );
   }
+
+  /// AGENT 执行器（**实发与预览共用同一构造**：档位档案、工具超集、状态工作副本、
+  /// 帧体构建器完全一致）。
+  ///
+  /// [gen] 为 null = 预览：不接任何过程回调（工具只读定义、不执行，也不改生成状态）。
+  AgentRoundRunner _makeAgentRoundRunner({
+    required _RoundRequest req,
+    required Book book,
+    required _BookGenState? gen,
+    required _AiCall call,
+  }) {
+    final workingCopy = AgentStateWorkingCopy(
+      // 修改轮：轮号 = 被重写轮，基座 = 其上一轮（工具查询 / 编辑停在上一轮）。
+      roundIndex: req.targetRoundIndex,
+      lastRound: req.baseRound,
+      categoryNames: [for (final c in book.roleCategories) c.name],
+    );
+    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各阶段共用同一份**
+    // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
+    final tools = _agentTools(
+      level: req.agentLevel,
+      workingCopy: workingCopy,
+      useSearch: req.useSearch,
+      gen: gen,
+    );
+    final values = req.agentValues!;
+    return AgentRoundRunner(
+      // 线路决定请求体形态（responses / chat），执行器结构与帧语义不变。
+      buildBody: (t) => req.responsesWire
+          ? _agentBody(settings: _aiSettingsProvider, base: values, t: t)
+          : _agentChatBody(settings: _aiSettingsProvider, base: values, t: t),
+      call: call,
+      tools: tools,
+      workingCopy: workingCopy,
+      // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
+      profile: AgentModeProfile.of(req.agentLevel),
+      memoryMergePlan: req.memoryMergePlan,
+      chaining: req.agentChaining,
+      reduceReasoningReplay: _reduceReasoningReplay,
+      // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
+      // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
+      // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。
+      onActivity: gen == null
+          ? null
+          : (a) {
+              if (a.type == AgentActivityType.turn) {
+                _handleAgentActivity(a, gen);
+              }
+            },
+      onToolStarted: gen == null ? null : (o) => _handleToolStarted(o, gen),
+      onToolFinished: gen == null ? null : (o) => _handleToolFinished(o, gen),
+    );
+  }
+
+  /// 实发执行器：真实网络调用 + RAW 捕获（[call] 的唯一注入点，见 [sendIntent]）。
+  ///
+  /// 与预览的差别**只有这一个函数**：预览路径根本不构造它（帧骨架只构建、不调用）。
+  _AiCall _makeRealCall({
+    required _BookGenState gen,
+    required _RoundRequest req,
+    required AiSettingsProvider? settings,
+  }) {
+    final apiBaseUrl = settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective;
+    final apiKey = settings?.apiKey ?? AppConfig.defaultApiKeyEffective;
+    return (body, stream, onChunk, onRequestBody, isCancelled) =>
+        req.responsesWire
+            ? _responsesCapturing(
+                gen: gen,
+                requestBody: body,
+                apiBaseUrl: apiBaseUrl,
+                apiKey: apiKey,
+                stream: stream,
+                onChunk: onChunk,
+                isCancelled: isCancelled ?? () => false,
+              )
+            : _chatCapturing(
+                gen: gen,
+                requestBody: body,
+                apiBaseUrl: apiBaseUrl,
+                apiKey: apiKey,
+                stream: stream,
+                onChunk: onChunk,
+                isCancelled: isCancelled ?? () => false,
+              );
+  }
+
+  /// 发送前的投影截断轮号（用于清常驻警告，与 [sendIntent] 的目标轮号一致）。
+  int _planTargetRoundIndex(RoundSendIntent intent) {
+    switch (intent.kind) {
+      case RoundSendKind.newRound:
+        return nextRoundIndex;
+      case RoundSendKind.reaskRound:
+      case RoundSendKind.rewriteByOpinion:
+        return intent.requiredTargetRoundIndex;
+    }
+  }
+
+  /// 投影里严格早于 [roundIndex] 的全部轮次（虚拟投影：与「先删该轮起投影行」
+  /// 的结果一致，供预览 / 实发在**不落库**的前提下算出截断后的请求）。
+  List<Round> _projectionBefore(int roundIndex) => [
+        for (final r in _rounds)
+          if (r.roundIndex < roundIndex) r,
+      ];
 
   /// 本轮落库快照（档位差异的唯一处理点）：
   /// - **Lv.2**：状态三栏全部来自工作副本（正文不含状态区块）；
@@ -2329,15 +2496,20 @@ class RoundProvider extends ChangeNotifier {
   /// [round] 只作**载体**：真正被读的是 [Round.roundIndex] / [Round.userInput] /
   /// [Round.userImages]。失败条目场景由调用方按「本该产生的那一轮」现构一个载体
   /// （轮号 = `nextRoundIndex`，输入 / 图片取失败条目）——它与正常刷新是同一条路径，
-  /// 差别只是输入来自哪里；[sendRound] 前会先清掉失败条目（见 `_clearFailureForRoundOp`）。
+  /// 差别只是输入来自哪里；[sendIntent] 前会先清掉失败条目（见 `_clearFailureForRoundOp`）。
+  ///
+  /// 走 [RoundSendIntent.reaskRound]：**预览请求体**用同一意图即可给出这条路径真正
+  /// 会发出的请求体（截断语义由虚拟投影表达）。
   Future<void> refreshRound(Round round, {Book? book}) async {
     final b = book;
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
-    await _rewriteRound(round.roundIndex);
-    await sendRound(
-      userInput: round.userInput,
+    await sendIntent(
+      intent: RoundSendIntent.reaskRound(
+        targetRoundIndex: round.roundIndex,
+        userInput: round.userInput,
+        images: round.userImages,
+      ),
       book: b,
-      userImages: round.userImages,
     );
   }
 
@@ -2354,8 +2526,14 @@ class RoundProvider extends ChangeNotifier {
     final b = book;
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
     await _applyEdit(round.id!, (r) => r.copyWith(userInput: editedInput));
-    await _rewriteRound(round.roundIndex);
-    await sendRound(userInput: editedInput, book: b, userImages: images);
+    await sendIntent(
+      intent: RoundSendIntent.reaskRound(
+        targetRoundIndex: round.roundIndex,
+        userInput: editedInput,
+        images: images ?? const [],
+      ),
+      book: b,
+    );
   }
 
   /// 按意见修改：以用户填写的修改意见**重写某一轮**（AI 气泡的「按意见修改」）。
@@ -2364,13 +2542,13 @@ class RoundProvider extends ChangeNotifier {
   /// 1. 取被重写轮 [round] 与其**上一轮**的快照（内容来自内存投影）；
   /// 2. 删除该轮起的投影行（旧代保留在版本树，`← / →` 可切回；后续轮次随旧代
   ///    一起从视图隐藏——分支模型既定语义，与「刷新本轮」一致）；
-  /// 3. 以「修改轮」提示词重新请求 AI（见 [sendRound]）：
+  /// 3. 以「修改轮」提示词重新请求 AI（见 [sendIntent]）：
   ///    - 历史 = 该轮生成时收到的 n 轮 + 该轮自身（n+1）；
   ///    - 状态 / 记忆等工具读取到的信息全部停在**上一轮**；
   ///    - 用户输入与图片沿用该轮原值（新版本与修改前一致），意见只进请求。
   ///
   /// [images] 是随意见附带的图片（仅本次请求，不落库）。
-  /// 返回是否成功；失败按既有「重新生成」规则写入失败条目（见 [sendRound]）。
+  /// 返回是否成功；失败按既有「重新生成」规则写入失败条目（见 [sendIntent]）。
   Future<bool> modifyRoundByOpinion(
     Round round,
     String opinion, {
@@ -2381,20 +2559,13 @@ class RoundProvider extends ChangeNotifier {
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return false;
     final text = opinion.trim();
     if (text.isEmpty) return false;
-    // 基座 = 严格早于被重写轮的最近一轮（须在删投影行之前快照）。
-    final base = _roundBefore(round.roundIndex);
-    await _rewriteRound(round.roundIndex);
-    return sendRound(
-      // 新版本沿用该轮原输入与原图（意见不落库）。
-      userInput: round.userInput,
-      book: b,
-      userImages: round.userImages,
-      rewrite: RoundRewrite(
-        target: round,
-        base: base,
+    return sendIntent(
+      intent: RoundSendIntent.rewriteByOpinion(
+        targetRoundIndex: round.roundIndex,
         opinion: text,
         images: images ?? const [],
       ),
+      book: b,
     );
   }
 
@@ -2411,7 +2582,7 @@ class RoundProvider extends ChangeNotifier {
   /// 「重写某轮」的准备：清失败态 → 删该轮起的投影行（`round_stack` 旧代保留）
   /// → 立刻重载投影。
   ///
-  /// 必须重载：`sendRound` 的 `nextRoundIndex` 与父锚点都按当前投影链计算，
+  /// 必须重载：`sendIntent` 的 `nextRoundIndex` 与父锚点都按当前投影链计算，
   /// 否则会在“删掉之后仍按旧链”的错号上新建轮次。
   Future<void> _rewriteRound(int roundIndex) async {
     if (_bookUuid.isEmpty) return;
@@ -2475,9 +2646,9 @@ class RoundProvider extends ChangeNotifier {
     }
   }
 
-  /// 取最近 N 轮作为历史上下文（排除第零轮，其无实际对话内容）。
-  List<Round> _takeRecent(int n) {
-    final chatRounds = _rounds.where((r) => r.roundIndex > 0).toList();
+  /// 从给定投影取最近 N 轮作为历史上下文（排除第零轮，其无实际对话内容）。
+  static List<Round> _takeRecent(List<Round> rounds, int n) {
+    final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
     if (n <= 0) return [];
     if (chatRounds.length > n) {
       return chatRounds.sublist(chatRounds.length - n);
@@ -2511,7 +2682,33 @@ class RoundRewrite {
   final List<String> images;
 }
 
-/// 一轮请求的组装结果（供 `sendRound` 与「预览请求体」共用）。
+/// 一次 AI 调用的执行器：实发 = 网络请求 + RAW 捕获（[_RoundProvider._makeRealCall]）；
+/// 预览路径只取执行器给出的帧骨架，从不构造本执行器。
+typedef _AiCall = Future<AiCallResult> Function(
+  Map<String, dynamic> requestBody,
+  bool stream,
+  void Function(AiStreamChunk chunk)? onChunk,
+  void Function(String requestBody)? onRequestBody,
+  bool Function()? isCancelled,
+);
+
+/// 一次发送的内部计划：组装结果 + 发送前要做的投影截断。
+///
+/// 组装（[_RoundProvider._planSend]）是纯函数，「先删轮再发」的用途用虚拟投影
+/// 表达截断语义——预览因此不必真的删库就能给出实发请求体，实发则在调用 AI 之前
+/// 按 [trimFromRoundIndex] 真删一次。
+class _SendPlan {
+  const _SendPlan({required this.req, this.trimFromRoundIndex});
+
+  /// 本轮请求组装结果。
+  final _RoundRequest req;
+
+  /// 非 null：调用 AI 之前先删除该轮起的投影行（重写骨架，见
+  /// [RoundProvider._rewriteRound]）。旧代保留在版本树，可 `← / →` 切回。
+  final int? trimFromRoundIndex;
+}
+
+/// 一轮请求的组装结果（供 `sendIntent` 与「预览请求体」共用）。
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
 /// [agent]（实验性档位）与 [responsesWire]（线路协议）**正交**：

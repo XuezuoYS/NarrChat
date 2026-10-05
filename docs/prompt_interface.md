@@ -133,11 +133,16 @@ const PromptInterface promptInterface = PromptV2();
 | `RoundProvider._assembleRoundRequest` | `promptInterface.system(request)` / `promptInterface.user(request)` |
 | `RoundProvider._agentTools(...)` | `promptInterface.tools(request)`（预览、Chat 联网循环、Agent 单轮三处共用） |
 | `RoundProvider` 历史消息 | `buildHistoryMessages(...)`（`wire_messages.dart`，与报文同侧、不经提示词模块） |
-| `AgentRoundRunner._runPrepareStage` / `_runMemoryStage` / `_runStoryStage` / `_runStateStage` | `_prompt.stagePrepare / stageMemory / stageStory / stageState` |
+| `AgentRoundRunner._appendStageDirective` | `_prompt.stagePrepare / stageMemory / stageStory / stageState`（实发各阶段与「预览请求体」的帧骨架共用同一追加点） |
 
-修改轮（按意见重写某一轮）走**同一条**组装路径（`RoundProvider.sendRound(rewrite:)` ←
-`modifyRoundByOpinion`）：提示词只多一个 `RewriteTarget`，历史 / 状态基座由调用方给
+修改轮（按意见重写某一轮）走**同一条**组装路径
+（`RoundProvider.sendIntent` ← `RoundSendIntent.rewriteByOpinion` ← `modifyRoundByOpinion`）：
+提示词只多一个 `RewriteTarget`，历史 / 状态基座由组装层按当前投影现算
 （历史 = 被重写轮生成时收到的 n 轮 + 该轮自身；基座 = 该轮的上一轮）。
+
+「预览请求体」不再另拼一套字段：它按当前**发送意图**（普通新一轮 / 灰条用途）走
+同一份组装与同一批执行器，取实发首帧；帧骨架由 `AgentRunner.outlineFrames` /
+`AgentRoundRunner.outlineFrames` 给出（首帧与实发逐字节一致，后续帧只列增量）。
 
 报文层（`_agentBody` / `_agentChatBody` / `_makeBodyBuilder` / `wire_adapters`）只接收
 接口产出的**纯文本与工具清单**，不认识提示词模块——即「报文拼装与提示词解耦」。

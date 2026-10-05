@@ -7,11 +7,13 @@ import 'package:http/testing.dart';
 import 'package:narrchat/models/agent_event.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/raw_exchange.dart';
+import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/html_search_service.dart';
+import 'package:narrchat/services/request_frame_outline.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/fakes.dart';
@@ -438,17 +440,17 @@ void main() {
       // 预览在发送前基于同一状态构建（0 个聊天轮次）；sendRound 随后以
       // 相同输入发出，RAW 捕获的首帧请求体应与预览完全一致。
       final preview = await provider.previewRequestBody(
-        userInput: '你好',
+        intent: RoundSendIntent.newRound(userInput: '你好'),
         book: book,
       );
       expect(await provider.sendRound(userInput: '你好', book: book), isTrue);
 
       final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
       final actual = provider.rawExchangesFor(round.id!)!.single.requestBody;
-      expect(actual, preview);
+      expect(actual, preview.firstFrameJson);
 
       // 结构校验：system 在首、user 在末且包含输入。
-      final req = jsonDecode(preview) as Map<String, dynamic>;
+      final req = preview.firstFrame;
       final messages = req['messages'] as List;
       expect((messages.first as Map)['role'], 'system');
       expect((messages.last as Map)['role'], 'user');
@@ -470,10 +472,12 @@ void main() {
       await provider.loadRounds('b1');
 
       final preview = await provider.previewRequestBody(
-        userInput: '查一下青云宗',
+        intent: RoundSendIntent.newRound(userInput: '查一下青云宗'),
         book: book,
       );
-      final req = jsonDecode(preview) as Map<String, dynamic>;
+      final req = preview.firstFrame;
+      // 联网工具循环：首帧之后还有「工具循环续接帧」（仅增量）。
+      expect(preview.subsequentFrames.map((f) => f.label), ['工具循环续接帧']);
       final messages = req['messages'] as List;
       // system 只有用户提示词（联网指令不再注入），末条 user 包含输入。
       expect((messages.first as Map)['content'], isNot(contains('【联网搜索】')));
@@ -506,7 +510,10 @@ void main() {
       await provider.loadRounds('b1');
 
       await expectLater(
-        provider.previewRequestBody(userInput: '你好', book: null),
+        provider.previewRequestBody(
+          intent: RoundSendIntent.newRound(userInput: '你好'),
+          book: null,
+        ),
         throwsStateError,
       );
     });
@@ -881,6 +888,55 @@ void main() {
       await tester.tap(find.text('图像 1 个（base64 已折叠）'));
       await tester.pumpAndSettle();
       expect(find.text('图 1 · png · 1 B'), findsOneWidget);
+    });
+
+    testWidgets('预览请求体含后续可用帧：默认折叠，展开后只显示增量字段', (tester) async {
+      const frames = [
+        PlannedFrame(
+          label: '记忆帧',
+          note: '调研结束、本轮记忆尚未落地时发出',
+          addedFields: {
+            'input': {
+              '…': '前 2 项同上一帧',
+              '+': [
+                {'role': 'user', 'content': '阶段指令原文'},
+              ],
+            },
+          },
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RawDialog(
+              exchanges: [
+                RawExchange(requestBody: '{"model":"m","input":[]}'),
+              ],
+              previewRequestOnly: true,
+              subsequentFrames: frames,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('【后续可用帧 1】'), findsOneWidget);
+      expect(find.text('【记忆帧】'), findsOneWidget);
+      expect(
+        find.text('调研结束、本轮记忆尚未落地时发出'),
+        findsOneWidget,
+      );
+      // 默认折叠：增量内容不上屏（只有请求体与后续帧两个块标题）。
+      expect(find.byType(SelectableText), findsNothing);
+
+      await tester.tap(find.text('【记忆帧】'));
+      await tester.pumpAndSettle();
+      final diff = tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .textSpan!
+          .toPlainText();
+      expect(diff, contains('阶段指令原文'));
+      expect(diff, contains('前 2 项同上一帧'));
     });
   });
 }

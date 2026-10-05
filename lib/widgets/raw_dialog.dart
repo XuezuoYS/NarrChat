@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/raw_exchange.dart';
+import '../services/request_frame_outline.dart';
 import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
 
@@ -130,6 +131,8 @@ String collapseRawImages(String text, List<RawImageData> images) {
 /// [failedError] 非空时在顶部展示失败原因，且无返回的交换显示「请求失败」。
 /// [previewRequestOnly] 为真时进入「预览请求体」模式：标题改为「预览请求体」，
 /// 且只展示请求体块（不渲染 AI 返回区），图片折叠 / 检索等能力照常复用。
+/// [subsequentFrames] 仅预览模式下有意义：列出后续**可能**发出的帧
+/// （每帧只展示相对上一帧的增量字段，见 [PlannedFrame]）。
 ///
 /// 命名为 [showRawDataDialog] 以避开 Flutter 内置的 `showRawDialog`。
 void showRawDataDialog(
@@ -137,6 +140,7 @@ void showRawDataDialog(
   required List<RawExchange> exchanges,
   String? failedError,
   bool previewRequestOnly = false,
+  List<PlannedFrame> subsequentFrames = const [],
 }) {
   showDialog<void>(
     context: context,
@@ -144,6 +148,7 @@ void showRawDataDialog(
       exchanges: exchanges,
       failedError: failedError,
       previewRequestOnly: previewRequestOnly,
+      subsequentFrames: subsequentFrames,
     ),
   );
 }
@@ -244,7 +249,9 @@ const double _kScrollTopPadding = 40;
 /// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
 ///   （默认开启，把 `\n` 等转义序列展开为真实换行，便于阅读）；
 /// - [previewRequestOnly] 为真时进入「预览请求体」模式：只展示请求体块，
-///   不渲染【AI返回】区（标题相应改为「预览请求体」）。
+///   不渲染【AI返回】区（标题相应改为「预览请求体」）；
+/// - [subsequentFrames] 非空时，在请求体之后追加「后续可用帧」区（仅预览模式）：
+///   每帧一个可折叠块，**只列出相对上一帧的增量字段**。
 class RawDialog extends StatefulWidget {
   final List<RawExchange> exchanges;
 
@@ -254,11 +261,15 @@ class RawDialog extends StatefulWidget {
   /// 预览请求体模式（仅展示请求体块，隐藏 AI 返回区）。
   final bool previewRequestOnly;
 
+  /// 后续可用帧（预览模式；首帧就是上方请求体，见 [PlannedFrame]）。
+  final List<PlannedFrame> subsequentFrames;
+
   const RawDialog({
     super.key,
     required this.exchanges,
     this.failedError,
     this.previewRequestOnly = false,
+    this.subsequentFrames = const [],
   });
 
   @override
@@ -313,12 +324,16 @@ class _RawDialogState extends State<RawDialog> {
   bool _hasReturn(RawExchange ex) =>
       ex.thinking.isNotEmpty || ex.toolCalls.isNotEmpty || ex.content.isNotEmpty;
 
-  /// 按文档顺序遍历全部块（请求体 + 思考/搜索/正文），回调传入
-  /// 全局块序号、展示文本与是否等宽。
+  /// 按文档顺序遍历全部块（请求体 + 思考/搜索/正文，预览模式再追加后续可用帧），
+  /// 回调传入全局块序号、展示文本与是否等宽。
+  ///
+  /// 序号必须与 [_buildTimeline] 的渲染一一对应（检索定位按序号取 GlobalKey）。
   void _forEachBlock(void Function(int blockIndex, String text, bool mono) fn) {
     var blockIndex = 0;
     for (final ex in widget.exchanges) {
       fn(blockIndex++, _requestDisplay(ex), true);
+      // 预览请求体模式不渲染 AI 返回区，序号也不为它占位。
+      if (widget.previewRequestOnly) continue;
       if (_hasReturn(ex)) {
         fn(blockIndex++, _display(ex.thinking), false);
         fn(blockIndex++, _display(ex.toolCalls), false);
@@ -327,6 +342,11 @@ class _RawDialogState extends State<RawDialog> {
         // 无返回：把失败原因（若有）纳入检索与定位。
         fn(blockIndex++, _noReturnText(ex), false);
       }
+    }
+    for (final frame in widget.previewRequestOnly
+        ? widget.subsequentFrames
+        : const <PlannedFrame>[]) {
+      fn(blockIndex++, frame.diffJson, true);
     }
   }
 
@@ -660,11 +680,84 @@ class _RawDialogState extends State<RawDialog> {
       children.add(built.widget);
       blockIndex = built.nextBlockIndex;
     }
+    children.addAll(_buildSubsequentFrames(context, blockIndex));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: children,
     );
+  }
+
+  /// 预览模式的「后续可用帧」区：每帧一个**可折叠增量块**（默认折叠，
+  /// 参与关键词检索与定位——命中即自动展开）。
+  ///
+  /// 这些帧是否真的发出取决于模型响应，故标题写清前提；块内只有相对上一帧的
+  /// 追加 / 省略字段（[PlannedFrame.diffJson]）。
+  List<Widget> _buildSubsequentFrames(BuildContext context, int firstBlock) {
+    final frames = widget.previewRequestOnly
+        ? widget.subsequentFrames
+        : const <PlannedFrame>[];
+    if (frames.isEmpty) return const [];
+    final scheme = Theme.of(context).colorScheme;
+    final children = <Widget>[
+      const SizedBox(height: 18),
+      Text(
+        '【后续可用帧 ${frames.length}】',
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: scheme.primary,
+        ),
+      ),
+      const SizedBox(height: 2),
+      Text(
+        '首帧 = 上方请求体（与实发逐字一致，点发送即发出）。以下帧'
+        '**是否发出取决于模型响应**，每帧只列出相对上一帧的增量字段。',
+        style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+      ),
+      const SizedBox(height: 6),
+    ];
+    var blockIndex = firstBlock;
+    for (var i = 0; i < frames.length; i++) {
+      final frame = frames[i];
+      final index = blockIndex;
+      children.add(
+        Padding(
+          padding: EdgeInsets.only(top: i == 0 ? 0 : 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _CollapsibleBlock(
+                label: '【${frame.label}】',
+                text: frame.diffJson,
+                query: _query,
+                mono: true,
+                expanded: _expandedBlocks.contains(index),
+                onToggle: (v) => _setBlockExpanded(index, v),
+                currentMatchIndex: _localCurrentIndex(index),
+                contentKey: _blockContentKeys.putIfAbsent(
+                  index,
+                  () => GlobalKey(),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 18),
+                child: Text(
+                  frame.note,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      blockIndex++;
+    }
+    return children;
   }
 
   /// 构建一次交换（请求体 + AI 返回三块），返回构建结果与下一个全局块序号。
@@ -696,7 +789,8 @@ class _RawDialogState extends State<RawDialog> {
       if (requestImages.isNotEmpty && _expandedBlocks.contains(requestBlockIndex))
         _ImageListBlock(images: requestImages),
     ];
-    // 预览请求体模式：只展示请求体块，不渲染 AI 返回区。
+    // 预览请求体模式：只展示请求体块，不渲染 AI 返回区（序号也要按「只占一个块」
+    // 推进，与 [_forEachBlock] 保持一致——后续可用帧接着编号）。
     if (widget.previewRequestOnly) {
       return (
         widget: Column(
@@ -705,7 +799,7 @@ class _RawDialogState extends State<RawDialog> {
           mainAxisSize: MainAxisSize.min,
           children: children,
         ),
-        nextBlockIndex: blockIndex,
+        nextBlockIndex: blockIndex + 1,
       );
     }
     children.add(const SizedBox(height: 10));

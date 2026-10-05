@@ -625,6 +625,74 @@ class FakeStreamingAiService extends AiService {
   }
 }
 
+/// 记录每次实发请求体的 AI 替身（「预览请求体 ≡ 实发首帧」对拍用例专用）。
+///
+/// 同时覆写 chat / responses 两条线路：请求体原样存入 [bodies]，并按 [content]
+/// 返回一个可直接落库的完整正文（`failWith` 非空时抛出，用于断言失败路径）。
+class RecordingAiService extends AiService {
+  RecordingAiService({this.content = kRecordingFullContent, this.failWith});
+
+  /// 一次实发调用捕获到的请求体（顺序 = 调用顺序）。
+  final List<Map<String, dynamic>> bodies = [];
+
+  /// 返回给上层的完整正文（默认六区块齐全，可直接落库）。
+  String content;
+
+  /// 非 null：每次调用抛出该异常（模拟请求失败）。
+  Object? failWith;
+
+  int get calls => bodies.length;
+
+  AiCallResult _record(Map<String, dynamic> requestBody) {
+    bodies.add(requestBody);
+    final err = failWith;
+    if (err != null) throw err;
+    return AiCallResult(
+      content: content,
+      promptTokens: 1,
+      completionTokens: 1,
+    );
+  }
+
+  @override
+  Future<AiCallResult> chat({
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, dynamic> requestBody,
+    bool stream = false,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) async {
+    final result = _record(requestBody);
+    if (stream) onChunk?.call(const AiStreamChunk(done: true));
+    return result;
+  }
+
+  @override
+  Future<AiCallResult> responses({
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, dynamic> requestBody,
+    bool stream = false,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) async {
+    final result = _record(requestBody);
+    if (stream) onChunk?.call(const AiStreamChunk(done: true));
+    return result;
+  }
+}
+
+/// [RecordingAiService] 的默认正文（六区块齐全，`AiResponseParser` 可解析落库）。
+const String kRecordingFullContent = '## 剧情演绎\n测试正文\n'
+    '## 推荐行动\n\n'
+    '## 当前时间\n第一天 午时\n'
+    '## 世界状态\n\n'
+    '## 角色状态\n\n'
+    '## 记忆总结\n';
+
 /// 可立即返回的 AI（成功 / 可切换失败），用于不依赖流式时序的用例。
 class ToggleAiService extends AiService {
   bool fail = false;

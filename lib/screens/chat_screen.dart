@@ -13,6 +13,7 @@ import '../models/ai_platform.dart';
 import '../models/book.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../models/round_send_intent.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/book_provider.dart';
 import '../providers/cloud_sync_provider.dart';
@@ -993,6 +994,10 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 发送入口：处于「临时用途」（灰条）时提交该用途，否则发送新一轮。
+  ///
+  /// 两条路径都先翻译成 [RoundSendIntent]，再交给 `RoundProvider.sendIntent`——
+  /// 与「预览请求体」（[_previewRequestBody]）**同一份意图**，预览给出的就是这里
+  /// 真正会发出的请求体。
   Future<void> _send() async {
     final mode = _inputMode;
     if (mode != null) {
@@ -1013,10 +1018,9 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() => _pendingImages.clear());
     _inputController.clear();
 
-    final ok = await roundProvider.sendRound(
-      userInput: input,
+    final ok = await roundProvider.sendIntent(
+      intent: RoundSendIntent.newRound(userInput: input, images: images),
       book: book,
-      userImages: images,
     );
 
     if (!ok && mounted && roundProvider.error != null) {
@@ -1029,6 +1033,19 @@ class _ChatScreenState extends State<ChatScreen>
       );
     }
     _endGeneration();
+  }
+
+  /// 当前状态下按发送键**会提交的发送意图**（与 [_send] / [_submitInputMode] 同源）。
+  ///
+  /// 预览请求体用它取「此刻若点击发送」的真实意图：灰条用途（修改并重新提问 /
+  /// 按意见修改）与普通新一轮各自成立，不会退化成「普通新一轮的镜像」。
+  RoundSendIntent _currentSendIntent() {
+    final text = _inputController.text.trim();
+    final images = List<String>.from(_pendingImages);
+    final mode = _inputMode;
+    return mode == null
+        ? RoundSendIntent.newRound(userInput: text, images: images)
+        : mode.buildIntent(text: text, images: images);
   }
 
   // ---------------------------------------------------------------------------
@@ -1071,10 +1088,11 @@ class _ChatScreenState extends State<ChatScreen>
     _inputFocus.requestFocus();
   }
 
-  /// 提交当前「临时用途」：内容交 [ComposerInputMode.onSubmit] 处理。
+  /// 提交当前「临时用途」：意图交 [RoundProvider.sendIntent] 实发。
   ///
-  /// 被消费（onSubmit 返回 true）即收起灰条并清空输入框 / 附件；未被消费
-  /// （如尚未选书）则原样保留，便于继续修改。
+  /// 未被消费（如尚未选书）时灰条与编辑内容保留；用途已失效（目标轮次 / 失败条目
+  /// 已被删除）则收起灰条并提示——与「预览请求体」同一判定，
+  /// 见 [ComposerInputMode.guard] 与 [RoundProvider.validateSendIntent]。
   ///
   /// **灰条用途一律直接上屏、不弹二次确认**：用户已用一次「进入用途 + 填写 +
   /// 按发送」表达了明确意图，再拦一道确认只是多一次点击（需要确认的是
@@ -1084,13 +1102,61 @@ class _ChatScreenState extends State<ChatScreen>
     final roundProvider = context.read<RoundProvider>();
     if (text.isEmpty || roundProvider.isSending) return;
     final images = List<String>.from(_pendingImages);
-    final consumed = await mode.onSubmit(text: text, images: images);
-    if (!consumed || !mounted) return;
+    final intent = mode.buildIntent(text: text, images: images);
+    final book = context.read<BookProvider>().currentBook;
+    if (book == null) {
+      context.notices.warning('尚未选择书籍');
+      return;
+    }
+    // 用途失效（目标轮次 / 失败条目已不在）→ 收起灰条并提示，不发出请求。
+    final invalid = _intentInvalidReason(mode, intent, roundProvider);
+    if (invalid != null) {
+      context.notices.warning(invalid);
+      if (!mounted) return;
+      setState(() {
+        _inputMode = null;
+        _pendingImages.clear();
+      });
+      _inputController.clear();
+      return;
+    }
+    // 重新生成开始即把本次应携带的图片送入「生成中」用户气泡。
+    _startGeneration(images: _bubbleImagesFor(intent, roundProvider));
+    await roundProvider.sendIntent(intent: intent, book: book);
+    _endGeneration();
+    if (!mounted) return;
     setState(() {
       _inputMode = null;
       _pendingImages.clear();
     });
     _inputController.clear();
+  }
+
+  /// 意图当前是否可提交 / 可预览；返回提示文案（null = 可以）。
+  ///
+  /// **实发与预览共用**：灰条用途在预览时同样按这条判定提示，不会一边说
+  /// 「该轮次已不存在」另一边照发。
+  String? _intentInvalidReason(
+    ComposerInputMode? mode,
+    RoundSendIntent intent,
+    RoundProvider roundProvider,
+  ) =>
+      mode?.guard?.call(roundProvider) ??
+      roundProvider.validateSendIntent(intent);
+
+  /// 生成期间「生成中」用户气泡应展示的图片。
+  ///
+  /// 修改轮的新版本沿用**被重写轮的原图**（与落库 / 请求一致），其余用途 =
+  /// 本次提交的附件。
+  List<String> _bubbleImagesFor(
+    RoundSendIntent intent,
+    RoundProvider roundProvider,
+  ) {
+    if (intent.kind != RoundSendKind.rewriteByOpinion) return intent.images;
+    final target = roundProvider.rounds
+        .where((r) => r.roundIndex == intent.targetRoundIndex)
+        .firstOrNull;
+    return target?.userImages ?? const [];
   }
 
   /// 用户气泡「修改并重新提问」：把该轮输入（识图模型含图片）载入输入框、
@@ -1100,8 +1166,13 @@ class _ChatScreenState extends State<ChatScreen>
     _enterInputMode(
       ComposerInputMode(
         label: '修改并重新提问（第 ${round.roundIndex} 轮）',
-        onSubmit: ({required text, required images}) =>
-            _submitEditAndReAsk(round, text: text, images: images),
+        buildIntent: ({required text, required images}) =>
+            RoundSendIntent.reaskRound(
+          targetRoundIndex: round.roundIndex,
+          userInput: text,
+          images: images,
+        ),
+        guard: _roundAliveGuard(round),
       ),
       text: round.userInput,
       // 非识图模型不携带图片：与发送路径的能力门控一致。
@@ -1109,85 +1180,37 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 「修改并重新提问」的提交动作；返回是否已消费本次用途。
-  ///
-  /// **直接上屏**（灰条用途一律不弹二次确认）：删除该轮及其后投影行后立刻生成。
-  Future<bool> _submitEditAndReAsk(
-    Round round, {
-    required String text,
-    required List<String> images,
-  }) async {
-    final roundProvider = context.read<RoundProvider>();
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) {
-      context.notices.warning('尚未选择书籍');
-      return false;
-    }
-    // 目标轮次可能已在会话中被删除：该用途失去意义，收起灰条并提示。
-    if (round.id == null ||
-        !roundProvider.rounds.any((r) => r.id == round.id)) {
-      context.notices.warning('该轮次已不存在，已退出修改');
-      return true;
-    }
-    // 重新生成开始即把图片送入「生成中」用户气泡（替换修改后的图片）。
-    _startGeneration(images: images);
-    await roundProvider.editAndReAsk(round, text, book: book, images: images);
-    _endGeneration();
-    return true;
-  }
-
   /// AI 气泡「按意见修改」：灰条亮起、输入框留空（只填意见）；按发送键后
   /// 删除该轮及后续所有轮次，并以该意见重写第 N 轮（新增一代，旧代可切回）。
   ///
   /// 与「刷新本轮 / 修改并重新提问」共用同一灰条形态与同一「重写」骨架，差别只在
-  /// 提交动作把 [ComposerInputSubmit.text] 当作**修改意见**（不落库）。
+  /// 提交动作把输入框文本当作**修改意见**（不落库）。
   void _startModifyByOpinion(Round round) {
     _enterInputMode(
       ComposerInputMode(
         label: '按意见修改（第 ${round.roundIndex} 轮）',
-        onSubmit: ({required text, required images}) =>
-            _submitModifyByOpinion(round, text: text, images: images),
+        buildIntent: ({required text, required images}) =>
+            RoundSendIntent.rewriteByOpinion(
+          targetRoundIndex: round.roundIndex,
+          opinion: text,
+          // 意见附带的图片仅进本次请求（不落库）。
+          images: images,
+        ),
+        guard: _roundAliveGuard(round),
       ),
       // 只填意见：原输入已在历史里（该轮自身会作为最后一轮历史提交给 AI）。
       text: '',
     );
   }
 
-  /// 「按意见修改」的提交动作；返回是否已消费本次用途。
-  ///
-  /// **直接上屏**（灰条用途一律不弹二次确认）。
-  Future<bool> _submitModifyByOpinion(
-    Round round, {
-    required String text,
-    required List<String> images,
-  }) async {
-    final roundProvider = context.read<RoundProvider>();
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) {
-      context.notices.warning('尚未选择书籍');
-      return false;
-    }
-    // 目标轮次可能已在会话中被删除：该用途失去意义，收起灰条并提示。
-    if (round.id == null ||
-        !roundProvider.rounds.any((r) => r.id == round.id)) {
-      context.notices.warning('该轮次已不存在，已退出修改');
-      return true;
-    }
-    // 新版本沿用该轮原输入与原图：生成期间的用户气泡照此上屏（与落库一致）。
-    _startGeneration(images: round.userImages);
-    await roundProvider.modifyRoundByOpinion(
-      round,
-      text,
-      book: book,
-      // 意见附带的图片仅进本次请求（不落库）。
-      images: images,
-    );
-    _endGeneration();
-    return true;
-  }
+  /// 目标轮次是否仍在会话中（含被删除 / 被替换）：失效时给出统一提示。
+  ComposerIntentGuard _roundAliveGuard(Round round) => (roundProvider) =>
+      round.id != null && roundProvider.rounds.any((r) => r.id == round.id)
+          ? null
+          : '该轮次已不存在，已退出修改';
 
   /// 失败条目「修改并重新提问」：把失败时的输入（识图模型含图片）载入输入框、
-  /// 灰条亮起；按发送键后以修改后的输入重新生成（sendRound 先清空失败条目）。
+  /// 灰条亮起；按发送键后以修改后的输入重新生成（sendIntent 先清空失败条目）。
   void _startEditAndRetryFailure() {
     final roundProvider = context.read<RoundProvider>();
     final input = roundProvider.failedUserInput;
@@ -1197,37 +1220,13 @@ class _ChatScreenState extends State<ChatScreen>
       ComposerInputMode(
         // 失败条目「本该产生」的那一轮。
         label: '修改并重新提问（第 ${roundProvider.nextRoundIndex} 轮）',
-        onSubmit: ({required text, required images}) =>
-            _submitEditAndRetryFailure(text: text, images: images),
+        buildIntent: ({required text, required images}) =>
+            RoundSendIntent.newRound(userInput: text, images: images),
+        guard: (rp) => rp.hasFailureEntry ? null : '失败条目已不存在，已退出修改',
       ),
       text: input,
       images: ai.supportsVision ? roundProvider.failedUserImages : const [],
     );
-  }
-
-  /// 失败条目「修改并重新提问」的提交动作；返回是否已消费本次用途。
-  Future<bool> _submitEditAndRetryFailure({
-    required String text,
-    required List<String> images,
-  }) async {
-    final roundProvider = context.read<RoundProvider>();
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) {
-      context.notices.warning('尚未选择书籍');
-      return false;
-    }
-    if (!roundProvider.hasFailureEntry) {
-      context.notices.warning('失败条目已不存在，已退出修改');
-      return true;
-    }
-    _startGeneration(images: images);
-    await roundProvider.sendRound(
-      userInput: text,
-      book: book,
-      userImages: images,
-    );
-    _endGeneration();
-    return true;
   }
 
   /// 打开平台文件选择器导入图片（仅识图模型可用）。
@@ -1575,10 +1574,15 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 预览「此刻若发送将实际发出」的请求体 JSON（不发送、无副作用）。
+  /// 预览「此刻若发送将实际发出」的请求体（不发送、无副作用）。
   ///
-  /// 按当前输入框文本与待发送附件构造，与 RAW 对话框共用以「仅请求体」模式
-  /// 展示（图片 data URL 折叠为占位符，避免大文本崩溃）。
+  /// 按**当前状态下的发送意图**（普通新一轮，或灰条用途）交给
+  /// [RoundProvider.previewRequestBody]：与实发共用同一份组装与同一批执行器，
+  /// 得到的就是此刻点击发送真正会发出的首帧请求体（灰条、无灰条、输入为空都
+  /// 如实反映——不可发送时发送键本身已置灰，这里不再另加提示）。
+  ///
+  /// 与 RAW 对话框共用以「仅请求体」模式展示（图片 data URL 折叠为占位符），
+  /// 并列出后续**可能**发出的帧（仅增量字段）。
   Future<void> _previewRequestBody() async {
     if (_isPreviewing) return;
     final book = context.read<BookProvider>().currentBook;
@@ -1586,21 +1590,26 @@ class _ChatScreenState extends State<ChatScreen>
       context.notices.warning('尚未选择书籍');
       return;
     }
-    final input = _inputController.text.trim();
-    final images = List<String>.from(_pendingImages);
-    final rp = context.read<RoundProvider>();
+    final roundProvider = context.read<RoundProvider>();
+    final intent = _currentSendIntent();
+    // 用途已失效（目标轮次 / 失败条目不在）→ 与实发同一句提示。
+    final invalid = _intentInvalidReason(_inputMode, intent, roundProvider);
+    if (invalid != null) {
+      context.notices.warning(invalid);
+      return;
+    }
     setState(() => _isPreviewing = true);
     try {
-      final jsonText = await rp.previewRequestBody(
-        userInput: input,
+      final preview = await roundProvider.previewRequestBody(
+        intent: intent,
         book: book,
-        userImages: images,
       );
       if (!mounted) return;
       showRawDataDialog(
         context,
-        exchanges: [RawExchange(requestBody: jsonText)],
+        exchanges: [RawExchange(requestBody: preview.firstFrameJson)],
         previewRequestOnly: true,
+        subsequentFrames: preview.subsequentFrames,
       );
     } catch (e) {
       if (!mounted) return;

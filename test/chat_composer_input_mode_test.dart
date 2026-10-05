@@ -4,6 +4,7 @@ import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/widgets/composer_input_mode.dart';
+import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -243,5 +244,87 @@ void main() {
     expect(rp.rounds.last.roundIndex, 2);
     expect(rp.rounds.last.userInput, '继续推进剧情');
     expect(modeBar(), findsNothing);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 「预览请求体」必须反映当前灰条用途（重构验收：预览不再按普通新一轮拼）
+  // ---------------------------------------------------------------------------
+
+  Finder previewButton() => find.byTooltip('预览请求体');
+
+  /// 预览对话框里的请求体文本（块默认折叠 → 先点标题展开；只取对话框内的
+  /// 可选中文本，避免命中底层对话气泡里的文本）。
+  Future<String> previewBodyText(WidgetTester tester) async {
+    final dialog = find.byType(RawDialog);
+    await tester.tap(find.descendant(of: dialog, matching: find.text('【请求体 1】')));
+    await tester.pumpAndSettle();
+    return tester
+        .widget<SelectableText>(
+          find
+              .descendant(of: dialog, matching: find.byType(SelectableText))
+              .first,
+        )
+        .textSpan!
+        .toPlainText();
+  }
+
+  Future<void> closeDialog(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('灰条「修改并重新提问」：预览给出截断后的新一轮请求，且不消费用途', (tester) async {
+    final rp = await pumpChatScreen(tester, seedRounds: 2, seedBodyRepeats: 1);
+
+    await tapEditAndReAsk(tester, '第 1 轮的用户输入');
+    await tester.enterText(composerField(), '改后的输入');
+    await tester.pump();
+    await tester.tap(previewButton());
+    await tester.pumpAndSettle();
+
+    expect(find.text('预览请求体'), findsOneWidget);
+    final body = await previewBodyText(tester);
+    expect(body, contains('改后的输入'));
+    expect(
+      body,
+      isNot(contains('第 1 轮的用户输入')),
+      reason: '该轮已被截断重发，不再作为历史',
+    );
+    expect(
+      body,
+      isNot(contains('第 2 轮的用户输入')),
+      reason: '后续轮次随截断一起离开投影',
+    );
+
+    // 预览零副作用：不删轮次、不消费用途（灰条与编辑内容原样保留）。
+    await closeDialog(tester);
+    expect(rp.rounds.map((r) => r.roundIndex).toList(), [1, 2]);
+    expect(modeBar(), findsOneWidget);
+    expect(fieldText(tester), '改后的输入');
+  });
+
+  testWidgets('灰条「按意见修改」：预览给出修改轮请求（意见 + n+1 历史）', (tester) async {
+    final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
+
+    await tester.tap(find.text('按意见修改'));
+    await tester.pumpAndSettle();
+    expect(find.text('按意见修改（第 1 轮）'), findsOneWidget);
+
+    await tester.enterText(composerField(), '把这段写紧凑些');
+    await tester.pump();
+    await tester.tap(previewButton());
+    await tester.pumpAndSettle();
+
+    final body = await previewBodyText(tester);
+    expect(body, contains('把这段写紧凑些'), reason: '意见进请求');
+    expect(
+      body,
+      contains('第 1 轮的用户输入'),
+      reason: '修改轮历史 = n 轮 + 被重写轮自身',
+    );
+
+    await closeDialog(tester);
+    expect(rp.rounds.map((r) => r.roundIndex).toList(), [1]);
+    expect(modeBar(), findsOneWidget);
   });
 }

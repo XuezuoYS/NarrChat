@@ -6,6 +6,7 @@ import '../ai_response_parser.dart';
 import '../ai_service.dart';
 import '../memory_merge_planner.dart';
 import '../prompt_interface.dart';
+import '../request_frame_outline.dart';
 import 'agent_activity.dart';
 import 'agent_mode_profile.dart';
 import 'narr_agent_tool.dart';
@@ -399,20 +400,11 @@ class AgentRoundRunner {
   bool _lastFrameTruncated = false;
   String _truncateReason = '';
 
-  /// 运行一轮 AGENT 生成。
+  /// 开始一轮：设定输入起点并重置全部运行期状态。
   ///
-  /// [initialInputItems]：本轮 input 的**历史 + 当前用户消息**部分；
-  /// 状态不做预置，由模型调用各栏目读取器（[AgentModeProfile.toolSections]）
-  /// 自取。
-  Future<AgentRoundResult> run({
-    required List<Map<String, dynamic>> initialInputItems,
-    required bool stream,
-    void Function(AiStreamChunk chunk)? onChunk,
-    void Function(String requestBody)? onRequestBody,
-    bool Function()? isCancelled,
-  }) async {
+  /// [run] 与 [outlineFrames] 共用——预览的首帧因此与实发首帧同源。
+  void _beginRound(List<Map<String, dynamic>> initialInputItems) {
     _history = List<Map<String, dynamic>>.from(initialInputItems);
-    _sink = onChunk;
     _resetItems();
     _outcomes.clear();
     _warnings.clear();
@@ -432,6 +424,22 @@ class AgentRoundRunner {
     _truncateReason = '';
     _frameReasoning = const [];
     _sectionsProvided.clear();
+  }
+
+  /// 运行一轮 AGENT 生成。
+  ///
+  /// [initialInputItems]：本轮 input 的**历史 + 当前用户消息**部分；
+  /// 状态不做预置，由模型调用各栏目读取器（[AgentModeProfile.toolSections]）
+  /// 自取。
+  Future<AgentRoundResult> run({
+    required List<Map<String, dynamic>> initialInputItems,
+    required bool stream,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) async {
+    _beginRound(initialInputItems);
+    _sink = onChunk;
 
     // Lv.1 = 三段流程（调研 → 记忆 → 正文）；Lv.2 = 正文 → （缺口时）维护轮。
     // 记忆条目在 Lv.1 **先于正文落地**（计划要求）：大纲在记忆阶段的思考通道里
@@ -552,12 +560,7 @@ class AgentRoundRunner {
     void Function(String requestBody)? onRequestBody,
     bool Function()? isCancelled,
   ) async {
-    _items.add({
-      'role': 'user',
-      'content': _prompt.stagePrepare(
-        AgentStageRequest(level: profile.level),
-      ),
-    });
+    _appendStageDirective(AgentStage.prepare);
     for (var i = 0; i < maxPrepFrames; i++) {
       final gate = _FrameGate(stage: AgentStage.prepare, sink: _sink);
       final result = await _callFrame(
@@ -604,7 +607,7 @@ class AgentRoundRunner {
     // ——第二条条目会让 applyEdits 整栏失败并多烧两帧修复。
     if (_memorySatisfied()) return;
     for (var i = 0; i < maxMemoryFrames; i++) {
-      _items.add(_memoryDirective(first: i == 0));
+      _appendStageDirective(AgentStage.memory, first: i == 0);
       _modelProblems.clear();
       final gate = _FrameGate(stage: AgentStage.memory, sink: _sink);
       final result = await _callFrame(
@@ -683,14 +686,7 @@ class AgentRoundRunner {
     // Lv.1：把「历史与记忆条目已就位、现在只写五个区块」说在最近处
     // （文案真源 = `promptInterface.stageStory`，与系统契约口径一致）。
     // Lv.2 保持原样：其正文契约已在系统指令里，不额外追加帧指令。
-    if (profile.level == AgentModeLevel.lv1) {
-      _items.add({
-        'role': 'user',
-        'content': _prompt.stageStory(
-          AgentStageRequest(level: profile.level),
-        ),
-      });
-    }
+    _appendStageDirective(AgentStage.story);
     for (var i = 0; i < maxStoryFrames; i++) {
       final gate = _FrameGate(stage: AgentStage.story, sink: _sink);
       final result = await _callFrame(
@@ -743,7 +739,7 @@ class AgentRoundRunner {
       // 工作副本 = 上一轮 + 本轮正文之后的状态），再按返回的最新块复制锚点；
       // 修复帧则复用上一帧读取结果与失败回传的「栏目当前全文」，
       // 不重复读取（见 [_stateDirective]）。
-      _items.add(_stateDirective(pending, first: i == 0));
+      _appendStageDirective(AgentStage.state, first: i == 0, problems: pending);
       _modelProblems.clear();
       final gate = _FrameGate(stage: AgentStage.state, sink: _sink);
       final result = await _callFrame(
@@ -831,14 +827,7 @@ class AgentRoundRunner {
           iteration: _frames,
         ),
       );
-      final body = buildBody(
-        AgentTurnRequest(
-          stage: stage,
-          items: _sendItems(),
-          previousResponseId: chaining ? _previousResponseId : null,
-          stateThinkingEffort: effort,
-        ),
-      );
+      final body = _frameBody(stage, stateThinkingEffort: effort);
       final sentCursor = _items.length;
       try {
         final result = await call(
@@ -885,6 +874,122 @@ class AgentRoundRunner {
       (chaining && _previousResponseId != null)
           ? _items.sublist(_sentCursor)
           : _items;
+
+  /// 本阶段当前帧的请求体：**实发 [_callFrame] 与「预览请求体」共用**，
+  /// 保证预览给出的首帧就是真正会发出的那一帧。
+  Map<String, dynamic> _frameBody(
+    AgentStage stage, {
+    String? stateThinkingEffort,
+  }) =>
+      buildBody(
+        AgentTurnRequest(
+          stage: stage,
+          items: _sendItems(),
+          previousResponseId: chaining ? _previousResponseId : null,
+          stateThinkingEffort: stateThinkingEffort,
+        ),
+      );
+
+  /// 追加本阶段首帧的**帧指令**（若有）。
+  ///
+  /// 各阶段帧指令的**唯一追加点**（文案真源仍由 [PromptInterface] 给出）：
+  /// 实发各阶段与 [outlineFrames] 都经这里，预览因此不会与实发漂移。
+  void _appendStageDirective(
+    AgentStage stage, {
+    bool first = true,
+    List<String> problems = const [],
+  }) {
+    switch (stage) {
+      case AgentStage.prepare:
+        _items.add({
+          'role': 'user',
+          'content': _prompt.stagePrepare(
+            AgentStageRequest(level: profile.level),
+          ),
+        });
+      case AgentStage.memory:
+        _items.add(_memoryDirective(first: first));
+      case AgentStage.story:
+        // 仅 Lv.1 追加「现在只写五个区块」；Lv.2 的正文契约已在系统指令里。
+        if (profile.level == AgentModeLevel.lv1) {
+          _items.add({
+            'role': 'user',
+            'content': _prompt.stageStory(
+              AgentStageRequest(level: profile.level),
+            ),
+          });
+        }
+      case AgentStage.state:
+        _items.add(_stateDirective(problems, first: first));
+    }
+  }
+
+  /// 预览：本轮会发出 / 可能发出的帧骨架（**不发起任何调用**）。
+  ///
+  /// 首帧与实发**逐字节一致**（同一 [_beginRound] + [_appendStageDirective] +
+  /// [_frameBody] 路径）；其余候选帧只保证形态——是否真的发出、以及缺口清单等
+  /// 动态部分，取决于模型响应与工具返回，故由调用方标注为「后续可用帧」。
+  ///
+  /// 调用本方法会重置执行器运行期状态（与 [run] 同级语义）；预览请用一次性实例。
+  List<RequestFrameOutline> outlineFrames(
+    List<Map<String, dynamic>> initialInputItems,
+  ) {
+    _beginRound(initialInputItems);
+    final frames = <RequestFrameOutline>[];
+    if (profile.level == AgentModeLevel.lv1) {
+      _appendStageDirective(AgentStage.prepare);
+      frames.add(
+        RequestFrameOutline(
+          label: '准备帧',
+          note: 'Lv.1 第一步：读历史、按需联网搜索 / 打开页'
+              '（本阶段遇工具调用会继续续帧，直到调研结束）。',
+          body: _frameBody(AgentStage.prepare),
+        ),
+      );
+      _appendStageDirective(AgentStage.memory);
+      frames.add(
+        RequestFrameOutline(
+          label: '记忆帧',
+          note: '调研结束、且本轮记忆条目尚未落地时发出'
+              '（思考强度降为 $kAgentStateThinkingEffort 省预算）。',
+          body: _frameBody(
+            AgentStage.memory,
+            stateThinkingEffort: kAgentStateThinkingEffort,
+          ),
+        ),
+      );
+      _appendStageDirective(AgentStage.story);
+      frames.add(
+        RequestFrameOutline(
+          label: '正文帧',
+          note: '记忆条目已落地后发出：写本轮正文（后接状态维护兜底）。',
+          body: _frameBody(AgentStage.story),
+        ),
+      );
+    } else {
+      frames.add(
+        RequestFrameOutline(
+          label: '正文帧',
+          note: 'Lv.2 第一步：直接写正文（世界 / 角色 / 记忆由工具维护）。',
+          body: _frameBody(AgentStage.story),
+        ),
+      );
+    }
+    _appendStageDirective(AgentStage.state);
+    frames.add(
+      RequestFrameOutline(
+        label: '维护帧',
+        note: '正文之后仍有缺项、或档位要求的记忆合并未落地时发出'
+            '（思考强度降为 $kAgentStateThinkingEffort 省预算；'
+            '缺项清单由当时的缺项决定）。',
+        body: _frameBody(
+          AgentStage.state,
+          stateThinkingEffort: kAgentStateThinkingEffort,
+        ),
+      ),
+    );
+    return frames;
+  }
 
   /// 吸收一帧：聚合用量 / 思考、按帧分类采纳正文、把思考条目与 assistant 消息
   /// 追加进会话累积（工具条目在 [_executeTools] 中紧随其后追加）。
