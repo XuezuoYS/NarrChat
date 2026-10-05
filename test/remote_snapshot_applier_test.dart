@@ -6,10 +6,12 @@ import 'package:narrchat/database/book_dao.dart';
 import 'package:narrchat/database/database_helper.dart';
 import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/database/round_dao.dart';
+import 'package:narrchat/database/round_stack_dao.dart';
 import 'package:narrchat/database/world_book_dao.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_stack.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/services/sync/remote_snapshot_applier.dart';
 import 'package:narrchat/services/sync/sync_action_planner.dart';
@@ -527,16 +529,185 @@ void main() {
     expect(remoteRounds.single.userInput, '你好');
     expect(await RoundDao().getRoundsByBook(localBookUuid), isEmpty);
   });
+
+  test('SY-3 远端独有书：版本树随整本复制落库（按 round_index ASC，重复拉取不重复）', () async {
+    final snapshotBytes = await _buildRemoteSnapshot(
+      title: '远端书',
+      rounds: const [(1, '你好', '正文')],
+      stackRows: <Map<String, Object?>>[
+        _stackRow(
+          uuid: 'rs-1-2',
+          roundIndex: 1,
+          roundSerialNum: 2,
+          aiNarrative: '第二代正文',
+        ),
+        _stackRow(
+          uuid: 'rs-1-1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          aiNarrative: '第一代正文',
+        ),
+      ],
+    );
+
+    final plan = SyncMergePlan(
+      books: [
+        decision(
+          '远端书',
+          remoteUuid: kRemoteBookUuid,
+          presence: SyncBookPresence.remoteOnly,
+        ),
+      ],
+    );
+    const applier = RemoteSnapshotApplier();
+    await applier.apply(
+      mergePlan: plan,
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+
+    final rows = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(rows.map((r) => r.uuid).toList(), ['rs-1-1', 'rs-1-2'],
+        reason: '按 round_index ASC 复制（同时代亦按序号升序）');
+    expect(rows.map((r) => r.roundSerialNum).toList(), [1, 2]);
+    expect(rows.map((r) => r.aiNarrative).toList(), ['第一代正文', '第二代正文'],
+        reason: '正文随行整体搬运');
+    expect(rows.map((r) => r.bookUuid).toSet(), {kRemoteBookUuid});
+
+    // 重复拉取：本地已有同一 uuid 的书 → 部件整体替换，版本树仍是同样两行。
+    await applier.apply(
+      mergePlan: plan,
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+    final again = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(again.map((r) => r.uuid).toSet(), {'rs-1-1', 'rs-1-2'});
+    expect(again, hasLength(2), reason: '版本树整体替换，不叠加重复代');
+  });
+
+  test('SY-4 rounds 部件下发（remoteOnly）→ 本地版本树整体替换（先删后插）', () async {
+    // 本地同一 uuid 的书：旧轮次 + 自己的两代版本树。
+    final bookDao = BookDao();
+    await bookDao.insertBook(const Book(uuid: kRemoteBookUuid, title: 'X'));
+    await RoundDao().insertRound(
+      Round(bookUuid: kRemoteBookUuid, roundIndex: 1, userInput: '本地轮'),
+    );
+    final localDb = await DatabaseHelper.instance.database;
+    await RoundStackDao().replaceBookStack(localDb, kRemoteBookUuid, <RoundStackRow>[
+      _localStackRow(
+        uuid: 'local-1-1',
+        roundSerialNum: 1,
+        aiNarrative: '本地第一代',
+      ),
+      _localStackRow(
+        uuid: 'local-1-2',
+        roundSerialNum: 2,
+        aiNarrative: '本地第二代',
+      ),
+    ]);
+
+    final snapshotBytes = await _buildRemoteSnapshot(
+      title: 'X',
+      rounds: const [(1, '远端轮', '远端正文')],
+      stackRows: <Map<String, Object?>>[
+        _stackRow(
+          uuid: 'remote-1-1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          aiNarrative: '远端第一代',
+        ),
+      ],
+    );
+
+    final plan = SyncMergePlan(
+      books: [
+        decision(
+          'X',
+          localUuid: kRemoteBookUuid,
+          remoteUuid: kRemoteBookUuid,
+          presence: SyncBookPresence.both,
+          rounds: SyncPartStatus.remoteOnly,
+        ),
+      ],
+    );
+    await const RemoteSnapshotApplier().apply(
+      mergePlan: plan,
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+
+    expect(
+      (await RoundDao().getRoundsByBook(kRemoteBookUuid)).map((r) => r.userInput),
+      ['远端轮'],
+      reason: '轮次部件整体采用远端',
+    );
+    final rows = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(rows.map((r) => r.uuid).toList(), ['remote-1-1'],
+        reason: '版本树与轮次同属「轮次部件」：远端独有该部件 → 先删后插整体替换');
+    expect(rows.single.aiNarrative, '远端第一代');
+  });
+
+  test('SY-5 远端快照无 round_stack 表（老 v18 快照）→ 不报错、保留本地版本树', () async {
+    final bookDao = BookDao();
+    await bookDao.insertBook(const Book(uuid: kRemoteBookUuid, title: 'X'));
+    await RoundDao().insertRound(
+      Round(bookUuid: kRemoteBookUuid, roundIndex: 1, userInput: '本地轮'),
+    );
+    final localDb = await DatabaseHelper.instance.database;
+    await RoundStackDao().replaceBookStack(localDb, kRemoteBookUuid, <RoundStackRow>[
+      _localStackRow(
+        uuid: 'local-1-1',
+        aiNarrative: '本地仅存的一代',
+      ),
+    ]);
+
+    // 远端老 schema：只有轮次，没有版本树表。
+    final snapshotBytes = await _buildRemoteSnapshot(
+      title: 'X',
+      rounds: const [(1, '远端轮', '远端正文')],
+      withRoundStack: false,
+    );
+
+    final plan = SyncMergePlan(
+      books: [
+        decision(
+          'X',
+          localUuid: kRemoteBookUuid,
+          remoteUuid: kRemoteBookUuid,
+          presence: SyncBookPresence.both,
+          rounds: SyncPartStatus.remoteOnly,
+        ),
+      ],
+    );
+    await const RemoteSnapshotApplier().apply(
+      mergePlan: plan,
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+
+    expect(
+      (await RoundDao().getRoundsByBook(kRemoteBookUuid)).map((r) => r.userInput),
+      ['远端轮'],
+      reason: '轮次照常下发',
+    );
+    final rows = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(rows.map((r) => r.uuid).toList(), ['local-1-1'],
+        reason: '远端无该表 → 不做任何删除，保留本地版本树，交给采纳收敛');
+    expect(rows.single.aiNarrative, '本地仅存的一代');
+  });
 }
 
 /// 生成一份远端快照字节：一本主键为 [kRemoteBookUuid] 的书（可指定标题 /
 /// 分类 / 后置词、轮次、是否带世界书），它引用主键 [kRemoteModUuid] 的用户
 /// Mod，另可附 [extraMods] 未被任何书引用的独立 Mod。
 ///
-/// schema 与本地库一致（v16）：`books` / `mods` 以 uuid 为主键（无 int id），
+/// schema 与本地库一致（v19）：`books` / `mods` 以 uuid 为主键（无 int id），
 /// `rounds` / `world_book_entries` / `book_mods` 保留自身自增 id，父表以
 /// `book_uuid` / `mod_uuid` 引用。用例要在本地预置「同一本书 / 同一个 Mod」，
 /// 就往本地库写同一个 uuid。
+///
+/// [withRoundStack] = false 模拟**老 v18 快照**（没有 `round_stack` 表）：
+/// 远端没有版本树可言，落地时必须保留本地版本树。
 Future<Uint8List> _buildRemoteSnapshot({
   String title = '远端书',
   String category = '玄幻',
@@ -546,6 +717,8 @@ Future<Uint8List> _buildRemoteSnapshot({
   bool withWorldBooks = true,
   List<Map<String, Object?>> extraMods = const [],
   bool withReferencedMod = true,
+  bool withRoundStack = true,
+  List<Map<String, Object?>> stackRows = const [],
 }) async {
   final dir = Directory.systemTemp.createTempSync('remote_snap_');
   final path = p.join(dir.path, 'snapshot.db');
@@ -632,6 +805,32 @@ Future<Uint8List> _buildRemoteSnapshot({
       is_enabled INTEGER NOT NULL DEFAULT 1
     )
   ''');
+  if (withRoundStack) {
+    await db.execute('''
+      CREATE TABLE round_stack (
+        uuid TEXT PRIMARY KEY,
+        book_uuid TEXT NOT NULL,
+        father_uuid TEXT,
+        round_index INTEGER NOT NULL,
+        round_serial_num INTEGER NOT NULL,
+        round_state TEXT,
+        round_created_at INTEGER NOT NULL DEFAULT 0,
+        user_input TEXT DEFAULT '',
+        ai_narrative TEXT DEFAULT '',
+        world_state TEXT DEFAULT '',
+        character_state TEXT DEFAULT '',
+        memory_summary TEXT DEFAULT '',
+        current_time TEXT DEFAULT '',
+        recommended_action TEXT DEFAULT '',
+        tokens_in INTEGER,
+        tokens_out INTEGER,
+        cached_tokens_in INTEGER,
+        model_name TEXT DEFAULT '',
+        user_images TEXT NOT NULL DEFAULT '[]',
+        ai_images TEXT NOT NULL DEFAULT '[]'
+      )
+    ''');
+  }
 
   await db.insert('books', {
     'uuid': kRemoteBookUuid,
@@ -679,6 +878,9 @@ Future<Uint8List> _buildRemoteSnapshot({
       'is_enabled': 1,
     });
   }
+  for (final row in stackRows) {
+    await db.insert('round_stack', row);
+  }
 
   final bytes = await File(path).readAsBytes();
   await db.close();
@@ -688,4 +890,54 @@ Future<Uint8List> _buildRemoteSnapshot({
     // 忽略清理失败。
   }
   return bytes;
+}
+
+/// 远端快照里的一代版本树行（内容列与 `rounds` 同形）。
+///
+/// [bookUuid] 默认是远端那本书（`kRemoteBookUuid`）。
+Map<String, Object?> _stackRow({
+  required String uuid,
+  int roundIndex = 1,
+  int roundSerialNum = 1,
+  String? fatherUuid,
+  String roundState = 'use',
+  String userInput = '',
+  String aiNarrative = '',
+  String? bookUuid,
+  int roundCreatedAt = 1000,
+}) {
+  return <String, Object?>{
+    'uuid': uuid,
+    'book_uuid': bookUuid ?? kRemoteBookUuid,
+    'father_uuid': fatherUuid,
+    'round_index': roundIndex,
+    'round_serial_num': roundSerialNum,
+    'round_state': roundState,
+    'round_created_at': roundCreatedAt,
+    'user_input': userInput,
+    'ai_narrative': aiNarrative,
+    'user_images': '[]',
+    'ai_images': '[]',
+  };
+}
+
+/// 本地库预置的一代版本树行（**收下另一本书的 uuid**：本地 `books.uuid`
+/// 就是远端同一 uuid，但类型上是本机的 [RoundStackRow]）。
+RoundStackRow _localStackRow({
+  required String uuid,
+  int roundIndex = 1,
+  int roundSerialNum = 1,
+  String aiNarrative = '',
+}) {
+  return RoundStackRow(
+    uuid: uuid,
+    bookUuid: kRemoteBookUuid,
+    roundIndex: roundIndex,
+    roundSerialNum: roundSerialNum,
+    roundState: 'use',
+    roundCreatedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+    aiNarrative: aiNarrative,
+    userImages: const [],
+    aiImages: const [],
+  );
 }

@@ -39,6 +39,12 @@ class Round {
   /// AI 返回附带的图片（相对路径数组；为未来图像生成预留，本轮仅存储/展示）。
   final List<String> aiImages;
 
+  /// 本行对应的 `round_stack` 行 uuid（该轮「当前应用代」的锚点）。
+  ///
+  /// 空串 = 尚未采纳（老库升级 / 老客户端写入），由采纳流程补建；
+  /// 版本树（切换 / 采纳 / 指纹）靠它把投影行与历史代对上。
+  final String useStackUuid;
+
   const Round({
     this.id,
     required this.bookUuid,
@@ -57,6 +63,7 @@ class Round {
     this.createdAt,
     this.userImages = const [],
     this.aiImages = const [],
+    this.useStackUuid = '',
   });
 
   factory Round.fromMap(Map<String, Object?> map) {
@@ -80,6 +87,7 @@ class Round {
           : DateTime.tryParse(map['created_at'] as String),
       userImages: _decodeImages(map['user_images']),
       aiImages: _decodeImages(map['ai_images']),
+      useStackUuid: (map['use_stack_uuid'] as String?) ?? '',
     );
   }
 
@@ -88,6 +96,21 @@ class Round {
       'id': id,
       'book_uuid': bookUuid,
       'round_index': roundIndex,
+      ...contentMap(),
+      // 老 schema（v18 及更早的库 / 老备份）没有该列：空锚点时不写该键，
+      // 让列取默认值（等价于空串），避免写入老库直接报“no column”。
+      if (useStackUuid.isNotEmpty) 'use_stack_uuid': useStackUuid,
+      'created_at': createdAt?.toIso8601String(),
+    };
+  }
+
+  /// 内容列（与 `round_stack` 同形，**唯一来源**）：不含 `id` / `book_uuid` /
+  /// `round_index` / 时间戳 / 版本树锚点。
+  ///
+  /// 「原地修改」写 `rounds` 与写 `round_stack` 共用本映射；内容指纹也按同一
+  /// 字段集比对（时间戳不参与）。
+  Map<String, Object?> contentMap() {
+    return {
       'user_input': userInput,
       'ai_narrative': aiNarrative,
       'world_state': worldState,
@@ -101,7 +124,6 @@ class Round {
       'model_name': modelName,
       'user_images': jsonEncode(userImages),
       'ai_images': jsonEncode(aiImages),
-      'created_at': createdAt?.toIso8601String(),
     };
   }
 
@@ -117,6 +139,20 @@ class Round {
     }
     return const [];
   }
+
+  /// 按数据库列名写回单个可编辑字段（白名单外的字段原样返回）。
+  ///
+  /// 供侧边栏「保存快照」与 `RoundProvider.updateRoundField` 共用，
+  /// 避免列名 → 模型字段的映射在 UI / Provider 两处漂移。
+  Round withField(String field, String value) => switch (field) {
+        RoundField.worldState => copyWith(worldState: value),
+        RoundField.characterState => copyWith(characterState: value),
+        RoundField.memorySummary => copyWith(memorySummary: value),
+        RoundField.currentTime => copyWith(currentTime: value),
+        RoundField.aiNarrative => copyWith(aiNarrative: value),
+        RoundField.userInput => copyWith(userInput: value),
+        _ => this,
+      };
 
   Round copyWith({
     int? id,
@@ -136,6 +172,7 @@ class Round {
     DateTime? createdAt,
     List<String>? userImages,
     List<String>? aiImages,
+    String? useStackUuid,
   }) {
     return Round(
       id: id ?? this.id,
@@ -155,6 +192,7 @@ class Round {
       createdAt: createdAt ?? this.createdAt,
       userImages: userImages ?? this.userImages,
       aiImages: aiImages ?? this.aiImages,
+      useStackUuid: useStackUuid ?? this.useStackUuid,
     );
   }
 }
@@ -172,4 +210,14 @@ class RoundField {
   static const String currentTime = 'current_time';
   static const String aiNarrative = 'ai_narrative';
   static const String userInput = 'user_input';
+
+  /// 可编辑字段白名单（侧边栏「保存快照」与 `RoundProvider.updateRoundField` 共用）。
+  static const Set<String> editable = {
+    worldState,
+    characterState,
+    memorySummary,
+    currentTime,
+    aiNarrative,
+    userInput,
+  };
 }

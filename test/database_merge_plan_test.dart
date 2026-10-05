@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/database_merge_service.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/merge_db.dart';
@@ -472,6 +475,209 @@ void main() {
     });
   });
 
+  group('DatabaseMergeService 版本树（SY-8）', () {
+    test('SY-8 内容部件采用导入 → 版本树随内容部件搬运（计数 + 落到本地书 uuid）', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        final lokUuid = await _addBook(local, 'lok-a', 'A', category: '同');
+        await _addRound(local, lokUuid, 1, userInput: '本地');
+        await _addStackRow(local, lokUuid, 'lok-g1', serial: 1);
+        final bakUuid = await _addBook(backup, 'bak-a', 'A', category: '同');
+        await _addRound(backup, bakUuid, 1, userInput: '备份');
+        await _addStackRow(backup, bakUuid, 'bak-g1', serial: 1, aiNarrative: '备份一代');
+        await _addStackRow(backup, bakUuid, 'bak-g2', serial: 2, aiNarrative: '备份二代');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final entry = plan.entries.single;
+        expect(entry.status, MergeBookStatus.conflict, reason: '轮次内容不同 → 内容部件冲突');
+        expect(entry.imported!.hasRoundStack, isTrue);
+        expect(entry.local!.hasRoundStack, isTrue);
+        expect(entry.imported!.stackRows, hasLength(2));
+
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          {
+            entry.title: const BookPartDecisions(
+              settings: MergePartChoice.keepLocal,
+              content: MergePartChoice.import,
+            ),
+          },
+          const {},
+        );
+
+        expect(result.stackRowsAdded, 2, reason: '版本树行数随「内容部件采用导入」计数');
+        expect(result.roundsAdded, 1);
+        final stack = await local.query('round_stack', orderBy: 'round_serial_num ASC');
+        expect(stack.map((r) => r['book_uuid']).toSet(), {lokUuid},
+            reason: '导入的版本树挂到本地书 uuid（同名书就地合并，身份不变）');
+        expect(stack.map((r) => r['uuid']).toSet(), {'bak-g1', 'bak-g2'});
+        expect(stack.map((r) => r['ai_narrative']).toList(), ['备份一代', '备份二代']);
+        expect(
+          await local.query('round_stack',
+              where: 'book_uuid = ?', whereArgs: ['lok-g1']),
+          isEmpty,
+          reason: '版本树整体替换：本地旧代被清掉（不是叠加）',
+        );
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('SY-8 整本导入（仅导入有）→ 版本树随书搬运，本地他书版本树不受影响', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb();
+      try {
+        final keptUuid = await _addBook(local, 'lok-keep', '本地书');
+        await _addRound(local, keptUuid, 1, userInput: '本地正文');
+        await _addStackRow(local, keptUuid, 'keep-g1');
+
+        final bakUuid = await _addBook(backup, 'bak-new', '新书');
+        await _addRound(backup, bakUuid, 1, userInput: '云端正文');
+        await _addStackRow(backup, bakUuid, 'new-g1', aiNarrative: '云端一代');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        expect(plan.importOnlyCount, 1);
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          const {},
+          const {},
+        );
+
+        expect(result.booksAdded, 1);
+        expect(result.stackRowsAdded, 1, reason: '整本导入同样搬运版本树并计数');
+        final stack = await local.query('round_stack', orderBy: 'uuid ASC');
+        expect(stack, hasLength(2));
+        expect(
+          stack.firstWhere((r) => r['uuid'] == 'new-g1')['book_uuid'],
+          'bak-new',
+          reason: '身份不冲突：沿用导入侧 uuid',
+        );
+        expect(
+          stack.firstWhere((r) => r['uuid'] == 'keep-g1')['book_uuid'],
+          keptUuid,
+          reason: '本地其它书的版本树不被触碰',
+        );
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('SY-8 老备份库无 round_stack 表 → 保留本地版本树（不搬运、不报错）', () async {
+      final local = await createMergeDb();
+      final backup = await createMergeDb(withRoundStack: false);
+      try {
+        final lokUuid = await _addBook(local, 'lok-a', 'A', category: '同');
+        await _addRound(local, lokUuid, 1, userInput: '本地');
+        await _addStackRow(local, lokUuid, 'lok-keep', aiNarrative: '本地仅存的一代');
+        final bakUuid = await _addBook(backup, 'bak-a', 'A', category: '同');
+        await _addRound(backup, bakUuid, 1, userInput: '备份');
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final entry = plan.entries.single;
+        expect(entry.imported!.hasRoundStack, isFalse, reason: 'v18 老备份没有该表');
+        expect(entry.imported!.stackRows, isEmpty);
+
+        final result = await DatabaseMergeService.applyPlan(
+          local,
+          plan,
+          {
+            entry.title: const BookPartDecisions(
+              settings: MergePartChoice.import,
+              content: MergePartChoice.import,
+            ),
+          },
+          const {},
+        );
+
+        expect(result.roundsAdded, 1, reason: '轮次照常导入');
+        expect(result.stackRowsAdded, 0, reason: '备份无该表 → 不搬运');
+        final stack = await local.query('round_stack');
+        expect(stack, hasLength(1), reason: '保留本地版本树，交给采纳按 rounds 收敛');
+        expect(stack.single['uuid'], 'lok-keep');
+        expect(stack.single['ai_narrative'], '本地仅存的一代');
+      } finally {
+        await local.close();
+        await backup.close();
+      }
+    });
+
+    test('版本树代次标签：有锚点轮 → 当前代 / 最新代；无表或无锚点 → 空', () async {
+      final local = await createMergeDb();
+      final path = await createMergeFileDb(title: 'A', uuid: 'bak-anchor');
+      final dir = Directory(p.dirname(path));
+      Database? backup;
+      try {
+        backup = await databaseFactoryFfi.openDatabase(
+          path,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        await _addRound(backup, 'bak-anchor', 1, userInput: '导入正文');
+        await _addRound(
+          backup,
+          'bak-anchor',
+          2,
+          userInput: '导入正文二',
+          useStackUuid: 'anchor',
+        );
+        // 同一分组两代：当前代 2、最新代 5 → '第 2 代 / 最新第 5 代'。
+        await _addStackRow(backup, 'bak-anchor', 'anchor', serial: 2);
+        await _addStackRow(backup, 'bak-anchor', 'newest', serial: 5);
+
+        final plan = await DatabaseMergeService.buildPlan(backup, local);
+        final entry = plan.entries.single;
+        expect(entry.status, MergeBookStatus.importOnly);
+        expect(
+          entry.imported!.versionLabel,
+          '第 2 代 / 最新第 5 代',
+          reason: '只读代次标签 = 最末有锚点轮的当前代 / 分组内最新代',
+        );
+        expect(entry.local, isNull, reason: '本地无同名书');
+
+        // 老备份库（v18，无 round_stack 表）→ 标签为空，不报错。
+        final oldPath = await createMergeFileDb(
+          title: 'B',
+          uuid: 'bak-old',
+          withRoundStack: false,
+        );
+        final oldDir = Directory(p.dirname(oldPath));
+        Database? oldBackup;
+        try {
+          oldBackup = await databaseFactoryFfi.openDatabase(
+            oldPath,
+            options: OpenDatabaseOptions(singleInstance: false),
+          );
+          await _addRound(oldBackup, 'bak-old', 1, userInput: '旧正文');
+          final oldPlan = await DatabaseMergeService.buildPlan(oldBackup, local);
+          final oldEntry =
+              oldPlan.entries.firstWhere((e) => e.imported?.dbUuid == 'bak-old');
+          expect(oldEntry.imported!.hasRoundStack, isFalse);
+          expect(oldEntry.imported!.versionLabel, isEmpty,
+              reason: '无版本树表 → 不显示代次，且不因缺表报错');
+        } finally {
+          await oldBackup?.close();
+          try {
+            oldDir.deleteSync(recursive: true);
+          } catch (_) {
+            // 忽略清理失败。
+          }
+        }
+      } finally {
+        await backup?.close();
+        await local.close();
+        try {
+          dir.deleteSync(recursive: true);
+        } catch (_) {
+          // 忽略清理失败。
+        }
+      }
+    });
+  });
+
   group('DatabaseMergeService.buildPlan（Mod）', () {
     test('Mod 分类：冲突 / 仅导入有 / 仅本地有 / 两者全一致', () async {
       final local = await createMergeDb();
@@ -641,6 +847,7 @@ Future<int> _addRound(
   String userInput = '',
   String aiNarrative = '',
   DateTime? createdAt,
+  String? useStackUuid,
 }) {
   return db.insert('rounds', {
     'book_uuid': bookUuid,
@@ -648,5 +855,36 @@ Future<int> _addRound(
     'user_input': userInput,
     'ai_narrative': aiNarrative,
     'created_at': createdAt?.toIso8601String(),
+    'use_stack_uuid': useStackUuid,
+  });
+}
+
+/// 为某本书追加一代版本树（`round_stack`，v19）。
+///
+/// [serial] = 分组内序号（同 `(book, round_index, father)` 分组内唯一）；
+/// [roundIndex] 默认 1（= 最末轮，供 [RoundStackDao.versionLabel] 的锚点查找）。
+Future<void> _addStackRow(
+  Database db,
+  String bookUuid,
+  String uuid, {
+  int roundIndex = 1,
+  int serial = 1,
+  String? fatherUuid,
+  String roundState = 'use',
+  String userInput = '',
+  String aiNarrative = '',
+}) async {
+  await db.insert('round_stack', {
+    'uuid': uuid,
+    'book_uuid': bookUuid,
+    'father_uuid': fatherUuid,
+    'round_index': roundIndex,
+    'round_serial_num': serial,
+    'round_state': roundState,
+    'round_created_at': 1000,
+    'user_input': userInput,
+    'ai_narrative': aiNarrative,
+    'user_images': '[]',
+    'ai_images': '[]',
   });
 }

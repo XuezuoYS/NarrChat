@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/sync/sync_fingerprint.dart';
 
@@ -6,6 +8,53 @@ import 'package:narrchat/services/sync/sync_fingerprint.dart';
 /// 行内引用一律是 uuid（`book_uuid` / `mod_uuid`），没有需要归一化的 int id；
 /// `bookMods` 的第二参数是 Mod 的 uuid → 名称映射。
 void main() {
+  /// 版本树（`round_stack`）一行；内容列与 `rounds` 同形，另有
+  /// `father_uuid` / `round_serial_num` / `round_state` / `round_created_at`。
+  Map<String, Object?> stackRow({
+    String uuid = 'g-1',
+    String bookUuid = 'u-1',
+    String? fatherUuid,
+    int roundIndex = 1,
+    int roundSerialNum = 1,
+    String? roundState,
+    int roundCreatedAt = 1000,
+    String userInput = '输入',
+    String aiNarrative = '正文',
+    String worldState = '',
+    String characterState = '',
+    String memorySummary = '',
+    String currentTime = '',
+    String recommendedAction = '',
+    int? tokensIn,
+    int? tokensOut,
+    int? cachedTokensIn,
+    String modelName = '',
+    String userImages = '[]',
+    String aiImages = '[]',
+  }) {
+    return {
+      'uuid': uuid,
+      'book_uuid': bookUuid,
+      'father_uuid': fatherUuid,
+      'round_index': roundIndex,
+      'round_serial_num': roundSerialNum,
+      'round_state': roundState,
+      'round_created_at': roundCreatedAt,
+      'user_input': userInput,
+      'ai_narrative': aiNarrative,
+      'world_state': worldState,
+      'character_state': characterState,
+      'memory_summary': memorySummary,
+      'current_time': currentTime,
+      'recommended_action': recommendedAction,
+      'tokens_in': tokensIn,
+      'tokens_out': tokensOut,
+      'cached_tokens_in': cachedTokensIn,
+      'model_name': modelName,
+      'user_images': userImages,
+      'ai_images': aiImages,
+    };
+  }
   Map<String, Object?> bookRow({
     String uuid = 'u-1',
     String title = '书A',
@@ -366,4 +415,190 @@ void main() {
       expect(SyncFingerprint.worldBooks(a), isNot(SyncFingerprint.worldBooks(c)));
     });
   });
+
+  group('版本树摘要（stackDigest）', () {
+    test('空表 → 空串（与「无版本树」同一口径）', () {
+      expect(SyncFingerprint.stackDigest(const []), '');
+    });
+
+    test('行集合 / 内容 / 状态变化 → 摘要变化', () {
+      final base = [stackRow()];
+      final digest = SyncFingerprint.stackDigest(base);
+
+      expect(
+        SyncFingerprint.stackDigest([...base, stackRow(uuid: 'g-2', roundSerialNum: 2)]),
+        isNot(digest),
+        reason: '新增一代 = 版本树内容变化',
+      );
+      expect(SyncFingerprint.stackDigest(const []), isNot(digest));
+      expect(
+        SyncFingerprint.stackDigest([stackRow(userInput: '改后输入')]),
+        isNot(digest),
+        reason: '内容列（user_input）在摘要内',
+      );
+      expect(
+        SyncFingerprint.stackDigest([stackRow(aiNarrative: '改后正文')]),
+        isNot(digest),
+      );
+      expect(
+        SyncFingerprint.stackDigest([
+          stackRow(tokensIn: 9, tokensOut: 8, cachedTokensIn: 7, modelName: 'm2'),
+        ]),
+        isNot(digest),
+        reason: 'token / 模型列在摘要内',
+      );
+      expect(
+        SyncFingerprint.stackDigest([stackRow(aiImages: '["img/a.png"]')]),
+        isNot(digest),
+        reason: '图片列在摘要内（图片同步与版本树一致）',
+      );
+      expect(
+        SyncFingerprint.stackDigest([stackRow(roundState: 'use')]),
+        isNot(digest),
+        reason: 'round_state 是分组内选中记忆，属内容',
+      );
+      expect(
+        SyncFingerprint.stackDigest([
+          stackRow(uuid: 'g-9', roundIndex: 2, roundSerialNum: 3),
+        ]),
+        isNot(digest),
+        reason: '身份 / 分组列（uuid、代数、轮号）参与摘要',
+      );
+    });
+
+    test('仅 round_created_at 变化 → 摘要不变（时间戳不参与）', () {
+      expect(
+        SyncFingerprint.stackDigest([stackRow(roundCreatedAt: 1000)]),
+        SyncFingerprint.stackDigest([stackRow(roundCreatedAt: 987654321)]),
+        reason: '创建时间会随保存刷新，纳入即造成「内容未变也判定变更」的假同步',
+      );
+    });
+
+    test('与输入顺序无关：乱序 → 相同摘要（按轮号 / 父 / 序号 / uuid 稳定定序）', () {
+      final ordered = [
+        stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1, aiNarrative: '一'),
+        stackRow(
+          uuid: 'g-2',
+          fatherUuid: 'g-1',
+          roundIndex: 2,
+          roundSerialNum: 1,
+          aiNarrative: '二',
+        ),
+        stackRow(uuid: 'g-3', roundIndex: 2, roundSerialNum: 2, aiNarrative: '三'),
+      ];
+      final shuffled = [ordered[2], ordered[0], ordered[1]];
+
+      expect(
+        SyncFingerprint.stackDigest(shuffled),
+        SyncFingerprint.stackDigest(ordered),
+        reason: '两台设备读出顺序不同（或 INSERT OR REPLACE 改写顺序）不应造成摘要漂移',
+      );
+      expect(
+        SyncFingerprint.stackDigest([...ordered.reversed]),
+        SyncFingerprint.stackDigest(ordered),
+      );
+    });
+  });
+
+  group('轮次部件折入版本树（SY-2 / SY-9）', () {
+    test('stackRows 变化 → 轮次部件聚合串变化', () {
+      final rounds = [
+        {'round_index': 1, 'user_input': 'x', 'ai_narrative': 'y'},
+      ];
+      final book = bookRow();
+      final none = SyncFingerprint.roundsWithFailed(rounds, book);
+      final withStack = SyncFingerprint.roundsWithFailed(
+        rounds,
+        book,
+        stackRows: [stackRow()],
+      );
+
+      expect(withStack, isNot(none), reason: '版本树折进「轮次部件」，不另立同步部件');
+      expect(
+        SyncFingerprint.roundsWithFailed(
+          rounds,
+          book,
+          stackRows: [stackRow(aiNarrative: '另一代')],
+        ),
+        isNot(withStack),
+      );
+      expect(
+        SyncFingerprint.roundsWithFailed(rounds, book, stackRows: const []),
+        none,
+        reason: '空版本树与缺省同口径（空表 → 空摘要）',
+      );
+    });
+
+    test('带 stack 键的聚合串仍能被 roundRows 解析出轮次行序列（新老客户端相容）', () {
+      final rows = [
+        {'round_index': 2, 'user_input': '第二', 'ai_narrative': '正文二'},
+        {'round_index': 1, 'user_input': '第一', 'ai_narrative': '正文一'},
+      ];
+      final fp = SyncFingerprint.roundsWithFailed(
+        rows,
+        bookRow(),
+        stackRows: [stackRow()],
+      );
+
+      final decoded = jsonDecode(fp) as Map<String, Object?>;
+      expect(decoded.keys.toSet(), {'rounds', 'failed', 'stack'},
+          reason: '聚合串新增 stack 键，rounds / failed 原样保留');
+
+      final parsed = SyncFingerprint.roundRows(fp);
+      expect(parsed, isNotNull, reason: '新增键不得影响解析');
+      // 生产侧按 round_index 升序排列后再写入 → 解析出的行序列必然升序
+      //（乱序写入的输入在此被规范化，两台设备因此得到同一串）。
+      final expected = [
+        (1, '第一', '正文一'),
+        (2, '第二', '正文二'),
+      ].map((e) => _roundRowString(e.$1, e.$2, e.$3)).toList();
+      expect(parsed, expected, reason: '解析结果 = 按 round_index 升序的轮次行串序列');
+    });
+
+    test('旧格式（无 stack 键）解析结果与今天一致', () {
+      final fp = jsonEncode({
+        'rounds': [_roundRowString(1, 'x', 'y')],
+        'failed': ['', '', '[]'],
+      });
+
+      expect(
+        SyncFingerprint.roundRows(fp),
+        [_roundRowString(1, 'x', 'y')],
+        reason: '老格式（历史同步数据）必须原样解析',
+      );
+      expect(
+        SyncFingerprint.roundRows(_roundRowString(1, 'x', 'y')),
+        isNull,
+        reason: '整串不是对象 → 不可解析（调用方按整串语义处理）',
+      );
+      expect(
+        SyncFingerprint.roundRows('{"rounds": [1, 2]}'),
+        isNull,
+        reason: '行内容非字符串 → 不可解析',
+      );
+    });
+  });
+}
+
+/// 单条轮次行串（与 [SyncFingerprint.round] 同形）：供 `roundRows` 断言比对。
+///
+/// 用 jsonEncode 复刻而非调用 `round`，使「解析出的行内容」与「写入时的行内容」
+/// 分别独立成立（避免用例自证）。
+String _roundRowString(int roundIndex, String userInput, String aiNarrative) {
+  return jsonEncode([
+    roundIndex,
+    userInput,
+    aiNarrative,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  ]);
 }

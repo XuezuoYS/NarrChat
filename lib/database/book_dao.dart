@@ -36,20 +36,30 @@ class BookDao {
   /// 软删除书籍：仅打上删除墓碑（UI 立即隐藏，行暂留用于同步删除传播）。
   ///
   /// 与 [deleteBook]（硬删）区分：硬删用于旁路/清理路径；软删供云同步删除传播。
+  /// 版本树（`round_stack`）随软删一并物理删除：书已隐藏，历史代不再可达，
+  /// 显式删除避免「墓碑行长期驻留 + 每代全文」把库撑大（`rounds` 行保留，
+  /// 删除传播仍以它为内容部件）。
   Future<void> softDeleteBook(String uuid) async {
     if (uuid.isEmpty) return;
     final db = await _helper.database;
     final now = DateTime.now().millisecondsSinceEpoch;
-    await db.update(
-      'books',
-      {
-        'deleted_at': now,
-        'settings_updated_at': now,
-        'rounds_updated_at': now,
-      },
-      where: 'uuid = ?',
-      whereArgs: [uuid],
-    );
+    await db.transaction((txn) async {
+      await txn.update(
+        'books',
+        {
+          'deleted_at': now,
+          'settings_updated_at': now,
+          'rounds_updated_at': now,
+        },
+        where: 'uuid = ?',
+        whereArgs: [uuid],
+      );
+      await txn.delete(
+        'round_stack',
+        where: 'book_uuid = ?',
+        whereArgs: [uuid],
+      );
+    });
   }
 
   /// 每本书最近一轮对话的创建时间（按「最近对话时间」排序用）。
@@ -99,11 +109,15 @@ class BookDao {
     return db.update('books', map, where: 'uuid = ?', whereArgs: [book.uuid]);
   }
 
-  /// 删除书籍及其全部轮次（事务保证原子性）。
+  /// 删除书籍及其全部轮次与版本树（事务保证原子性）。
+  ///
+  /// `round_stack` 另有 `ON DELETE CASCADE` 外键兜底，此处显式删除以保证
+  /// 「删书后无孤儿 stack 行」不依赖 `PRAGMA foreign_keys` 是否开启。
   Future<void> deleteBook(String uuid) async {
     if (uuid.isEmpty) return;
     final db = await _helper.database;
     await db.transaction((txn) async {
+      await txn.delete('round_stack', where: 'book_uuid = ?', whereArgs: [uuid]);
       await txn.delete('rounds', where: 'book_uuid = ?', whereArgs: [uuid]);
       await txn.delete('books', where: 'uuid = ?', whereArgs: [uuid]);
     });

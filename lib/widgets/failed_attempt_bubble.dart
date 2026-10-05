@@ -9,7 +9,7 @@ import 'bubble_pointer_listener.dart';
 import 'chat_bubble.dart';
 
 /// 「失败条目」气泡：用户输入气泡 + AI 红色提示框（已截断 / 生成失败 + 原因）
-/// + 底部操作（重新提问 / 修改并重新提问 / 清除失败条目）。
+/// + 底部操作（代次控件 / 重新提问 / 修改并重新提问 / 清除失败条目）。
 ///
 /// 整块支持右键 / 长按弹出上下文菜单（复制输入 / 重新提问 / 修改并重新提问 / 清除）。
 class FailedAttemptBubble extends StatelessWidget {
@@ -21,6 +21,10 @@ class FailedAttemptBubble extends StatelessWidget {
   /// RAW 查看回调（null = 无 RAW 数据，不显示按钮）。
   final VoidCallback? onViewRaw;
 
+  /// 代次控件（失败态：`current = null` + 只给 `← 还原上一代`）；
+  /// null = 该分组没有可还原的存活代，不显示。
+  final Widget? versionStepper;
+
   const FailedAttemptBubble({
     super.key,
     required this.attempt,
@@ -28,6 +32,7 @@ class FailedAttemptBubble extends StatelessWidget {
     required this.onEditAndRetry,
     required this.onClear,
     this.onViewRaw,
+    this.versionStepper,
   });
 
   void _showMenu(BuildContext context, Offset position) {
@@ -102,7 +107,9 @@ class FailedAttemptBubble extends StatelessWidget {
           Wrap(
             spacing: 2,
             runSpacing: 2,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              ?versionStepper,
               ActionButton(
                 icon: Icons.replay,
                 label: '重新提问',

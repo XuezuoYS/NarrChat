@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../database/database_helper.dart';
+import '../database/round_stack_dao.dart';
 import '../models/book.dart';
 import '../models/round.dart';
+import '../models/round_stack.dart';
 import '../utils/uuid_utils.dart';
 
 /// 合并结果统计。
@@ -16,6 +18,9 @@ class DatabaseMergeResult {
   int roundsAdded = 0;
   int worldBookAdded = 0;
   int bookModsAdded = 0;
+
+  /// 随「内容部件 / 整本导入」搬运的版本树行数（v19；老备份无该表 → 0）。
+  int stackRowsAdded = 0;
 
   /// 冲突书「保留导入侧」导致的整本替换（删除本地同名书并写入导入侧副本）。
   int booksReplaced = 0;
@@ -35,6 +40,7 @@ class DatabaseMergeResult {
       roundsAdded == 0 &&
       worldBookAdded == 0 &&
       bookModsAdded == 0 &&
+      stackRowsAdded == 0 &&
       booksReplaced == 0 &&
       modsReplaced == 0 &&
       modsRenamed == 0;
@@ -86,6 +92,15 @@ class DatabaseMergeService {
     final localMods = await local.query('mods');
     final backupBookMods = await backup.query('book_mods');
     final localBookMods = await local.query('book_mods');
+    // 版本树（v19）：老备份库可能没有该表 → 保留本地 stack，交给采纳收敛。
+    final backupHasStack = await RoundStackDao.hasTable(backup);
+    final localHasStack = await RoundStackDao.hasTable(local);
+    final backupStackByBook = backupHasStack
+        ? _groupStackByBook(await backup.query('round_stack'))
+        : <String, List<RoundStackRow>>{};
+    final localStackByBook = localHasStack
+        ? _groupStackByBook(await local.query('round_stack'))
+        : <String, List<RoundStackRow>>{};
 
     // 子表按 book_uuid 分组；Mod 行按 uuid 索引（uuid 即两侧主键）。
     final backupRoundsByBook = _groupByBookUuid(backupRounds);
@@ -122,6 +137,12 @@ class DatabaseMergeService {
               worldBooks: backupWbByBook[backupRow['uuid']] ?? const [],
               bookMods: backupBookModsByBook[backupRow['uuid']] ?? const [],
               modsByUuid: backupModsByUuid,
+              hasRoundStack: backupHasStack,
+              stackRows: backupStackByBook[backupRow['uuid']] ?? const [],
+              versionLabel: await RoundStackDao.versionLabel(
+                backup,
+                backupRow['uuid'] as String? ?? '',
+              ),
             );
       final localSide = localRow == null
           ? null
@@ -131,6 +152,12 @@ class DatabaseMergeService {
               worldBooks: localWbByBook[localRow['uuid']] ?? const [],
               bookMods: localBookModsByBook[localRow['uuid']] ?? const [],
               modsByUuid: localModsByUuid,
+              hasRoundStack: localHasStack,
+              stackRows: localStackByBook[localRow['uuid']] ?? const [],
+              versionLabel: await RoundStackDao.versionLabel(
+                local,
+                localRow['uuid'] as String? ?? '',
+              ),
             );
 
       final MergeBookStatus status;
@@ -437,6 +464,16 @@ class DatabaseMergeService {
       );
       result.roundsAdded++;
     }
+    // 版本树与轮次同属内容部件：导入侧带 `round_stack` 表 → 一并搬运；
+    // 老备份无该表 → **保留本地版本树**（随后由采纳按 rounds 收敛）。
+    if (imported.hasRoundStack) {
+      await RoundStackDao().replaceBookStack(
+        txn,
+        localUuid,
+        [for (final row in imported.stackRows) row.copyWith(bookUuid: localUuid)],
+      );
+      result.stackRowsAdded += imported.stackRows.length;
+    }
     final patch = <String, Object?>{
       'failed_user_input': imported.failedUserInput,
       'failed_error_message': imported.failedErrorMessage,
@@ -615,6 +652,16 @@ class DatabaseMergeService {
       result.roundsAdded++;
     }
 
+    // 整本导入：版本树随书一起搬（备份无该表 → 留空，采纳会按 rounds 懒建）。
+    if (side.hasRoundStack) {
+      await RoundStackDao().replaceBookStack(
+        txn,
+        bookUuid,
+        [for (final row in side.stackRows) row.copyWith(bookUuid: bookUuid)],
+      );
+      result.stackRowsAdded += side.stackRows.length;
+    }
+
     for (final wb in side.worldBooks) {
       await txn.insert(
         'world_book_entries',
@@ -646,6 +693,9 @@ class DatabaseMergeService {
     required List<Map<String, Object?>> worldBooks,
     required List<Map<String, Object?>> bookMods,
     required Map<String, Map<String, Object?>> modsByUuid,
+    required bool hasRoundStack,
+    required List<RoundStackRow> stackRows,
+    required String versionLabel,
   }) {
     final roundModels = [
       for (final r in rounds) Round.fromMap(r),
@@ -697,6 +747,9 @@ class DatabaseMergeService {
       dbUuid: backupRow['uuid'] as String?,
       roundsCount: roundModels.length,
       lastTime: lastTime,
+      hasRoundStack: hasRoundStack,
+      stackRows: stackRows,
+      versionLabel: versionLabel,
       settingsUpdatedAt: (backupRow['settings_updated_at'] as int?) ?? 0,
       roundsUpdatedAt: (backupRow['rounds_updated_at'] as int?) ?? 0,
       fingerprint: _fingerprint(
@@ -900,6 +953,19 @@ class DatabaseMergeService {
     final iAt = imported?.settingsUpdatedAt ?? 0;
     final lAt = local?.settingsUpdatedAt ?? 0;
     return lAt > iAt ? MergePartChoice.keepLocal : MergePartChoice.import;
+  }
+
+  /// 版本树行按 `book_uuid` 分组（v19；无表时调用方直接跳过）。
+  static Map<String, List<RoundStackRow>> _groupStackByBook(
+    List<Map<String, Object?>> rows,
+  ) {
+    final map = <String, List<RoundStackRow>>{};
+    for (final row in rows) {
+      final uuid = (row['book_uuid'] as String? ?? '').trim();
+      if (uuid.isEmpty) continue;
+      (map[uuid] ??= []).add(RoundStackRow.fromMap(row));
+    }
+    return map;
   }
 
   static Map<String, List<Map<String, Object?>>> _groupByBookUuid(
@@ -1163,6 +1229,15 @@ class BookMergeSide {
   final String failedErrorMessage;
   final String failedUserImages;
 
+  /// 该侧库是否带 `round_stack` 表（老备份 → false：导入内容部件时保留本地版本树）。
+  final bool hasRoundStack;
+
+  /// 该侧版本树行（`round_stack`；无表 / 空表为 `[]`）。
+  final List<RoundStackRow> stackRows;
+
+  /// 只读代次标签（`'第 3 代 / 最新第 7 代'`；无版本树 → `''`）。
+  final String versionLabel;
+
   const BookMergeSide({
     required this.book,
     required this.rounds,
@@ -1180,6 +1255,9 @@ class BookMergeSide {
     this.failedUserInput = '',
     this.failedErrorMessage = '',
     this.failedUserImages = '[]',
+    this.hasRoundStack = false,
+    this.stackRows = const [],
+    this.versionLabel = '',
   });
 }
 

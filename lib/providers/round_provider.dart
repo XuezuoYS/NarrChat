@@ -13,6 +13,7 @@ import '../models/book.dart';
 import '../models/failed_attempt.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
+import '../models/round_stack.dart';
 import '../services/agent/agent_default_tools.dart';
 import '../services/agent/agent_mode_profile.dart';
 import '../services/agent/agent_round_runner.dart';
@@ -31,6 +32,7 @@ import '../services/image_store.dart';
 import '../services/memory_merge_planner.dart';
 import '../services/non_stream_replay.dart';
 import '../services/prompt_interface.dart';
+import '../services/round_stack_service.dart';
 import '../services/round_warnings_store.dart';
 import '../services/world_book_scanner.dart';
 import 'ai_settings_provider.dart';
@@ -149,6 +151,8 @@ class RoundProvider extends ChangeNotifier {
     /// 轮次常驻警告的本地存储（缺省用内存实现：仅会话内存、不落盘，
     /// 行为与「仅内存」时代一致；生产由 main 注入 [FileRoundWarningsStore]）。
     RoundWarningsStore? warningsStore,
+    /// 版本树（修改还原）领域服务；缺省 = 真实服务（生产）。
+    RoundStackService? roundStackService,
   })  : _dao = dao ?? RoundDao(),
         _bookDao = bookDao ?? BookDao(),
         _aiService = aiService ?? AiService(),
@@ -173,6 +177,7 @@ class RoundProvider extends ChangeNotifier {
     // 测试 / 调用方可注入工具（非 null 时 Agent 运行优先使用）。
     _webSearchTool = webSearchTool;
     _fetchPageTool = fetchPageTool;
+    _stack = roundStackService ?? RoundStackService();
   }
 
   final RoundDao _dao;
@@ -199,6 +204,23 @@ class RoundProvider extends ChangeNotifier {
 
   /// 轮次常驻警告的本地存储（本地数据层，不入库、不云同步）。
   final RoundWarningsStore _warningsStore;
+
+  /// 版本树（修改还原）领域服务。
+  late final RoundStackService _stack;
+
+  /// 版本树服务（测试注入 / 启动指纹接线用，只读暴露）。
+  RoundStackService get roundStackService => _stack;
+
+  /// 本机版本索引缓存（一次元数据查询建好，UI **同步**查询）。
+  RoundStackIndex _versionIndex = RoundStackIndex.empty();
+
+  int _versionsRevision = 0;
+
+  /// 版本树 / 投影变更计数：任何 stack 或投影变化都自增。
+  ///
+  /// 供 UI 做缓存失效（楼层跳转的条目高度估算依赖「代次控件是否显示」，
+  /// 控件显隐会改变条目高度 → 必须并入失效依据）。
+  int get versionsRevision => _versionsRevision;
 
   /// 生成成功回调（书籍 uuid, 书名）。
   final void Function(String bookUuid, String bookTitle)? onGenerationCompleted;
@@ -462,20 +484,23 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// 若书籍尚无任何轮次，自动创建「第零轮」（round_index = 0），
   /// 用于在开始对话前编辑初始的世界状态与角色状态。
+  ///
+  /// v19（修改还原）：加载后跑一次**廉价**版本树采纳（老库懒建根 / 悬空锚点自愈），
+  /// 并重建本机版本索引；采纳可能改写 `use_stack_uuid`，故随后重读投影行。
   Future<void> loadRounds(String bookUuid) async {
-    // 切换书籍：清理旧书的内存 RAW 数据，避免跨书误配。
-    if (_bookUuid.isNotEmpty && _bookUuid != bookUuid) {
-      _rawDataByRound.clear();
-    }
     _bookUuid = bookUuid;
+    // 投影重建会换 `rounds.id`：每次重载都清该书的 RAW 内存缓存（不再只在换书时清）。
+    _rawDataByRound.clear();
     try {
       _setRounds(await _dao.getRoundsByBook(bookUuid));
       if (_rounds.isEmpty) {
         await _dao.insertRound(
           Round(bookUuid: bookUuid, roundIndex: 0, createdAt: DateTime.now()),
         );
-        _setRounds(await _dao.getRoundsByBook(bookUuid));
       }
+      await _adoptStack(bookUuid, force: false);
+      _setRounds(await _dao.getRoundsByBook(bookUuid));
+      await _refreshVersionIndex(bookUuid);
     } catch (e) {
       _error = e.toString();
     }
@@ -484,6 +509,54 @@ class RoundProvider extends ChangeNotifier {
     // 常驻警告：水合本地存储 + 按当前轮次校验清理（须在失败条目之后）。
     await _syncWarningsWithBook(bookUuid);
     notifyListeners();
+  }
+
+  /// 版本树 / 投影变更计数自增（UI 缓存失效依据）。
+  void _bumpVersions() => _versionsRevision++;
+
+  /// 本轮的父锚点 = 上一轮**当前代**的 uuid；第零轮 / 前一轮缺失 → null。
+  String? _fatherAnchorFor(int roundIndex) {
+    if (roundIndex <= 0) return null;
+    for (final round in _rounds) {
+      if (round.roundIndex == roundIndex - 1) {
+        return round.useStackUuid.isEmpty ? null : round.useStackUuid;
+      }
+    }
+    return null;
+  }
+
+  /// 版本树采纳（best-effort）：失败**不得**影响轮次加载（版本树是辅助特性，
+  /// 老库 / 无真实库路径时必须静默降级）。返回是否发生了实际变化。
+  Future<bool> _adoptStack(String bookUuid, {required bool force}) async {
+    if (bookUuid.isEmpty) return false;
+    try {
+      final report = await _stack.adoptIfNeeded(bookUuid, force: force);
+      final changed = report != null && report.hasChanges;
+      if (changed) _bumpVersions();
+      return changed;
+    } catch (e) {
+      debugPrint('[round_stack] 采纳失败（已忽略）：$e');
+      return false;
+    }
+  }
+
+  /// 重建本机版本索引（只读元数据列，一次查询）。
+  Future<void> _refreshVersionIndex(String bookUuid) async {
+    try {
+      _versionIndex = await _stack.loadIndex(bookUuid);
+    } catch (e) {
+      debugPrint('[round_stack] 版本索引加载失败（已忽略）：$e');
+      _versionIndex = RoundStackIndex.empty();
+    }
+  }
+
+  /// 任何轮次操作前先清失败态（失败态不写 stack / rounds，操作即删除）。
+  Future<void> _clearFailureForRoundOp() async {
+    if (_bookUuid.isEmpty) return;
+    final gen = _gens[_bookUuid];
+    if (gen == null || gen.failedAttempt.isEmpty) return;
+    gen.failedRawExchanges = null;
+    await _setFailedAttempt(_bookUuid, const FailedAttempt());
   }
 
   /// 加载本书「失败条目」；读取失败时置空（不打扰用户）。
@@ -531,6 +604,109 @@ class RoundProvider extends ChangeNotifier {
       return;
     }
     await loadRounds(_bookUuid);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 修改还原（版本树：`round_stack` + `rounds.use_stack_uuid`）
+  // ---------------------------------------------------------------------------
+
+  /// 该轮的可切换版本信息（`null` = 不显示控件）。
+  ///
+  /// **同步**读本机缓存索引（一次元数据查询建好，绝不逐轮查库 / 读正文）；
+  /// 缓存随 [loadRounds] 与 [versionsRevision] 失效。
+  RoundVersionInfo? versionInfoFor(int roundIndex) {
+    if (_bookUuid.isEmpty) return null;
+    Round? current;
+    for (final round in _rounds) {
+      if (round.roundIndex == roundIndex) {
+        current = round;
+        break;
+      }
+    }
+    return _versionIndex.infoFor(
+      roundIndex,
+      fatherUuid: _fatherAnchorFor(roundIndex),
+      currentUuid: current?.useStackUuid,
+    );
+  }
+
+  /// 切换本轮版本：[forward] = true 取下一存活代，false 取上一存活代；
+  /// 没有可切换目标 / 正在生成 → 直接返回 false。
+  ///
+  /// 成功后：清该轮起的常驻黄框、清失败态、重载投影（RAW 缓存随之清空）。
+  /// **不**滚动到底、**不**触发云同步（切换不改变内容权威，只改投影）。
+  Future<bool> switchRoundVersion(
+    int roundIndex, {
+    required bool forward,
+  }) async {
+    if (_bookUuid.isEmpty || isSending) return false;
+    final info = versionInfoFor(roundIndex);
+    final target = forward ? info?.nextUuid : info?.prevUuid;
+    if (target == null) return false;
+    final bookUuid = _bookUuid;
+    try {
+      final switched = await _stack.switchTo(
+        bookUuid: bookUuid,
+        roundIndex: roundIndex,
+        targetUuid: target,
+      );
+      if (!switched) return false;
+      _bumpVersions();
+      // 投影重建后 `rounds.id` 变化 → 清 RAW 内存缓存。
+      _rawDataByRound.clear();
+      final gen = _gen(bookUuid);
+      // 该轮及其后轮次的常驻黄框随切换撤销（本地提示，不入库）。
+      _dropRoundWarningsFrom(gen, roundIndex);
+      gen.failedRawExchanges = null;
+      await _setFailedAttempt(bookUuid, const FailedAttempt());
+      await loadRounds(bookUuid);
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// 采纳入口：以 `rounds` 为准收敛版本树（联网同步 / 导入 db / 启动指纹变化调用）。
+  ///
+  /// [force] = true 做全量内容比对；false 只在「存在空锚点 / 悬空锚点」时工作。
+  /// 采纳改动投影锚点后立即重载轮次（外部改动对 UI 立刻可见）。
+  Future<void> adoptRoundStack({bool force = false}) async {
+    final bookUuid = _bookUuid;
+    if (bookUuid.isEmpty) return;
+    final changed = await _adoptStack(bookUuid, force: force);
+    if (!changed) return;
+    try {
+      _setRounds(await _dao.getRoundsByBook(bookUuid));
+      _rawDataByRound.clear();
+    } catch (e) {
+      _error = e.toString();
+    }
+    await _refreshVersionIndex(bookUuid);
+    notifyListeners();
+  }
+
+  /// 失败条目重试：以失败时的输入与图片重新生成（[sendRound] 会先清空失败条目）。
+  ///
+  /// 供 UI「重新提问」调用（逻辑下沉自 `chat_screen`，统一走生成的新增代路径）。
+  Future<bool> retryFailedRound({
+    Book? book,
+    String? userInput,
+    List<String>? userImages,
+  }) async {
+    var b = book;
+    if (b == null && _bookUuid.isNotEmpty) {
+      b = await _bookDao.getBookByUuid(_bookUuid);
+    }
+    if (b == null || b.uuid.isEmpty) return false;
+    final input = userInput ?? failedAttempt.userInput;
+    if (input.isEmpty) return false;
+    return sendRound(
+      userInput: input,
+      book: b,
+      userImages: userImages ?? failedAttempt.userImages,
+    );
   }
 
   /// 预览「此刻若发送将实际发出」的请求体 JSON（pretty 格式化，不发送）。
@@ -1050,7 +1226,14 @@ class RoundProvider extends ChangeNotifier {
         userImages: userImages ?? const [],
         createdAt: DateTime.now(),
       );
-      final newRoundId = await _dao.insertRound(newRound);
+      // 版本树：本轮 = 同分组内新的一代（父 = 上一轮当前代），投影行同事务写入。
+      // 该轮若曾被重写，旧代已作为同父兄弟代保留在库中（可 `← / →` 切回）。
+      final newRoundId = await _stack.attachNewGeneration(
+        bookUuid: b.uuid,
+        round: newRound,
+        fatherUuid: _fatherAnchorFor(newRound.roundIndex),
+      );
+      _bumpVersions();
       // 结束态：生成期间的顶部警告转存为该轮的常驻警告（空即清除上一轮失败
       // 尝试留下的同下标提示）；写入本地数据层，不入用户库、不云同步。
       // Chat 模式无回炉机会：档位要求的记忆合并没落地 → 追加一条常驻警告
@@ -1066,14 +1249,21 @@ class RoundProvider extends ChangeNotifier {
         ...gen.agentWarnings,
         ...chatMergeWarnings,
       ]);
-      // 成功轮次：RAW 时间线归属到本轮（随后清理当前缓冲）。
-      _rawDataByRound[newRoundId] = List.of(gen.rawExchanges);
+      // 成功轮次：RAW 时间线先取出缓冲，待投影重载后再按**实际行 id**归位
+      //（`loadRounds` 会清空本书 RAW 缓存，而投影重建可能改变 `rounds.id`）。
+      final rawExchanges = List.of(gen.rawExchanges);
       gen.rawExchanges.clear();
       // 自动云同步：所有生成结束路径（成功 / 失败 / 中断）统一在 finally 触发，
       // 不阻塞本轮返回；上传失败也不影响本轮结果。
       if (_bookUuid == b.uuid) {
         await loadRounds(b.uuid);
       }
+      final liveRound = _bookUuid == b.uuid
+          ? _rounds
+              .where((r) => r.roundIndex == newRound.roundIndex)
+              .firstOrNull
+          : null;
+      _rawDataByRound[liveRound?.id ?? newRoundId] = rawExchanges;
       // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
       onGenerationCompleted?.call(b.uuid, b.title);
       return true;
@@ -2031,11 +2221,21 @@ class RoundProvider extends ChangeNotifier {
 
   /// 删除轮次。
   ///
-  /// - [deleteFollowing] 为 false：仅删除本轮；
+  /// - [deleteFollowing] 为 false：仅删除本轮（该轮的**全部代跨分支**一并物理删除，
+  ///   后续轮次保留并由采纳重新挂父）；
   /// - [deleteFollowing] 为 true：删除本轮及后续所有轮次。
+  ///
+  /// 与「重写本轮」（刷新 / 修改并重新提问）的关键区别：重写只删**投影行**，
+  /// 旧代保留在 `round_stack` 里供切换；删除则连历史代一起物理删除。
   Future<void> deleteRound(Round round, {required bool deleteFollowing}) async {
     try {
-      await _dao.deleteRound(round.id!, deleteFollowing: deleteFollowing);
+      await _clearFailureForRoundOp();
+      await _stack.deleteFrom(
+        bookUuid: round.bookUuid,
+        fromRoundIndex: round.roundIndex,
+        deleteFollowing: deleteFollowing,
+      );
+      _bumpVersions();
       // 常驻警告随轮次一起消失（重生成此轮 / 修改提问都先删轮，故一并覆盖）。
       final gen = _gens[round.bookUuid];
       if (gen != null) {
@@ -2048,6 +2248,9 @@ class RoundProvider extends ChangeNotifier {
       if (_bookUuid.isNotEmpty) {
         await loadRounds(_bookUuid);
       }
+      // 删除是内容部件的真实变更：照旧触发一次自动同步（与生成 / 编辑一致；
+      // 否则被删轮次要等到下一次用户操作才上云，期间可能被远端推回）。
+      _cloudSyncProvider?.triggerSync();
       notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -2056,12 +2259,12 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 刷新本轮：
-  /// 1. 删除本轮及后续所有轮次；
-  /// 2. 以当前轮次的用户输入重新请求 AI（本轮被新结果替换）。
+  /// 1. 清失败态，删除本轮起的**投影行**（旧代保留，可切换回来）；
+  /// 2. 以当前轮次的用户输入重新请求 AI（本轮被新结果替换为新的一代）。
   Future<void> refreshRound(Round round, {Book? book}) async {
     final b = book;
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
-    await deleteRound(round, deleteFollowing: true);
+    await _rewriteRound(round.roundIndex);
     await sendRound(
       userInput: round.userInput,
       book: b,
@@ -2070,9 +2273,9 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 修改并重新提问：
-  /// 1. 更新该轮的用户输入；
-  /// 2. 删除本轮及后续所有轮次；
-  /// 3. 以修改后的输入重新请求 AI（替换原轮次及后续，而非追加新轮次）。
+  /// 1. 原地修改该轮当前代（用户输入）；
+  /// 2. 删除该轮起的投影行（旧代保留）；
+  /// 3. 以修改后的输入重新请求 AI（替换为新的一代）。
   Future<void> editAndReAsk(
     Round round,
     String editedInput, {
@@ -2081,66 +2284,71 @@ class RoundProvider extends ChangeNotifier {
   }) async {
     final b = book;
     if (b == null || b.uuid.isEmpty || _gen(b.uuid).isSending) return;
-    await updateUserInput(round.id!, editedInput);
-    await deleteRound(round, deleteFollowing: true);
+    await _applyEdit(round.id!, (r) => r.copyWith(userInput: editedInput));
+    await _rewriteRound(round.roundIndex);
     await sendRound(userInput: editedInput, book: b, userImages: images);
+  }
+
+  /// 「重写某轮」的准备：清失败态 → 删该轮起的投影行（`round_stack` 旧代保留）
+  /// → 立刻重载投影。
+  ///
+  /// 必须重载：`sendRound` 的 `nextRoundIndex` 与父锚点都按当前投影链计算，
+  /// 否则会在“删掉之后仍按旧链”的错号上新建轮次。
+  Future<void> _rewriteRound(int roundIndex) async {
+    if (_bookUuid.isEmpty) return;
+    await _clearFailureForRoundOp();
+    await _stack.deleteProjectionFrom(_bookUuid, roundIndex);
+    _bumpVersions();
+    await loadRounds(_bookUuid);
+  }
+
+  /// 原地修改（§4.2）：同一事务内改「当前代」内容 + 投影行内容，不新增代。
+  ///
+  /// 供编辑 AI 正文 / 用户输入 / 侧边栏白名单字段共用；失败态先清。
+  Future<bool> _applyEdit(int roundId, Round Function(Round) change) async {
+    final round = _rounds.where((r) => r.id == roundId).firstOrNull;
+    if (round == null) return false;
+    await _clearFailureForRoundOp();
+    await _stack.applyInPlaceEdit(round: change(round));
+    _bumpVersions();
+    if (_bookUuid.isNotEmpty) {
+      await loadRounds(_bookUuid);
+    }
+    _cloudSyncProvider?.triggerSync();
+    return true;
   }
 
   /// 编辑 AI 正文（长按/右键 → 编辑正文）。
   ///
-  /// 保存成功后刷新本轮 `updated_at`（见 [RoundDao.updateRoundFields]）
-  /// 并触发一次自动云同步，保证编辑结果可被推送。
+  /// 原地修改当前代（不新增版本），保存后刷新 `updated_at` 并触发一次自动云同步。
   Future<void> updateNarrative(int roundId, String narrative) async {
     try {
-      await _dao.updateRoundFields(roundId, {'ai_narrative': narrative});
-      if (_bookUuid.isNotEmpty) {
-        await loadRounds(_bookUuid);
-      }
-      _cloudSyncProvider?.triggerSync();
+      await _applyEdit(roundId, (r) => r.copyWith(aiNarrative: narrative));
     } catch (e) {
       _error = e.toString();
       notifyListeners();
     }
   }
 
-  /// 编辑用户输入（长按/右键 → 编辑输入）。
-  ///
-  /// 保存成功后刷新本轮 `updated_at` 并触发一次自动云同步。
+  /// 编辑用户输入（长按/右键 → 编辑输入）：同样走原地修改。
   Future<void> updateUserInput(int roundId, String input) async {
     try {
-      await _dao.updateRoundFields(roundId, {'user_input': input});
-      if (_bookUuid.isNotEmpty) {
-        await loadRounds(_bookUuid);
-      }
-      _cloudSyncProvider?.triggerSync();
+      await _applyEdit(roundId, (r) => r.copyWith(userInput: input));
     } catch (e) {
       _error = e.toString();
       notifyListeners();
     }
   }
 
-  /// 侧边栏显式保存：将单个字段（数据库列名）写回并重新加载。
+  /// 侧边栏显式保存：将单个字段（数据库列名）原地写回当前代 + 投影行并重新加载。
   ///
   /// 仅允许白名单内的字段，防止误写；返回是否保存成功。
   /// 保存成功后刷新本轮 `updated_at` 并触发一次自动云同步
   /// （写库失败 / 被拒时不同步，避免推送未落库的编辑）。
   Future<bool> updateRoundField(int roundId, String field, String value) async {
-    const allowed = {
-      RoundField.worldState,
-      RoundField.characterState,
-      RoundField.memorySummary,
-      RoundField.currentTime,
-      RoundField.aiNarrative,
-      RoundField.userInput,
-    };
-    if (!allowed.contains(field)) return false;
+    if (!RoundField.editable.contains(field)) return false;
     try {
-      await _dao.updateRoundFields(roundId, {field: value});
-      if (_bookUuid.isNotEmpty) {
-        await loadRounds(_bookUuid);
-      }
-      _cloudSyncProvider?.triggerSync();
-      return true;
+      return await _applyEdit(roundId, (r) => r.withField(field, value));
     } catch (e) {
       _error = e.toString();
       notifyListeners();

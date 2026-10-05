@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 18;
+  static const int _dbVersion = 19;
 
   Database? _database;
 
@@ -48,6 +48,7 @@ class DatabaseHelper {
       onCreate: (db, version) async {
         await _createBooksTable(db);
         await _createRoundsTable(db);
+        await _createRoundStackTable(db);
         await _createWorldBookTable(db);
         await _createModsTable(db);
         await _createBookModsTable(db);
@@ -285,6 +286,20 @@ class DatabaseHelper {
             'memory_summary_rounds',
             'ALTER TABLE books ADD COLUMN memory_summary_rounds '
                 'INTEGER NOT NULL DEFAULT 0',
+          );
+        }
+        if (oldVersion < 19) {
+          // v19：修改还原（版本树）。**只增不改**——
+          // 1) 新表 `round_stack`（每「代」一行，`father_uuid` 指上一轮当时的活动代）；
+          // 2) `rounds` 增列 `use_stack_uuid`（本行对应的 stack 行，空 = 待采纳）。
+          // 两者皆幂等（IF NOT EXISTS / 先查列），保证「2.3 → 2.4 → 回退 2.3 →
+          // 再升 2.4」不产生 `table already exists` / `duplicate column name`。
+          await _createRoundStackTable(db);
+          await _addColumnIfMissing(
+            db,
+            'rounds',
+            'use_stack_uuid',
+            "ALTER TABLE rounds ADD COLUMN use_stack_uuid TEXT DEFAULT ''",
           );
         }
   }
@@ -625,6 +640,9 @@ class DatabaseHelper {
 
   /// `rounds`：自增 id 保留，所属书籍以 [booksTable]（v16 迁移期为 `books_new`）
   /// 的 uuid 外键引用。
+  ///
+  /// `use_stack_uuid`（v19）**必须保持在列尾**：v19 迁移用 `ALTER TABLE ... ADD
+  /// COLUMN` 追加，只有列序一致才能保证「迁移产物 = 新装库 schema」（DB-1）。
   static Future<void> _createRoundsTable(
     Database db, {
     String suffix = '',
@@ -650,9 +668,59 @@ class DatabaseHelper {
         ai_images TEXT NOT NULL DEFAULT '[]',
         created_at DATETIME,
         updated_at INTEGER NOT NULL DEFAULT 0,
+        use_stack_uuid TEXT DEFAULT '',
         FOREIGN KEY (book_uuid) REFERENCES @B@ (uuid) ON DELETE CASCADE
       )
     '''.replaceAll('@S@', suffix).replaceAll('@B@', booksTable));
+  }
+
+  /// `round_stack`：修改还原的版本树（v19 新增）。
+  ///
+  /// - 每「代」一行：`father_uuid` 指向**上一轮当时活动代**（根为 NULL），
+  ///   同一 `(book_uuid, round_index, father_uuid)` 分组内以 `round_serial_num` 记序；
+  /// - `round_state = 'use'` 是「分组内选中记忆」（闲置为 NULL）；
+  /// - **不建** `father_uuid` 自引用外键：删除是物理删除，自引用外键会阻止删父行
+  ///   或级联掉要保留的非活动分支；不可达行靠「孤儿规则 + purgeOrphans」清理；
+  /// - 外键只指向 `books(uuid)`（删书级联），并由 `BookDao` 显式删除兜底。
+  ///
+  /// 新装库（`onCreate`）与 v19 迁移共用本 helper，保证两侧 DDL 逐字一致。
+  static Future<void> _createRoundStackTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS round_stack (
+        uuid             TEXT PRIMARY KEY,
+        book_uuid        TEXT NOT NULL,
+        father_uuid      TEXT,
+        round_index      INTEGER NOT NULL,
+        round_serial_num INTEGER NOT NULL,
+        round_state      TEXT,
+        round_created_at INTEGER NOT NULL DEFAULT 0,
+        user_input         TEXT DEFAULT '',
+        ai_narrative       TEXT DEFAULT '',
+        world_state        TEXT DEFAULT '',
+        character_state    TEXT DEFAULT '',
+        memory_summary     TEXT DEFAULT '',
+        current_time       TEXT DEFAULT '',
+        recommended_action TEXT DEFAULT '',
+        tokens_in          INTEGER,
+        tokens_out         INTEGER,
+        cached_tokens_in   INTEGER,
+        model_name         TEXT DEFAULT '',
+        user_images        TEXT NOT NULL DEFAULT '[]',
+        ai_images          TEXT NOT NULL DEFAULT '[]',
+        FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS ix_stack_group ON round_stack '
+      '(book_uuid, round_index, father_uuid, round_serial_num)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS ix_stack_father ON round_stack (father_uuid)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS ix_stack_book ON round_stack '
+      '(book_uuid, round_index)',
+    );
   }
 
   /// `world_book_entries`：自增 id 保留，书籍以 uuid 引用。

@@ -110,6 +110,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -206,6 +207,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -293,6 +295,7 @@ void main() {
     final dao = FakeRoundDao();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(happySse()))),
       aiSettingsProvider: AiSettingsProvider(),
@@ -343,8 +346,10 @@ void main() {
     Future<Map<String, dynamic>> previewWith(
       ExperimentalSettingsProvider experimental,
     ) async {
+      final roundDao = FakeRoundDao();
       final provider = RoundProvider(
-        dao: FakeRoundDao(),
+        dao: roundDao,
+        roundStackService: FakeRoundStackService(roundDao: roundDao),
         bookDao: FakeBookDao(),
         aiService: AiService(client: MockClient((_) async => sse(happySse()))),
         aiSettingsProvider: settings,
@@ -420,6 +425,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -492,6 +498,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -550,6 +557,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -603,6 +611,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -661,6 +670,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -756,6 +766,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -831,6 +842,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -898,6 +910,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -952,8 +965,10 @@ void main() {
         return sse(calls == 5 ? truncatedLines : storyLines);
       }),
     );
+    final roundDao = FakeRoundDao();
     final provider = RoundProvider(
-      dao: FakeRoundDao(),
+      dao: roundDao,
+      roundStackService: FakeRoundStackService(roundDao: roundDao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -993,6 +1008,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -1036,6 +1052,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),

@@ -1,5 +1,6 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../../database/round_stack_dao.dart';
 import 'sync_fingerprint.dart';
 import 'sync_merge_planner.dart';
 
@@ -80,6 +81,15 @@ class SyncLocalSnapshot {
       if (bookUuid.isEmpty) continue;
       (bookModsByBook[bookUuid] ??= []).add(r);
     }
+    // 版本树（v19）折进「轮次部件」：老库 / 无表时视为空（守卫避免查询报错）。
+    final stackByBook = <String, List<Map<String, Object?>>>{};
+    if (await RoundStackDao.hasTable(db)) {
+      for (final r in await db.query('round_stack')) {
+        final bookUuid = (r['book_uuid'] as String? ?? '').trim();
+        if (bookUuid.isEmpty) continue;
+        (stackByBook[bookUuid] ??= []).add(r);
+      }
+    }
 
     // uuid → 名称（书-Mod 指纹按名称归一化：名称是内容，uuid 是身份）。
     // 软删 Mod 不参与。
@@ -112,6 +122,7 @@ class SyncLocalSnapshot {
           roundsFp: SyncFingerprint.roundsWithFailed(
             [...roundsByBook[uuid] ?? const []],
             r,
+            stackRows: [...stackByBook[uuid] ?? const []],
           ),
           worldBookFp: SyncFingerprint.worldBooks(
             [...wbByBook[uuid] ?? const []],

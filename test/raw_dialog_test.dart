@@ -215,6 +215,7 @@ void main() {
       ]);
       final provider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         aiSettingsProvider: _SearchDisabledSettings(),
@@ -266,6 +267,7 @@ void main() {
       ]);
       final provider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         webSearchTool: _FakeWebSearchTool(),
@@ -346,6 +348,7 @@ void main() {
       );
       final provider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         searchService: search,
@@ -391,6 +394,7 @@ void main() {
       final bookDao = FakeBookDao();
       final provider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: _FailingAiService(),
         aiSettingsProvider: _SearchDisabledSettings(),
@@ -423,6 +427,7 @@ void main() {
       ]);
       final provider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         aiSettingsProvider: _SearchDisabledSettings(),
@@ -451,8 +456,10 @@ void main() {
     });
 
     test('联网搜索开启：预览含工具 schema，system 不再追加联网指令', () async {
+      final roundDao = FakeRoundDao();
       final provider = RoundProvider(
-        dao: FakeRoundDao(),
+        dao: roundDao,
+        roundStackService: FakeRoundStackService(roundDao: roundDao),
         bookDao: FakeBookDao(),
         aiService: _ScriptAiService([
           AiCallResult(content: _fullContent, promptTokens: 1, completionTokens: 1),
@@ -486,8 +493,10 @@ void main() {
     });
 
     test('未选择书籍：抛出 StateError', () async {
+      final roundDao = FakeRoundDao();
       final provider = RoundProvider(
-        dao: FakeRoundDao(),
+        dao: roundDao,
+        roundStackService: FakeRoundStackService(roundDao: roundDao),
         bookDao: FakeBookDao(),
         aiService: _ScriptAiService([
           AiCallResult(content: _fullContent, promptTokens: 1, completionTokens: 1),

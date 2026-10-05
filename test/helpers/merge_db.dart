@@ -10,15 +10,18 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// 不参与云同步），但一律改以 `book_uuid` / `mod_uuid` 引用父书的 uuid。
 ///
 /// 涵盖 `database_merge_service.dart` 的 `buildPlan` / `applyPlan` 会读写的全部表与列
-/// （books 含失败条目列、rounds 含 model_name/user_images/ai_images）。
-Future<Database> createMergeDb() async {
+/// （books 含失败条目列、rounds 含 model_name/user_images/ai_images/use_stack_uuid）。
+///
+/// [withRoundStack]：是否建 v19 的 `round_stack` 版本树表。
+/// 传 false 用于模拟「老备份库」（v18 及更早，没有该表）→ 调用方必须保留本地 stack。
+Future<Database> createMergeDb({bool withRoundStack = true}) async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   final db = await openDatabase(
     inMemoryDatabasePath,
     singleInstance: false,
   );
-  await _createSchema(db);
+  await _createSchema(db, withRoundStack: withRoundStack);
   return db;
 }
 
@@ -30,19 +33,23 @@ Future<Database> createMergeDb() async {
 Future<String> createMergeFileDb({
   String title = '导入书',
   String uuid = 'file-import-book',
+  bool withRoundStack = true,
 }) async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   final dir = await Directory.systemTemp.createTemp('narrchat_import_');
   final path = p.join(dir.path, 'backup.db');
   final db = await databaseFactoryFfi.openDatabase(path);
-  await _createSchema(db);
+  await _createSchema(db, withRoundStack: withRoundStack);
   await db.insert('books', {'uuid': uuid, 'title': title});
   await db.close();
   return path;
 }
 
-Future<void> _createSchema(Database db) async {
+Future<void> _createSchema(
+  Database db, {
+  bool withRoundStack = true,
+}) async {
   await db.execute('''
     CREATE TABLE books (
       uuid TEXT PRIMARY KEY,
@@ -84,9 +91,36 @@ Future<void> _createSchema(Database db) async {
       user_images TEXT NOT NULL DEFAULT '[]',
       ai_images TEXT NOT NULL DEFAULT '[]',
       created_at DATETIME,
-      updated_at INTEGER NOT NULL DEFAULT 0
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      use_stack_uuid TEXT DEFAULT ''
     )
   ''');
+  if (withRoundStack) {
+    await db.execute('''
+      CREATE TABLE round_stack (
+        uuid             TEXT PRIMARY KEY,
+        book_uuid        TEXT NOT NULL,
+        father_uuid      TEXT,
+        round_index      INTEGER NOT NULL,
+        round_serial_num INTEGER NOT NULL,
+        round_state      TEXT,
+        round_created_at INTEGER NOT NULL DEFAULT 0,
+        user_input         TEXT DEFAULT '',
+        ai_narrative       TEXT DEFAULT '',
+        world_state        TEXT DEFAULT '',
+        character_state    TEXT DEFAULT '',
+        memory_summary     TEXT DEFAULT '',
+        current_time       TEXT DEFAULT '',
+        recommended_action TEXT DEFAULT '',
+        tokens_in          INTEGER,
+        tokens_out         INTEGER,
+        cached_tokens_in   INTEGER,
+        model_name         TEXT DEFAULT '',
+        user_images        TEXT NOT NULL DEFAULT '[]',
+        ai_images          TEXT NOT NULL DEFAULT '[]'
+      )
+    ''');
+  }
   await db.execute('''
     CREATE TABLE world_book_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +129,8 @@ Future<void> _createSchema(Database db) async {
       content TEXT DEFAULT '',
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at DATETIME,
-      updated_at INTEGER NOT NULL DEFAULT 0
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      use_stack_uuid TEXT DEFAULT ''
     )
   ''');
   await db.execute('''

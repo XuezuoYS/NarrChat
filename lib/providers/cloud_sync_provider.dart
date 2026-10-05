@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../database/database_helper.dart';
 import '../database/book_dao.dart';
 import '../database/mod_dao.dart';
+import '../database/round_stack_dao.dart';
 import '../database/sync_dao.dart';
 import '../models/app_notice.dart';
 import '../services/cloud_sync_service.dart';
@@ -1189,6 +1190,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 收集当前库实际引用的图片路径（存活集；仅写入 manifest.images 展示项）。
+  ///
+  /// v19 起把**版本树里被切走的代**所引用的图片也计入：否则图片同步会把
+  /// 「只被历史代引用」的图当垃圾删除，切回旧代时裂图。
   Future<List<String>> _referencedImages() async {
     final db = await DatabaseHelper.instance.database;
     final out = <String>{};
@@ -1198,6 +1202,15 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     )) {
       out.addAll(_decodeImgList(row['user_images']));
       out.addAll(_decodeImgList(row['ai_images']));
+    }
+    if (await RoundStackDao.hasTable(db)) {
+      for (final row in await db.query(
+        'round_stack',
+        columns: ['user_images', 'ai_images'],
+      )) {
+        out.addAll(_decodeImgList(row['user_images']));
+        out.addAll(_decodeImgList(row['ai_images']));
+      }
     }
     for (final row in await db.query('books', columns: ['failed_user_images'])) {
       out.addAll(_decodeImgList(row['failed_user_images']));

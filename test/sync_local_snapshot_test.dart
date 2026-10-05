@@ -1,4 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/database/round_stack_dao.dart';
+import 'package:narrchat/models/round_stack.dart';
+import 'package:narrchat/services/sync/sync_fingerprint.dart';
 import 'package:narrchat/services/sync/sync_local_snapshot.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -97,6 +100,35 @@ void main() {
       },
     );
     return database;
+  }
+
+  /// 在 [db] 上补建 v19 的 `round_stack`（夹具基础 schema 保持 v16/v18 形态：
+  /// 老库没有该表，覆盖「带表 / 不带表」两条路径）。
+  Future<void> createRoundStackTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE round_stack(
+        uuid TEXT PRIMARY KEY,
+        book_uuid TEXT NOT NULL,
+        father_uuid TEXT,
+        round_index INTEGER NOT NULL,
+        round_serial_num INTEGER NOT NULL,
+        round_state TEXT,
+        round_created_at INTEGER NOT NULL DEFAULT 0,
+        user_input TEXT DEFAULT '',
+        ai_narrative TEXT DEFAULT '',
+        world_state TEXT DEFAULT '',
+        character_state TEXT DEFAULT '',
+        memory_summary TEXT DEFAULT '',
+        current_time TEXT DEFAULT '',
+        recommended_action TEXT DEFAULT '',
+        tokens_in INTEGER,
+        tokens_out INTEGER,
+        cached_tokens_in INTEGER,
+        model_name TEXT DEFAULT '',
+        user_images TEXT NOT NULL DEFAULT '[]',
+        ai_images TEXT NOT NULL DEFAULT '[]'
+      )
+    ''');
   }
 
   setUp(() async {
@@ -207,4 +239,156 @@ void main() {
         snap.books['u-dup-b']!.parts.settingsFp,
         reason: '同名同设置 → 部件指纹相同，但仍是两个独立实体');
   });
+
+  group('版本树折入轮次部件（SY-2）', () {
+    test('改动 stack 内容 → 该书 roundsFp 变；仅改 round_created_at → 不变', () async {
+      await db.insert('books', {'uuid': 'u-b1', 'title': '书一'});
+      await db.insert('rounds', {
+        'book_uuid': 'u-b1',
+        'round_index': 1,
+        'user_input': '输入',
+        'ai_narrative': '正文',
+      });
+      await createRoundStackTable(db);
+      await RoundStackDao().replaceBookStack(db, 'u-b1', [
+        _stackRow(
+          uuid: 'g-1',
+          bookUuid: 'u-b1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          aiNarrative: '第一代',
+          roundCreatedAt: 1000,
+        ),
+        _stackRow(
+          uuid: 'g-2',
+          bookUuid: 'u-b1',
+          roundIndex: 1,
+          roundSerialNum: 2,
+          aiNarrative: '第二代',
+          roundCreatedAt: 2000,
+        ),
+      ]);
+
+      final base = await SyncLocalSnapshot.build(db);
+      final baseFp = base.books['u-b1']!.parts.roundsFp;
+      expect(
+        SyncFingerprint.roundRows(baseFp),
+        isNotNull,
+        reason: '轮次部件仍是 rounds+failed 聚合串（老客户端可解析）',
+      );
+
+      // 1) 仅刷新创建时间（不新增代、不改内容）：指纹必须稳定。
+      final timesOnly = await SyncLocalSnapshot.build(db);
+      await _touchStackCreatedAt(db, 'g-1', 999999);
+      final afterTouch = await SyncLocalSnapshot.build(db);
+      expect(
+        afterTouch.books['u-b1']!.parts.roundsFp,
+        timesOnly.books['u-b1']!.parts.roundsFp,
+        reason: 'round_created_at 不参与指纹（时间戳刷新不得造成假变更）',
+      );
+
+      // 2) 改内容：指纹必须变。
+      await db.update(
+        'round_stack',
+        {'ai_narrative': '改后正文'},
+        where: 'uuid = ?',
+        whereArgs: ['g-2'],
+      );
+      final afterContent = await SyncLocalSnapshot.build(db);
+      expect(
+        afterContent.books['u-b1']!.parts.roundsFp,
+        isNot(baseFp),
+        reason: '版本树折进「轮次部件」：某代正文变化必须被检出',
+      );
+
+      // 3) 删除一代：指纹必须变（行集合也是内容）。
+      await db.delete('round_stack', where: 'uuid = ?', whereArgs: ['g-1']);
+      final afterDelete = await SyncLocalSnapshot.build(db);
+      expect(
+        afterDelete.books['u-b1']!.parts.roundsFp,
+        isNot(afterContent.books['u-b1']!.parts.roundsFp),
+      );
+    });
+
+    test('stack 行按 book_uuid 归组：另一本书的版本树不改变本书指纹', () async {
+      await db.insert('books', {'uuid': 'u-b1', 'title': '书一'});
+      await db.insert('books', {'uuid': 'u-b2', 'title': '书二'});
+      await createRoundStackTable(db);
+      await RoundStackDao().replaceBookStack(db, 'u-b1', [
+        _stackRow(uuid: 'g-b1', bookUuid: 'u-b1', aiNarrative: '书一正文'),
+      ]);
+      final before = await SyncLocalSnapshot.build(db);
+      final fp1 = before.books['u-b1']!.parts.roundsFp;
+      final fp2 = before.books['u-b2']!.parts.roundsFp;
+
+      await RoundStackDao().replaceBookStack(db, 'u-b2', [
+        _stackRow(uuid: 'g-b2', bookUuid: 'u-b2', aiNarrative: '书二正文'),
+      ]);
+      final after = await SyncLocalSnapshot.build(db);
+
+      expect(after.books['u-b1']!.parts.roundsFp, fp1);
+      expect(after.books['u-b2']!.parts.roundsFp, isNot(fp2));
+    });
+
+    test('老 schema 库（无 round_stack 表）不报错；空表与无表同口径', () async {
+      await db.insert('books', {'uuid': 'u-b1', 'title': '书一'});
+      await db.insert('rounds', {
+        'book_uuid': 'u-b1',
+        'round_index': 1,
+        'user_input': '输入',
+        'ai_narrative': '正文',
+      });
+
+      expect(await RoundStackDao.hasTable(db), isFalse, reason: 'v18 老库没有该表');
+      final noTable = await SyncLocalSnapshot.build(db);
+      final expected = SyncFingerprint.roundRows(noTable.books['u-b1']!.parts.roundsFp);
+      expect(expected, isNotNull, reason: '无版本树的库同样产出可解析的轮次部件');
+      expect(noTable.books.keys, contains('u-b1'));
+
+      // 补上空的版本树表：摘要口径不变（空表 → 空摘要），且不因缺表 / 空表报错。
+      await createRoundStackTable(db);
+      final emptyTable = await SyncLocalSnapshot.build(db);
+      expect(
+        emptyTable.books['u-b1']!.parts.roundsFp,
+        noTable.books['u-b1']!.parts.roundsFp,
+        reason: 'hasTable 守卫跳过查询；空版本树对轮次部件的贡献与无表一致',
+      );
+    });
+  });
 }
+
+/// 版本树一行（内容列与 `rounds` 同形）。
+RoundStackRow _stackRow({
+  required String uuid,
+  required String bookUuid,
+  String? fatherUuid,
+  int roundIndex = 1,
+  int roundSerialNum = 1,
+  String? roundState,
+  int roundCreatedAt = 1000,
+  String userInput = '',
+  String aiNarrative = '',
+}) {
+  return RoundStackRow(
+    uuid: uuid,
+    bookUuid: bookUuid,
+    fatherUuid: fatherUuid,
+    roundIndex: roundIndex,
+    roundSerialNum: roundSerialNum,
+    roundState: roundState,
+    roundCreatedAt: DateTime.fromMillisecondsSinceEpoch(roundCreatedAt),
+    userInput: userInput,
+    aiNarrative: aiNarrative,
+  );
+}
+
+/// 只刷新某一代的创建时间（模拟保存时 `round_created_at` 被重写）。
+Future<void> _touchStackCreatedAt(Database db, String uuid, int ms) async {
+  await db.update(
+    'round_stack',
+    {'round_created_at': ms},
+    where: 'uuid = ?',
+    whereArgs: [uuid],
+  );
+}
+

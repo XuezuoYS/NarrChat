@@ -51,6 +51,7 @@ void main() {
   ) {
     return RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: bookDao,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),

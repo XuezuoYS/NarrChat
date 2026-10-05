@@ -7,6 +7,7 @@ import '../../database/book_dao.dart';
 import '../../database/database_helper.dart';
 import '../../database/mod_dao.dart';
 import '../../database/round_dao.dart';
+import '../../database/round_stack_dao.dart';
 import '../../database/world_book_dao.dart';
 import '../../models/book.dart';
 import '../../models/mod.dart';
@@ -180,6 +181,8 @@ class RemoteSnapshotApplier {
     for (final r in rounds) {
       await roundDao.insertRound(Round.fromMap(r));
     }
+    // 版本树随整本复制（远端老快照没有该表 → 跳过，交给采纳按 rounds 懒建）。
+    await _copyStackRows(remote, localDb, uuid);
     await _touchBookTimes(
       localDb,
       uuid,
@@ -290,9 +293,34 @@ class RemoteSnapshotApplier {
       // 远端行的 book_uuid 就是本地这本书的 uuid（同一主键），身份无需改写。
       await roundDao.insertRound(Round.fromMap(r));
     }
+    // 版本树与轮次同属「轮次部件」：远端独有该部件 → 整体替换本地版本树。
+    // 远端快照是老 schema（无 `round_stack` 表）→ **保留本地 stack**，交给采纳收敛。
+    await _replaceStackRows(remote, bookUuid);
     await _syncRoundsUpdatedAt(bookUuid, roundsUpdatedAt);
     // 失败条目与轮次同生命周期：随轮次部件一并替换（books 上的失败列）。
     await _writeFailed(bookUuid, await _remoteFailed(remote, bookUuid));
+  }
+
+  /// 远端独有书：把远端版本树整体复制到本地（按 `round_index ASC` 插入）。
+  ///
+  /// 远端没有该表（老快照）→ 什么都不做。
+  Future<void> _copyStackRows(
+    Database remote,
+    Database localDb,
+    String bookUuid,
+  ) async {
+    if (!await RoundStackDao.hasTable(remote)) return;
+    final rows = await RoundStackDao.loadByBookFrom(remote, bookUuid);
+    if (rows.isEmpty) return;
+    await RoundStackDao().replaceBookStack(localDb, bookUuid, rows);
+  }
+
+  /// 部件下发：整体替换本地版本树（先清后插；同样带表存在守卫）。
+  Future<void> _replaceStackRows(Database remote, String bookUuid) async {
+    if (!await RoundStackDao.hasTable(remote)) return;
+    final localDb = await DatabaseHelper.instance.database;
+    final rows = await RoundStackDao.loadByBookFrom(remote, bookUuid);
+    await RoundStackDao().replaceBookStack(localDb, bookUuid, rows);
   }
 
   /// 读取远端书的失败条目（books 列）。

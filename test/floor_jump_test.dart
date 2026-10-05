@@ -2,7 +2,9 @@ import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/round_stack.dart';
 import 'package:narrchat/widgets/floor_jump_bar.dart';
+import 'package:narrchat/widgets/round_version_stepper.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -460,5 +462,52 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull, reason: 'Tooltip 触发不应抛异常');
     expect(find.text('上一轮起点'), findsOneWidget, reason: 'Tooltip 应正常弹出');
+  });
+
+  testWidgets('UI-7 版本树变更（代次控件出现）后跳转仍准确：高度缓存必须失效', (tester) async {
+    final dao = FakeRoundDao();
+    final stack = FakeRoundStackService(roundDao: dao);
+    final provider = await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      roundDao: dao,
+      roundStackService: stack,
+      ai: FakeStreamingAiService(),
+      seedRounds: 6,
+      seedBodyRepeats: 200,
+    );
+    // 先跳一次，填充「条目实测高度」缓存。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '2');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expectRoundStartAligned(tester, 2);
+
+    // 第 2 轮出现第 2 代 → 该轮 footer 多出代次控件（≈ +28px），其后条目整体下移。
+    stack.metas = [
+      const RoundStackMeta(
+        uuid: 'g1',
+        bookUuid: kHarnessBookUuid,
+        roundIndex: 2,
+        roundSerialNum: 1,
+        roundState: 'use',
+      ),
+      const RoundStackMeta(
+        uuid: 'g2',
+        bookUuid: kHarnessBookUuid,
+        roundIndex: 2,
+        roundSerialNum: 2,
+      ),
+    ];
+    await provider.loadRounds(kHarnessBookUuid);
+    await tester.pumpAndSettle();
+    expect(find.byType(RoundVersionStepper), findsOneWidget);
+
+    // 再次定点跳转：缓存已失效并重新实测，第 5 轮起点仍与视口顶对齐。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '5');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expectRoundStartAligned(tester, 5);
   });
 }

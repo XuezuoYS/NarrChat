@@ -5,6 +5,7 @@ import 'action_button.dart';
 import 'token_usage_pill.dart';
 
 /// AI 气泡底部控件：
+/// - 代次控件（修改还原：`← x/y →`，仅 ≥2 存活代时由调用方传入）
 /// - Token 栏（模型名 + 输入 / 输出 Token，整块可点 → 弹出计费明细气泡）
 /// - 查看本轮侧边栏
 /// - RAW（查看请求/返回原始数据，仅存在数据时显示）
@@ -19,6 +20,9 @@ class AiBubbleActions extends StatelessWidget {
   /// RAW 查看回调（null = 本轮无 RAW 数据，不显示按钮）。
   final VoidCallback? onViewRaw;
 
+  /// 代次控件（null = 不显示）；恒占 `Wrap` 首位（控件自身不换行）。
+  final Widget? versionStepper;
+
   const AiBubbleActions({
     super.key,
     required this.round,
@@ -26,6 +30,7 @@ class AiBubbleActions extends StatelessWidget {
     required this.onDelete,
     required this.onRefresh,
     this.onViewRaw,
+    this.versionStepper,
   });
 
   @override
@@ -43,7 +48,7 @@ class AiBubbleActions extends StatelessWidget {
           alignment: WrapAlignment.start,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            ActionButton(
+            ?versionStepper,            ActionButton(
               icon: Icons.view_sidebar_outlined,
               label: '查看侧边栏',
               onPressed: onViewSidebar,

@@ -1072,6 +1072,246 @@ void main() {
     );
     await db.close();
   });
+
+  test('v18→v19（DB-1/DB-4）：新增 round_stack + rounds.use_stack_uuid，既有行零改写', () async {
+    final path = _newDbPath();
+    final db18 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 18, onCreate: _createV18Schema),
+    );
+    await db18.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db18.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 0,
+      'user_input': '初始',
+      'created_at': DateTime(2026, 1, 1).toIso8601String(),
+    });
+    await db18.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'user_input': '你好',
+      'ai_narrative': '正文',
+      'tokens_in': 10,
+      'tokens_out': 20,
+      'cached_tokens_in': 5,
+      'created_at': DateTime(2026, 1, 2).toIso8601String(),
+    });
+    // 迁移前快照（DB-4：迁移前后逐字节比对）。
+    final booksBefore = await db18.query('books');
+    final roundsBefore = await db18.query('rounds');
+    expect(
+      await _tableNames(db18),
+      isNot(contains('round_stack')),
+      reason: '迁移前的旧库必须真的没有新表，否则本用例测不到新增',
+    );
+    expect(
+      _columnNames(await db18.rawQuery('PRAGMA table_info(rounds)')),
+      isNot(contains('use_stack_uuid')),
+    );
+    await db18.close();
+
+    final db = await _openUpgraded(path);
+    final ver = await db.rawQuery('PRAGMA user_version');
+    expect(ver.first.values.first, 19);
+    expect(DatabaseHelper.currentDbVersion, 19, reason: '代码期望版本必须与迁移目标一致');
+
+    // 新表逐列核对（列名与顺序即 DDL 契约）。
+    expect(
+      _columnNames(await db.rawQuery('PRAGMA table_info(round_stack)')),
+      [
+        'uuid',
+        'book_uuid',
+        'father_uuid',
+        'round_index',
+        'round_serial_num',
+        'round_state',
+        'round_created_at',
+        'user_input',
+        'ai_narrative',
+        'world_state',
+        'character_state',
+        'memory_summary',
+        'current_time',
+        'recommended_action',
+        'tokens_in',
+        'tokens_out',
+        'cached_tokens_in',
+        'model_name',
+        'user_images',
+        'ai_images',
+      ],
+    );
+    expect(
+      _fkTargets(await db.rawQuery('PRAGMA foreign_key_list(round_stack)')),
+      {'books': 'uuid'},
+      reason: '删书靠 book_uuid 外键级联兜底',
+    );
+    expect(
+      (await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_stack%'",
+      ))
+          .map((r) => r['name']),
+      containsAll(<String>['ix_stack_group', 'ix_stack_father', 'ix_stack_book']),
+    );
+
+    final roundCols = _columnNames(await db.rawQuery('PRAGMA table_info(rounds)'));
+    expect(roundCols.where((n) => n == 'use_stack_uuid'), hasLength(1));
+    expect(_columnSpec(_columnInfo(await db.rawQuery('PRAGMA table_info(rounds)')),
+        'use_stack_uuid'), {
+      'type': 'TEXT',
+      'notnull': 0,
+      'dflt_value': "''",
+    });
+
+    // DB-4：既有行快照完全一致（仅新增列取默认值 ''）。
+    expect(await db.query('books'), booksBefore);
+    expect(
+      (await db.query('rounds'))
+          .map((r) => Map<String, Object?>.from(r)..remove('use_stack_uuid'))
+          .toList(),
+      roundsBefore,
+    );
+    expect(
+      (await db.query('rounds')).every((r) => r['use_stack_uuid'] == ''),
+      isTrue,
+      reason: '迁移不得预置指向（空 = 待采纳）',
+    );
+    await db.close();
+  });
+
+  test('v19 迁移幂等（DB-2）：同库重跑不报错、不重复建表建列、数据保留', () async {
+    final path = _newDbPath();
+    final db18 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 18, onCreate: _createV18Schema),
+    );
+    await db18.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db18.insert('rounds', {'book_uuid': 'u-1', 'round_index': 1, 'user_input': 'x'});
+    await db18.close();
+
+    final db = await _openUpgraded(path);
+    // 模拟「schema 已带新表新列、user_version 被回退到 18」的遗留状态：重复迁移必须跳过。
+    await DatabaseHelper.migrate(db, 18, 19);
+    await DatabaseHelper.migrate(db, 18, 19);
+
+    expect(
+      (await _tableNames(db)).where((n) => n == 'round_stack'),
+      hasLength(1),
+    );
+    expect(
+      _columnNames(await db.rawQuery('PRAGMA table_info(rounds)'))
+          .where((n) => n == 'use_stack_uuid'),
+      hasLength(1),
+    );
+    expect((await db.query('books')).single['title'], '书A');
+    expect(await db.query('rounds'), hasLength(1));
+    await db.close();
+  });
+
+  test('版本回退遗留（C1/DB-3）：v18 打开 v19 库不报错，新表新列与数据原样保留', () async {
+    final path = _newDbPath();
+    final db18 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 18, onCreate: _createV18Schema),
+    );
+    await db18.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db18.close();
+
+    final db19 = await _openUpgraded(path);
+    await db19.insert('round_stack', {
+      'uuid': 'g1',
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'round_serial_num': 1,
+      'round_state': 'use',
+      'round_created_at': 1234,
+      'ai_narrative': '第一代',
+    });
+    await db19.close();
+
+    // 老客户端（v18）打开 v19 库：sqflite 只把 user_version 写回 18，schema / 数据保留。
+    final downgraded = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 18),
+    );
+    expect((await downgraded.rawQuery('PRAGMA user_version')).first.values.first, 18);
+    expect(
+      await _tableNames(downgraded),
+      contains('round_stack'),
+    );
+    expect(
+      (await downgraded.query('round_stack')).single['ai_narrative'],
+      '第一代',
+      reason: '降级不得丢版本树数据',
+    );
+    expect(
+      _columnNames(await downgraded.rawQuery('PRAGMA table_info(rounds)')),
+      contains('use_stack_uuid'),
+    );
+    // 老客户端只动 rounds：新客户端再升时必须能原样读懂。
+    await downgraded.insert('rounds', {
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'user_input': '老客户端写的',
+      'ai_narrative': '老客户端正文',
+    });
+    await downgraded.close();
+
+    final reupgraded = await _openUpgraded(path);
+    expect((await reupgraded.rawQuery('PRAGMA user_version')).first.values.first, 19);
+    expect((await reupgraded.query('round_stack')).single['uuid'], 'g1');
+    expect((await reupgraded.query('rounds')).single['ai_narrative'], '老客户端正文');
+    await reupgraded.close();
+  });
+
+  test('v19 迁移结果与全新安装库的 round_stack / 索引 DDL 一致（DB-1）', () async {
+    final migratedPath = _newDbPath();
+    final db18 = await databaseFactoryFfi.openDatabase(
+      migratedPath,
+      options: OpenDatabaseOptions(version: 18, onCreate: _createV18Schema),
+    );
+    await db18.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db18.close();
+    final migrated = await _openUpgraded(migratedPath);
+
+    final freshPath = _newDbPath();
+    DatabaseHelper.debugDatabasePathOverride = freshPath;
+    final fresh = await DatabaseHelper.instance.database;
+    addTearDown(() async {
+      DatabaseHelper.debugDatabasePathOverride = null;
+      await DatabaseHelper.instance.close();
+    });
+
+    const names = [
+      'round_stack',
+      'ix_stack_group',
+      'ix_stack_father',
+      'ix_stack_book',
+    ];
+    final migratedSchema = await _businessSchema(migrated, names);
+    final freshSchema = await _businessSchema(fresh, names);
+    expect(migratedSchema.keys.toList()..sort(), freshSchema.keys.toList()..sort());
+    for (final name in names) {
+      expect(
+        migratedSchema[name],
+        freshSchema[name],
+        reason: '$name 的 DDL 在新装库与迁移库之间不一致（应复用同一 helper）',
+      );
+    }
+    // rounds.use_stack_uuid：迁移走 ADD COLUMN、新装库写在 CREATE TABLE 里，
+    // 文本形态天然不同，故按「类型 / 非空 / 默认值」比对（列序不参与判定）。
+    expect(
+      _columnSpec(
+        _columnInfo(await migrated.rawQuery('PRAGMA table_info(rounds)')),
+        'use_stack_uuid',
+      ),
+      _columnSpec(
+        _columnInfo(await fresh.rawQuery('PRAGMA table_info(rounds)')),
+        'use_stack_uuid',
+      ),
+    );
+    await migrated.close();
+  });
 }
 
 final List<Directory> _tempDirs = [];
@@ -1352,6 +1592,17 @@ Future<void> _createCommonTables(Database db) async {
       is_enabled INTEGER NOT NULL DEFAULT 1
     )
   ''');
+}
+
+/// 已发布 v18 schema：v16 基础上加 `books.memory_summary_rounds` 与
+/// `rounds.cached_tokens_in`（Token 列可空由 v17 重建完成），**尚无**
+/// `round_stack` 表与 `rounds.use_stack_uuid` 列。
+Future<void> _createV18Schema(Database db, int version) async {
+  await _createV16Schema(db, version);
+  await db.execute(
+    'ALTER TABLE books ADD COLUMN memory_summary_rounds INTEGER NOT NULL DEFAULT 0',
+  );
+  await db.execute('ALTER TABLE rounds ADD COLUMN cached_tokens_in INTEGER');
 }
 
 /// 库内全部表名（墓碑表等「不应存在」的断言用）。

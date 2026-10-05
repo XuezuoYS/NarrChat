@@ -157,6 +157,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       // Agent 档位开启 + Chat 兼容协议（全解耦组合）。
@@ -277,6 +278,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),
@@ -351,8 +353,10 @@ void main() {
   });
 
   test('Agent 开 + Chat 协议：预览请求体为 Chat 形态（messages/tools），无指令字段', () async {
+    final roundDao = FakeRoundDao();
     final provider = RoundProvider(
-      dao: FakeRoundDao(),
+      dao: roundDao,
+      roundStackService: FakeRoundStackService(roundDao: roundDao),
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(['']))),
       aiSettingsProvider: ChatCompatibleSettings(),
@@ -434,6 +438,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),

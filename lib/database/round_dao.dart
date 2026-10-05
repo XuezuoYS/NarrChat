@@ -1,19 +1,50 @@
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
 import '../models/round.dart';
 import 'database_helper.dart';
 
 /// `rounds` 表的数据访问对象。
+///
+/// v19（修改还原）后本表是**读权威**：所有读取路径只依赖 `rounds`；
+/// `round_stack` 只是历史与分支库，二者的投影重建见
+/// [replaceProjectionFrom] / [upsertProjectionRow] / [deleteRoundsFrom]。
 class RoundDao {
   final DatabaseHelper _helper = DatabaseHelper.instance;
 
   Future<List<Round>> getRoundsByBook(String bookUuid) async {
     final db = await _helper.database;
-    final rows = await db.query(
+    return getRoundsByBookFrom(db, bookUuid);
+  }
+
+  /// [getRoundsByBook] 的显式执行器版本（事务内读取一致快照 / 备份库分析）。
+  static Future<List<Round>> getRoundsByBookFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+  ) async {
+    final rows = await e.query(
       'rounds',
       where: 'book_uuid = ?',
       whereArgs: [bookUuid],
       orderBy: 'round_index ASC',
     );
     return rows.map(Round.fromMap).toList();
+  }
+
+  /// 取某书某一轮的投影行（版本树校验 / 切换前的单轮比对用）。
+  static Future<Round?> getRoundByIndexFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+    int roundIndex,
+  ) async {
+    final rows = await e.query(
+      'rounds',
+      where: 'book_uuid = ? AND round_index = ?',
+      whereArgs: [bookUuid, roundIndex],
+      orderBy: 'id ASC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Round.fromMap(rows.first);
   }
 
   Future<Round?> getRoundById(int id) async {
@@ -82,5 +113,93 @@ class RoundDao {
     final db = await _helper.database;
     await db.delete('rounds', where: 'book_uuid = ?', whereArgs: [bookUuid]);
     await DatabaseHelper.touchBook(db, bookUuid, rounds: true);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 投影重建（v19：`round_stack` 版本树 ↔ `rounds` 投影）
+  //
+  // 以下方法一律接收事务执行器，且**不**自行 touchBook：由服务层在同一事务
+  // 收尾统一 `DatabaseHelper.touchBook(..., rounds: true)`。
+  // ---------------------------------------------------------------------------
+
+  /// 删除该轮起的全部投影行（投影重建的清理步骤）。
+  Future<void> deleteRoundsFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+    int fromRoundIndex,
+  ) async {
+    await e.delete(
+      'rounds',
+      where: 'book_uuid = ? AND round_index >= ?',
+      whereArgs: [bookUuid, fromRoundIndex],
+    );
+  }
+
+  /// 只删某一轮的投影行（用户「删除本轮」；后续轮次保留、允许父链断裂）。
+  Future<void> deleteRoundAt(
+    DatabaseExecutor e,
+    String bookUuid,
+    int roundIndex,
+  ) async {
+    await e.delete(
+      'rounds',
+      where: 'book_uuid = ? AND round_index = ?',
+      whereArgs: [bookUuid, roundIndex],
+    );
+  }
+
+  /// 投影重建：删该轮起的 `rounds` 行 → 按 [rows] 顺序插入。
+  ///
+  /// 内容取 `round_stack` 行、`use_stack_uuid` = 该行 uuid、
+  /// `created_at` = `round_created_at`、`updated_at` = now（见设计 §2.4）。
+  Future<void> replaceProjectionFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+    int fromRoundIndex,
+    List<Round> rows,
+  ) async {
+    await deleteRoundsFrom(e, bookUuid, fromRoundIndex);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final row in rows) {
+      final map = row.toMap()
+        ..remove('id')
+        ..['updated_at'] = now;
+      await e.insert('rounds', map);
+    }
+  }
+
+  /// 单行投影（生成 / 原地修改用）：该轮只保留一行，并写 [useStackUuid]。
+  ///
+  /// 先按 `(book_uuid, round_index)` 清行再插入：保证「一轮一行」不变量，
+  /// 代价是 `rounds.id` 会变（调用方须清该书的 RAW 缓存）。返回新行 id。
+  Future<int> upsertProjectionRow(
+    DatabaseExecutor e,
+    Round round,
+    String useStackUuid,
+  ) async {
+    await e.delete(
+      'rounds',
+      where: 'book_uuid = ? AND round_index = ?',
+      whereArgs: [round.bookUuid, round.roundIndex],
+    );
+    final map = round.toMap()
+      ..remove('id')
+      ..['use_stack_uuid'] = useStackUuid
+      ..['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+    return e.insert('rounds', map);
+  }
+
+  /// 原地修改投影行的指定字段（白名单字段由调用方保证）并刷新 `updated_at`。
+  Future<void> updateProjectionFields(
+    DatabaseExecutor e,
+    int roundId,
+    Map<String, Object?> fields,
+  ) async {
+    await e.update(
+      'rounds',
+      {...fields, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'id = ?',
+      whereArgs: [roundId],
+    );
   }
 }

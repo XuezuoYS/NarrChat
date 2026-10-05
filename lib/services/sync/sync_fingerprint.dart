@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 import '../../models/book.dart';
 
 /// 云同步用内容指纹工具。
@@ -62,10 +64,15 @@ class SyncFingerprint {
   }
 
   /// 「轮次部件」聚合指纹：与顺序无关地汇总全部轮次（按 round_index 排序后逐条哈希），
-  /// 并**附带失败条目**（生成内容的同生命周期状态，随轮次同步）。
+  /// 并**附带失败条目**（生成内容的同生命周期状态，随轮次同步）与**版本树摘要**
+  /// （`round_stack` 折进同一部件：版本链与轮次世系强耦合，不另立同步部件）。
+  ///
+  /// [stackRows]：该书的 `round_stack` 行（可为空）。老客户端只读 `'rounds'` 键
+  /// （见 [roundRows]），新增的 `'stack'` 键天然被忽略 → 格式演进相容。
   static String roundsWithFailed(
     List<Map<String, Object?>> rows,
     Map<String, Object?> bookRow,
+    {List<Map<String, Object?>>? stackRows}
   ) {
     final sorted = [...rows]
       ..sort((a, b) => _asInt(a['round_index']).compareTo(_asInt(b['round_index'])));
@@ -76,7 +83,56 @@ class SyncFingerprint {
         bookRow['failed_error_message'],
         bookRow['failed_user_images'],
       ],
+      // 版本树用**摘要**而非明文：每代都是全文，明文进 manifest 会把清单按代数放大；
+      // 部件级整体比对不需要行级明细。
+      'stack': stackDigest(stackRows ?? const []),
     });
+  }
+
+  /// 「版本树」摘要：按 `(round_index, father_uuid, round_serial_num, uuid)` 稳定
+  /// 排序后哈希全部内容列。
+  ///
+  /// - `uuid` / `father_uuid` 是跨设备稳定身份（同步原样复制）→ 参与指纹；
+  /// - `round_created_at` **排除**（时间戳会随保存刷新，纳入即造成假变更）；
+  /// - 空表 → `''`。
+  static String stackDigest(List<Map<String, Object?>> rows) {
+    if (rows.isEmpty) return '';
+    final sorted = [...rows]..sort((a, b) {
+        final byIndex = _asInt(a['round_index']).compareTo(_asInt(b['round_index']));
+        if (byIndex != 0) return byIndex;
+        final byFather = ((a['father_uuid'] as String?) ?? '')
+            .compareTo((b['father_uuid'] as String?) ?? '');
+        if (byFather != 0) return byFather;
+        final bySerial = _asInt(a['round_serial_num'])
+            .compareTo(_asInt(b['round_serial_num']));
+        if (bySerial != 0) return bySerial;
+        // 脏数据（同分组重号）也必须稳定定序，否则两台设备摘要不同 → 反复推送。
+        return ((a['uuid'] as String?) ?? '').compareTo((b['uuid'] as String?) ?? '');
+      });
+    final canonical = jsonEncode([
+      for (final r in sorted)
+        [
+          r['uuid'],
+          r['round_index'],
+          r['father_uuid'],
+          r['round_serial_num'],
+          r['round_state'],
+          r['user_input'],
+          r['ai_narrative'],
+          r['world_state'],
+          r['character_state'],
+          r['memory_summary'],
+          r['current_time'],
+          r['recommended_action'],
+          r['tokens_in'],
+          r['tokens_out'],
+          r['cached_tokens_in'],
+          r['model_name'],
+          r['user_images'],
+          r['ai_images'],
+        ],
+    ]);
+    return sha256.convert(utf8.encode(canonical)).toString();
   }
 
   /// 解析「轮次部件」聚合串的行内容列表（`roundsWithFailed` 的输出格式：按

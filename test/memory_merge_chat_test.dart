@@ -37,6 +37,7 @@ void main() {
 
   RoundProvider providerFor(Book book) => RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: FakeBookDao(books: [book]),
         aiService: service,
         aiSettingsProvider: ChatCompatibleSettings(),

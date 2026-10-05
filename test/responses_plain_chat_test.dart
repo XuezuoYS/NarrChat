@@ -52,6 +52,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       // 不注入实验性设置 → Agent 开关关闭（默认）。
@@ -92,8 +93,10 @@ void main() {
   });
 
   test('Agent 关 + Response 协议：预览请求体为响应式 JSON（无工具）', () async {
+    final roundDao = FakeRoundDao();
     final provider = RoundProvider(
-      dao: FakeRoundDao(),
+      dao: roundDao,
+      roundStackService: FakeRoundStackService(roundDao: roundDao),
       bookDao: FakeBookDao(),
       aiService: AiService(client: MockClient((_) async => sse(chatBlocksSse()))),
       aiSettingsProvider: AiSettingsProvider(),
@@ -137,6 +140,7 @@ void main() {
     final searchTool = _StubSearchTool();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(),
       aiService: ai,
       // 强制开启联网搜索（覆写 getter，不触碰本地配置文件）。

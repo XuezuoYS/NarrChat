@@ -18,6 +18,7 @@ void main() {
   // 两侧设置时间戳 / 轮次时间可定制的冲突计划（见 [_buildSettingsStampPlan]）。
   late DatabaseMergePlan importNewerSettingsPlan;
   late DatabaseMergePlan localNewerSettingsPlan;
+  late DatabaseMergePlan versionPlan;
 
   setUp(() async {
     final local = await createMergeDb();
@@ -99,6 +100,43 @@ void main() {
       localRoundAt: DateTime(2026, 2, 15),
       backupRoundAt: DateTime(2026, 1, 1),
     );
+    // UI-6 用：本地侧带版本树（可给出代次标签）、备份侧为老 v18（无 round_stack 表）。
+    final stackLocal = await createMergeDb();
+    final stackBackup = await createMergeDb(withRoundStack: false);
+    try {
+      await stackLocal.insert('books', {'uuid': 'lok-v', 'title': 'V'});
+      await stackLocal.insert('rounds', {
+        'book_uuid': 'lok-v',
+        'round_index': 1,
+        'use_stack_uuid': 'l-g1',
+      });
+      await stackLocal.insert('round_stack', {
+        'uuid': 'l-g1',
+        'book_uuid': 'lok-v',
+        'round_index': 1,
+        'round_serial_num': 1,
+        'round_state': 'use',
+      });
+      await stackLocal.insert('round_stack', {
+        'uuid': 'l-g2',
+        'book_uuid': 'lok-v',
+        'round_index': 1,
+        'round_serial_num': 4,
+      });
+      await stackBackup.insert('books', {'uuid': 'bak-v', 'title': 'V'});
+      await stackBackup.insert('rounds', {
+        'book_uuid': 'bak-v',
+        'round_index': 1,
+        'ai_narrative': '老备份正文',
+      });
+      versionPlan = await DatabaseMergeService.buildPlan(
+        stackBackup,
+        stackLocal,
+      );
+    } finally {
+      await stackLocal.close();
+      await stackBackup.close();
+    }
   });
 
   testWidgets('列出书籍，冲突展示两侧轮次/时间与状态徽标', (tester) async {
@@ -504,6 +542,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(modDecisions['M'], ModMergeDecision.keepLocal);
+  });
+
+  testWidgets('UI-6 轮次内容旁渲染只读代次指示器；无版本树的一侧不显示', (tester) async {
+    await _pumpScreen(tester, versionPlan);
+
+    expect(
+      find.text('本地 第 1 代 / 最新第 4 代'),
+      findsOneWidget,
+      reason: '本地侧有版本树 → 显示只读代次指示器',
+    );
+    expect(
+      find.textContaining('导入 第'),
+      findsNothing,
+      reason: '老备份没有 round_stack 表 → 不显示',
+    );
   });
 }
 

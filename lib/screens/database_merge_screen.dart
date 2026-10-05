@@ -422,6 +422,26 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
     );
   }
 
+  /// 只读代次指示器（与对话页代次控件同形，无箭头功能）。
+  Widget _versionIndicator(
+    BuildContext context,
+    String sideLabel,
+    String versionLabel,
+  ) {
+    final colors = context.narrColors;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.history, size: 14, color: colors.textSecondary),
+        const SizedBox(width: 4),
+        Text(
+          '$sideLabel $versionLabel',
+          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+        ),
+      ],
+    );
+  }
+
   Widget _bulkChip(BuildContext context, _BulkRule rule, String label) {
     return ActionChip(
       label: Text(label, style: const TextStyle(fontSize: 12)),
@@ -570,7 +590,12 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
           ],
         ),
         const SizedBox(height: 8),
-        Row(
+        // 轮次内容：选项旁附**只读**代次指示器（有版本树的侧才显示；
+        // 老备份无 `round_stack` 表 → versionLabel 为空 → 不显示）。
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
               '轮次内容：',
@@ -579,7 +604,6 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
                 color: colors.textSecondary,
               ),
             ),
-            const SizedBox(width: 8),
             SegmentedButton<MergePartChoice>(
               segments: const [
                 ButtonSegment(
@@ -599,6 +623,10 @@ class _DatabaseMergeScreenState extends State<DatabaseMergeScreen> {
               ),
               showSelectedIcon: false,
             ),
+            if ((entry.local?.versionLabel ?? '').isNotEmpty)
+              _versionIndicator(context, '本地', entry.local!.versionLabel),
+            if ((entry.imported?.versionLabel ?? '').isNotEmpty)
+              _versionIndicator(context, '导入', entry.imported!.versionLabel),
           ],
         ),
         if (entry.settingsConflict && entry.contentConflict)

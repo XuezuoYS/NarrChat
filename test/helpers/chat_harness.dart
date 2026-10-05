@@ -20,6 +20,7 @@ import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/non_stream_replay.dart';
+import 'package:narrchat/services/round_stack_service.dart';
 import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -62,7 +63,9 @@ const String kHarnessBookUuid = 'book-1';
 ///   冷启动恢复场景可预置数据）；
 /// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）；
 /// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作，
-///   需要断言跳转的用例注入自己的实现）。
+///   需要断言跳转的用例注入自己的实现）；
+/// - [roundStackService]：版本树服务替身（默认 [FakeRoundStackService]，
+///   与传入的 [roundDao] 共享同一内存轮次表，**绝不触碰真实数据库**）。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
   AiService? ai,
@@ -81,6 +84,7 @@ Future<RoundProvider> pumpChatScreen(
   HtmlSearchService? searchService,
   NonStreamReplayer? nonStreamReplayer,
   RoundWarningsStore? warningsStore,
+  RoundStackService? roundStackService,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
   ThemeData? theme,
@@ -121,6 +125,7 @@ Future<RoundProvider> pumpChatScreen(
     searchService: searchService,
     nonStreamReplayer: nonStreamReplayer,
     warningsStore: warningsStore ?? FakeRoundWarningsStore(),
+    roundStackService: roundStackService ?? FakeRoundStackService(roundDao: dao),
     onGenerationCompleted: onGenerationCompleted,
   );
   await roundProvider.loadRounds(kHarnessBookUuid);
@@ -214,7 +219,11 @@ Future<BookProvider> pumpHomeScreen(
           create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
         ),
         ChangeNotifierProvider(
-          create: (_) => RoundProvider(dao: roundDao, bookDao: bookDao),
+          create: (_) => RoundProvider(
+            dao: roundDao,
+            bookDao: bookDao,
+            roundStackService: FakeRoundStackService(roundDao: roundDao),
+          ),
         ),
         if (notificationSettings != null)
           ChangeNotifierProvider<NotificationSettingsProvider>.value(
@@ -275,6 +284,7 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
     dao: dao,
     aiService: ai ?? ToggleAiService(),
     bookDao: bookDao,
+    roundStackService: FakeRoundStackService(roundDao: dao),
     onGenerationCompleted: service.onGenerationCompleted,
   );
 

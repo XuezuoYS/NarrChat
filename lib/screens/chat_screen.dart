@@ -47,6 +47,7 @@ import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/responsive_builder.dart';
 import '../widgets/round_action_dialogs.dart';
+import '../widgets/round_version_stepper.dart';
 import '../widgets/sidebar_panel.dart';
 import '../widgets/sidebar_resize_divider.dart';
 import '../widgets/text_field_context_menu.dart';
@@ -75,6 +76,9 @@ const int _kScrollToBottomMaxRefine = 10;
 
 /// 判定「已到底部」的残余误差（px），收敛停止条件。
 const double _kScrollToBottomEpsilon = 1.0;
+
+/// 切换版本后「视图停在控件」的帧级校准上限（懒加载列表逐帧收敛，开销极小）。
+const int _kAnchorRefineMax = 8;
 
 /// 楼层跳转：轮起点与视口顶对齐的判定误差（px）。
 /// 小于该值视为「正处于该轮起点」→ 左箭头跳到上一轮，否则跳到当前轮起点。
@@ -129,6 +133,8 @@ typedef _ChatShellSignals = ({
   int nextRoundIndex,
   /// 常驻警告版本号（列表项高度缓存失效依据）。
   int warningsVersion,
+  /// 版本树 / 投影变更计数（代次控件显隐会改变条目高度，同为缓存失效依据）。
+  int versionsRevision,
 });
 
 /// 对话界面（独立页面，由书籍列表点击进入）。
@@ -194,6 +200,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 自动跟随滚动是否已在本帧注册 postFrame 回调（防止同帧多次 rebuild 重复 jumpTo）。
   bool _autoFollowPending = false;
+
+  /// 切换版本后跳过下一帧自动贴底（「视图停在父」）。
+  bool _skipAutoFollowOnce = false;
+
+  /// 各轮代次控件的稳定 Key（切换前后按控件位置补偿滚动）。
+  final Map<int, GlobalKey> _stepperKeys = {};
 
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
@@ -270,6 +282,8 @@ class _ChatScreenState extends State<ChatScreen>
   /// 已见过的「常驻警告变更计数」（警告框增删会改变条目高度，需重测）。
   int _lastWarningsVersion = 0;
 
+  /// 已见过的「版本树变更计数」（代次控件显隐会改变条目高度，需重测）。
+  int _lastVersionsRevision = 0;
   /// 宽屏右侧栏拖拽中的实时宽度（null = 未拖拽）。
   ///
   /// 拖动期间只对本页 setState（不触发全局 UI 设置通知），
@@ -586,6 +600,11 @@ class _ChatScreenState extends State<ChatScreen>
   /// 仅在帧末执行 `jumpTo`（非动画），不会与用户手动滚动/动画滚动冲突；
   /// [_autoFollowPending] 保证同一帧内多次触发只注册一次回调。
   void _autoFollowIfNeeded() {
+    // 切换版本后的下一帧：视图停在父，不自动贴底（一次性跳过）。
+    if (_skipAutoFollowOnce) {
+      _skipAutoFollowOnce = false;
+      return;
+    }
     if (_autoFollowPending || !_scrollController.hasClients) return;
     final rp = context.read<RoundProvider>();
     if (!(rp.isSending || rp.showTimeline)) return;
@@ -1341,14 +1360,119 @@ class _ChatScreenState extends State<ChatScreen>
   /// 失败条目携带图片（识图模型）时，「生成中」气泡随之带图；不触碰待发送附件。
   Future<void> _retryFailure() async {
     final rp = context.read<RoundProvider>();
-    final input = rp.failedUserInput;
-    final images = rp.failedUserImages;
-    if (input.isEmpty || rp.isSending) return;
+    if (rp.failedUserInput.isEmpty || rp.isSending) return;
     final book = context.read<BookProvider>().currentBook;
     if (book == null) return;
-    _startGeneration(images: images);
-    await rp.sendRound(userInput: input, book: book, userImages: images);
+    _startGeneration(images: rp.failedUserImages);
+    // 重试逻辑已下沉到 Provider（统一走「新增一代」的版本树路径）。
+    await rp.retryFailedRound(book: book);
     _endGeneration();
+  }
+
+  /// 切换当前轮的版本（`← / →`）：**直接切换，不弹任何提示**。
+  ///
+  /// 「视图停在控件」：切换后正文长度可能变化、条目高度随之改变——这里按
+  /// **代次控件在视口中的位置**做滚动补偿（而不是保持总滚动偏移），
+  /// 保证控件不会被正文长度变化挤出视口；同时跳过一帧自动贴底。
+  Future<void> _switchVersion(int roundIndex, {required bool forward}) async {
+    final rp = context.read<RoundProvider>();
+    final info = rp.versionInfoFor(roundIndex);
+    final target = forward ? info?.nextUuid : info?.prevUuid;
+    if (target == null) return;
+    final anchorKey = _stepperKeyFor(roundIndex);
+    final beforeTop = _globalTopOf(anchorKey);
+    _skipAutoFollowOnce = true;
+    final switched = await rp.switchRoundVersion(
+      roundIndex,
+      forward: forward,
+    );
+    if (!mounted) return;
+    if (!switched) {
+      context.notices.warning('切换失败，请稍后重试');
+      return;
+    }
+    _keepAnchorInPlace(anchorKey, beforeTop);
+  }
+
+  /// 代次控件的稳定 Key（同一轮复用；供切换前后做位置补偿）。
+  GlobalKey _stepperKeyFor(int roundIndex) =>
+      _stepperKeys.putIfAbsent(roundIndex, () => GlobalKey());
+
+  double? _globalTopOf(GlobalKey key) {
+    final box = key.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached) return null;
+    return box.localToGlobal(Offset.zero).dy;
+  }
+
+  /// 把 [key] 对应控件放回切换前在视口中的纵向位置（按控件锚点补偿滚动，
+  /// 而不是以总滚动偏移为准——否则「新代正文更长/更短」会让控件漂出视口）。
+  ///
+  /// 懒加载列表的高度在随后几帧继续收敛（更长正文会逐帧撑开），故按本文件既有
+  /// 的「帧末复查 + 补滚」模式逐帧校准，最多 [_kAnchorRefineMax] 帧。
+  ///
+  /// 位置补偿受列表边界约束：切换前就在**列表底部**时无法继续下滚，
+  /// 此时钳到最大滚动位置（即仍停在底部），控件不会被推得更远。
+  void _keepAnchorInPlace(GlobalKey key, double? beforeTop) {
+    if (beforeTop == null) return;
+    var attempt = 0;
+    void step() {
+      if (!mounted || !_scrollController.hasClients) return;
+      final afterTop = _globalTopOf(key);
+      if (afterTop != null) {
+        final delta = afterTop - beforeTop;
+        if (delta.abs() >= 0.5) {
+          final position = _scrollController.position;
+          _scrollController.jumpTo(
+            (position.pixels + delta).clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            ),
+          );
+        }
+      }
+      if (++attempt < _kAnchorRefineMax) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => step());
+        WidgetsBinding.instance.scheduleFrame();
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => step());
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// 本轮 AI 气泡的代次控件（null = 单代 / 无版本信息 → 不显示）。
+  Widget? _versionStepperFor(int roundIndex) {
+    final rp = context.read<RoundProvider>();
+    final info = rp.versionInfoFor(roundIndex);
+    if (info == null || !info.switchable) return null;
+    return RoundVersionStepper(
+      key: _stepperKeyFor(roundIndex),
+      current: info.currentSerial,
+      latest: info.latestSerial,
+      enabled: !rp.isSending,
+      tooltip: '第 ${info.currentSerial ?? '临时'} 代 / 最新第 ${info.latestSerial} 代',
+      onPrev: info.prevUuid == null
+          ? null
+          : () => _switchVersion(roundIndex, forward: false),
+      onNext: info.nextUuid == null
+          ? null
+          : () => _switchVersion(roundIndex, forward: true),
+    );
+  }
+
+  /// 失败条目的代次控件：失败态是「临时代」，只提供「← 还原上一代」。
+  Widget? _failureVersionStepper(int pendingRoundIndex) {
+    final rp = context.read<RoundProvider>();
+    final info = rp.versionInfoFor(pendingRoundIndex);
+    if (info == null || info.prevUuid == null) return null;
+    return RoundVersionStepper(
+      key: _stepperKeyFor(pendingRoundIndex),
+      current: null,
+      latest: info.latestSerial,
+      enabled: !rp.isSending,
+      tooltip: '还原上一代（第 ${info.prevSerial ?? info.latestSerial} 代）',
+      onPrev: () => _switchVersion(pendingRoundIndex, forward: false),
+    );
   }
 
   /// 清除失败条目。
@@ -1880,6 +2004,7 @@ class _ChatScreenState extends State<ChatScreen>
         hasFailure: p.hasFailureEntry,
         nextRoundIndex: p.nextRoundIndex,
         warningsVersion: p.roundWarningsVersion,
+        versionsRevision: p.versionsRevision,
       ),
     );
     // 非订阅读取：历史条目的 RAW / 警告等按需取用（是否展示由上面的信号决定）。
@@ -1891,18 +2016,22 @@ class _ChatScreenState extends State<ChatScreen>
     final rounds = shell.rounds;
     // 第零轮（初始状态）不参与气泡展示。
     final chatRounds = rounds.where((r) => r.roundIndex > 0).toList();
-    // 楼层跳转：轮次来源（引用+长度）、常驻警告变化或聊天区宽度变化时
-    // 清空实测数据缓存（警告框出现 / 关闭会改变条目高度）。
+    // 楼层跳转：轮次来源（引用+长度）、常驻警告变化、**代次控件显隐**
+    // （版本树版本号）或聊天区宽度变化时，清空实测数据缓存
+    //（警告框 / 代次控件的出现与关闭都会改变条目高度）。
     final warningsVersion = shell.warningsVersion;
+    final versionsRevision = shell.versionsRevision;
     if (!identical(rounds, _lastRoundsSource) ||
         rounds.length != _lastRoundsCount ||
         warningsVersion != _lastWarningsVersion ||
+        versionsRevision != _lastVersionsRevision ||
         (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
       _itemHeights.clear();
       _itemOffsets.clear();
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
       _lastWarningsVersion = warningsVersion;
+      _lastVersionsRevision = versionsRevision;
       _lastChatLayoutWidth = chatWidth;
     }
     final isSending = shell.isSending;
@@ -1954,6 +2083,7 @@ class _ChatScreenState extends State<ChatScreen>
                     onRetry: _retryFailure,
                     onEditAndRetry: _startEditAndRetryFailure,
                     onClear: _clearFailure,
+                    versionStepper: _failureVersionStepper(pendingIndex),
                     onViewRaw: roundProvider.failedRawExchanges != null
                         ? _showFailedRawDialog
                         : null,
@@ -2037,6 +2167,7 @@ class _ChatScreenState extends State<ChatScreen>
                         onViewSidebar: () => _onViewSidebar(round),
                         onDelete: () => _handleDelete(round),
                         onRefresh: () => _handleReAsk(round),
+                        versionStepper: _versionStepperFor(round.roundIndex),
                         onViewRaw:
                             roundProvider.rawExchangesFor(round.id!) != null
                             ? () => _showRawDialog(round)

@@ -82,6 +82,7 @@ void main() {
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -151,6 +152,7 @@ void main() {
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -216,6 +218,7 @@ void main() {
       final ai = _ConcurrentAiService();
       final rp = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -316,6 +319,7 @@ void main() {
 
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -381,6 +385,7 @@ void main() {
 
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -450,6 +455,7 @@ void main() {
 
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -525,6 +531,7 @@ void main() {
 
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -598,6 +605,7 @@ void main() {
       await bookProvider.loadBooks();
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,
@@ -693,6 +701,7 @@ void main() {
 
       final roundProvider = RoundProvider(
         dao: dao,
+        roundStackService: FakeRoundStackService(roundDao: dao),
         bookDao: bookDao,
         aiService: ai,
         retryDelay: Duration.zero,

@@ -13,6 +13,7 @@ void main() {
     final dao = FakeRoundDao();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
       // 默认预设（列表首位 = DeepSeek V4.1 Flash，模型 ID deepseek-flash）。
@@ -31,6 +32,7 @@ void main() {
     final dao = FakeRoundDao();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
     );
@@ -44,6 +46,7 @@ void main() {
     final dao = FakeRoundDao();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
       aiSettingsProvider: ChatCompatibleSettings(),
@@ -65,6 +68,7 @@ void main() {
     final dao = FakeRoundDao();
     final provider = RoundProvider(
       dao: dao,
+      roundStackService: FakeRoundStackService(roundDao: dao),
       bookDao: FakeBookDao(books: [book]),
       aiService: ToggleAiService(),
       aiSettingsProvider: ChatCompatibleSettings(),

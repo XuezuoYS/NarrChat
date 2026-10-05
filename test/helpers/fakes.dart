@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:narrchat/config/ai_platforms.dart';
@@ -13,6 +14,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_stack.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
@@ -21,6 +23,7 @@ import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/services/round_stack_service.dart';
 import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:narrchat/services/update_check_service.dart';
@@ -35,6 +38,7 @@ import 'package:narrchat/database/sync_dao.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// 公共测试替身（Fakes）。
 ///
@@ -188,6 +192,7 @@ class FakeRoundDao extends RoundDao {
       createdAt: round.createdAt,
       userImages: List.of(round.userImages),
       aiImages: List.of(round.aiImages),
+      useStackUuid: round.useStackUuid,
     );
     rounds.add(created);
     return created.id!;
@@ -200,32 +205,78 @@ class FakeRoundDao extends RoundDao {
   ) async {
     final index = rounds.indexWhere((r) => r.id == roundId);
     if (index < 0) return 0;
-    final updated = Round(
-      id: roundId,
-      bookUuid: rounds[index].bookUuid,
-      roundIndex: rounds[index].roundIndex,
+    final updated = rounds[index].copyWith(
       userInput: (fields['user_input'] as String?) ?? rounds[index].userInput,
-      aiNarrative: (fields['ai_narrative'] as String?) ??
-          rounds[index].aiNarrative,
-      worldState: (fields['world_state'] as String?) ??
-          rounds[index].worldState,
-      characterState: (fields['character_state'] as String?) ??
-          rounds[index].characterState,
-      memorySummary: (fields['memory_summary'] as String?) ??
-          rounds[index].memorySummary,
-      currentTime: (fields['current_time'] as String?) ??
-          rounds[index].currentTime,
-      recommendedAction: rounds[index].recommendedAction,
-      tokensIn: rounds[index].tokensIn,
-      tokensOut: rounds[index].tokensOut,
-      cachedTokensIn: rounds[index].cachedTokensIn,
-      modelName: rounds[index].modelName,
-      createdAt: rounds[index].createdAt,
-      userImages: rounds[index].userImages,
-      aiImages: rounds[index].aiImages,
+      aiNarrative:
+          (fields['ai_narrative'] as String?) ?? rounds[index].aiNarrative,
+      worldState:
+          (fields['world_state'] as String?) ?? rounds[index].worldState,
+      characterState:
+          (fields['character_state'] as String?) ?? rounds[index].characterState,
+      memorySummary:
+          (fields['memory_summary'] as String?) ?? rounds[index].memorySummary,
+      currentTime:
+          (fields['current_time'] as String?) ?? rounds[index].currentTime,
+      useStackUuid: (fields['use_stack_uuid'] as String?) ??
+          rounds[index].useStackUuid,
     );
     rounds[index] = updated;
     return 1;
+  }
+
+  /// v19 投影重建（服务层走真库时不会用到；此处保证替身「全部方法已覆写」）。
+  @override
+  Future<void> deleteRoundsFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+    int fromRoundIndex,
+  ) async {
+    rounds.removeWhere(
+      (r) => r.bookUuid == bookUuid && r.roundIndex >= fromRoundIndex,
+    );
+  }
+
+  @override
+  Future<void> deleteRoundAt(
+    DatabaseExecutor e,
+    String bookUuid,
+    int roundIndex,
+  ) async {
+    rounds.removeWhere(
+      (r) => r.bookUuid == bookUuid && r.roundIndex == roundIndex,
+    );
+  }
+
+  @override
+  Future<void> replaceProjectionFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+    int fromRoundIndex,
+    List<Round> rows,
+  ) async {
+    await deleteRoundsFrom(e, bookUuid, fromRoundIndex);
+    for (final row in rows) {
+      await insertRound(row.copyWith(id: null));
+    }
+  }
+
+  @override
+  Future<int> upsertProjectionRow(
+    DatabaseExecutor e,
+    Round round,
+    String useStackUuid,
+  ) async {
+    await deleteRoundAt(e, round.bookUuid, round.roundIndex);
+    return insertRound(round.copyWith(id: null, useStackUuid: useStackUuid));
+  }
+
+  @override
+  Future<void> updateProjectionFields(
+    DatabaseExecutor e,
+    int roundId,
+    Map<String, Object?> fields,
+  ) async {
+    await updateRoundFields(roundId, fields);
   }
 
   @override
@@ -247,6 +298,217 @@ class FakeRoundDao extends RoundDao {
     } else {
       rounds.removeWhere((r) => r.id == roundId);
     }
+  }
+}
+
+/// 内存版 [RoundStackService]：Provider / UI 用例专用，**绝不触碰真实数据库**。
+///
+/// 只承担 Provider 真正依赖的两件事：
+/// 1. **投影写入**：委托给注入的 [RoundDao]（通常与 Provider 同一个
+///    `FakeRoundDao`），既有用例的轮次落库行为因此完全不变；
+/// 2. 版本索引 / 切换 / 删除的内存记账与可编程返回，供断言使用。
+///
+/// 真实版本树语义（采纳 / 归一化 / 活动链 / 孤儿清理）由真库用例
+/// `round_stack_service_test.dart` / `round_stack_adoption_test.dart` 覆盖，
+/// 本替身不重复实现，避免「替身与实现各写一套」的漂移。
+class FakeRoundStackService extends RoundStackService {
+  FakeRoundStackService({RoundDao? roundDao})
+      : _rounds = roundDao ?? FakeRoundDao();
+
+  final RoundDao _rounds;
+
+  /// 内存版本树：book_uuid → 全部代。
+  final Map<String, List<RoundStackRow>> rows = {};
+
+  /// UI 索引的额外数据源（测试预置；与 [rows] 合并成索引）。
+  List<RoundStackMeta> metas = [];
+
+  int attachCalls = 0;
+  int adoptCalls = 0;
+  bool lastAdoptForce = false;
+  RoundStackAdoptionReport? adoptReport;
+  int adoptAllCalls = 0;
+  int adoptAllResult = 0;
+  int purgeCalls = 0;
+
+  /// 切换记录（bookUuid, roundIndex, targetUuid）。
+  final List<({String bookUuid, int roundIndex, String targetUuid})> switches =
+      [];
+  bool switchResult = true;
+
+  /// 切换钩子：可在切换「落地」时改写注入的 [RoundDao] 内容，用于模拟真实
+  /// 投影重建后条目高度变化（「视图停在切换控件」用例）。
+  void Function(String bookUuid, int roundIndex, String targetUuid)? onSwitch;
+
+  /// 删除记录（bookUuid, fromRoundIndex, deleteFollowing）。
+  final List<({String bookUuid, int fromRoundIndex, bool deleteFollowing})>
+      deletes = [];
+
+  /// 「重写本轮」的投影删除记录。
+  final List<({String bookUuid, int fromRoundIndex})> projectionDeletes = [];
+
+  int _seq = 0;
+
+  List<RoundStackRow> _rowsFor(String bookUuid) =>
+      rows.putIfAbsent(bookUuid, () => []);
+
+  @override
+  Future<RoundStackIndex> loadIndex(String bookUuid) async =>
+      RoundStackIndex.fromMetas([
+        ...metas,
+        for (final row in _rowsFor(bookUuid))
+          RoundStackMeta(
+            uuid: row.uuid,
+            bookUuid: row.bookUuid,
+            fatherUuid: row.fatherUuid,
+            roundIndex: row.roundIndex,
+            roundSerialNum: row.roundSerialNum,
+            roundState: row.roundState,
+            roundCreatedAt: row.roundCreatedAt,
+          ),
+      ]);
+
+  @override
+  Future<int> attachNewGeneration({
+    required String bookUuid,
+    required Round round,
+    String? fatherUuid,
+  }) async {
+    attachCalls++;
+    // 与真实 `RoundDao.upsertProjectionRow` 同语义：该轮只保留一行。
+    final existing = await _rounds.getRoundsByBook(bookUuid);
+    for (final r in existing.where((r) => r.roundIndex == round.roundIndex)) {
+      await _rounds.deleteRound(r.id!);
+    }
+    final father = RoundStackRow.normalizeFather(fatherUuid);
+    final list = _rowsFor(bookUuid);
+    final group = list
+        .where(
+          (r) => r.roundIndex == round.roundIndex && r.fatherUuid == father,
+        )
+        .toList();
+    final serial = group.isEmpty
+        ? 1
+        : group.map((r) => r.roundSerialNum).reduce(math.max) + 1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].isUse && group.any((g) => g.uuid == list[i].uuid)) {
+        list[i] = list[i].copyWith(clearState: true);
+      }
+    }
+    final row = RoundStackRow.fromRound(
+      round,
+      uuid: 'gen-${round.roundIndex}-${_seq++}',
+      fatherUuid: father,
+      roundSerialNum: serial,
+      roundState: 'use',
+    );
+    list.add(row);
+    return _rounds.insertRound(round.copyWith(useStackUuid: row.uuid));
+  }
+
+  @override
+  Future<void> applyInPlaceEdit({required Round round}) async {
+    final id = round.id;
+    if (id != null) {
+      await _rounds.updateRoundFields(id, round.contentMap());
+    }
+    final list = _rowsFor(round.bookUuid);
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].uuid != round.useStackUuid) continue;
+      list[i] = list[i].copyWith(
+        userInput: round.userInput,
+        aiNarrative: round.aiNarrative,
+        worldState: round.worldState,
+        characterState: round.characterState,
+        memorySummary: round.memorySummary,
+        currentTime: round.currentTime,
+        recommendedAction: round.recommendedAction,
+        modelName: round.modelName,
+        userImages: round.userImages,
+        aiImages: round.aiImages,
+      );
+    }
+  }
+
+  @override
+  Future<void> deleteProjectionFrom(String bookUuid, int fromRoundIndex) async {
+    projectionDeletes.add((bookUuid: bookUuid, fromRoundIndex: fromRoundIndex));
+    final rounds = await _rounds.getRoundsByBook(bookUuid);
+    for (final r in rounds.where((r) => r.roundIndex >= fromRoundIndex)) {
+      await _rounds.deleteRound(r.id!);
+    }
+  }
+
+  @override
+  Future<bool> switchTo({
+    required String bookUuid,
+    required int roundIndex,
+    required String targetUuid,
+  }) async {
+    switches.add((
+      bookUuid: bookUuid,
+      roundIndex: roundIndex,
+      targetUuid: targetUuid,
+    ));
+    onSwitch?.call(bookUuid, roundIndex, targetUuid);
+    return switchResult;
+  }
+
+  @override
+  Future<void> deleteFrom({
+    required String bookUuid,
+    required int fromRoundIndex,
+    required bool deleteFollowing,
+  }) async {
+    deletes.add((
+      bookUuid: bookUuid,
+      fromRoundIndex: fromRoundIndex,
+      deleteFollowing: deleteFollowing,
+    ));
+    final rounds = await _rounds.getRoundsByBook(bookUuid);
+    for (final r in rounds) {
+      final hit = deleteFollowing
+          ? r.roundIndex >= fromRoundIndex
+          : r.roundIndex == fromRoundIndex;
+      if (hit) await _rounds.deleteRound(r.id!);
+    }
+    _rowsFor(bookUuid).removeWhere(
+      (r) => deleteFollowing
+          ? r.roundIndex >= fromRoundIndex
+          : r.roundIndex == fromRoundIndex,
+    );
+  }
+
+  @override
+  Future<RoundStackAdoptionReport?> adoptIfNeeded(
+    String bookUuid, {
+    bool force = false,
+  }) async {
+    adoptCalls++;
+    lastAdoptForce = force;
+    return adoptReport;
+  }
+
+  @override
+  Future<int> adoptAllBooks({bool force = true}) async {
+    adoptAllCalls++;
+    return adoptAllResult;
+  }
+
+  @override
+  Future<void> normalizeGroup(
+    String bookUuid,
+    int roundIndex,
+    String? fatherUuid,
+  ) async {}
+
+  @override
+  Future<void> normalizeBook(String bookUuid) async {}
+
+  @override
+  Future<int> purgeOrphans(String bookUuid) async {
+    purgeCalls++;
+    return 0;
   }
 }
 
@@ -815,10 +1077,31 @@ class MemorySyncStateStore implements SyncStateStore {
   Future<void> deleteModBase(String uuid) async => modBases.remove(uuid);
 }
 
+/// [CloudSyncProvider] 替身：只记录 `triggerSync` 调用（不打网络、不碰本地配置）。
+///
+/// 供「哪些写路径该触发自动同步」的用例复用（生成 / 采纳 / 删除触发，
+/// 版本切换不触发），比每个用例各写一份记录器更不易漂移。
+class FakeCloudSyncProvider extends CloudSyncProvider {
+  /// 自动同步触发次数。
+  int triggers = 0;
+
+  /// 最近一次触发的种类（未触发时为 null）。
+  SyncKind? lastKind;
+
+  /// 最近一次触发是否静默。
+  bool? lastSilent;
+
+  @override
+  void triggerSync({SyncKind kind = SyncKind.both, bool silent = false}) {
+    triggers++;
+    lastKind = kind;
+    lastSilent = silent;
+  }
+}
+
 /// [CloudSyncProvider] 替身：覆写「保留历史版本」云端读写，
 /// 切断真实 WebDAV（供弹窗 / 面板 widget 测试复用）。
-class StubCloudSyncProvider extends CloudSyncProvider {
-  StubCloudSyncProvider({
+class StubCloudSyncProvider extends CloudSyncProvider {  StubCloudSyncProvider({
     this.cloudKeepVersions = SyncConfig.defaultKeepVersions,
     this.refreshError,
     this.saveError,
