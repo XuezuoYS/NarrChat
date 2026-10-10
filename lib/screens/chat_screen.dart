@@ -1,9 +1,15 @@
 import 'dart:io' show File, Platform;
+import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/rendering.dart' show RenderAbstractViewport, ScrollDirection;
+import 'package:flutter/rendering.dart'
+    show
+        RenderAbstractViewport,
+        RenderSliverMultiBoxAdaptor,
+        ScrollDirection,
+        SliverMultiBoxAdaptorParentData;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -92,8 +98,25 @@ const double _kFloorJumpAtStartEpsilon = 4;
 const double _kFloorJumpDefaultUserHeight = 48;
 const double _kFloorJumpDefaultAiHeight = 280;
 
-/// 楼层跳转：校准迭代上限（超出即停在估算位置）。
-const int _kFloorJumpMaxRefine = 10;
+/// 楼层跳转：单帧最多推进的条目数。
+///
+/// `ListView` 是懒加载的：`jumpTo` 到当前已构建窗口之外时，框架会从最近的子项
+/// 开始**逐条构建途经条目**直到目标偏移（`rendering/sliver_list.dart:262-274`
+/// 的 `advance()` 循环）。不设上限的远端跳转会在**一帧**里构建几百个气泡：
+/// 实测 120 轮书冷跳第 30 轮出现 **1043ms** 单帧。故跳转按条目数限步、逐帧推进
+/// （每帧约 8 条 ≈ 30ms，表现为一次快速滚动）。
+const int _kFloorJumpStepItems = 8;
+
+/// 楼层跳转：单帧最少推进的像素（不足时按此值推进，避免模型误差导致原地不动）。
+const double _kFloorJumpMinStepViewports = 0.5;
+
+/// 楼层跳转：对齐后在随后几帧内复查次数（懒加载列表跳转后仍会重排已构建条目，
+/// 单次对齐可能被随后的重排带偏；复查是纯测量，不动画）。
+const int _kFloorJumpMaxAlignChecks = 3;
+
+/// 楼层跳转：校准迭代上限（每帧一次；超出即停在最后落点）。
+/// 远端跳转按条目数限步逐帧推进，长书需要几十帧（见 [_kFloorJumpStepItems]）。
+const int _kFloorJumpMaxRefine = 120;
 
 /// 右侧栏开合动画时长。
 const Duration _kSidebarAnimDuration = Duration(milliseconds: 300);
@@ -270,18 +293,26 @@ class _ChatScreenState extends State<ChatScreen>
   /// 帧末检测守卫：同一帧多次 rebuild 只注册一次回调。
   bool _floorJumpDetectPending = false;
 
-  /// 楼层跳转：列表项定位缓存，由列表项在帧末「自上报」维护
+  /// 楼层跳转：列表项**实测高度**缓存，由列表项在帧末「自上报」维护
   /// （见 [_FloorMeasuredItem]，不使用逐项 GlobalKey）：
-  /// - [_itemOffsets]：item index → 该项起点在滚动坐标系中的偏移（滚动不变，
-  ///   项离开视口后仍有效）；
-  /// - [_itemHeights]：item index → 该项实测高度（未测项用分类型均值估算）。
-  final Map<int, double> _itemOffsets = {};
+  /// item 逻辑序号 → 实测高度（未测项用分类型均值估算）。
+  ///
+  /// 高度与坐标系无关、跨帧长期有效；条目**偏移**不在此缓存——懒加载列表的
+  /// 范围估算变化后已构建子项会整体重排，历史偏移随即失效，故偏移一律当帧从
+  /// 渲染树读取（见 [_liveChatItems]）。
   final Map<int, double> _itemHeights = {};
 
+  /// 消息列的条目总数（构建时更新），用于把列表**视图下标**换算为逻辑序号
+  /// （`reverse: true` 下 `逻辑序号 = 总数 − 1 − 视图下标`，见 [_viewIndexOfChatItem]）。
+  int _chatListItemCount = 0;
+
   /// 楼层跳转：当前跳转目标项的**唯一** GlobalKey（仅跳转期间挂载到目标项，
-  /// 供 [RenderAbstractViewport.getOffsetToReveal] 精确对齐；避免逐项建 key）。
+  /// 用于测量其当前在视口内的位置以精确对齐；避免逐项建 key）。
   final GlobalKey _floorJumpTargetKey = GlobalKey();
   int? _floorJumpTargetIndex;
+
+  /// 本次跳转已做的「对齐后复查」次数（见 [_kFloorJumpMaxAlignChecks]）。
+  int _floorJumpAlignChecks = 0;
 
   /// 缓存失效依据：轮次来源（引用+长度）或聊天区宽度变化时清空实测数据。
   ///
@@ -553,14 +584,14 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
-  /// 清空楼层跳转的实测缓存。
+  /// 清空楼层跳转的**实测高度**缓存。
   ///
-  /// 跳底/动画滚动期间构建的子项会以「跳变过程中的滚动位置」上报偏移
-  /// （项序号与偏移错位，楼层检测会误判当前轮）：滚动落定后清空，
-  /// 后续以纯估算兜底，待用户滚动 / 打开悬浮条重建时重新实测上报。
+  /// 跳底/网格重排期间构建的子项会以「跳变过程中的滚动宽度」上报高度
+  /// （列宽变化会改变行高，楼层估算会随之失真）：滚动落定后清空，
+  /// 后续以分类型均值兜底，待用户滚动 / 打开悬浮条重建时重新实测上报。
+  /// 偏移无需清理——它不再被缓存（见 [_liveChatItems]）。
   void _resetItemMeasurementCache() {
     _itemHeights.clear();
-    _itemOffsets.clear();
   }
 
   /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复；
@@ -570,6 +601,11 @@ class _ChatScreenState extends State<ChatScreen>
   /// 「底部」判据随 `reverse: true` 变为 `pixels <= minScrollExtent + 阈值`
   /// （见 [_isNearBottom]）。
   bool _onChatScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      // 用户按下并开始拖动：立刻放弃进行中的定点跳转。
+      _cancelFloorJump();
+    }
     if (_floorJumpOpen) {
       _scheduleFloorJumpDetect();
     }
@@ -579,6 +615,7 @@ class _ChatScreenState extends State<ChatScreen>
         // 已离开底部，暂停自动跟随与补滚；回到底部附近后由 idle 分支恢复。
         // （仅靠 reverse 判断会漏掉「offset 减小时方向为 forward」的真实语义。）
         _userScrolledAway = true;
+        _cancelFloorJump();
       } else if (_scrollController.hasClients) {
         // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随、清除红点。
         final pos = _scrollController.position;
@@ -592,6 +629,15 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
     return false;
+  }
+
+  /// 放弃进行中的定点跳转（用户接管滚动时调用）。
+  ///
+  /// 跳转是「分帧推进 + 帧末复查」的：不在用户开始拖动时取消，复查回调会在
+  /// 拖动过程中把列表拽回目标位置（实测「向上拖 300px」被拉回原点）。
+  /// 释放目标标记后，[_refineJump] 的后续帧会自行退出。
+  void _cancelFloorJump() {
+    _floorJumpTargetIndex = null;
   }
 
   /// 帧末触发重建（滚动通知可能在布局/手势分发期间触发，不宜直接 setState）。
@@ -769,20 +815,20 @@ class _ChatScreenState extends State<ChatScreen>
   /// 消息列 `reverse: true`：`pixels` 是**视口底边**（offset 0 = 底部），
   /// 因此视口顶边 = `pixels + viewportDimension`。楼层跳转的偏移模型（条目顶边
   /// 在滚动坐标系中的位置）依赖此换算；若把列表改回正向，这里与
-  /// [_onItemMeasured]、[_detectFloorJumpCurrent]、[_estimateItemOffset]、
-  /// [_modeledItemOffset] 必须一起改回。
+  /// [_detectFloorJumpCurrent]、[_estimateItemOffset]、[_modeledItemOffset]、
+  /// [_liveChatItems] 必须一起改回。
   double _viewportTopOffset(ScrollMetrics pos) =>
       pos.pixels + pos.viewportDimension;
 
   /// 把偏移模型的「条目**顶边**在滚动坐标系中的位置」换算为「该条目顶边对齐
   /// 视口顶」所需的 [ScrollPosition.pixels]。
   ///
-  /// 模型量以**视口顶边**为参照（见 [_onItemMeasured] / [_viewportTopOffset]），
+  /// 模型量以**视口顶边**为参照（见 [_liveChatItems] / [_viewportTopOffset]），
   /// 而 [ScrollPosition.pixels] 在 `reverse: true` 下是**视口底边**的坐标：
   /// 两者相差一个视口高度，故此处必须减去 [ScrollMetrics.viewportDimension]。
   /// 漏掉这一步的后果不是「估算不准」而是**方向性错误**——目标项会被送到
   /// 「顶边 = 视口底边」的位置（即条目贴在窗口底部），随后才由 [_refineJump]
-  /// 的动画拉到视口顶：表现为「先无动画定位到目标轮 user 气泡在窗口底部，
+  /// 对齐到视口顶：表现为「先无动画定位到目标轮 user 气泡在窗口底部，
   /// 再滚动到顶部」。
   ///
   /// 越界由调用方 `.clamp(min, max)` 收口：目标项离内容底部不足一屏时本就不可能
@@ -791,16 +837,62 @@ class _ChatScreenState extends State<ChatScreen>
   double _revealScrollOffset(double itemTopOffset, ScrollMetrics pos) =>
       itemTopOffset - pos.viewportDimension;
 
-  /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：
-  /// 记录该项**顶边**在滚动坐标系中的偏移与高度，供检测/跳转使用。
-  /// 上报的 `viewportTop` 是「相对视口的顶部偏移」（视口顶为 0），按上面的
-  /// 换算得到条目顶边的滚动偏移；滚动不变、离开视口后仍有效。
-  void _onItemMeasured(int itemIndex, double viewportTop, double height) {
-    _itemHeights[itemIndex] = height;
-    if (_scrollController.hasClients) {
-      final pos = _scrollController.position;
-      _itemOffsets[itemIndex] = _viewportTopOffset(pos) - viewportTop;
+  /// **当帧已构建**的聊天条目：逻辑序号、顶边在滚动坐标系中的偏移（当帧坐标系）、
+  /// 实测高度。按序号升序（= 视觉上自下而上）。
+  ///
+  /// 偏移取**绘制位置**反推（`视口顶偏移 − 条目在视口内的 y`），而不是子项
+  /// `parentData.layoutOffset`：后者是**所属 sliver 内部**的坐标，不含
+  /// `ListView` 前导 padding（`reverse: true` 下是贴底留白 = 输入面板高 + 8，
+  /// 实测 183px），直接拿来用会让整个偏移模型整体偏小一个留白，
+  /// 「当前轮」被判成上一轮、跳转落点也跟着偏。
+  ///
+  /// 也不沿用历史上报的绝对偏移：懒加载列表在「范围估算」变化后会把已构建子项
+  /// 整体重排，历史偏移随即失效（实测读到过 `-18288` 这类负偏移）。
+  List<({int index, double topEdge, double height})> _liveChatItems() {
+    final items = <({int index, double topEdge, double height})>[];
+    if (!_scrollController.hasClients) return items;
+    final total = _chatListItemCount;
+    if (total <= 0) return items;
+    final pos = _scrollController.position;
+    final viewportTop = _viewportTopOffset(pos);
+    final root = pos.context.storageContext.findRenderObject();
+    if (root == null) return items;
+
+    void collect(RenderSliverMultiBoxAdaptor sliver) {
+      sliver.visitChildren((RenderObject child) {
+        final parentData = child.parentData;
+        if (parentData is! SliverMultiBoxAdaptorParentData) return;
+        final viewIndex = parentData.index;
+        if (viewIndex == null) return;
+        if (child is! RenderBox || !child.hasSize) return;
+        final viewport = RenderAbstractViewport.maybeOf(child);
+        if (viewport is! RenderObject) return;
+        final y = child.localToGlobal(Offset.zero, ancestor: viewport).dy;
+        items.add((
+          index: total - 1 - viewIndex,
+          topEdge: viewportTop - y,
+          height: child.size.height,
+        ));
+      });
     }
+
+    void visit(RenderObject ro) {
+      if (ro is RenderSliverMultiBoxAdaptor) {
+        collect(ro);
+        return;
+      }
+      ro.visitChildren(visit);
+    }
+
+    visit(root);
+    items.sort((a, b) => a.index.compareTo(b.index));
+    return items;
+  }
+
+  /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：记录实测高度。
+  /// 高度与坐标系无关，跨帧长期有效（偏移不缓存，见 [_liveChatItems]）。
+  void _onItemMeasured(int itemIndex, double height) {
+    _itemHeights[itemIndex] = height;
   }
 
   /// 检测当前屏幕中的轮次。
@@ -809,13 +901,13 @@ class _ChatScreenState extends State<ChatScreen>
   /// 项，其顶部可能已在视口上方）——即用户正在阅读的轮次；atStart 表示该轮
   /// 起点已与视口顶对齐。
   ///
-  /// 偏移模型以「条目顶边在滚动坐标系中的位置」表达（见 [_onItemMeasured]）。
+  /// 偏移模型以「条目顶边在滚动坐标系中的位置」表达（见 [_liveChatItems]）。
   /// `reverse: true` 下滚动偏移随**逻辑序递减**（逻辑第 0 轮在最上方、偏移最大），
   /// 故判据中的视口参考点取 [_viewportTopOffset]，可视项用「底边 = 顶边 − 高度」
   /// 判断（正向列表为「顶边 + 高度」）。
   ///
-  /// 使用「完整偏移模型」：已上报项用实测偏移，未上报项从最近已上报锚点
-  /// 推算（见 [_modeledItemOffset]）——即使当前轮起点项从未被构建/上报
+  /// 使用「完整偏移模型」：已构建项用当帧实测偏移，未构建项从最近的已构建锚点
+  /// 推算（见 [_modeledItemOffset]）——即使当前轮起点项从未被构建
   /// （如直接跳转后阅读），也能正确识别当前轮（修复「第 5 轮底部点左箭头
   /// 跳到第 4 轮」）。
   void _detectFloorJumpCurrent() {
@@ -828,8 +920,10 @@ class _ChatScreenState extends State<ChatScreen>
     final pos = _scrollController.position;
     final itemCount = chatRounds.length * 2;
     final viewportTop = _viewportTopOffset(pos);
+    final live = _liveChatItems();
     double heightOf(int idx) => _itemHeights[idx] ?? _avgItemHeightFor(idx);
-    double offsetOf(int idx) => _modeledItemOffset(idx, itemCount);
+    double offsetOf(int idx) =>
+        _modeledItemOffset(idx, itemCount, live: live);
 
     // 可视内容起始项：按逻辑序（= 视觉自上而下）首个「底边 < 视口顶」的项。
     int? firstIndex;
@@ -854,28 +948,43 @@ class _ChatScreenState extends State<ChatScreen>
     _setFloorJumpCurrent((roundIndex: round.roundIndex, atStart: atStart));
   }
 
-  /// 计算指定列表项**顶边**的滚动偏移（完整偏移模型）：
-  /// - 已上报项：直接返回实测偏移；
-  /// - 未上报项：从最近已上报锚点推算（逻辑序在前的锚点在视口上方、偏移更大；
-  ///   在后的锚点在视口下方、偏移更小），间距用已测高度/分类型均值补齐——
-  ///   锚点近、链条短，误差小。
-  double _modeledItemOffset(int itemIndex, int itemCount) {
-    final reported = _itemOffsets[itemIndex];
-    if (reported != null) return reported;
-    int? above; // 最近的已上报且 index < itemIndex（视觉上在**上方**）
-    int? below; // 最近的已上报且 index > itemIndex（视觉上在**下方**）
-    for (final e in _itemOffsets.entries) {
-      if (e.key < itemIndex) {
-        if (above == null || e.key > above) above = e.key;
-      } else if (e.key > itemIndex) {
-        if (below == null || e.key < below) below = e.key;
+  /// 计算指定列表项**顶边**的滚动偏移（完整偏移模型，当帧坐标系）：
+  /// - 已构建项（[live] 里直接命中）：返回当帧实测偏移；
+  /// - 未构建项：从**最近的已构建锚点**推算——序号更小 = 视觉上更靠上 = 偏移更大，
+  ///   故「上方锚点」减间距、「下方锚点」加间距，间距用已测高度/分类型均值补齐；
+  /// - 列表尚无已构建项：从底部（offset 0 恒定）累加（[_estimateItemOffset]）。
+  ///
+  /// 锚点必须是**当帧**已构建项：懒加载列表在范围估算变化后会重排已构建子项，
+  /// 跨帧缓存的历史偏移会失效（见 [_liveChatItems]）。[live] 可由调用方传入以
+  /// 避免同一帧内重复遍历渲染树。
+  double _modeledItemOffset(
+    int itemIndex,
+    int itemCount, {
+    List<({int index, double topEdge, double height})>? live,
+  }) {
+    final items = live ?? _liveChatItems();
+    int? above; // 最近的已构建且 index < itemIndex（视觉上在**上方**）
+    int? below; // 最近的已构建且 index > itemIndex（视觉上在**下方**）
+    for (final item in items) {
+      if (item.index == itemIndex) return item.topEdge;
+      if (item.index < itemIndex) {
+        if (above == null || item.index > above) above = item.index;
+      } else if (item.index > itemIndex) {
+        if (below == null || item.index < below) below = item.index;
       }
     }
+    double? topEdgeOf(int index) {
+      for (final item in items) {
+        if (item.index == index) return item.topEdge;
+      }
+      return null;
+    }
+
     if (above != null) {
-      return _itemOffsets[above]! - _estimateGap(above, itemIndex);
+      return topEdgeOf(above)! - _estimateGap(above, itemIndex);
     }
     if (below != null) {
-      return _itemOffsets[below]! + _estimateGap(itemIndex, below);
+      return topEdgeOf(below)! + _estimateGap(itemIndex, below);
     }
     return _estimateItemOffset(itemIndex, itemCount);
   }
@@ -949,25 +1058,19 @@ class _ChatScreenState extends State<ChatScreen>
     return -1;
   }
 
-  /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）：
-  /// 标记目标（唯一 GlobalKey 挂载到该项供精确对齐），先按估算偏移粗定位，
-  /// 再帧末校准到精确偏移。
+  /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）。
   ///
-  /// 粗定位的偏移由 [_revealScrollOffset] 从模型量换算（`reverse: true` 下
-  /// 必须减去一个视口高度），使**首帧**即落在目标顶部附近；帧末校准只收敛
-  /// 估算误差引起的剩余偏差。
+  /// 分帧推进：标记目标（唯一 GlobalKey 挂载到该项供精确对齐）→ 每帧朝目标
+  /// 走**有界的一步**（[_stepJumpTowardItem]）→ 目标进入渲染树后精确对齐视口顶
+  /// （[_alignedOffsetForTarget] + 复查）。近处目标 1~2 帧到位；远端目标表现为
+  /// 一次快速滚动，且单帧构建量有界（不会一帧构建几百个气泡）。
   void _jumpToItem(int itemIndex) {
     if (!_scrollController.hasClients) return;
-    final pos = _scrollController.position;
+    _floorJumpAlignChecks = 0;
     if (_floorJumpTargetIndex != itemIndex) {
       setState(() => _floorJumpTargetIndex = itemIndex);
     }
-    final itemCount = _chatRoundsNow().length * 2;
-    final estimate = _revealScrollOffset(
-      _modeledItemOffset(itemIndex, itemCount),
-      pos,
-    ).clamp(pos.minScrollExtent, pos.maxScrollExtent);
-    pos.jumpTo(estimate);
+    _stepJumpTowardItem(itemIndex);
     _scheduleRefineJump(itemIndex, 0);
   }
 
@@ -978,77 +1081,103 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
-  /// 校准跳转：目标项已构建（唯一 GlobalKey 已挂载）→ 用
-  /// [RenderAbstractViewport.getOffsetToReveal] 精确对齐视口顶（粗定位一次命中
-  /// 时用动画收敛残余，靠回退落点才命中时瞬时对齐，见方法内注释）；
-  /// 未构建 → 用完整偏移模型估算目标偏移并跳转。每次跳转都会构建目标
-  /// 附近的项，实测高度随之补充、估算误差随迭代收缩（最多
-  /// [_kFloorJumpMaxRefine] 次）。
+  /// 朝目标项推进**一帧的一步**，返回是否真的移动了。
+  ///
+  /// **方向**由当帧已构建条目的序号区间决定（懒加载列表只能按序号单调推进，
+  /// 该判据不受「范围估算变化导致的偏移重排」影响——实测历史偏移会失效甚至
+  /// 变成负数）；**步长**取偏移模型的剩余距离，夹在
+  /// `[0.5 视口, _kFloorJumpStepItems × 局部条目高度]` 内：上限保证单帧构建的
+  /// 途经条目数有界（框架在 `jumpTo` 越出已构建窗口时逐条构建中间条目，
+  /// 不设上限会让远端跳转在一帧里构建几百个气泡：实测 1043ms 单帧）。
+  bool _stepJumpTowardItem(int itemIndex) {
+    if (!_scrollController.hasClients) return false;
+    final pos = _scrollController.position;
+    final itemCount = _chatRoundsNow().length * 2;
+    final live = _liveChatItems();
+    final desired = _revealScrollOffset(
+      _modeledItemOffset(itemIndex, itemCount, live: live),
+      pos,
+    );
+    final delta = desired - pos.pixels;
+    // 方向：序号更小 = 视觉更靠上 = 滚动偏移更大。
+    var direction = delta.isNegative ? -1.0 : 1.0;
+    if (live.isNotEmpty) {
+      if (itemIndex < live.first.index) {
+        direction = 1.0;
+      } else if (itemIndex > live.last.index) {
+        direction = -1.0;
+      }
+    }
+    final minStep = pos.viewportDimension * _kFloorJumpMinStepViewports;
+    final localHeight = live.isEmpty
+        ? _avgItemHeightFor(itemIndex)
+        : live.map((item) => item.height).reduce((a, b) => a + b) /
+            live.length;
+    final cap = math.max(
+      _kFloorJumpStepItems * math.max(localHeight, 24),
+      minStep,
+    );
+    final magnitude = delta.abs().clamp(minStep, cap);
+    final next = (pos.pixels + direction * magnitude).clamp(
+      pos.minScrollExtent,
+      pos.maxScrollExtent,
+    );
+    if ((next - pos.pixels).abs() < _kFloorJumpAtStartEpsilon) return false;
+    pos.jumpTo(next);
+    return true;
+  }
+
+  /// 校准跳转：目标项已构建（唯一 GlobalKey 已挂载）→ 精确对齐视口顶；
+  /// 未构建 → 继续分帧推进（[_stepJumpTowardItem]）。
+  ///
+  /// 对齐后用 [_kFloorJumpMaxAlignChecks] 帧复查：懒加载列表在跳转后会继续重排
+  /// 已构建条目（新条目被构建 ⇒ 范围估算与已有条目的偏移一起变化），单次对齐
+  /// 可能被随后的重排带偏。
   void _refineJump(int itemIndex, int attempt) {
     if (!_scrollController.hasClients) return;
     if (attempt > _kFloorJumpMaxRefine) return;
     final pos = _scrollController.position;
-    final ro = _floorJumpTargetIndex == itemIndex
-        ? _floorJumpTargetKey.currentContext?.findRenderObject() as RenderBox?
-        : null;
-    if (ro != null && ro.attached) {
-      final vp = RenderAbstractViewport.of(ro);
-      // `alignment` 是「目标在视口里的相对位置」：0 = 目标前缘贴视口前缘、
-      // 1 = 目标后缘贴视口后缘。`reverse: true` 下视口的**前缘是底部**、
-      // 后缘才是顶部，因此「把条目顶边对齐视口顶」必须用 1.0
-      // （正向列表用 0.0；见 `rendering/viewport.dart:1166-1174, 1219`）。
-      final reveal = vp.getOffsetToReveal(ro, 1.0).offset;
-      final target = reveal.clamp(pos.minScrollExtent, pos.maxScrollExtent);
-      if (attempt == 0) {
-        // 粗定位已把目标带进视口：剩余偏差就是模型误差（通常几十 px），
-        // 用动画收敛更顺滑（且偏差为 0 时动画即空转，无感）。
-        pos
-            .animateTo(
-              target,
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOut,
-            )
-            .then((_) {
-          // 动画结束后再检测当前轮次：动画中途检测会读到中间位置导致
-          // 「当前轮/是否在起点」短暂失真（驱动悬浮条数字与箭头状态）。
-          if (!mounted) return;
-          try {
-            _detectFloorJumpCurrent();
-          } catch (_) {
-            // 检测仅为状态刷新，任何异常都不应影响跳转结果。
-          }
-        });
-      } else {
-        // 目标是靠回退落点逐帧推进才带进视口的（粗定位没命中）：此时目标多半
-        // 停在**窗口底部一侧**，若再用 280ms 动画对齐，用户看到的就是
-        // 「气泡先落在窗口底部、再滚到顶部」。瞬时对齐把中间态压缩到一帧
-        // （≈16ms，肉眼不可见），即用户预期的「无动画定位到视口顶」。
+    if (_floorJumpTargetIndex != itemIndex) return;
+    final target = _alignedOffsetForTarget(pos);
+    if (target != null) {
+      // 必须**精确**对齐（不做「偏差小于阈值就跳过」的优化）：楼层检测用
+      // 「上一项底边 < 视口顶」的严格判据，残留几 px 就会把「当前轮」判成上一轮。
+      if ((target - pos.pixels).abs() > 0.01) {
+        // 瞬时对齐：动画期间列表会重排，`animateTo` 的目标值随即失真
+        // （实测把「残余 7px」走成 190px 偏差、并把「当前轮」带错一轮）；
+        // 瞬时对齐也正是用户对定点跳转的预期（「无动画定位到视口顶」）。
         pos.jumpTo(target);
-        _scheduleFloorJumpDetect();
       }
-      // 跳转完成：释放目标标记（下次跳转再挂载）。
-      if (_floorJumpTargetIndex == itemIndex) {
-        _floorJumpTargetIndex = null;
+      if (_floorJumpAlignChecks < _kFloorJumpMaxAlignChecks) {
+        _floorJumpAlignChecks++;
+        _scheduleRefineJump(itemIndex, attempt + 1);
+        return;
       }
+      // 对齐完成：释放目标标记（下次跳转再挂载）并刷新「当前轮」。
+      _floorJumpTargetIndex = null;
+      _scheduleFloorJumpDetect();
       return;
     }
-    // 目标未构建（粗定位落点没把目标带进视口，或目标在懒加载列表已估算出的
-    // 范围之外）：继续用完整偏移模型逐帧推进，落点取**未换算**的模型量
-    // （= 条目顶边贴视口底边）。这一落点是 P0-③ 之前既有实现的落点：它对
-    // 「模型低估目标偏移」更宽容（条目仍贴在视口底边一侧、更可能被构建），
-    // 实测「换算修正 + 本回退落点」在长短混合长书上冷/热跳转均 5/5 收敛，
-    // 而「换算修正 + 沿用修正落点」只有 2/5（见
-    // `.agents/perf/floor_jump_frame_probe_test.dart`）——因为修正后的落点整体
-    // 上移一屏，模型低估时目标反被推到视口**上方**，永远等不到它进入视口。
-    // 该落点只决定中间态，最终对齐仍由上面的 getOffsetToReveal 分支瞬时收口。
-    final itemCount = _chatRoundsNow().length * 2;
-    pos.jumpTo(
-      _modeledItemOffset(
-        itemIndex,
-        itemCount,
-      ).clamp(pos.minScrollExtent, pos.maxScrollExtent),
-    );
+    _stepJumpTowardItem(itemIndex);
     _scheduleRefineJump(itemIndex, attempt + 1);
+  }
+
+  /// 把目标项**顶边**对齐到视口顶所需的 [ScrollPosition.pixels]；
+  /// 目标项未构建（无 [GlobalKey] 上下文 / 未布局）时返回 null。
+  ///
+  /// 不用 `RenderAbstractViewport.getOffsetToReveal`：它在 `reverse: true` 的
+  /// 视口里要经过 growth direction / pinned sliver 等多层换算，实测与目标真实
+  /// 位置相差 183px（它给 846，真实对齐值是 663），会让「对齐」把目标留在
+  /// 视口顶下方一整条气泡的位置。改为直接量目标**当帧**在视口内的 y：
+  /// `pixels` 增大内容下移，故取 `pixels − y` 即为对齐偏移
+  /// （与 [_keepAnchorInPlace] 同一手法）。
+  double? _alignedOffsetForTarget(ScrollMetrics pos) {
+    final ro = _floorJumpTargetKey.currentContext?.findRenderObject();
+    if (ro is! RenderBox || !ro.attached || !ro.hasSize) return null;
+    final viewport = RenderAbstractViewport.maybeOf(ro);
+    if (viewport is! RenderObject) return null;
+    final y = ro.localToGlobal(Offset.zero, ancestor: viewport).dy;
+    return (pos.pixels - y).clamp(pos.minScrollExtent, pos.maxScrollExtent);
   }
 
   /// 估算 [fromIndex, toIndex) 各项高度之和（已测用实测，未测用分类型均值）。
@@ -2303,7 +2432,6 @@ class _ChatScreenState extends State<ChatScreen>
         versionsRevision != _lastVersionsRevision ||
         (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
       _itemHeights.clear();
-      _itemOffsets.clear();
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
       _lastWarningsVersion = warningsVersion;
@@ -2346,6 +2474,8 @@ class _ChatScreenState extends State<ChatScreen>
       showPendingUser: showPendingUser,
       showPending: showPending,
     );
+    // 供楼层跳转把列表**视图下标**换算回逻辑序号（见 [_liveChatItems]）。
+    _chatListItemCount = itemKeys.length;
     final chatList = NotificationListener<ScrollNotification>(
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
@@ -2486,8 +2616,7 @@ class _ChatScreenState extends State<ChatScreen>
           return _FloorMeasuredItem(
             key: itemKeys[logicalIndex],
             itemIndex: logicalIndex,
-            onReport: _onItemMeasured,
-            child: Center(
+            onReport: _onItemMeasured,            child: Center(
               key: logicalIndex == _floorJumpTargetIndex
                   ? _floorJumpTargetKey
                   : null,
@@ -3667,16 +3796,18 @@ class _FloorJumpBarAppearanceState extends State<_FloorJumpBarAppearance>
   }
 }
 
-/// 楼层跳转：列表项自上报部件。
+/// 楼层跳转：列表项**高度**自上报部件。
 ///
-/// 构建/内容变化后在帧末回报该项「相对视口的顶部偏移」与「高度」
-/// （通过 [onReport]），供楼层跳转检测与定位使用。刻意**不使用逐项
-/// GlobalKey**（避免虚拟化列表中大量 GlobalKey 带来的元素/键冲突风险）：
-/// 部件通过自身 context 找到 RenderBox 计算位置，且仅在帧末、mounted 时
-/// 读取，无需父级持有任何键。
+/// 构建/内容变化后在帧末回报该项实测高度（通过 [onReport]），供楼层跳转估算
+/// 未构建条目的偏移使用。刻意**不使用逐项 GlobalKey**（避免虚拟化列表中大量
+/// GlobalKey 带来的元素/键冲突风险）：部件通过自身 context 找到 RenderBox 读取
+/// 尺寸，且仅在帧末、mounted 时读取，无需父级持有任何键。
+///
+/// 只上报高度、**不上报偏移**：偏移随懒加载列表的「范围估算」重排而失效
+/// （详见 [_liveChatItems]）。
 class _FloorMeasuredItem extends StatefulWidget {
   final int itemIndex;
-  final void Function(int itemIndex, double viewportTop, double height) onReport;
+  final void Function(int itemIndex, double height) onReport;
   final Widget child;
 
   const _FloorMeasuredItem({
@@ -3709,9 +3840,7 @@ class _FloorMeasuredItemState extends State<_FloorMeasuredItem> {
       if (!mounted) return;
       final ro = context.findRenderObject();
       if (ro is! RenderBox) return;
-      final vp = RenderAbstractViewport.of(ro);
-      final y = ro.localToGlobal(Offset.zero, ancestor: vp).dy;
-      widget.onReport(widget.itemIndex, y, ro.size.height);
+      widget.onReport(widget.itemIndex, ro.size.height);
     });
   }
 

@@ -133,6 +133,59 @@ void main() {
     print('--- L0-5 汇总 ---\n${_summary.join('\n')}');
   });
 
+  // ---------------- 冷跳远端/过早/未加载轮次：到达帧与单帧成本 ----------------
+  // 两个验收量：
+  // ① **到达帧**：目标轮起点对齐视口顶（9px = 气泡内边距）发生在第几帧——
+  //    限步分帧推进后，远端跳转不再「一帧构建几百条」，代价是若干帧；
+  // ② **单帧成本**：最大单帧耗时（旧实现冷跳远端曾出现 **1043ms** 单帧）。
+  for (final round in <int>[1, 2, 5, 30, 60, 90, 119, 120]) {
+    testWidgets('混合书冷跳第 $round 轮：到达帧与单帧成本', (tester) async {
+      final dao = await _buildMixedRounds(shortCount: 117, longCount: 3);
+      await pumpChatScreen(tester, roundDao: dao);
+      final pos = _chatPosition(tester);
+      await _jumpOnce(tester, round);
+      var arrived = -1;
+      var worstMs = 0;
+      var worstFrame = 0;
+      final trail = <String>[];
+      for (var f = 0; f < 40; f++) {
+        final gap = _topGapOfRound(tester, round);
+        if (arrived < 0 && gap != null && gap.abs() < 15) arrived = f + 1;
+        if (f < 4 || f % 10 == 9) {
+          trail.add(
+            '${f + 1}:px=${pos.pixels.toStringAsFixed(0)}'
+            '/目标=${_fmt(gap)}',
+          );
+        }
+        final sw = Stopwatch()..start();
+        await tester.pump(const Duration(milliseconds: 16));
+        sw.stop();
+        if (sw.elapsedMilliseconds > worstMs) {
+          worstMs = sw.elapsedMilliseconds;
+          worstFrame = f + 1;
+        }
+      }
+      final finalGap = _topGapOfRound(tester, round);
+      // ignore: avoid_print
+      print(
+        '--- L0-6 冷跳第 $round 轮：到达第 ${arrived < 0 ? '未到达' : '$arrived'} 帧'
+        ' | 40 帧后=${_fmt(finalGap)}'
+        ' | 最大单帧=${worstMs}ms(第 $worstFrame 帧)'
+        ' | 轨迹=${trail.join(' ')}',
+      );
+      _summary.add(
+        '冷跳第 $round 轮：到达第 ${arrived < 0 ? '—' : arrived} 帧、'
+        '40 帧后=${_fmt(finalGap)}、最大单帧=${worstMs}ms',
+      );
+      expect(
+        arrived,
+        greaterThan(0),
+        reason: '远端/过早/未加载轮次的跳转必须最终到达目标（旧实现冷跳第 1/30/60/90 轮永远到不了）',
+      );
+      expect(worstMs, lessThan(600), reason: '单帧构建量必须有界（旧实现曾 1043ms/帧）');
+    }, timeout: const Timeout(Duration(minutes: 10)));
+  }
+
   // ---------------- 均匀书（硬断言） ----------------
   for (final round in <int>[2, 4, 6]) {
     testWidgets('均匀书第 $round 轮：首帧即对齐视口顶且收敛后仍对齐', (tester) async {

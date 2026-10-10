@@ -36,6 +36,26 @@ void main() {
     return provider;
   }
 
+  /// 117 短轮 + 3 长轮（120 轮）：懒加载列表的范围估算与分类型均值高度模型
+  /// 误差都被放大，用于锁死「远端 / 未加载轮次跳转」。
+  Future<FakeRoundDao> buildLongMixedBook() async {
+    final dao = FakeRoundDao();
+    for (var i = 1; i <= 120; i++) {
+      final isLong = i > 117;
+      await dao.insertRound(
+        Round(
+          bookUuid: kHarnessBookUuid,
+          roundIndex: i,
+          userInput: '第 $i 轮的用户输入',
+          aiNarrative: isLong ? '尾部剧情正文。' * 260 : '第 $i 轮正文。' * 40,
+          currentTime: '第一天 午时',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    return dao;
+  }
+
   /// 对话消息列表最外层（ListView 自带）的滚动状态。
   ScrollableState chatScrollable(WidgetTester tester) {
     return tester.state<ScrollableState>(
@@ -304,25 +324,41 @@ void main() {
     expectRoundStartAligned(tester, 2);
   });
 
+  testWidgets('长书远端跳转：目标轮最终精确对齐视口顶（修复「到不了目标」）', (tester) async {
+    // 同一本长书，冷跳到**远端**第 30 轮（跨约 180 个条目）。修复前该跳转永远
+    // 到不了目标：`jumpTo` 一次跨越整个列表会让框架在**一帧**里逐条构建几百个
+    // 途经条目（实测 1043ms 单帧），随后范围估算崩塌、偏移模型算出负数，
+    // 最终停在列表底部（实测「40 帧后仍未构建」）。
+    await pumpChatScreen(tester, roundDao: await buildLongMixedBook());
+
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '30');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+
+    // 跳转按条目数限步、逐帧推进：每帧构建量有界（实测 ~8 条/帧），
+    // 因此远端需要若干帧（实测 ~19 帧）。
+    final viewport = tester.getSize(find.byType(ListView)).height;
+    var farFrames = 0;
+    for (var i = 0; i < 40; i++) {
+      final gap = roundTopGap(tester, 30);
+      if (gap != null && gap > viewport * 0.3) farFrames++;
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    expect(roundTopGap(tester, 30), isNotNull, reason: '远端跳转必须最终把目标轮带进视口');
+    expectRoundStartAligned(tester, 30);
+    expect(
+      farFrames,
+      lessThanOrEqualTo(1),
+      reason: '目标可见后应即时贴到视口顶（当前有 $farFrames 帧停在视口下部）',
+    );
+  });
+
   testWidgets('长书跳转不出现「气泡先停在窗口底部再滚上去」', (tester) async {
     // 117 短 + 3 长的长书：懒加载范围估算与分类型均值高度模型误差都被放大。
     // 跳到靠底部的第 119 轮（旧行为：首帧把 user 气泡送到窗口底边，偏差 ≈ 一屏
     // 839px，再用约 20 帧动画滚到视口顶 —— 即用户报告的动效现象）。
-    final dao = FakeRoundDao();
-    for (var i = 1; i <= 120; i++) {
-      final isLong = i > 117;
-      await dao.insertRound(
-        Round(
-          bookUuid: kHarnessBookUuid,
-          roundIndex: i,
-          userInput: '第 $i 轮的用户输入',
-          aiNarrative: isLong ? '尾部剧情正文。' * 260 : '第 $i 轮正文。' * 40,
-          currentTime: '第一天 午时',
-          createdAt: DateTime.now(),
-        ),
-      );
-    }
-    await pumpChatScreen(tester, roundDao: dao);
+    await pumpChatScreen(tester, roundDao: await buildLongMixedBook());
 
     await openFloorBar(tester);
     await tester.enterText(numberField(), '119');
