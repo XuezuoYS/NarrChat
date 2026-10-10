@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/round_stack.dart';
 import 'package:narrchat/widgets/floor_jump_bar.dart';
 import 'package:narrchat/widgets/round_version_stepper.dart';
@@ -124,6 +125,14 @@ void main() {
         reason: '第 $roundIndex 轮起点应对齐视口顶（当前偏差 ${roundTop - listTop}px）');
   }
 
+  /// 指定轮次 user 气泡文本顶相对消息视口顶的偏差；该轮未构建时返回 null。
+  double? roundTopGap(WidgetTester tester, int roundIndex) {
+    final finder = find.text('第 $roundIndex 轮的用户输入');
+    if (finder.evaluate().isEmpty) return null;
+    return tester.getTopLeft(finder).dy -
+        tester.getTopLeft(find.byType(ListView)).dy;
+  }
+
   testWidgets('宽屏：楼层跳转按钮位于滚动到底部按钮左侧', (tester) async {
     await pumpChat(tester);
 
@@ -243,6 +252,100 @@ void main() {
 
     expectRoundStartAligned(tester, 2);
     expect(floorBar(), findsNothing, reason: '回车定点跳转后悬浮条应关闭');
+  });
+
+  testWidgets('定点跳转首帧即落在目标顶部（不先无动画落到窗口底部再滚上去）', (tester) async {
+    await pumpChat(tester);
+
+    // 先跳一次并等动画结束：取得「目标轮起点对齐视口顶」的**精确**滚动偏移。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '2');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expectRoundStartAligned(tester, 2);
+    final pos = chatScrollable(tester).position;
+    final exactOffset = pos.pixels;
+    final viewportHeight = pos.viewportDimension;
+
+    // 回到列表底部（跳转起点与上一次不同，模型需重新估算中间条目高度）。
+    await scrollChatToBottom(tester);
+    expect(chatBottomGap(tester), closeTo(0, 1));
+
+    // 再次定点跳转：只 pump **一帧**——此时校准动画尚未推进，读到的就是
+    // 用户看到的第一帧落点。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '2');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    final firstFrameOffset = chatScrollable(tester).position.pixels;
+    final listTop = tester.getTopLeft(find.byType(ListView)).dy;
+    final firstFrameTop =
+        tester.getTopLeft(find.text('第 2 轮的用户输入')).dy - listTop;
+    // 首帧必须已把目标送到视口**上部**（容差取 0.3 屏：留出高度模型的估算误差），
+    // 而不是先落到窗口底部（旧行为恰偏下 1.0 屏 = 视口高）。
+    final tolerance = viewportHeight * 0.3;
+    expect(
+      firstFrameOffset,
+      closeTo(exactOffset, tolerance),
+      reason: '首帧落点应≈精确对齐偏移（当前偏差 '
+          '${(firstFrameOffset - exactOffset).toStringAsFixed(1)}px，'
+          '视口高 ${viewportHeight.toStringAsFixed(0)}px；'
+          '偏差≈1.0 屏即「先无动画落到目标轮 user 气泡位于窗口底部」的旧行为）',
+    );
+    expect(
+      firstFrameTop,
+      lessThan(tolerance),
+      reason: '首帧目标轮起点应在视口上部（当前 ${firstFrameTop.toStringAsFixed(1)}px，'
+          '旧行为≈${viewportHeight.toStringAsFixed(0)}px 即气泡顶贴窗口底边）',
+    );
+
+    await tester.pumpAndSettle();
+    expectRoundStartAligned(tester, 2);
+  });
+
+  testWidgets('长书跳转不出现「气泡先停在窗口底部再滚上去」', (tester) async {
+    // 117 短 + 3 长的长书：懒加载范围估算与分类型均值高度模型误差都被放大。
+    // 跳到靠底部的第 119 轮（旧行为：首帧把 user 气泡送到窗口底边，偏差 ≈ 一屏
+    // 839px，再用约 20 帧动画滚到视口顶 —— 即用户报告的动效现象）。
+    final dao = FakeRoundDao();
+    for (var i = 1; i <= 120; i++) {
+      final isLong = i > 117;
+      await dao.insertRound(
+        Round(
+          bookUuid: kHarnessBookUuid,
+          roundIndex: i,
+          userInput: '第 $i 轮的用户输入',
+          aiNarrative: isLong ? '尾部剧情正文。' * 260 : '第 $i 轮正文。' * 40,
+          currentTime: '第一天 午时',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    await pumpChatScreen(tester, roundDao: dao);
+
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '119');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+
+    // 逐帧观察 40 帧：统计「目标已可见但离视口顶很远」的帧（= 气泡停在窗口
+    // 底部、用户看着它慢慢滚上去的那些帧）。
+    final viewport = tester.getSize(find.byType(ListView)).height;
+    var farFrames = 0;
+    for (var i = 0; i < 40; i++) {
+      final gap = roundTopGap(tester, 119);
+      if (gap != null && gap > viewport * 0.3) farFrames++;
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    expect(roundTopGap(tester, 119), isNotNull, reason: '跳转最终必须把目标轮带进视口');
+    expectRoundStartAligned(tester, 119);
+    expect(
+      farFrames,
+      lessThanOrEqualTo(1),
+      reason: '目标可见后应即时贴到视口顶，不应停在一屏之下的窗口底部'
+          '（当前有 $farFrames 帧停在视口下部；旧行为 ≥5 帧）',
+    );
   });
 
   testWidgets('边界：第 1 轮起点时左箭头禁用', (tester) async {

@@ -774,6 +774,23 @@ class _ChatScreenState extends State<ChatScreen>
   double _viewportTopOffset(ScrollMetrics pos) =>
       pos.pixels + pos.viewportDimension;
 
+  /// 把偏移模型的「条目**顶边**在滚动坐标系中的位置」换算为「该条目顶边对齐
+  /// 视口顶」所需的 [ScrollPosition.pixels]。
+  ///
+  /// 模型量以**视口顶边**为参照（见 [_onItemMeasured] / [_viewportTopOffset]），
+  /// 而 [ScrollPosition.pixels] 在 `reverse: true` 下是**视口底边**的坐标：
+  /// 两者相差一个视口高度，故此处必须减去 [ScrollMetrics.viewportDimension]。
+  /// 漏掉这一步的后果不是「估算不准」而是**方向性错误**——目标项会被送到
+  /// 「顶边 = 视口底边」的位置（即条目贴在窗口底部），随后才由 [_refineJump]
+  /// 的动画拉到视口顶：表现为「先无动画定位到目标轮 user 气泡在窗口底部，
+  /// 再滚动到顶部」。
+  ///
+  /// 越界由调用方 `.clamp(min, max)` 收口：目标项离内容底部不足一屏时本就不可能
+  /// 对齐视口顶（正向列表不存在这个换算，改回正向时随
+  /// [_viewportTopOffset] 一并去掉）。
+  double _revealScrollOffset(double itemTopOffset, ScrollMetrics pos) =>
+      itemTopOffset - pos.viewportDimension;
+
   /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：
   /// 记录该项**顶边**在滚动坐标系中的偏移与高度，供检测/跳转使用。
   /// 上报的 `viewportTop` 是「相对视口的顶部偏移」（视口顶为 0），按上面的
@@ -935,6 +952,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）：
   /// 标记目标（唯一 GlobalKey 挂载到该项供精确对齐），先按估算偏移粗定位，
   /// 再帧末校准到精确偏移。
+  ///
+  /// 粗定位的偏移由 [_revealScrollOffset] 从模型量换算（`reverse: true` 下
+  /// 必须减去一个视口高度），使**首帧**即落在目标顶部附近；帧末校准只收敛
+  /// 估算误差引起的剩余偏差。
   void _jumpToItem(int itemIndex) {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
@@ -942,9 +963,9 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() => _floorJumpTargetIndex = itemIndex);
     }
     final itemCount = _chatRoundsNow().length * 2;
-    final estimate = _modeledItemOffset(
-      itemIndex,
-      itemCount,
+    final estimate = _revealScrollOffset(
+      _modeledItemOffset(itemIndex, itemCount),
+      pos,
     ).clamp(pos.minScrollExtent, pos.maxScrollExtent);
     pos.jumpTo(estimate);
     _scheduleRefineJump(itemIndex, 0);
@@ -958,7 +979,8 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 校准跳转：目标项已构建（唯一 GlobalKey 已挂载）→ 用
-  /// [RenderAbstractViewport.getOffsetToReveal] 精确对齐视口顶；
+  /// [RenderAbstractViewport.getOffsetToReveal] 精确对齐视口顶（粗定位一次命中
+  /// 时用动画收敛残余，靠回退落点才命中时瞬时对齐，见方法内注释）；
   /// 未构建 → 用完整偏移模型估算目标偏移并跳转。每次跳转都会构建目标
   /// 附近的项，实测高度随之补充、估算误差随迭代收缩（最多
   /// [_kFloorJumpMaxRefine] 次）。
@@ -977,29 +999,48 @@ class _ChatScreenState extends State<ChatScreen>
       // （正向列表用 0.0；见 `rendering/viewport.dart:1166-1174, 1219`）。
       final reveal = vp.getOffsetToReveal(ro, 1.0).offset;
       final target = reveal.clamp(pos.minScrollExtent, pos.maxScrollExtent);
-      pos
-          .animateTo(
-            target,
-            duration: const Duration(milliseconds: 280),
-            curve: Curves.easeOut,
-          )
-          .then((_) {
-        // 动画结束后再检测当前轮次：动画中途检测会读到中间位置导致
-        // 「当前轮/是否在起点」短暂失真（驱动悬浮条数字与箭头状态）。
-        if (!mounted) return;
-        try {
-          _detectFloorJumpCurrent();
-        } catch (_) {
-          // 检测仅为状态刷新，任何异常都不应影响跳转结果。
-        }
-      });
+      if (attempt == 0) {
+        // 粗定位已把目标带进视口：剩余偏差就是模型误差（通常几十 px），
+        // 用动画收敛更顺滑（且偏差为 0 时动画即空转，无感）。
+        pos
+            .animateTo(
+              target,
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOut,
+            )
+            .then((_) {
+          // 动画结束后再检测当前轮次：动画中途检测会读到中间位置导致
+          // 「当前轮/是否在起点」短暂失真（驱动悬浮条数字与箭头状态）。
+          if (!mounted) return;
+          try {
+            _detectFloorJumpCurrent();
+          } catch (_) {
+            // 检测仅为状态刷新，任何异常都不应影响跳转结果。
+          }
+        });
+      } else {
+        // 目标是靠回退落点逐帧推进才带进视口的（粗定位没命中）：此时目标多半
+        // 停在**窗口底部一侧**，若再用 280ms 动画对齐，用户看到的就是
+        // 「气泡先落在窗口底部、再滚到顶部」。瞬时对齐把中间态压缩到一帧
+        // （≈16ms，肉眼不可见），即用户预期的「无动画定位到视口顶」。
+        pos.jumpTo(target);
+        _scheduleFloorJumpDetect();
+      }
       // 跳转完成：释放目标标记（下次跳转再挂载）。
       if (_floorJumpTargetIndex == itemIndex) {
         _floorJumpTargetIndex = null;
       }
       return;
     }
-    // 目标未构建：用完整偏移模型校正方向与距离。
+    // 目标未构建（粗定位落点没把目标带进视口，或目标在懒加载列表已估算出的
+    // 范围之外）：继续用完整偏移模型逐帧推进，落点取**未换算**的模型量
+    // （= 条目顶边贴视口底边）。这一落点是 P0-③ 之前既有实现的落点：它对
+    // 「模型低估目标偏移」更宽容（条目仍贴在视口底边一侧、更可能被构建），
+    // 实测「换算修正 + 本回退落点」在长短混合长书上冷/热跳转均 5/5 收敛，
+    // 而「换算修正 + 沿用修正落点」只有 2/5（见
+    // `.agents/perf/floor_jump_frame_probe_test.dart`）——因为修正后的落点整体
+    // 上移一屏，模型低估时目标反被推到视口**上方**，永远等不到它进入视口。
+    // 该落点只决定中间态，最终对齐仍由上面的 getOffsetToReveal 分支瞬时收口。
     final itemCount = _chatRoundsNow().length * 2;
     pos.jumpTo(
       _modeledItemOffset(
