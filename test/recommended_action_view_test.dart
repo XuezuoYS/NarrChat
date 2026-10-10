@@ -11,7 +11,7 @@ import 'package:narrchat/widgets/recommended_action_view.dart';
 ///
 /// 为什么值得钉死：每个选项各建一个 `MarkdownBody` = 每条选项各付一次块级解析
 /// + 一整棵 Markdown 子树构建。实测一个 AI 气泡 6 次构树（正文 1 + 选项 5，
-/// `.agents/chat-ui-perf-plan.md` §0 M1）。改造后构树次数 = 正文 1 + 非列表文本
+/// `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-②」）。改造后构树次数 = 正文 1 + 非列表文本
 /// 段数，选项为 0。
 ///
 /// 与既有用例的分工：`chat_bubble_test.dart` 覆盖双击 / 单击 / 选中 / 复制等

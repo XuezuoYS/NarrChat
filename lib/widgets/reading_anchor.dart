@@ -10,9 +10,8 @@ import 'package:flutter/widgets.dart';
 /// - **用户已上翻阅读历史时**，视口**下方**的条目长高会把可视内容整体向上推
 ///   （`visualY = viewportDimension + pixels − offset`，下方内容长高 ⇒ 可视内容的
 ///   offset 变大 ⇒ 视觉上移）。实测：合成宿主里位移**恰好等于**长高的量；
-///   真实对话页里一次结构插入 85px、持续流式增长 150px+（详见
-///   `.agents/perf/reading_drift_probe_test.dart`）——表现为「读着读着整段内容自己
-///   往上跑」。
+///   真实对话页里一次结构插入 85px、持续流式增长 150px+ —— 表现为「读着读着整段
+///   内容自己往上跑」（度量记录见 `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-③」）。
 ///
 /// ## 怎么做到
 /// 1. [ReadingAnchorItem] 包住每个条目，只有**列表逻辑末尾**那一条（= 视口下方最近的

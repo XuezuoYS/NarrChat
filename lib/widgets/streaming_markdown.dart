@@ -10,7 +10,7 @@ import 'markdown_preview.dart';
 ///   widget 实例被冻结保存；父级重建时同一实例被复用，Flutter 会跳过该子树的
 ///   rebuild（`Element.updateChild` 命中同一实例短路）→ 既不重新解析、也不重新
 ///   排版。于是**解析 + 构树 + 排版**的成本只与尾部残块长度相关，不再随正文全长
-///   增长（实测 8000 字时末段便宜 7.4x，见 `.agents/chat-ui-perf-plan.md` §8.2）；
+///   增长（实测 8000 字时末段便宜 7.4x，见 `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-①」）；
 /// - 只有尾部残块（尚未出现空行的最后一块）随每个增量重建。
 ///
 /// ⚠️ 屏幕上已渲染的块仍会被框架逐帧遍历（layout/paint 早退 + 选中容器注册），

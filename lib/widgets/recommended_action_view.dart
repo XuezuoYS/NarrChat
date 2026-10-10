@@ -22,7 +22,7 @@ import 'markdown_preview.dart';
 /// ## 为什么选项行不再走 [MarkdownPreview]（构树次数）
 /// 每个选项都建一个 `MarkdownBody`，等于**每条选项各付一次块级解析 + 一整棵
 /// Markdown 子树构建**（实测一个 AI 气泡 6 次构树：正文 1 + 选项 5，见
-/// `.agents/chat-ui-perf-plan.md` §0 M1）。选项内容按契约是**单行**文本，块级
+/// `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-②」）。选项内容按契约是**单行**文本，块级
 /// 解析本就多余，故改为内联 span + `Text.rich`：一个气泡的构树次数降为
 /// 「正文 1 + 非列表文本段数」。
 class RecommendedActionView extends StatelessWidget {

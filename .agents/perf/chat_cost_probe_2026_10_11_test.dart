@@ -1,4 +1,6 @@
-/// 探针（非回归测试；属 `.agents/` 度量设施）：对话页 UI 成本基线。
+/// 探针（非回归测试；属 `.agents/perf/` 度量设施。文件名里的 `2026_10_11`
+/// 标记「对话页 UI 性能优化」本轮收官日期，本轮之后不再更新）：
+/// 对话页 UI 成本基线。
 ///
 /// 覆盖四件事：
 /// 1. 「滚动到底部」链路：越界帧（= 用户看到的「往下多弹一段」）、
@@ -11,7 +13,7 @@
 ///    整列只有列表外一个区域）；
 /// 4. 滚动一屏（揭示新条目）的每帧耗时。
 ///
-/// 运行：`flutter test .agents/perf/chat_cost_probe_test.dart`
+/// 运行：`flutter test .agents/perf/chat_cost_probe_2026_10_11_test.dart`
 library;
 
 import 'package:flutter/material.dart';
