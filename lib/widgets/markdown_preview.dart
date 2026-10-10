@@ -447,6 +447,26 @@ class MarkdownPreview extends StatefulWidget {
   ) =>
       _buildBullet(parameters, GitHubPalette.of(context));
 
+  /// 把**内联** Markdown 文本渲染为 [InlineSpan]（递归处理 strong / em / code /
+  /// del / a / mark）。
+  ///
+  /// 供需要把**单行**内容直接拼进 `Text.rich` 的调用点复用（如推荐行动选项行）：
+  /// 与 [MarkdownPreview] 共用同一套语法（[GitHubMarkdownStyle.extensionSet]）与
+  /// 配色，但**不建 `MarkdownBody`**——省掉一次块级解析与整棵子树构建。
+  ///
+  /// ⚠️ 只做内联解析：调用点须保证 [data] 是单行、不含块级结构。
+  static InlineSpan buildInlineSpans(
+    BuildContext context,
+    String data, {
+    TextStyle? base,
+  }) =>
+      _nodesToSpans(
+        context,
+        _inlineMarkdownDocument.parseInline(data),
+        GitHubPalette.of(context),
+        base,
+      );
+
   /// GitHub 风格任务列表复选框。
   static Widget _buildCheckbox(bool checked) {
     return Padding(
@@ -809,7 +829,10 @@ class _AlertBlockBuilder extends MarkdownElementBuilder {
       case 'p':
         return Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Text.rich(_spans(context, el, git, base), style: base),
+          child: Text.rich(
+            _nodesToSpans(context, el.children ?? const <md.Node>[], git, base),
+            style: base,
+          ),
         );
       case 'ul':
         return Padding(
@@ -892,21 +915,20 @@ class _AlertBlockBuilder extends MarkdownElementBuilder {
         children: [
           bullet,
           Flexible(
-            child: Text.rich(_spans(context, li, git, base), style: base),
+            child: Text.rich(
+              _nodesToSpans(
+                context,
+                li.children ?? const <md.Node>[],
+                git,
+                base,
+              ),
+              style: base,
+            ),
           ),
         ],
       ),
     );
   }
-
-  /// 递归构建内联 span（strong / em / code / a / del）。
-  InlineSpan _spans(
-    BuildContext context,
-    md.Element el,
-    GitHubPalette git,
-    TextStyle? base,
-  ) =>
-      _inlineSpans(context, el, git, base);
 
   Widget _text(
     BuildContext context,
@@ -921,17 +943,27 @@ class _AlertBlockBuilder extends MarkdownElementBuilder {
   }
 }
 
-/// 递归构建内联 span（strong / em / code / a / del）。
+/// 内联 Markdown 的共享解析器（与 [MarkdownPreview] 同一套语法与 `encodeHtml`）。
 ///
-/// 供 [_AlertBlockBuilder] 渲染 alert 内容与列表项时复用。
-InlineSpan _inlineSpans(
+/// 语法对象无状态、[md.Document.parseInline] 只读取语法表，故全局共享一份，
+/// 避免每次构建都为「选项行内联内容」重新装配一遍语法集合。
+final md.Document _inlineMarkdownDocument = md.Document(
+  extensionSet: GitHubMarkdownStyle.extensionSet,
+  encodeHtml: false,
+);
+
+/// 内联节点列表 → [InlineSpan]（strong / em / code / del / a / mark 递归）。
+///
+/// [MarkdownPreview.buildInlineSpans] 与 [_AlertBlockBuilder] 共用，
+/// 保证「自行组装 `Text.rich`」的调用点与 [MarkdownPreview] 的内联观感一致。
+InlineSpan _nodesToSpans(
   BuildContext context,
-  md.Element el,
+  List<md.Node> nodes,
   GitHubPalette git,
   TextStyle? base,
 ) {
   final children = <InlineSpan>[];
-  for (final node in el.children ?? const <md.Node>[]) {
+  for (final node in nodes) {
     if (node is md.Text) {
       children.add(TextSpan(text: node.text));
     } else if (node is md.Element) {
@@ -977,7 +1009,9 @@ InlineSpan _elementSpan(
   }
   return TextSpan(
     style: style,
-    children: [_inlineSpans(context, el, git, base)],
+    children: [
+      _nodesToSpans(context, el.children ?? const <md.Node>[], git, base),
+    ],
   );
 }
 

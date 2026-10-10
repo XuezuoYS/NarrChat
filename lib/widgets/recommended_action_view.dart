@@ -9,14 +9,22 @@ import 'markdown_preview.dart';
 /// 渲染约定：
 /// - 列表项（`- ` / `* ` / `1. `）沿用整块列表的外观——符号用
 ///   [MarkdownPreview.buildListBullet]、符号列宽按
-///   [GitHubMarkdownStyle.listBulletWidth] 对齐，条目内容仍走 [MarkdownPreview]
-///   （行内 Markdown 照常解析），只是额外绑定**双击**手势；
-/// - 非列表文本原样交给 [MarkdownPreview]，不做任何手势绑定；
+///   [GitHubMarkdownStyle.listBulletWidth] 对齐；条目内容按**内联** Markdown
+///   渲染（[MarkdownPreview.buildInlineSpans] + `Text.rich`），只额外绑定**双击**
+///   手势；
+/// - 非列表文本原样交给 [MarkdownPreview]（块级结构照常解析）；
 /// - 整个区块共用一个 [SelectableTextArea]（与气泡内其它 Markdown 同一约定：
 ///   抑制默认右键 / 长按菜单，避免与气泡菜单冲突）。因此「长按选择 / 拖动框选
 ///   + 复制」与改造前一致（触屏同样生效），选项行不会因双击手势失去选中能力：
 ///   双击由行内 `DoubleTapGestureRecognizer` 抢先判定，单击 / 长按 / 拖动仍归
 ///   [SelectionArea]。
+///
+/// ## 为什么选项行不再走 [MarkdownPreview]（构树次数）
+/// 每个选项都建一个 `MarkdownBody`，等于**每条选项各付一次块级解析 + 一整棵
+/// Markdown 子树构建**（实测一个 AI 气泡 6 次构树：正文 1 + 选项 5，见
+/// `.agents/chat-ui-perf-plan.md` §0 M1）。选项内容按契约是**单行**文本，块级
+/// 解析本就多余，故改为内联 span + `Text.rich`：一个气泡的构树次数降为
+/// 「正文 1 + 非列表文本段数」。
 class RecommendedActionView extends StatelessWidget {
   const RecommendedActionView({
     super.key,
@@ -71,7 +79,7 @@ class RecommendedActionView extends StatelessWidget {
   }
 }
 
-/// 单个可双击选项行：列表符号（与整块列表同一外观）+ Markdown 条目内容。
+/// 单个可双击选项行：列表符号（与整块列表同一外观）+ 条目内容内联 span。
 class _OptionRow extends StatelessWidget {
   const _OptionRow({
     required this.option,
@@ -113,10 +121,15 @@ class _OptionRow extends StatelessWidget {
           ),
         ),
         Flexible(
-          child: MarkdownPreview(
-            data: option.content,
-            base: base,
-            selectable: false,
+          // 选项内容按契约是单行文本：只做内联解析，不建 MarkdownBody。
+          child: Text.rich(
+            MarkdownPreview.buildInlineSpans(
+              context,
+              option.content,
+              base: base,
+            ),
+            // 与 MarkdownPreview 的段落样式同一取值（p = base ?? bodyMedium）。
+            style: base ?? Theme.of(context).textTheme.bodyMedium,
           ),
         ),
       ],

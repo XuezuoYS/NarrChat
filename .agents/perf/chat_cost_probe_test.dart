@@ -6,7 +6,8 @@
 /// 2. 流式生成：每批增量的单次 `pump` 耗时曲线（含 O(L²) 解析与
 ///    累计构树次数上升的叠加效应）；
 /// 3. 单个 AI 气泡内的 `MarkdownBody` 数量（每次 = 一次全量解析 + 全量重排）
-///    与 `SelectionArea` 数量；
+///    与 `SelectionArea` 数量；**P0-② 已落地**，此处断言的是修复后的期望
+///    （选项不再各建一个 `MarkdownBody`）；
 /// 4. 滚动一屏（揭示新条目）的每帧耗时。
 ///
 /// 运行：`flutter test .agents/perf/chat_cost_probe_test.dart`
@@ -331,20 +332,25 @@ void main() {
 
     // ignore: avoid_print
     print(
-      '--- L0-3 每气泡解析次数 --- AI 气泡 MarkdownBody=$aiMarkdown '
+      '--- L0-3 每气泡解析次数（P0-② 落地后）--- AI 气泡 MarkdownBody=$aiMarkdown '
       'SelectionArea=$aiSelectionAreas | 用户气泡 MarkdownBody=$userMarkdown '
       '| 页面内 MarkdownBody 合计=$totalMarkdown',
     );
 
     expect(
       aiMarkdown,
-      greaterThanOrEqualTo(5),
-      reason: '推荐行动逐项各建一个 MarkdownBody（每项一次全量解析）',
+      lessThanOrEqualTo(2),
+      reason: 'P0-② 验收：正文 1 次 + 选项 0 次（改造前 6 次：正文 + 5 选项）',
+    );
+    expect(
+      aiMarkdown,
+      greaterThanOrEqualTo(1),
+      reason: '正文仍须走 Markdown 块级解析',
     );
     expect(
       aiSelectionAreas,
-      greaterThanOrEqualTo(2),
-      reason: '正文与推荐行动各自建一个 SelectionArea',
+      greaterThanOrEqualTo(1),
+      reason: '正文仍需一个选中容器；推荐行动区块内部共用一个（见 chat_bubble_test）',
     );
   });
 }

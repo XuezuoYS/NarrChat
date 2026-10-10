@@ -95,9 +95,8 @@
 
 ### P0（收益/风险比最高，先做）
 1. ~~**流式正文按块增量渲染**~~ → **已落地**（见 §8；实测合计 6.3x、末段 7.4x，无空行内容无回归）。
-2. **推荐行动改为一次解析**（M1：6 次 → 1~2 次构树/气泡）：
-   整块解析出 inline spans / 列表项，选项行用 `Text.rich` + 双击手势，不再每项一个 `MarkdownBody`
-   （`recommended_action_view.dart:62,116`）。直接降低滚动时「每揭示一个旧气泡」的成本。
+2. ~~**推荐行动改为一次解析**~~（M1：6 次 → 1~2 次构树/气泡）→ **已落地**（见 §9；
+   实测 MarkdownBody 6 → 1、揭示一个旧气泡的构建成本 1.88x）。
 3. **底部锚定 `reverse: true`**（消除 M2 的 45/80 越界帧与 1.3s 收敛）：详见 §4。
 4. **`SelectionArea` 收敛**：主收益是**修正跨气泡选中的设计缺陷**（`selectable_region.dart:189-192`），
    成本收益待 P0 落地后再补测（当前无法在不改产线代码的前提下测准）。
@@ -134,7 +133,7 @@
 1. 落底：**越界帧 = 0**，位置变化帧 ≤ 2，稳定帧数 ≤ 5（当前 45 / 57 / 68）。
 2. 流式 8000 字：每 chunk 净工作不再随长度线性上升（目标 8000 字 ≤ 800 字的 1.5 倍）；
    总增量开销 ≤ 2s 量级（当前 ≈10.7s）。
-3. 单个 AI 气泡 `MarkdownBody` 数 ≤ 2（当前 6）。
+3. 单个 AI 气泡 `MarkdownBody` 数 ≤ 2（当前 6）→ ✅ **已达成**（P0-② 落地后实测 **1**）。
 4. 滚动 30 帧 ≤ 当前基线；历史气泡不重复解析。
 5. `flutter test` 全绿；`chat_stream_rebuild_scope_test.dart` 的实例同一性约束不破。
 
@@ -231,4 +230,57 @@
    `<script>` / `<pre>` / `<!--` 等按围栏同等处理）。
 3. 链接 / 脚注引用定义之后不再切分（定义是文档级语义，必须留在尾部）。
 4. 残余「N 个文本块」的每帧遍历成本（上表归因）——需要换渲染结构或收敛选中容器，属 P0-④/P1。
+
+---
+
+## 9. P0-② 落地记录：推荐行动改为一次解析（已完成）
+
+**状态**：已落地；`flutter analyze` 干净、`flutter test` 全绿（1737 passed / 1 skipped）。
+
+### 9.1 改动面（1 处渲染路径 + 1 处公共 API 收敛）
+| 文件 | 作用 |
+|---|---|
+| [lib/widgets/recommended_action_view.dart](../../lib/widgets/recommended_action_view.dart) | 选项行 `MarkdownPreview(option.content)` → `Text.rich(MarkdownPreview.buildInlineSpans(...))`；补「为什么不再走 MarkdownPreview」的说明 |
+| [lib/widgets/markdown_preview.dart](../../lib/widgets/markdown_preview.dart#L450) | 新增公开 `MarkdownPreview.buildInlineSpans`（内联 Markdown → `InlineSpan`，共享一份 `md.Document`）；把 `_AlertBlockBuilder` 用过的私有 `_inlineSpans` / `_spans` 收敛成同一个 `_nodesToSpans`（去掉重复的内联渲染实现） |
+
+**一次解析口径**（与方案 §3-P0-2 的对应关系）：
+- 选项内容按提示词契约是**单行**文本（`recommended_action_parser` 逐行剥离标记），块级解析本就是多余 → 改为
+  **内联解析**（`md.Document.parseInline`，与 `MarkdownPreview` 共用同一套 `extensionSet`），再用 `Text.rich` 排版；
+- **非列表文本仍交给 `MarkdownPreview`**（块级结构、表格、引用等不能丢）；
+- 于是单个 AI 气泡的构树次数 = **正文 1 + 非列表文本段数**（选项 0）。
+
+### 9.2 实测
+**结构（`.agents/perf/chat_cost_probe_test.dart` L0-3，同时已把断言从「钉住缺陷」反转为修复后期望）**
+
+| 指标 | 改造前 | 改造后 |
+|---|---|---|
+| 单个 AI 气泡 `MarkdownBody`（M1） | 6（正文 1 + 选项 5） | **1**（正文 1 + 选项 0） |
+| 单个 AI 气泡 `SelectionArea` | 2 | 2（未变，P0-④ 的目标） |
+
+**微基准（`.agents/perf/recommended_action_probe_test.dart`，单独运行）**
+交替渲染两组内容以逼出「从零构建一个旧气泡（正文 + 5 选项）」的成本，4 批 × 200 次：
+
+| batch | 现状（每项一个 `MarkdownBody`，探针内按原实现重建） | P0-② 一次解析 | 倍数 |
+|---|---|---|---|
+| 0 | 6.35 ms | 3.02 ms | 2.10x |
+| 3（预热后） | 2.84 ms | 1.68 ms | 1.69x |
+| **平均** | **4.11 ms** | **2.18 ms** | **1.88x** |
+
+（探针同时断言页面 `MarkdownBody` 数：现状 6 → P0-② 1。）
+
+### 9.3 观感 / 行为保持
+- 既有用例全绿：`chat_bubble_test`（符号列、双击插入、单击不插入、长按框选复制、触屏双击、
+  未接线不绑手势）、`recommended_action_insert_test`（落点三分支 + 焦点 + 不发送）；
+- 符号列宽 / 间距 / 手势 / 选中语义一律未动；非列表文本的块级渲染未动；
+- **已知微差（少见情形）**：选项行内的**行内代码**此前由 `_InlineCodeBuilder` 画圆角容器，
+  现在走内联 span 的底色（与 GitHub Alerts 内部同款）。仅当某条选项里出现 `` `code` `` 时
+  有一档底色差异；
+- 链接：`onTapLink` 本就为空（此前只有一个 no-op 识别器），现在不再建识别器，交互结果不变。
+
+### 9.4 测试
+- [test/recommended_action_view_test.dart](../../test/recommended_action_view_test.dart)（新增 4 例）：① 选项行零 `MarkdownBody`（构树次数 = 非列表文本段数）、
+  ② 非列表文本仍走块级解析、③ 选项内行内 Markdown 保真（粗体 / 行内代码 / 链接 / 继承 `base`）、
+  ④ **单个 AI 气泡构树次数 ≤ 2（P0-② 验收）**。
+- 交互层沿用既有 `chat_bubble_test.dart` / `recommended_action_insert_test.dart`（不重复覆盖）。
+
 
