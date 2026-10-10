@@ -1,6 +1,6 @@
 # 对话页（ChatScreen）UI 性能优化方案 — v3（含 L0 实测数据）
 
-> 状态：**P0-① / P0-② / P0-③ 已落地**（见 §8 / §9 / §10）；P0-④ 待办。
+> 状态：**P0-① / P0-② / P0-③ / P0-④ 全部已落地**（见 §8 / §9 / §10 / §11）。
 > 环境：Flutter 3.47.5（framework 6a19cca56）/ Dart 3.13.4；目标平台 Windows + Android。
 > 证据来源：本仓库源码 + Flutter SDK 源码（`C:\Language\Flutter\flutter`）+
 > flutter_markdown 0.7.7+1 源码（pub cache）+ **本轮 L0 实测探针**（`.agents/perf/`）。
@@ -15,7 +15,7 @@
 | 编号 | 测量项 | 结果 |
 |---|---|---|
 | **M1** | 单个 AI 气泡内的 `MarkdownBody` 数（= 全量 Markdown 构树次数） | **6 次**（1 正文 + 5 推荐行动选项）；用户气泡 0 次 |
-| **M1b** | 单个 AI 气泡内的 `SelectionArea` 数 | **2 个** |
+| **M1b** | 单个 AI 气泡内的 `SelectionArea` 数 | **2 个** → P0-④ 后 **0 个**（整列收敛为列表外 1 个，见 §11） |
 | **M2** | 「滚动到底部」链路（120 轮，117 短 + 3 长） | **越界帧 45/80**；最大越界 **390.7px**；位置变化 **57 帧**；**68 帧后才稳定**；收敛 **1306ms**；最终误差 0.00px |
 | **M2b** | 滚动 30 帧（向上揭示历史条目） | 74–91ms，**2.5–3.1 ms/帧**（debug 测试环境） |
 | **M3** | 流式每 chunk 成本曲线（60 轮底稿，每 chunk 8 字） | 800 字 **7.0ms** → 8000 字 **15.0ms**（**2.15x**）；一次 8000 字回复的增量开销合计 **≈10.7s** |
@@ -84,7 +84,8 @@
 1. 验收基准：**两者都要，量化以 Windows 桌面为主**。
 2. **接受 `reverse: true` 底部锚定**（`pixels==0` 即底部 → 删除 `jumpTo(max)` 与补滚循环）。
 3. 流式正文：**按块增量渲染**（已封闭块冻结、只重排尾部残块）。
-4. `SelectionArea`：**收敛为「列表外一个」**（顺带修好「跨气泡无法选中」）。
+4. `SelectionArea`：**收敛为「列表外一个」**（顺带修好「跨气泡无法选中」）
+   → **已落地**（见 §11）。
 5. 常驻 UI：**不动观感**（AI 操作栏、时间线块保持现状）。
 6. 长会话：**不限制轮数**。
 7. 节奏：**先只做 L0** ← 本文件 §0 即 L0 交付物。
@@ -101,8 +102,12 @@
    → **已落地**（见 §10；实测越界帧 **0/80**、最大越界 **0.0px**、到底后**零补滚**）。
    顺带修掉一个此前未意识到的缺陷：**离底阅读时内容被推走**（新增
    `lib/widgets/reading_anchor.dart` 把「视口下方长高」补回滚动偏移，实测位移 -225px → 0px）。
-4. **`SelectionArea` 收敛**：主收益是**修正跨气泡选中的设计缺陷**（`selectable_region.dart:189-192`），
-   成本收益待 P0 落地后再补测（当前无法在不改产线代码的前提下测准）。
+4. ~~**`SelectionArea` 收敛**~~ → **已落地**（见 §11）：主收益是**修正跨气泡选中的设计缺陷**
+   （`selectable_region.dart:189-192`）+ 把「每个已构建气泡一份「选中区域」的常数成本」
+   （平台文本处理查询 15 → 1、`FocusNode`/`SelectionOverlay`/手势识别器各一份）收敛为整列一份；
+   逐帧成本无变化（L0-4 2.65 ms/帧，基线 2.5–3.1）。
+   落地时顺带发现并修掉一个**手势冲突**：窄屏「左滑开抽屉」与选中区域的横向拖动识别器相争
+   （区域在外会吃掉抽屉滑动），见 §11.2。
 
 ### P1
 5. 流式通知合帧节流（虽实测通知本身≈0ms，但**每 chunk 强制一整帧**在真机 release 下仍有意义；
@@ -142,9 +147,12 @@
    总增量开销 ≤ 2s 量级（当前 ≈10.7s）。
 3. 单个 AI 气泡 `MarkdownBody` 数 ≤ 2（当前 6）→ ✅ **已达成**（P0-② 落地后实测 **1**）。
 4. 滚动 30 帧 ≤ 当前基线；历史气泡不重复解析。
-   → ✅ 2.85ms/帧（基线 2.5–3.1ms，P0-③ 前后同量级，无回归）；历史气泡不重复解析见 §8。
+   → ✅ 2.85ms/帧（P0-③ 后）、2.65ms/帧（P0-④ 后），基线 2.5–3.1ms，无回归；历史气泡不重复解析见 §8。
 5. `flutter test` 全绿；`chat_stream_rebuild_scope_test.dart` 的实例同一性约束不破。
-   → ✅ P0-③ 落地后 **1752 passed / 1 skipped**。
+   → ✅ P0-④ 落地后 **1762 passed / 1 skipped**。
+6. 选中容器：整列收敛为**列表外一个**（每个已构建气泡 0 个）；跨气泡可连续选中；
+   气泡右键/长按菜单、触屏左滑开抽屉、拖选自动滚动不受影响。
+   → ✅ 见 §11（`chat_selection_scope_test` / `selectable_text_scope_test` / `sidebar_toc_test`）。
 
 ## 6. 回归面
 | 改动 | 风险 | 验证 |
@@ -153,7 +161,8 @@
 | 离底阅读位置补偿 | 与用户拖拽/惯性/动画冲突、贴底语义被破坏、误补偿 | ✅ `reading_anchor_test`（11 例）+ `chat_auto_scroll_test`「离底阅读…不推走已读内容」+ 探针 D6/D7 + `reading_drift_probe_test` |
 | 流式按块渲染 | 未闭合代码块、光标位置、结尾排版跳变 | `markdown_preview_test` + 新增单测 + 长代码块手工 |
 | 推荐行动单次解析 | 双击插入、选中、序号/符号列对齐 | `recommended_action_insert_test`/`recommended_action_view` + 手工 |
-| 单个 SelectionArea | 跨气泡选中、选择时自动滚动、右键菜单抑制 | `markdown_preview_test:118`、`token_usage_pill_test:197` + 手工复制 |
+| 单个 SelectionArea（列表外） | 跨气泡选中、气泡菜单（长按/右键）、拖选自动滚动、抽屉左滑、`selectable` 语义 | ✅ `chat_selection_scope_test`（4 例，含跨气泡复制 A/B 与窄屏横向拖选）/`selectable_text_scope_test`（6 例，含硬边界 A/B）/`chat_bubble_test`（长按框选复制、双击插入）/`sidebar_toc_test`「窄屏（移动抽屉）同样接入导轨」/`chat_delete_generation_test`·`chat_raw_entry_test`·`chat_modify_opinion_test`（长按菜单）；手工复制待你复验 |
+| 失败原因改 `PlainTextPreview` | 该处选中/复制、纯文本分行 | `round_generation_failure_test` 等既有用例 + §11.1 |
 | 通知节流 | `done`/取消路径延迟、`pumpAndSettle` 语义 | `waitSendDone` 脚手架 + 现有流式测试 |
 
 ## 7. L0 剩余项（需你确认后做）
@@ -164,9 +173,11 @@
    （itemBuilder 次数 / 构树次数 / `jumpTo` 次数），默认关闭。
 3. ~~探针提升为回归测试~~ → **已做**：落底越界/零补滚（`chat_auto_scroll_test.dart`
    「贴底生成：连续增量不改变滚动偏移」）、每气泡构树次数（`recommended_action_view_test.dart`）、
-   离底阅读不漂移（`chat_auto_scroll_test.dart` + `reading_anchor_test.dart`）已进 `test/`；
-   耗时类留在 `.agents/perf/` 手工运行。`chat_cost_probe_test.dart` 的 L0-1 断言已按
-   「越界帧 = 0 且到底后零补滚」反转（不再钉住缺陷）。
+   离底阅读不漂移（`chat_auto_scroll_test.dart` + `reading_anchor_test.dart`）、
+   跨气泡连续选中与「每气泡 0 个区域」（`chat_selection_scope_test.dart` + `selectable_text_scope_test.dart`）
+   已进 `test/`；耗时类留在 `.agents/perf/` 手工运行。`chat_cost_probe_test.dart` 的 L0-1 断言已按
+   「越界帧 = 0 且到底后零补滚」反转（不再钉住缺陷），L0-3 追加「每气泡区域数 = 0」「整页区域 = 1」
+   与 L0-3b「区域数 ↔ 平台文本处理查询 1:1」。
 
 ---
 
@@ -215,7 +226,10 @@
 - 给每个冻结块外挂 `RepaintBoundary`：3053 ms vs 3125 ms → **无收益，已撤销**；
 - 同一路径关掉选中容器（`selectable: false`）：3214 ms → **1913 ms（−40%）**，
   但**增长倍数不变**（都是 3.17x）→ 残余增长不是 `SelectionArea` 造成，而是
-  「屏幕上 N 个文本块」的平台级遍历/合成成本（P0-④ / P1 再评估）。
+  「屏幕上 N 个文本块」的平台级遍历/合成成本。
+  → **P0-④ 已验证该判断**：把「每个气泡 2 个区域」收敛为「整列 1 个区域」后，
+  逐帧成本无变化（L0-4 2.65 vs 2.85 ms/帧），收益落在构建期常数与正确性上（见 §11.3）；
+  残余的逐帧成本需换渲染结构，属 P1。
 
 ### 8.3 与 §5 验收标准的对照
 | 标准 | 结果 |
@@ -240,7 +254,8 @@
 2. 跨空行的自定义块语法内部（GitHub Alerts 的行首 `>` 情形已被「上一行需自成一块」拒绝；
    `<script>` / `<pre>` / `<!--` 等按围栏同等处理）。
 3. 链接 / 脚注引用定义之后不再切分（定义是文档级语义，必须留在尾部）。
-4. 残余「N 个文本块」的每帧遍历成本（上表归因）——需要换渲染结构或收敛选中容器，属 P0-④/P1。
+4. 残余「N 个文本块」的每帧遍历成本（上表归因）——需要换渲染结构，属 **P1**
+   （P0-④ 已排除「选中容器数量」这一解释，见 §11.3）。
 
 ---
 
@@ -266,7 +281,7 @@
 | 指标 | 改造前 | 改造后 |
 |---|---|---|
 | 单个 AI 气泡 `MarkdownBody`（M1） | 6（正文 1 + 选项 5） | **1**（正文 1 + 选项 0） |
-| 单个 AI 气泡 `SelectionArea` | 2 | 2（未变，P0-④ 的目标） |
+| 单个 AI 气泡 `SelectionArea` | 2 | 2（P0-② 阶段未变；**P0-④ 后为 0**，整列收敛为列表外 1 个，见 §11） |
 
 **微基准（`.agents/perf/recommended_action_probe_test.dart`，单独运行）**
 交替渲染两组内容以逼出「从零构建一个旧气泡（正文 + 5 选项）」的成本，4 批 × 200 次：
@@ -404,6 +419,99 @@ L0-3 单气泡 `MarkdownBody`=1、`SelectionArea`=2（不变）；L0-4 滚动 30
 - 手势语义与用户直觉一致：**向上拖动 = 更新内容（朝底部）、向下拖动 = 更旧内容**（与正向列表相同，D8）；
 - 贴底观感不变：新正文把旧内容顶上去，最新一行停在输入面板上方；
 - 滚动条：反向列表的拇指位置/拖动方向镜像，外观不变（`app_theme` 未动）。
+
+---
+
+## 11. P0-④ 落地记录：`SelectionArea` 收敛为「列表外一个」（已完成）
+
+**状态**：已落地；`flutter analyze lib test .agents/perf` 干净、`flutter test` **1762 passed / 1 skipped**。
+
+### 11.1 改动面（3 处产线 + 1 处顺带修正）
+| 文件 | 作用 |
+|---|---|
+| [lib/widgets/markdown_preview.dart](../../lib/widgets/markdown_preview.dart#L586) | `SelectableTextArea`（统一选中容器）改为**作用域感知**；新增容器级 `SelectableTextScope` |
+| [lib/screens/chat_screen.dart](../../lib/screens/chat_screen.dart#L2462) | 消息列外包一层 `SelectableTextScope`；`_buildChatArea` 新增 `swipeOpensDrawer`：窄屏时把「左滑开抽屉」识别器放进列表**内部** |
+| [lib/screens/chat_screen.dart](../../lib/screens/chat_screen.dart#L369) | `_wrapSwipeGesture` 的识别器限定为**触屏**（与其文档「仅触屏指针生效」对齐） |
+| [lib/widgets/failed_attempt_bubble.dart](../../lib/widgets/failed_attempt_bubble.dart#L182) | 失败原因由 `SelectableText`（自带一套 `EditableText` 选区）改为 `PlainTextPreview`，纳入统一区域 |
+
+**机制**
+- 框架里两个 `SelectableRegion` 互为**硬边界**（`widgets/selectable_region.dart:189-192`）：
+  **父区域选不进子区域、子区域也选不出去**。改造前每个气泡自带 2 个区域（正文 + 推荐行动）
+  ⇒「跨气泡连续选中」在设计上就不可能。
+- `SelectableTextArea` 通过私有 `_SelectableScopeMarker`（`InheritedWidget`）判断「上方是否已有
+  统一区域」：有则**直接返回 child**（不建区域、不建第二套 `FocusNode` / `SelectionOverlay` /
+  手势识别器），没有则照旧建一个。于是气泡 / 思考框 / 推荐行动 / 时间线块**都无需感知自己是否在
+  作用域内**——默认自建、上层接管即让位（比「逐个调用点传 `selectable: false`」更不易漏）。
+- 区域之下若有 `Scrollable`，框架自动注册选区滚动同步（`widgets/scrollable.dart:1062-1071`），
+  拖动选区到视口边缘仍会自动滚动；默认右键/长按菜单的抑制沿用原 `contextMenuBuilder`
+  （气泡自己的菜单走 `Listener`，与手势竞技场无关，不受影响）。
+- 失败原因框原用 `SelectableText`（内部是 `EditableText`，自带独立选区）——在统一区域下它就是
+  一个选区边界，故换成 `PlainTextPreview`（作用域外仍自建区域，行为不变）。
+
+### 11.2 落地时被既有用例拦下的一个**手势冲突**（已修）
+触屏上「聊天区左滑打开右侧抽屉」是**横向拖动**；而 `SelectableRegion` 为非精确指针注册的正是
+**横向拖动**识别器（`widgets/selectable_region.dart:684-720`，框架刻意如此，好让竖向滚动不受影响）。
+两者相遇时，命中顺序**更靠内者先接受**：
+- 首版把区域套在最外层 ⇒ 触屏左滑被区域吃掉（**抽屉不开**、选区反而动了）；
+  既有用例 [test/sidebar_toc_test.dart](../../test/sidebar_toc_test.dart)「窄屏（移动抽屉）同样接入导轨」
+  立刻变红（导轨右缘 1127 ≠ 600）。
+- 修法：窄屏时把**同一个**「左滑开抽屉」识别器（`_wrapSwipeGesture`，不复制逻辑）放进列表**内部**
+  （区域之下）⇒ 抽屉滑动优先；触屏选中仍由长按路径驱动（`LongPressGestureRecognizer`，不受影响）。
+- 顺带把该识别器限定为触屏指针：它本来就只对 `PointerDeviceKind.touch` 生效
+  （`_swipePointerIsTouch` 守卫），却会把鼠标/触控笔的横向拖动「什么都不做」地吃掉——而那正是
+  桌面端（含窄窗口）拖选正文的天然手势。
+
+### 11.3 实测
+**结构（`.agents/perf/chat_cost_probe_test.dart` L0-3；断言已按修复后期望）**
+
+| 指标 | 改造前 | 改造后 |
+|---|---|---|
+| 单个 AI 气泡 `SelectionArea`（M1b） | **2** | **0** |
+| 页面内 `SelectionArea` / `SelectableRegion` | 每个**已构建**气泡 1~2 个 | **1 / 1**（列表外一个，两轮四条气泡都在它内部） |
+| 单个 AI 气泡 `MarkdownBody`（M1） | 6 | 1（P0-②，未变） |
+
+**平台往返（同探针 L0-3b：同一棵「10 条气泡」的树，只差作用域外套）**
+
+| 形态 | `SelectionArea` 数 | `ProcessText.queryTextActions` 平台调用 |
+|---|---|---|
+| 旧形态（各自区域） | 15 | **15**（每区域 1 次，实测 1:1） |
+| 作用域内 | 1 | **1** |
+
+> 机制：每个 `SelectableRegion.initState` 都会查一次系统文本处理动作
+> （`selectable_region.dart:466-474` → `services/process_text.dart:113-118`）。旧形态下
+> **滚动到新条目、追加新气泡**都会各付一次；现在整页一次。另外每个区域各自持有
+> `FocusNode` / `SelectionOverlay` / `Actions` 表 / 4 个手势识别器，也同样是「每个气泡一份 → 一份」。
+
+**帧成本（L0-4，单独运行）**：滚动 30 帧 **2.65 ms/帧**（基线 2.5–3.1；P0-③ 时 2.85）→ **无回归**。
+与 L0 归因一致：残留逐帧成本来自「屏幕上有多少文本块」，不是选中容器本身；本项收益在
+**正确性**（跨气泡选中）与**构建期常数**，不在逐帧。
+
+### 11.4 测试
+- [test/selectable_text_scope_test.dart](../../test/selectable_text_scope_test.dart)（新增 6 例）：
+  作用域外各自一个区域 / 作用域内只剩一个且覆盖两段正文 / **跨子项鼠标拖动复制 A/B**
+  （对照：无作用域时选区止于第一段、含 `beta` 断言为假）/ 触屏长按拖动同样跨子项 /
+  菜单抑制 / 纯代理不改变布局。**A/B 即同一用例内的对照组**，实现退化时必红。
+- [test/chat_selection_scope_test.dart](../../test/chat_selection_scope_test.dart)（新增 4 例）：
+  消息列只有一个区域且不在气泡 / 输入面板内；唯一区域是两轮四条气泡正文的共同祖先；
+  **鼠标拖动跨气泡连续选中并复制**（复制文本同时含用户气泡与 AI 正文）；窄屏下鼠标横向
+  拖动仍可选中（抽屉滑动只认触屏）。
+- [test/helpers/selection_harness.dart](../../test/helpers/selection_harness.dart)（新增公共脚手架）：
+  以系统剪贴板为外部锚点读选中结果（与 `chat_bubble_test` 同法）。
+  > ⚠️ 坑（花费了一轮调试）：`RenderParagraph.getOffsetForCaret` 返回的矩形**上边界**恰好落在行顶
+  > （实测 y ≈ **-0.02px**），直接拿它当指针落点会**落在命中区外**——事件到不了区域，表现为
+  > 「拖动什么都不选中」。脚手架统一往行内偏移几像素（`Offset(1, caret.height / 2)`）。
+- 既有用例零改动、全绿（尤其：`sidebar_toc_test` 窄屏抽屉、`chat_bubble_test` 长按框选复制/
+  双击插入、`chat_delete_generation_test`·`chat_raw_entry_test`·`chat_modify_opinion_test` 长按菜单、
+  `streaming_markdown_test`·`markdown_preview_test` 区域计数、`token_usage_pill_test` 气泡内选中）。
+
+### 11.5 观感 / 行为保持
+- 常驻 UI 一律未动（气泡、操作栏、时间线块、输入面板、滚动条）；
+- 选中语义：区域内文本仍可长按选择 / 拖动框选 / 复制，**并且现在可以跨气泡连续选中**；
+  默认右键/长按菜单仍被抑制（与气泡自定义菜单冲突的问题保持原样解决）；
+- 输入面板不在区域内（`TextField` 自带选区与粘贴菜单不受影响）；气泡长按/右键菜单走
+  `Listener`，与区域的手势识别无关，行为不变；
+- 触屏：长按选中、左滑开抽屉、竖向滚动均保持原行为（横向拖动优先归抽屉）。
+
 
 
 

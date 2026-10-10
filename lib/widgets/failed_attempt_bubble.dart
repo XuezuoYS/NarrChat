@@ -7,6 +7,7 @@ import 'app_menu.dart';
 import 'app_notice_overlay.dart';
 import 'bubble_pointer_listener.dart';
 import 'chat_bubble.dart';
+import 'markdown_preview.dart';
 
 /// 「失败条目」气泡：用户输入气泡 + AI 红色提示框（已截断 / 生成失败 + 原因）
 /// + 底部操作（代次控件 / 刷新本轮 / 修改并重新提问 / RAW / 清除失败条目）。
@@ -181,12 +182,13 @@ class _FailureBox extends StatelessWidget {
           ),
           if (!attempt.isTruncated) ...[
             const SizedBox(height: 6),
-            SelectableText(
-              attempt.errorMessage,
-              // 抑制默认右键菜单，统一由外层 BubblePointerListener 处理。
-              contextMenuBuilder: (context, editableTextState) =>
-                  const SizedBox.shrink(),
-              style: TextStyle(fontSize: 13, height: 1.5, color: errorColor),
+            // 失败原因原文（纯文本，不走 Markdown）：外层统一选中容器负责
+            // 选中/复制与默认菜单抑制（同气泡正文的约定），故此处不再用
+            // `SelectableText`——它自带一套独立选区（`EditableText`），在外层
+            // `SelectionArea` 下会成为选区硬边界，跨条目连续选中到此为止。
+            PlainTextPreview(
+              data: attempt.errorMessage,
+              base: TextStyle(fontSize: 13, height: 1.5, color: errorColor),
             ),
           ],
         ],

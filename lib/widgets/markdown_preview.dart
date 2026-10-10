@@ -590,17 +590,62 @@ class _MarkdownPreviewState extends State<MarkdownPreview> {
 /// 自定义组装的内容（如推荐行动选项列表）需要同样的选中/复制语义时复用它：
 /// 内部文本以 `selectable: false` 交给本容器统一处理，即可保持「长按选择 /
 /// 拖动框选 + 复制」与整体一致（触屏同样生效）。
+///
+/// **作用域内自动让位**：若上层已有 [SelectableTextScope]（整块内容统一选中，
+/// 如对话页消息列），本组件不再另建 [SelectionArea]。框架里两个
+/// [SelectableRegion] 互为**硬边界**（`widgets/selectable_region.dart:189-192`：
+/// 父区域选不进子区域、子区域也选不出父区域），嵌套会让「跨条目连续选中」
+/// 失效。因此子组件无需知道自己在不在作用域内：默认自建区域，上层一旦统一
+/// 接管就自动让位。
 class SelectableTextArea extends StatelessWidget {
   const SelectableTextArea({super.key, required this.child});
 
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => SelectionArea(
-        contextMenuBuilder: (context, selectableRegionState) =>
-            const SizedBox.shrink(),
-        child: child,
+  Widget build(BuildContext context) {
+    if (_SelectableScopeMarker.isInside(context)) return child;
+    return SelectionArea(
+      contextMenuBuilder: (context, selectableRegionState) =>
+          const SizedBox.shrink(),
+      child: child,
+    );
+  }
+}
+
+/// 容器级选中作用域：为**整块内容**（如对话页消息列）建立唯一的
+/// [SelectionArea]，使选区可以跨越子项边界（跨气泡连续选中）。
+///
+/// 作用域内的 [SelectableTextArea] 自动退化为普通包裹（见其文档），因此
+/// 每个气泡 / 思考框 / 推荐行动各自都不再建区域；作用域**外**的调用点行为
+/// 不变（各自一个区域）。
+///
+/// 与「列表 + 滚动」的协作由框架负责：`SelectableRegion` 之下的 [Scrollable]
+/// 会自动注册选区滚动同步（`widgets/scrollable.dart:1062-1071`），拖动选区
+/// 到视口边缘仍会自动滚动。
+class SelectableTextScope extends StatelessWidget {
+  const SelectableTextScope({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SelectableTextArea(
+        child: _SelectableScopeMarker(child: child),
       );
+}
+
+/// [SelectableTextScope] 的作用域标记：仅用于让下层 [SelectableTextArea]
+/// 判断「上层是否已有统一选中区域」。
+class _SelectableScopeMarker extends InheritedWidget {
+  const _SelectableScopeMarker({required super.child});
+
+  /// [context] 是否位于某个 [SelectableTextScope] 内。
+  static bool isInside(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_SelectableScopeMarker>() !=
+      null;
+
+  @override
+  bool updateShouldNotify(_SelectableScopeMarker oldWidget) => false;
 }
 
 /// 纯文本预览：与 [MarkdownPreview] 共用同一套选中约定，但**不做任何 Markdown

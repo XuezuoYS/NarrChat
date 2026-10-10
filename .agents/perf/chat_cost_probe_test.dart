@@ -6,19 +6,22 @@
 /// 2. 流式生成：每批增量的单次 `pump` 耗时曲线（含 O(L²) 解析与
 ///    累计构树次数上升的叠加效应）；
 /// 3. 单个 AI 气泡内的 `MarkdownBody` 数量（每次 = 一次全量解析 + 全量重排）
-///    与 `SelectionArea` 数量；**P0-② 已落地**，此处断言的是修复后的期望
-///    （选项不再各建一个 `MarkdownBody`）；
+///    与**选中区域数量**；**P0-② / P0-④ 已落地**，此处断言的是修复后的期望
+///    （选项不再各建一个 `MarkdownBody`；气泡内不再自建 `SelectionArea`，
+///    整列只有列表外一个区域）；
 /// 4. 滚动一屏（揭示新条目）的每帧耗时。
 ///
 /// 运行：`flutter test .agents/perf/chat_cost_probe_test.dart`
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
 
 import '../../test/helpers/chat_harness.dart';
 import '../../test/helpers/fakes.dart';
@@ -350,12 +353,18 @@ void main() {
         )
         .length;
     final totalMarkdown = tester.widgetList(find.byType(MarkdownBody)).length;
+    final totalSelectionAreas =
+        tester.widgetList(find.byType(SelectionArea)).length;
+    final totalRegions = tester.widgetList(find.byType(SelectableRegion)).length;
 
     // ignore: avoid_print
     print(
-      '--- L0-3 每气泡解析次数（P0-② 落地后）--- AI 气泡 MarkdownBody=$aiMarkdown '
-      'SelectionArea=$aiSelectionAreas | 用户气泡 MarkdownBody=$userMarkdown '
-      '| 页面内 MarkdownBody 合计=$totalMarkdown',
+      '--- L0-3 每气泡解析次数 / 选中容器（P0-② + P0-④ 落地后）--- '
+      'AI 气泡 MarkdownBody=$aiMarkdown SelectionArea=$aiSelectionAreas | '
+      '用户气泡 MarkdownBody=$userMarkdown | '
+      '页面内 MarkdownBody 合计=$totalMarkdown '
+      'SelectionArea 合计=$totalSelectionAreas '
+      'SelectableRegion 合计=$totalRegions',
     );
 
     expect(
@@ -370,8 +379,97 @@ void main() {
     );
     expect(
       aiSelectionAreas,
-      greaterThanOrEqualTo(1),
-      reason: '正文仍需一个选中容器；推荐行动区块内部共用一个（见 chat_bubble_test）',
+      0,
+      reason: 'P0-④ 验收：气泡内不再自建选中区域（改造前 2 个：正文 + 推荐行动）',
     );
+    expect(
+      totalRegions,
+      1,
+      reason: '整列收敛为列表外一个区域（跨气泡连续选中的前提）',
+    );
+    expect(
+      find.ancestor(
+        of: aiBubble,
+        matching: find.byType(SelectableRegion),
+      ),
+      findsOneWidget,
+      reason: 'AI 气泡位于该区域内',
+    );
+    expect(
+      find.ancestor(
+        of: userBubble,
+        matching: find.byType(SelectableRegion),
+      ),
+      findsOneWidget,
+      reason: '用户气泡位于同一区域内',
+    );
+  });
+
+  testWidgets('选中区域数量 → 平台文本处理查询次数（每区域一次往返）', (tester) async {
+    // 每个 `SelectableRegion.initState` 都会查一次系统文本处理动作
+    // （`SelectableRegionState._initProcessTextActions` →
+    // `SystemChannels.processText`）。旧形态「每个气泡各自建区域」下，滚动到新
+    // 条目、追加新气泡都会再付一次这个**平台往返**；收敛为列表外一个后整页一次。
+    final queries = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.processText,
+      (call) async {
+        queries.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.processText, null),
+    );
+
+    // 5 轮 = 10 条气泡（AI 气泡带推荐行动），全部一次性构建（Column 非懒加载）。
+    Widget page({required bool scope}) {
+      final list = SingleChildScrollView(
+        child: Column(
+          children: [
+            for (var round = 1; round <= 5; round++) ...[
+              ChatBubble(isUser: true, text: '第 $round 轮的用户输入'),
+              ChatBubble(
+                isUser: false,
+                text: '第 $round 轮的剧情正文。',
+                recommendedAction: '- 选项一\n- 选项二',
+              ),
+            ],
+          ],
+        ),
+      );
+      return MaterialApp(
+        home: Scaffold(
+          body: scope ? SelectableTextScope(child: list) : list,
+        ),
+      );
+    }
+
+    await tester.pumpWidget(page(scope: false));
+    await tester.pumpAndSettle();
+    final perBubble = queries.length;
+    final areasPerBubble =
+        tester.widgetList(find.byType(SelectionArea)).length;
+
+    queries.clear();
+    await tester.pumpWidget(page(scope: true));
+    await tester.pumpAndSettle();
+    final scoped = queries.length;
+    final areasScoped = tester.widgetList(find.byType(SelectionArea)).length;
+
+    // ignore: avoid_print
+    print(
+      '--- L0-3b 平台文本处理查询（10 条气泡）--- 旧形态(各自区域)：'
+      'SelectionArea=$areasPerBubble 查询=$perBubble 次 | '
+      '作用域内：SelectionArea=$areasScoped 查询=$scoped 次',
+    );
+
+    expect(
+      perBubble,
+      areasPerBubble,
+      reason: '每个区域各查一次系统文本处理动作（1:1）',
+    );
+    expect(scoped, 1, reason: '整块只有一个区域 → 只查一次');
   });
 }

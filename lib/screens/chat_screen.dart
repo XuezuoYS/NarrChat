@@ -366,6 +366,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// 包裹横向滑动手势识别（用于移动端抽屉开合）：
   /// - [leftward] 为 true 时左滑（从右向左）触发 [onSwipe]，false 时右滑触发；
   /// - 仅触屏指针生效；快速甩动（速度超阈值）或慢速长距离拖动（距离超阈值）均触发。
+  ///
+  /// ⚠️ [supportedDevices] 必须是**触屏**（与上面这条一一对应）：鼠标 / 触控笔
+  /// 的横向拖动若也被本识别器抢占，就会「什么都不做」地吃掉手势——放在对话区，
+  /// 那正是「鼠标拖动选中正文」的天然手势（选中区域同样监听横向拖动）。
   Widget _wrapSwipeGesture({
     required Widget child,
     required bool leftward,
@@ -376,6 +380,7 @@ class _ChatScreenState extends State<ChatScreen>
           _swipePointerIsTouch = event.kind == PointerDeviceKind.touch,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
+        supportedDevices: const <PointerDeviceKind>{PointerDeviceKind.touch},
         onHorizontalDragStart: (_) => _swipeDistance = 0,
         onHorizontalDragUpdate: (details) => _swipeDistance += details.delta.dx,
         onHorizontalDragEnd: (details) {
@@ -2021,7 +2026,11 @@ class _ChatScreenState extends State<ChatScreen>
             final chatWidth = constraints.maxWidth.isFinite
                 ? constraints.maxWidth - slotWidth
                 : MediaQuery.sizeOf(context).width;
-            final chat = _buildChatArea(context, chatWidth);
+            final chat = _buildChatArea(
+              context,
+              chatWidth,
+              swipeOpensDrawer: !wide,
+            );
             final sidebar = _buildSidebar(
               context,
               onClose: wide ? () => _setSidebarOpen(false) : _closeDrawer,
@@ -2210,7 +2219,15 @@ class _ChatScreenState extends State<ChatScreen>
   // ---------------------------------------------------------------------------
   /// [chatWidth]：聊天区实际宽度（宽屏 = 窗口宽 - 侧栏槽位宽；窄屏 = 全宽）。
   /// 楼层跳转实测数据据此失效（拖拽改侧栏宽时聊天区行高会变化）。
-  Widget _buildChatArea(BuildContext context, double chatWidth) {
+  ///
+  /// [swipeOpensDrawer]：当前布局是否由「聊天区左滑」打开右侧抽屉（窄屏布局）。
+  /// 为真时把该识别器放进消息列**内部**，让它优先于选中区域的横向拖动（见
+  /// 下方 `drawerSwipe` 处的说明）。
+  Widget _buildChatArea(
+    BuildContext context,
+    double chatWidth, {
+    required bool swipeOpensDrawer,
+  }) {
     // 外壳只订阅低频信号（见 [_ChatShellSignals]）：流式增量由 [_StreamingSlot]
     // 自行订阅，因此生成期间整页不再逐增量重建。
     final shell = context.select<RoundProvider, _ChatShellSignals>(
@@ -2288,7 +2305,7 @@ class _ChatScreenState extends State<ChatScreen>
       showPendingUser: showPendingUser,
       showPending: showPending,
     );
-    final messagesList = NotificationListener<ScrollNotification>(
+    final chatList = NotificationListener<ScrollNotification>(
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
         controller: _scrollController,
@@ -2448,6 +2465,23 @@ class _ChatScreenState extends State<ChatScreen>
         },
       ),
     );
+
+    // 整列共用一个**选中作用域**（区域建在列表外）：框架里两个
+    // `SelectableRegion` 互为硬边界（`widgets/selectable_region.dart:189-192`），
+    // 每个气泡各自建区域时选区跨不过气泡（改造前：一个 AI 气泡 2 个区域，
+    // 跨气泡无法连续选中）。作用域内的 `SelectableTextArea` 自动让位，故气泡 /
+    // 思考框 / 推荐行动都无需感知本作用域（见 [SelectableTextScope]）。
+    //
+    // 窄屏（有抽屉）时把「左滑开抽屉」的识别器放进列表**内部**（即区域之下）：
+    // 选中区域为触屏注册的是**横向拖动**识别器（框架刻意这样设计，好让竖向
+    // 滚动不受影响，见 `widgets/selectable_region.dart:684-720`），而抽屉左滑
+    // 同样是横向拖动；手势竞技场里命中顺序更靠内者先接受，故必须让抽屉识别
+    // 器比区域更靠内，否则触屏左滑会被区域吃掉（选区动了、抽屉不开）。
+    // 触屏的选中仍由长按路径驱动（[LongPressGestureRecognizer]，不受影响）。
+    final list = swipeOpensDrawer
+        ? _wrapSwipeGesture(leftward: true, onSwipe: _openDrawer, child: chatList)
+        : chatList;
+    final messagesList = SelectableTextScope(child: list);
 
     // 楼层跳转：悬浮条打开时帧末检测当前轮次（驱动中间数字刷新）
     // 并重新定位（跟随按钮位置变化）。
