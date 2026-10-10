@@ -83,8 +83,9 @@ void main() {
       roundStackService: seed.stack,
       seedBodyRepeats: 40,
     );
-    // 视口内先滚动到中间位置：切换不得把视图拉到底部。
-    await tester.drag(find.byType(ListView), const Offset(0, -200));
+    // 视口内先滚动离开底部：切换不得把视图拉到底部。
+    // （消息列 `reverse: true`：向下拖动 = 揭示更旧内容 = offset 增大、离开底部。）
+    await tester.drag(find.byType(ListView), const Offset(0, 200));
     await tester.pumpAndSettle();
     final beforeOffset = tester
         .widget<Scrollable>(find.byType(Scrollable).first)
@@ -186,7 +187,7 @@ void main() {
     final beforeTop = tester.getTopLeft(stepperFinder).dy;
     expect(beforeTop, greaterThan(50), reason: '夹具前提：控件不在视口最顶部');
     expect(
-      scrollable.position.maxScrollExtent - scrollable.position.pixels,
+      scrollable.position.pixels - scrollable.position.minScrollExtent,
       greaterThan(50),
       reason: '夹具前提：切换前不在列表底部（否则无法向下补偿滚动）',
     );

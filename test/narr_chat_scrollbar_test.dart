@@ -296,6 +296,125 @@ void main() {
     });
   });
 
+  group('ScrollThumbGeometry：reverse 底部锚定（对话页消息列）', () {
+    // `reverse: true` → `AxisDirection.up`：pixels 0 在轨道**底**部。
+
+    test('thumbTop：pixels 0 在轨道底，pixels = max 在轨道顶', () {
+      // 轨道 500、拇指 250 → 行程 250；maxScrollExtent = 1000。
+      expect(
+        ScrollThumbGeometry.thumbTop(
+          trackExtent: 500,
+          thumbExtent: 250,
+          pixels: 0,
+          maxScrollExtent: 1000,
+          axisDirection: AxisDirection.up,
+        ),
+        250,
+        reason: 'reverse：offset 0 是底部 → 拇指贴在轨道底',
+      );
+      expect(
+        ScrollThumbGeometry.thumbTop(
+          trackExtent: 500,
+          thumbExtent: 250,
+          pixels: 1000,
+          maxScrollExtent: 1000,
+          axisDirection: AxisDirection.up,
+        ),
+        0,
+      );
+      expect(
+        ScrollThumbGeometry.thumbTop(
+          trackExtent: 500,
+          thumbExtent: 250,
+          pixels: 500,
+          maxScrollExtent: 1000,
+          axisDirection: AxisDirection.up,
+        ),
+        125,
+        reason: '中点同样取镜像后的中点',
+      );
+      // 越界值仍夹取在轨道内。
+      expect(
+        ScrollThumbGeometry.thumbTop(
+          trackExtent: 500,
+          thumbExtent: 250,
+          pixels: -100,
+          maxScrollExtent: 1000,
+          axisDirection: AxisDirection.up,
+        ),
+        250,
+      );
+    });
+
+    test('pointerOffset：reverse 下指针上移 = 滚动偏移增大', () {
+      const start = Offset(10, 200);
+      // grab：指针上移 100 → 偏移 −(−100) × (1000 / 400) = +250。
+      expect(
+        ScrollThumbGeometry.pointerOffset(
+          pointerPosition: const Offset(10, 100),
+          trackExtent: 500,
+          thumbExtent: 100,
+          viewportDimension: 500,
+          maxScrollExtent: 1000,
+          minScrollExtent: 0,
+          dragAnchor: ScrollDragAnchor.grab,
+          startOffset: 400,
+          startPointerPosition: start,
+          axisDirection: AxisDirection.up,
+        ),
+        closeTo(650, 0.001),
+      );
+      // grab：指针下移 100 → 偏移减小（朝底部）。
+      expect(
+        ScrollThumbGeometry.pointerOffset(
+          pointerPosition: const Offset(10, 300),
+          trackExtent: 500,
+          thumbExtent: 100,
+          viewportDimension: 500,
+          maxScrollExtent: 1000,
+          minScrollExtent: 0,
+          dragAnchor: ScrollDragAnchor.grab,
+          startOffset: 400,
+          startPointerPosition: start,
+          axisDirection: AxisDirection.up,
+        ),
+        closeTo(150, 0.001),
+      );
+      // center：指针落在轨道底（拇指中心贴在轨道底）= 偏移 0。
+      expect(
+        ScrollThumbGeometry.pointerOffset(
+          pointerPosition: const Offset(10, 450),
+          trackExtent: 500,
+          thumbExtent: 100,
+          viewportDimension: 500,
+          maxScrollExtent: 1000,
+          minScrollExtent: 0,
+          dragAnchor: ScrollDragAnchor.center,
+          startOffset: 0,
+          startPointerPosition: Offset.zero,
+          axisDirection: AxisDirection.up,
+        ),
+        0,
+      );
+      // center：指针落在轨道顶 = 偏移 max。
+      expect(
+        ScrollThumbGeometry.pointerOffset(
+          pointerPosition: const Offset(10, 50),
+          trackExtent: 500,
+          thumbExtent: 100,
+          viewportDimension: 500,
+          maxScrollExtent: 1000,
+          minScrollExtent: 0,
+          dragAnchor: ScrollDragAnchor.center,
+          startOffset: 0,
+          startPointerPosition: Offset.zero,
+          axisDirection: AxisDirection.up,
+        ),
+        1000,
+      );
+    });
+  });
+
   group('NarrChatScrollbar', () {
     testWidgets('内容不溢出：拇指整体不渲染', (tester) async {
       await pumpHost(tester, itemCount: 3);

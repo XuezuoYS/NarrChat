@@ -47,13 +47,11 @@ void main() {
     );
   }
 
-  /// 对话消息列表的滚动偏移。
-  double chatOffset(WidgetTester tester) =>
-      chatScrollable(tester).position.pixels;
-
-  /// 对话消息列表的最大滚动偏移。
-  double chatMax(WidgetTester tester) =>
-      chatScrollable(tester).position.maxScrollExtent;
+  /// 对话消息列表距**底部**的距离（`reverse: true`：0 = 贴底）。
+  double chatBottomGap(WidgetTester tester) {
+    final pos = chatScrollable(tester).position;
+    return pos.pixels - pos.minScrollExtent;
+  }
 
   Finder floorButton() => find.byIcon(Icons.layers_outlined);
   Finder floorBar() => find.byType(FloorJumpBar);
@@ -64,13 +62,16 @@ void main() {
       );
 
   /// 用慢速手势把对话列表滚动到底部（无惯性甩动，便于确定性断言）。
+  ///
+  /// 手势方向与列表方向无关：向上拖动 = 揭示更新内容 = 朝底部（`reverse` 下
+  /// `pixels` 减到 `minScrollExtent`）；向下拖动 = 揭示更旧内容。
   Future<void> scrollChatToBottom(WidgetTester tester) async {
     final start = tester.getCenter(find.byType(ListView));
     final gesture = await tester.startGesture(start);
     for (var i = 0; i < 30; i++) {
       await gesture.moveBy(const Offset(0, -300));
       await tester.pump();
-      if (chatOffset(tester) >= chatMax(tester) - 1) break;
+      if (chatBottomGap(tester) <= 1) break;
     }
     await gesture.up();
     await tester.pump();
@@ -178,9 +179,9 @@ void main() {
 
   testWidgets('点击按钮在其上方弹出悬浮条，中间数字为当前（底部=最后一轮）轮次', (tester) async {
     await pumpChat(tester);
-    // 测试环境无初始自动滚动：显式滚到底部 → 当前轮应为最后一轮。
+    // 打开书籍即在底部（reverse 底部锚定）→ 当前轮应为最后一轮。
     await scrollChatToBottom(tester);
-    expect(chatOffset(tester), closeTo(chatMax(tester), 1));
+    expect(chatBottomGap(tester), closeTo(0, 1));
 
     await openFloorBar(tester);
     expect(floorBar(), findsOneWidget);
@@ -229,7 +230,7 @@ void main() {
 
     // 已是最后一轮：右箭头 → 列表末尾（第 6 轮末尾）。
     await tapNext(tester);
-    expect(chatOffset(tester), closeTo(chatMax(tester), 1));
+    expect(chatBottomGap(tester), closeTo(0, 1));
   });
 
   testWidgets('回车跳转：输入数字回车 → 对应轮起点，悬浮条关闭', (tester) async {

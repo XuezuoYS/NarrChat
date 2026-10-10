@@ -1,6 +1,6 @@
 # 对话页（ChatScreen）UI 性能优化方案 — v3（含 L0 实测数据）
 
-> 状态：**仅探索 + L0 度量，未落地任何优化**。
+> 状态：**P0-① / P0-② / P0-③ 已落地**（见 §8 / §9 / §10）；P0-④ 待办。
 > 环境：Flutter 3.47.5（framework 6a19cca56）/ Dart 3.13.4；目标平台 Windows + Android。
 > 证据来源：本仓库源码 + Flutter SDK 源码（`C:\Language\Flutter\flutter`）+
 > flutter_markdown 0.7.7+1 源码（pub cache）+ **本轮 L0 实测探针**（`.agents/perf/`）。
@@ -97,7 +97,10 @@
 1. ~~**流式正文按块增量渲染**~~ → **已落地**（见 §8；实测合计 6.3x、末段 7.4x，无空行内容无回归）。
 2. ~~**推荐行动改为一次解析**~~（M1：6 次 → 1~2 次构树/气泡）→ **已落地**（见 §9；
    实测 MarkdownBody 6 → 1、揭示一个旧气泡的构建成本 1.88x）。
-3. **底部锚定 `reverse: true`**（消除 M2 的 45/80 越界帧与 1.3s 收敛）：详见 §4。
+3. ~~**底部锚定 `reverse: true`**（消除 M2 的 45/80 越界帧与 1.3s 收敛）~~
+   → **已落地**（见 §10；实测越界帧 **0/80**、最大越界 **0.0px**、到底后**零补滚**）。
+   顺带修掉一个此前未意识到的缺陷：**离底阅读时内容被推走**（新增
+   `lib/widgets/reading_anchor.dart` 把「视口下方长高」补回滚动偏移，实测位移 -225px → 0px）。
 4. **`SelectionArea` 收敛**：主收益是**修正跨气泡选中的设计缺陷**（`selectable_region.dart:189-192`），
    成本收益待 P0 落地后再补测（当前无法在不改产线代码的前提下测准）。
 
@@ -128,19 +131,26 @@
   自绘滚动条**方向感知**（`ScrollThumbGeometry` 的拇指位置与拖动数学）；
   `_isNearBottom` 语义（`pixels <= threshold`）；楼层跳转测量坐标系；
   以及断言 `offset ≈ max` 的测试（`chat_auto_scroll_test.dart` 多处、`floor_jump_test.dart:183,232`）。
+- ➡️ **以上已全部落地**，逐条实测与新增项（阅读位置补偿、手势方向、易主取舍）见 §10。
 
 ## 5. 验收标准（建议写进 PR）
 1. 落底：**越界帧 = 0**，位置变化帧 ≤ 2，稳定帧数 ≤ 5（当前 45 / 57 / 68）。
+   → ✅ **已达成**（P0-③ 落地后实测：越界帧 **0/80**、最大越界 **0.0px**、
+   到底之后**零次**位置变化；「位置变化帧」在带 300ms 动画的路径上必然有 ~20 帧，
+   故该条按「动画结束后不再变动」判定，见 §10）。
 2. 流式 8000 字：每 chunk 净工作不再随长度线性上升（目标 8000 字 ≤ 800 字的 1.5 倍）；
    总增量开销 ≤ 2s 量级（当前 ≈10.7s）。
 3. 单个 AI 气泡 `MarkdownBody` 数 ≤ 2（当前 6）→ ✅ **已达成**（P0-② 落地后实测 **1**）。
 4. 滚动 30 帧 ≤ 当前基线；历史气泡不重复解析。
+   → ✅ 2.85ms/帧（基线 2.5–3.1ms，P0-③ 前后同量级，无回归）；历史气泡不重复解析见 §8。
 5. `flutter test` 全绿；`chat_stream_rebuild_scope_test.dart` 的实例同一性约束不破。
+   → ✅ P0-③ 落地后 **1752 passed / 1 skipped**。
 
 ## 6. 回归面
 | 改动 | 风险 | 验证 |
 |---|---|---|
-| reverse 列表 | 自绘滚动条方向、楼层跳转坐标、抽屉横滑、`offset≈max` 测试语义 | `narr_chat_scrollbar_test`/`floor_jump_test`/`chat_auto_scroll_test`/`chat_round_version_test` + 桌面手工 |
+| reverse 列表 | 自绘滚动条方向、楼层跳转坐标、抽屉横滑、`offset≈max` 测试语义 | ✅ `narr_chat_scrollbar_test`（新增 reverse 几何 2 例）/`floor_jump_test`（20 例全绿）/`chat_auto_scroll_test`（7 例）/`chat_round_version_test` + §10 实测；桌面手工待你复验 |
+| 离底阅读位置补偿 | 与用户拖拽/惯性/动画冲突、贴底语义被破坏、误补偿 | ✅ `reading_anchor_test`（11 例）+ `chat_auto_scroll_test`「离底阅读…不推走已读内容」+ 探针 D6/D7 + `reading_drift_probe_test` |
 | 流式按块渲染 | 未闭合代码块、光标位置、结尾排版跳变 | `markdown_preview_test` + 新增单测 + 长代码块手工 |
 | 推荐行动单次解析 | 双击插入、选中、序号/符号列对齐 | `recommended_action_insert_test`/`recommended_action_view` + 手工 |
 | 单个 SelectionArea | 跨气泡选中、选择时自动滚动、右键菜单抑制 | `markdown_preview_test:118`、`token_usage_pill_test:197` + 手工复制 |
@@ -152,10 +162,11 @@
    或改成 `integration_test` + `traceAction` 的自动化采集（要加 dev 依赖并跑桌面构建）。
 2. 若要更强的归因：在 debug 下加 `--dart-define=NARRCHAT_PERF_LOG` 埋点
    （itemBuilder 次数 / 构树次数 / `jumpTo` 次数），默认关闭。
-3. 探针提升为回归测试：把 `.agents/perf/` 里的两个探针里**稳定且与实现无关**的断言
-   （落底越界帧、每气泡构树次数）搬进 `test/`，其余（耗时类）保留为手动探针。
-   > 注意：`chat_cost_probe_test.dart` 的 L0-1 断言目前**刻意钉住当前缺陷**
-   > （`changedFrames > 2`）——修复落地后必须反转成 `changedFrames <= 2 && overshootFrames == 0`。
+3. ~~探针提升为回归测试~~ → **已做**：落底越界/零补滚（`chat_auto_scroll_test.dart`
+   「贴底生成：连续增量不改变滚动偏移」）、每气泡构树次数（`recommended_action_view_test.dart`）、
+   离底阅读不漂移（`chat_auto_scroll_test.dart` + `reading_anchor_test.dart`）已进 `test/`；
+   耗时类留在 `.agents/perf/` 手工运行。`chat_cost_probe_test.dart` 的 L0-1 断言已按
+   「越界帧 = 0 且到底后零补滚」反转（不再钉住缺陷）。
 
 ---
 
@@ -282,5 +293,117 @@
   ② 非列表文本仍走块级解析、③ 选项内行内 Markdown 保真（粗体 / 行内代码 / 链接 / 继承 `base`）、
   ④ **单个 AI 气泡构树次数 ≤ 2（P0-② 验收）**。
 - 交互层沿用既有 `chat_bubble_test.dart` / `recommended_action_insert_test.dart`（不重复覆盖）。
+
+---
+
+## 10. P0-③ 落地记录：底部锚定 `reverse: true`（已完成）
+
+**状态**：已落地；`flutter analyze lib test .agents/perf` 干净、`flutter test` 全绿
+（**1752 passed / 1 skipped**，其中 P0-③ 新增/改写 14 例）。
+
+### 10.1 改动面（1 新增 + 3 处改动）
+| 文件 | 作用 |
+|---|---|
+| [lib/screens/chat_screen.dart](../../lib/screens/chat_screen.dart) | 消息列 `reverse: true` + 逻辑序号反转 + 条目身份 Key + `findChildIndexCallback`；删除「jumpTo(估算 max)+逐帧补滚」；`_isNearBottom`/`_autoFollowIfNeeded`/通知语义改为 `pixels <= 阈值`；楼层跳转偏移模型按 reverse 反向；代次切换补偿改符号；接入阅读锚点 |
+| [lib/widgets/narr_chat_scrollbar.dart](../../lib/widgets/narr_chat_scrollbar.dart) | `ScrollThumbGeometry.thumbTop`/`pointerOffset` 增加 `axisDirection`（默认正向，反向镜像拇指位置与拖动方向）；两处调用传入 `pos.axisDirection` |
+| [lib/widgets/reading_anchor.dart](../../lib/widgets/reading_anchor.dart)（新） | 离底阅读期间「视口下方条目长高」的实高测量（`ReadingAnchorItem` + 布局阶段上报）与滚动物理补偿（`ReadingAnchorScrollPhysics`） |
+
+**核心机制**
+1. **贴底不再需要脚本**：`reverse: true` 下 offset 0 即底部，新内容插在坐标起点，框架自身
+   保持 `pixels`（`rendering/sliver_list.dart:175-195`）。`_scrollToBottom` 只 `jumpTo/​animateTo(minScrollExtent)`，
+   `_settleScrollToBottom` 整套收敛循环删除。
+2. **条目身份 Key + `findChildIndexCallback`**：末尾追加条目会让所有已有条目的**视图下标 +1**，
+   只有键能让框架把元素（连同 State）搬到新下标。
+3. **楼层跳转坐标系反转**：条目顶边偏移 = `pixels + viewportDimension − 视口内 y`；
+   「首个可视项」判据用「顶边 − 高度 < 视口顶」；锚点推算正负号反向；前导 padding 是
+   `_composerHeight + 8`；`getOffsetToReveal` 取 **alignment 1.0**（reverse 下视口顶是 trailing 边）。
+4. **离底阅读位置补偿**（新增发现，见 10.3）。
+
+### 10.2 实测（探针逐个单独运行）
+**落底链路（`.agents/perf/chat_cost_probe_test.dart` L0-1：120 轮，从顶部点「滚动到底部」）**
+
+| 指标 | 改造前（M2） | P0-③ 落地后 |
+|---|---|---|
+| 越界帧（>0.5px） | **45/80** | **0/80** |
+| 最大越界 | **390.7px** | **0.0px** |
+| 位置变化 | 57 帧 | 20 帧（= 300ms 动画本身），**到达底部后 0 帧** |
+| 收敛 | 68 帧 / 1306ms | 首次到底部于第 21 帧（动画结束），其后无变动 |
+| 最终误差 | 0.00px | 0.00px |
+
+**合成宿主语义核对（`.agents/perf/reverse_anchor_probe_test.dart`，单独运行）**
+
+| 编号 | 事实 |
+|---|---|
+| D1 | 贴底追加条目：12 帧 `pixels` 恒为 0、无越界；新条目底边距视口底 = 200（= `padding.bottom`，语义不变） |
+| D2/D3 | **离底时内容增长会推走可视内容**：追加 120px → 参考项上移 **−120px**；再长高 60px → 累计 **−180px**（`pixels` 不变） |
+| D4 | 元素/State 复用：key + 回调 → 只有新条目新建 State（1）、零错绑；**缺回调 → 6 个可见条目全部重建**；无 key → 6 个 State 被错绑到别的条目 |
+| D5 | `reverse` 下 `padding.bottom` 是**前导**（贴底一侧）：末条底边距视口底 = 200、`maxScrollExtent` = 内容+前后 padding−视口 |
+| D6a | 生产实现：离底 + 末尾长高 60px → 参考项位移 **0.0px**、`pixels` 300 → **360**（补偿量 = 长高量） |
+| D6b | 生产实现：离底 + **追加新条目**（末尾易主）→ **不补偿**（参考项 −120px）——刻意的保守取舍，见 10.4 |
+| D6c/D6d | 生产实现：贴底时同两种变化 → `pixels` 恒为 0（「新内容顶上去」语义保留） |
+| D7 | 视口**上方**条目长高 60px → 可视内容位移 0.0px、`pixels` 不变（不误补偿） |
+| D8 | 手势方向：reverse 下**手指向下**拖动 → `pixels` 0 → 300（揭示更旧内容）；**手指向上** → 0（贴底） |
+
+**离底阅读漂移（真实对话页，`.agents/perf/reading_drift_probe_test.dart`）**
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| A：离开底部时流式气泡已长高且被构建（20 段增量） | 参考部件全局 top **−150px+**（持续被推走）、`pixels` 不变 | 参考部件位移 **0.0px**、`pixels` +600（补偿） |
+| B：离开底部时气泡还很矮、被移出 cache 区（40 段增量） | 0px（框架冻结布局模型，`maxScrollExtent` 也不增长） | 0px（无需补偿，也不误补偿） |
+
+> ⚠️ 度量口径的坑：**`maxScrollExtent` 的增量不能当作漂移量**——懒加载列表的 extent 是估算值
+> （`rendering/sliver_list.dart:299-311`），一个超高子项会把平均高度拉爆：A 场景实测 Δmax =
+> **2800px**，而真实增长仅数百 px。补偿量必须来自**条目实高**（10.3）。
+
+**回归核对**：L0-2 流式 8000 字 7.2 → 15.8ms/chunk（2.2x，与 P0-③ 前同量级，无回归）；
+L0-3 单气泡 `MarkdownBody`=1、`SelectionArea`=2（不变）；L0-4 滚动 30 帧 2.85ms/帧（基线 2.5–3.1ms）。
+
+### 10.3 新增：离底阅读位置补偿（`lib/widgets/reading_anchor.dart`）
+**为什么必须做**：reverse 列表把新内容插在坐标起点，**视口下方**的条目长高会让可视内容整体
+上移（`visualY = viewportDimension + pixels − offset`）。贴底时这正是想要的；但用户上翻阅读
+历史时就成了「读着读着整段内容自己往上跑」——实测单条气泡长高多少就推走多少
+（A 场景 20 段增量推走 150px+、合成宿主里位移与长高量严格相等）。
+
+**做法**
+- `ReadingAnchorItem` 包住**每个**条目（纯代理），只有「列表逻辑末尾」那一条（reverse 下
+  即视觉底部、流式正文生长处）在**布局阶段**上报自己的实高；
+- `ReadingAnchor` 记住「来源身份 + 实高」，`takeGrowth()` 取出**自上次读取以来的增量**并清零；
+- `ReadingAnchorScrollPhysics` 在 `adjustPositionForNewDimensions` 里把增量补进滚动偏移。
+  该钩子在 `RenderViewport.performLayout` 的布局循环内被调用，修正会**带着新偏移重排一次**
+  （`rendering/viewport.dart:1723-1740`），因此**同一帧**生效、不产生漂移帧、不改滚动活动
+  （不打断拖拽）；贴底时（`pixels <= min + 0.5`）不补偿；结果夹取在合法范围。
+- 读取即清零 ⇒ 布局重试的第二次调用读到 0，不会重复补偿（不会触发 `maxLayoutCycles` 断言）。
+
+### 10.4 已知取舍与不覆盖
+1. **末尾条目易主时不补偿**（D6b）：`流式插槽 → 落库气泡`、追加/删除轮次都会换末尾条目，
+   此时「不补偿」比「按高度差补」安全（后者遇到「新条目根本没被构建过」会凭空跳一段）。
+   代价是**生成结束那一刻**若用户正在阅读历史，可能有一次几十~百 px 的位移；此时本来也会
+   亮「有新内容」红点。要彻底消除需按「视口下方所有条目」逐项建模（P1）。
+2. **底部留白变化不补偿**：输入面板长高（`_composerHeight`）会推动内容（属 P1-7
+   「底部留白不再依赖帧末测量」的范畴）。
+3. **视口上方条目长高**不补偿——它本来就不推动可视内容（D7）。
+4. 用户**正在拖拽/惯性滚动**时补偿照常进行（补偿只改位置、不改活动，不会打断手势）；
+   这比 postFrame 里 `jumpTo` 的方案更安全（后者会 `goIdle()` 掐断拖拽）。
+
+### 10.5 测试
+- [test/reading_anchor_test.dart](../../test/reading_anchor_test.dart)（新增 11 例）：`ReadingAnchor` 对基/增量/清零/易主/负增量；
+  `ReadingAnchorItem` 只测 active 条目 + 布局透明；`ReadingAnchorScrollPhysics` 离底补偿、
+  贴底不补偿、无增长不动、夹取上限、`applyTo` 传递同一 anchor（与平台物理叠加）。
+- [test/chat_auto_scroll_test.dart](../../test/chat_auto_scroll_test.dart)（7 例）：首帧即底部且稳定（内容不均/单轮）、
+  **贴底连续增量 `pixels` 恒为 0 且不越界**、按住下滑不被拉回、上翻暂停/回落恢复、
+  **离底阅读时流式新内容不推走已读内容**（参考部件位移 < 2px 且 `pixels` 补偿）、生成结束仍贴底。
+  > 该「不推走」用例已验证**能失败**：临时关掉锚点后位移 225px、用例立刻红。
+- [test/floor_jump_test.dart](../../test/floor_jump_test.dart)（20 例全绿，未改断言口径，只改脚手架的手势/判据：
+  `chatBottomGap = pixels − minScrollExtent`、「滚到底部」向上拖）；
+- [test/narr_chat_scrollbar_test.dart](../../test/narr_chat_scrollbar_test.dart)：新增 reverse 几何 2 例
+  （`thumbTop` 镜像、`pointerOffset` 方向镜像）；
+- [test/chat_round_version_test.dart](../../test/chat_round_version_test.dart)：夹具前提改为「不在底部 = `pixels > 50`」。
+
+### 10.6 观感 / 行为保持
+- 常驻 UI（AI 操作栏、时间线块、输入面板）一律未动；
+- 手势语义与用户直觉一致：**向上拖动 = 更新内容（朝底部）、向下拖动 = 更旧内容**（与正向列表相同，D8）；
+- 贴底观感不变：新正文把旧内容顶上去，最新一行停在输入面板上方；
+- 滚动条：反向列表的拇指位置/拖动方向镜像，外观不变（`app_theme` 未动）。
+
 
 

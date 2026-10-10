@@ -45,15 +45,21 @@ class ScrollThumbGeometry {
   }
 
   /// 拇指顶部 y：按 `pixels / maxScrollExtent` 线性映射，越界值被夹取。
+  ///
+  /// [axisDirection] 表达滚动方向：[AxisDirection.down]（正向下拉列表）时
+  /// `pixels == 0` 在轨道**顶**部；[AxisDirection.up]（`reverse: true` 的底部锚定
+  /// 列表，如对话页消息列）时 `pixels == 0` 在轨道**底**部，拇指位置随之镜像。
   static double thumbTop({
     required double trackExtent,
     required double thumbExtent,
     required double pixels,
     required double maxScrollExtent,
+    AxisDirection axisDirection = AxisDirection.down,
   }) {
     final travel = trackExtent - thumbExtent;
     if (travel <= 0 || maxScrollExtent <= 0) return 0;
-    return (pixels / maxScrollExtent).clamp(0.0, 1.0) * travel;
+    final frac = (pixels / maxScrollExtent).clamp(0.0, 1.0);
+    return (axisDirection == AxisDirection.up ? 1.0 - frac : frac) * travel;
   }
 
   /// 指针拖动 → 目标滚动偏移。
@@ -67,6 +73,9 @@ class ScrollThumbGeometry {
   ///
   /// 返回 null 表示本次不可定位（轨道无法容纳拇指或不可滚动）；结果已夹取到
   /// `[minScrollExtent, maxScrollExtent]`。
+  ///
+  /// [axisDirection] 表达滚动方向：`AxisDirection.up`（`reverse: true` 的底部锚定
+  /// 列表）下拇指与指针的纵向关系整体镜像——指针**上**移对应滚动偏移**增大**。
   static double? pointerOffset({
     required Offset pointerPosition,
     required double trackExtent,
@@ -77,17 +86,23 @@ class ScrollThumbGeometry {
     required ScrollDragAnchor dragAnchor,
     required double startOffset,
     required Offset startPointerPosition,
+    AxisDirection axisDirection = AxisDirection.down,
   }) {
     final travel = trackExtent - thumbExtent;
     final content = maxScrollExtent + viewportDimension;
     if (travel <= 0 || content <= 0) return null;
     final pixelsPerTrack = maxScrollExtent / travel;
+    final reversed = axisDirection == AxisDirection.up;
+    // 拇指中心在轨道中的位置（镜像后与 [thumbTop] 的映射一致）。
+    final centerInTrack = pointerPosition.dy - thumbExtent / 2;
     final target = switch (dragAnchor) {
       ScrollDragAnchor.grab =>
         startOffset +
-            (pointerPosition.dy - startPointerPosition.dy) * pixelsPerTrack,
+            (pointerPosition.dy - startPointerPosition.dy) *
+                pixelsPerTrack *
+                (reversed ? -1.0 : 1.0),
       ScrollDragAnchor.center =>
-        (pointerPosition.dy - thumbExtent / 2) * pixelsPerTrack,
+        (reversed ? travel - centerInTrack : centerInTrack) * pixelsPerTrack,
     };
     return target.clamp(minScrollExtent, maxScrollExtent);
   }
@@ -573,6 +588,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
       dragAnchor: widget.dragAnchor,
       startOffset: _startOffset,
       startPointerPosition: _startPointer,
+      axisDirection: pos.axisDirection,
     );
     if (target == null) return;
     if ((pos.pixels - target).abs() > 0.5) {
@@ -649,6 +665,7 @@ class _NarrChatScrollbarState extends State<NarrChatScrollbar>
       thumbExtent: thumbExtent,
       pixels: pos.pixels,
       maxScrollExtent: pos.maxScrollExtent,
+      axisDirection: pos.axisDirection,
     );
     return _buildThumbLayer(
       context,

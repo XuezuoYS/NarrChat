@@ -67,50 +67,58 @@ void main() {
 
     expect(pos.maxScrollExtent, greaterThan(0), reason: '内容必须溢出才有滚动意义');
 
+    // 方向无关的「底部/顶部」：消息列已改 `reverse: true`（offset 0 = 底部），
+    // `minScrollExtent` 即底部、`maxScrollExtent` 即顶部。
+    final bottom = pos.minScrollExtent;
+    final top = pos.maxScrollExtent;
+
     // 先回到顶部，再从生产入口（输入面板上方「滚动到底部」按钮）触发一次落底。
-    pos.jumpTo(0);
+    pos.jumpTo(top);
     await tester.pump();
-    expect(pos.pixels, 0, reason: '已回到顶部');
+    expect(pos.pixels, closeTo(top, 1), reason: '已回到顶部');
 
     await tester.tap(find.byTooltip('滚动到底部'));
 
     final samples = <({double p, double m})>[];
     final sw = Stopwatch()..start();
     for (var i = 0; i < 80; i++) {
-      // 采样点 = 该帧开始前（即上一帧 postFrame 里的 jumpTo 之后）的状态。
+      // 采样点 = 该帧开始前（即上一帧动画/回调之后）的状态。
       samples.add((p: pos.pixels, m: pos.maxScrollExtent));
       tester.binding.scheduleFrame();
       await tester.pump(const Duration(milliseconds: 16));
     }
     sw.stop();
 
+    // 越界帧（越过底部 = 冲过头）与「到达底部之后是否还有位置变化（补滚残留）」。
     var overshootFrames = 0;
     var maxOvershoot = 0.0;
     for (final s in samples) {
-      final o = s.p - s.m;
+      final o = bottom - s.p;
       if (o > 0.5) overshootFrames++;
       if (o > maxOvershoot) maxOvershoot = o;
     }
     var changedFrames = 0;
-    for (var i = 1; i < samples.length; i++) {
-      if ((samples[i].p - samples[i - 1].p).abs() > 0.5) changedFrames++;
-    }
-    var firstStable = samples.length;
-    for (var i = samples.length - 1; i >= 0; i--) {
-      if ((samples[i].p - samples[i].m).abs() > 1) {
-        firstStable = i + 1;
-        break;
+    var firstAtBottom = samples.length;
+    for (var i = 0; i < samples.length; i++) {
+      if (i > 0 && (samples[i].p - samples[i - 1].p).abs() > 0.5) changedFrames++;
+      if (firstAtBottom == samples.length && (samples[i].p - bottom).abs() <= 1) {
+        firstAtBottom = i;
       }
     }
-    final finalGap = (samples.last.p - samples.last.m).abs();
+    var postSettleChanges = 0;
+    for (var i = firstAtBottom + 1; i < samples.length; i++) {
+      if ((samples[i].p - samples[i - 1].p).abs() > 0.5) postSettleChanges++;
+    }
+    final finalGap = (samples.last.p - bottom).abs();
 
     // ignore: avoid_print
     print('--- L0-1 落底链路（120 轮，滚动到底部按钮）---');
     // ignore: avoid_print
     print(
-      '越界帧(>0.5px)=$overshootFrames/80 最大越界=${maxOvershoot.toStringAsFixed(1)}px '
-      '| 位置变化帧=$changedFrames $firstStable 帧后稳定 '
-      '| 收敛耗时=${sw.elapsedMilliseconds}ms 最终误差=${finalGap.toStringAsFixed(2)}px',
+      '越界帧(越过底部 >0.5px)=$overshootFrames/80 最大越界=${maxOvershoot.toStringAsFixed(1)}px '
+      '| 位置变化帧=$changedFrames（含 300ms 动画） '
+      '| 首次到底部于第 $firstAtBottom 帧 其后位置变化=$postSettleChanges '
+      '| 耗时=${sw.elapsedMilliseconds}ms 最终误差=${finalGap.toStringAsFixed(2)}px',
     );
 
     expect(
@@ -118,15 +126,21 @@ void main() {
       lessThan(1.5),
       reason: '落底链路最终必须停在真实底部（既有不变量）',
     );
-    // 探针断言：复现「多弹一段 / 多次跳变」这一缺陷；修复后应改为
-    // changedFrames <= 2 且 overshootFrames == 0。
+    // P0-③（reverse 底部锚定）落地后的期望：目标 offset 是**精确**边界
+    // （minScrollExtent），不再有「jumpTo 懒加载估算值 → 冲过头 → 回弹 → 逐帧补滚」。
     expect(
-      changedFrames,
-      greaterThan(2),
-      reason: '落底当前经由多帧 jumpTo 收敛（L0 待优化点）',
+      overshootFrames,
+      0,
+      reason: '不得越过底部（改造前：45/80 帧越界、最大 390.7px）',
+    );
+    expect(
+      postSettleChanges,
+      0,
+      reason: '到达底部后不得再有补滚残留（改造前：68 帧后才稳定）',
     );
 
     // 滚动一屏（揭示新条目）的每帧耗时：手势逐步上移，每步一帧。
+    // （向上拖动 = 揭示更新内容 = 朝底部；这里改为向下拖动，朝历史侧揭示。）
     final dragSw = Stopwatch()..start();
     final gesture = await tester.startGesture(
       tester.getCenter(find.byType(ListView)),
@@ -145,7 +159,7 @@ void main() {
       '总耗时=${dragSw.elapsedMilliseconds}ms '
       '每帧=${(dragSw.elapsedMicroseconds / 1000 / 30).toStringAsFixed(2)}ms',
     );
-    expect(pos.pixels, greaterThan(0), reason: '手势应把列表向上滚动离开底部');
+    expect(pos.pixels, greaterThan(0), reason: '手势应把列表滚离底部（揭示历史条目）');
   }, timeout: const Timeout(Duration(minutes: 8)));
 
   testWidgets('流式增量成本曲线（60 轮底稿，约 8000 字正文）', (tester) async {
@@ -205,7 +219,8 @@ void main() {
     final pos = _chatPosition(tester);
     await tester.drag(find.byType(ListView), const Offset(0, 400));
     await tester.pump();
-    final awayFromBottom = pos.pixels < pos.maxScrollExtent - 80;
+    // reverse：向下拖动 = 揭示更旧内容 = 离开底部。
+    final awayFromBottom = pos.pixels > pos.minScrollExtent + 80;
     final notifyAwaySw = Stopwatch()..start();
     for (var i = 0; i < notifyPumps; i++) {
       ai.emit('');
@@ -214,13 +229,13 @@ void main() {
     notifyAwaySw.stop();
     final notifyAwayMs = notifyAwaySw.elapsedMicroseconds / 1000 / notifyPumps;
 
-    // 拉回底部（越界被夹取 → 结束时的 idle 通知会把「用户已离开底部」复位），
-    // 以便后面的增量曲线仍处于「贴底跟随」的真实语义下。
+    // 拉回底部（向上拖动 = 朝底部；越界被夹取 → 结束时的 idle 通知会把
+    // 「用户已离开底部」复位），以便后面的增量曲线仍处于「贴底跟随」的真实语义下。
     await tester.drag(find.byType(ListView), const Offset(0, -800));
     await tester.pump();
     expect(
       pos.pixels,
-      greaterThanOrEqualTo(pos.maxScrollExtent - 1),
+      lessThanOrEqualTo(pos.minScrollExtent + 1),
       reason: '探针前置条件：增量曲线必须在贴底状态下测量',
     );
 
@@ -315,8 +330,14 @@ void main() {
     );
     await pumpChatScreen(tester, roundDao: dao);
 
-    final aiBubble = find.byType(ChatBubble).last;
-    final userBubble = find.byType(ChatBubble).first;
+    // 按 `isUser` 取气泡：`reverse: true` 下视图下标与逻辑序相反，
+    // `find.byType(ChatBubble).first/last` 的先后不再对应「用户/AI」。
+    final aiBubble = find.byWidgetPredicate(
+      (w) => w is ChatBubble && !w.isUser,
+    );
+    final userBubble = find.byWidgetPredicate(
+      (w) => w is ChatBubble && w.isUser,
+    );
     final aiMarkdown = tester
         .widgetList(find.descendant(of: aiBubble, matching: find.byType(MarkdownBody)))
         .length;

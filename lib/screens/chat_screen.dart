@@ -46,6 +46,7 @@ import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/raw_dialog.dart';
+import '../widgets/reading_anchor.dart';
 import '../widgets/responsive_builder.dart';
 import '../widgets/round_action_dialogs.dart';
 import '../widgets/round_version_stepper.dart';
@@ -73,10 +74,10 @@ const double _kComposerTextGap = 8;
 /// 流式自动跟随滚动：距底部小于该距离视为「位于底部」。
 const double _kAutoScrollThreshold = 80;
 
-/// 滚到底部收敛循环上限（懒加载列表 maxScrollExtent 逐帧收敛，帧级、开销极小）。
-const int _kScrollToBottomMaxRefine = 10;
-
-/// 判定「已到底部」的残余误差（px），收敛停止条件。
+/// 判定「已到底部」的残余误差（px）。
+///
+/// 消息列 `reverse: true`：底部即 [ScrollPosition.minScrollExtent]（恒为 0），
+/// 是**精确**边界（不像旧实现要拿懒加载估算的 `maxScrollExtent` 逼近）。
 const double _kScrollToBottomEpsilon = 1.0;
 
 /// 切换版本后「视图停在控件」的帧级校准上限（懒加载列表逐帧收敛，开销极小）。
@@ -163,6 +164,15 @@ class _ChatScreenState extends State<ChatScreen>
   final FocusNode _inputFocus = FocusNode();
 
   final ScrollController _scrollController = ScrollController();
+
+  /// 阅读锚点：离底阅读期间「视口下方条目长高」的实高测量去向
+  /// （见 [ReadingAnchor] 的说明与 [ReadingAnchorScrollPhysics]）。
+  final ReadingAnchor _readingAnchor = ReadingAnchor();
+
+  /// 消息列的滚动物理：在平台默认物理之上叠加阅读位置补偿。
+  /// 实例在 State 生命周期内保持稳定（物理按约定不可变，测量值放在 [_readingAnchor]）。
+  late final ReadingAnchorScrollPhysics _chatScrollPhysics =
+      ReadingAnchorScrollPhysics(anchor: _readingAnchor);
 
   /// 当前待发送的用户消息附件（图片，相对路径 `img/<hash>.<ext>`）。
   final List<String> _pendingImages = [];
@@ -455,6 +465,40 @@ class _ChatScreenState extends State<ChatScreen>
     super.dispose();
   }
 
+  /// 消息列条目的**身份 Key**（逻辑序，与 [ListView.builder] 的逻辑序号一一对应）。
+  ///
+  /// 按条目身份（轮号 / 失败条目 / 待定气泡 / 流式插槽）取值，而不是易位下标：
+  /// `reverse: true` 下末尾追加新条目会让所有已有条目的**视图下标 +1**，
+  /// 只有键能让框架把它们（连同 State）搬到新下标，见 [findChildIndexCallback]。
+  /// 轮号在版本切换、删除相邻轮次时都不变 → 元素与 State 得以保留。
+  List<Key> _chatItemKeys({
+    required List<Round> chatRounds,
+    required bool showFailure,
+    required bool showPendingUser,
+    required bool showPending,
+  }) => [
+    for (final round in chatRounds) ...[
+      ValueKey('chat-round${round.roundIndex}-user'),
+      ValueKey('chat-round${round.roundIndex}-ai'),
+    ],
+    if (showFailure) const ValueKey('chat-failure'),
+    if (showPendingUser) const ValueKey('chat-pending-user'),
+    if (showPending) const ValueKey('chat-pending-ai'),
+  ];
+
+  /// [findChildIndexCallback]：把已有条目的 Key 映射到它**新的视图下标**。
+  ///
+  /// 视图下标与逻辑序号相反，故新下标 = `总数 − 1 − 逻辑序号`。键不在本轮列表里
+  /// （条目被删掉）时返回 null，交由框架按位置处理。
+  int? _viewIndexOfChatItem(List<Key> itemKeys, Key key) {
+    for (var logicalIndex = 0; logicalIndex < itemKeys.length; logicalIndex++) {
+      if (itemKeys[logicalIndex] == key) {
+        return itemKeys.length - 1 - logicalIndex;
+      }
+    }
+    return null;
+  }
+
   /// 打开书籍的「加载轮次 → 跳转到底部」初始化（同一本书幂等）。
   ///
   /// initState 帧末与 build 兜底两处调用：列表点击进入时 currentBook 已就绪，
@@ -475,62 +519,51 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 滚动到底部（默认带动画；打开书籍等场景用 [animated] = false 瞬时跳转）。
   ///
-  /// 消息列表是懒加载 ListView.builder：maxScrollExtent 在尾部项尚未构建时是
-  /// 估算值，动画/跳转只到达当时的估算极限，随后尾部项被构建、真实极限可能
-  /// 更大——旧实现动画停在旧目标，多轮/内容不均时「滚到一半停住」。
-  /// 两种模式完成后都追帧末收敛循环（[_settleScrollToBottom]），
-  /// 直至位置 ≥ 真实 maxScrollExtent - ε 或达到收敛上限。
+  /// 消息列 `reverse: true`（**offset 0 即底部**，见 [_buildChatArea] 的说明），
+  /// 目标恒为 [ScrollPosition.minScrollExtent]：它是精确边界，一次到位。
+  ///
+  /// 旧实现（正向列表）必须 `jumpTo(懒加载估算的 maxScrollExtent)` 再追一个
+  /// 最长 10 帧的补滚循环：估算值大于真实底部时会先冲过头、被回弹、再逐帧收敛
+  /// （L0 实测 45/80 帧越界、最大越界 390.7px、1306ms 才稳定）——即用户看到的
+  /// 「往下多弹一段」。reverse 之后这条链路整体消失。
   void _scrollToBottom({bool animated = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
       final pos = _scrollController.position;
-      if (animated && pos.pixels < pos.maxScrollExtent - _kScrollToBottomEpsilon) {
+      final target = pos.minScrollExtent;
+      if (animated && (pos.pixels - target).abs() > _kScrollToBottomEpsilon) {
         pos
             .animateTo(
-              pos.maxScrollExtent,
+              target,
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeOut,
             )
             .then((_) {
-          if (mounted) _settleScrollToBottom(0);
+          if (mounted) _resetItemMeasurementCache();
         });
       } else {
-        pos.jumpTo(pos.maxScrollExtent);
-        _settleScrollToBottom(0);
+        pos.jumpTo(target);
+        _resetItemMeasurementCache();
       }
     });
   }
 
-  /// 帧末复查 + 补滚：jump/动画后视口底部项才被构建，maxScrollExtent 可能
-  /// 继续增长，逐帧校准直至稳定（最多 [_kScrollToBottomMaxRefine] 次）。
+  /// 清空楼层跳转的实测缓存。
   ///
-  /// 用户已主动上翻（[_userScrolledAway]）时不再强制拉回（动画被用户滚动
-  /// 打断的场景，交由用户接管）；每次补滚后显式 scheduleFrame，保证
-  /// 帧末回调链在真实与测试环境都能持续到收敛。
-  void _settleScrollToBottom(int attempt) {
-    if (!mounted || attempt > _kScrollToBottomMaxRefine) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final pos = _scrollController.position;
-      if (_userScrolledAway) return;
-      if (pos.pixels >= pos.maxScrollExtent - _kScrollToBottomEpsilon) {
-        // 跳底完成：收敛经由多帧 jump 定位，期间构建的子项可能以「跳变后
-        // 的滚动位置」上报过期偏移（项序号与偏移错位，楼层检测会误判当前
-        // 轮）。清空楼层测量缓存，后续以纯估算兜底，待用户滚动 / 打开悬浮
-        // 条重建时重新实测上报。
-        _itemHeights.clear();
-        _itemOffsets.clear();
-        return;
-      }
-      pos.jumpTo(pos.maxScrollExtent);
-      WidgetsBinding.instance.scheduleFrame();
-      _settleScrollToBottom(attempt + 1);
-    });
+  /// 跳底/动画滚动期间构建的子项会以「跳变过程中的滚动位置」上报偏移
+  /// （项序号与偏移错位，楼层检测会误判当前轮）：滚动落定后清空，
+  /// 后续以纯估算兜底，待用户滚动 / 打开悬浮条重建时重新实测上报。
+  void _resetItemMeasurementCache() {
+    _itemHeights.clear();
+    _itemOffsets.clear();
   }
 
   /// 监听用户主动滚动：上翻阅读历史时暂停自动跟随，回到底部附近后恢复；
   /// 同时维护「生成结束」红点——滚动回底部即清除。
   /// 悬浮条打开期间任何滚动（含流式自动跟随）都会刷新中间数字。
+  ///
+  /// 「底部」判据随 `reverse: true` 变为 `pixels <= minScrollExtent + 阈值`
+  /// （见 [_isNearBottom]）。
   bool _onChatScrollNotification(ScrollNotification notification) {
     if (_floorJumpOpen) {
       _scheduleFloorJumpDetect();
@@ -544,7 +577,7 @@ class _ChatScreenState extends State<ChatScreen>
       } else if (_scrollController.hasClients) {
         // 滚动停止（松手/惯性结束）后若已回到底部附近 → 恢复自动跟随、清除红点。
         final pos = _scrollController.position;
-        if (pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold) {
+        if (pos.pixels <= pos.minScrollExtent + _kAutoScrollThreshold) {
           _userScrolledAway = false;
           if (_newContentDot) {
             _newContentDot = false;
@@ -585,10 +618,12 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 是否已滚动到（或接近）底部（误差 [_kAutoScrollThreshold] 内视为底部）。
+  ///
+  /// 消息列 `reverse: true`：底部 = [ScrollPosition.minScrollExtent]。
   bool _isNearBottom() {
     if (!_scrollController.hasClients) return true;
     final pos = _scrollController.position;
-    return pos.pixels >= pos.maxScrollExtent - _kAutoScrollThreshold;
+    return pos.pixels <= pos.minScrollExtent + _kAutoScrollThreshold;
   }
 
   /// 生成期间若用户停在底部附近（未主动上翻阅读历史），帧末把消息列贴到底。
@@ -599,8 +634,11 @@ class _ChatScreenState extends State<ChatScreen>
   /// - 外壳重建（[_buildChatArea]）：改窗口宽度 / 侧栏宽度 / 输入面板高度等
   ///   重排场景（此前同样依赖重建触发）。
   ///
-  /// 仅在帧末执行 `jumpTo`（非动画），不会与用户手动滚动/动画滚动冲突；
-  /// [_autoFollowPending] 保证同一帧内多次触发只注册一次回调。
+  /// `reverse: true` 之后，**贴底（pixels == minScrollExtent）时内容增长本身
+  /// 就不再改变 pixels**（框架在坐标起点插入新子项，见 [_buildChatArea]），
+  /// 因此这里只剩「用户停在底部 80px 以内但没到底」这一种情况：帧末一次性
+  /// 拉回精确底部。仅在帧末执行 `jumpTo`（非动画），不会与用户手动滚动/动画
+  /// 滚动冲突；[_autoFollowPending] 保证同一帧内多次触发只注册一次回调。
   void _autoFollowIfNeeded() {
     // 切换版本后的下一帧：视图停在父，不自动贴底（一次性跳过）。
     if (_skipAutoFollowOnce) {
@@ -614,15 +652,17 @@ class _ChatScreenState extends State<ChatScreen>
     // 用户正在主动拖拽/惯性滚动，或已手动上翻阅读历史时，不强制拉回底部
     // （避免流式输出期间触屏滑动被 jumpTo 一直拽回底部）。
     if (pos.isScrollingNotifier.value || _userScrolledAway) return;
-    if (pos.pixels < pos.maxScrollExtent - _kAutoScrollThreshold) return;
+    if (pos.pixels > pos.minScrollExtent + _kAutoScrollThreshold) return;
+    // 已**精确**贴底：reverse 列表的新内容不会移动 pixels，无需跳转、也不必修帧。
+    if (pos.pixels <= pos.minScrollExtent + _kScrollToBottomEpsilon) return;
     _autoFollowPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _autoFollowPending = false;
       if (!mounted || !_scrollController.hasClients) return;
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      _scrollController.jumpTo(_scrollController.position.minScrollExtent);
     });
     // 该回调由「provider 通知」而非「重建」触发：显式请求一帧，避免通知未引起
-    // 任何重建时回调被搁置、_autoFollowPending 卡住（与 _settleScrollToBottom 同理）。
+    // 任何重建时回调被搁置、_autoFollowPending 卡住（与 [_scrollToBottom] 同理）。
     WidgetsBinding.instance.scheduleFrame();
   }
 
@@ -719,21 +759,38 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
+  /// 视口**顶边**在滚动坐标系中的位置。
+  ///
+  /// 消息列 `reverse: true`：`pixels` 是**视口底边**（offset 0 = 底部），
+  /// 因此视口顶边 = `pixels + viewportDimension`。楼层跳转的偏移模型（条目顶边
+  /// 在滚动坐标系中的位置）依赖此换算；若把列表改回正向，这里与
+  /// [_onItemMeasured]、[_detectFloorJumpCurrent]、[_estimateItemOffset]、
+  /// [_modeledItemOffset] 必须一起改回。
+  double _viewportTopOffset(ScrollMetrics pos) =>
+      pos.pixels + pos.viewportDimension;
+
   /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：
-  /// 记录该项起点在滚动坐标系中的偏移与高度，供检测/跳转使用。
-  /// 偏移由「上报时的视口局部 y + 当时滚动偏移」得到，滚动不变、离开视口后仍有效。
+  /// 记录该项**顶边**在滚动坐标系中的偏移与高度，供检测/跳转使用。
+  /// 上报的 `viewportTop` 是「相对视口的顶部偏移」（视口顶为 0），按上面的
+  /// 换算得到条目顶边的滚动偏移；滚动不变、离开视口后仍有效。
   void _onItemMeasured(int itemIndex, double viewportTop, double height) {
     _itemHeights[itemIndex] = height;
     if (_scrollController.hasClients) {
-      _itemOffsets[itemIndex] = _scrollController.position.pixels + viewportTop;
+      final pos = _scrollController.position;
+      _itemOffsets[itemIndex] = _viewportTopOffset(pos) - viewportTop;
     }
   }
 
   /// 检测当前屏幕中的轮次。
   ///
-  /// 当前轮 = 可视内容起始项所属的轮次（首个「底边仍在视口顶以下」的项，
-  /// 其顶部可能已在视口上方）——即用户正在阅读的轮次；atStart 表示该轮
+  /// 当前轮 = 可视内容起始项所属的轮次（视觉最上方那个「底边仍在视口顶以下」的
+  /// 项，其顶部可能已在视口上方）——即用户正在阅读的轮次；atStart 表示该轮
   /// 起点已与视口顶对齐。
+  ///
+  /// 偏移模型以「条目顶边在滚动坐标系中的位置」表达（见 [_onItemMeasured]）。
+  /// `reverse: true` 下滚动偏移随**逻辑序递减**（逻辑第 0 轮在最上方、偏移最大），
+  /// 故判据中的视口参考点取 [_viewportTopOffset]，可视项用「底边 = 顶边 − 高度」
+  /// 判断（正向列表为「顶边 + 高度」）。
   ///
   /// 使用「完整偏移模型」：已上报项用实测偏移，未上报项从最近已上报锚点
   /// 推算（见 [_modeledItemOffset]）——即使当前轮起点项从未被构建/上报
@@ -748,13 +805,14 @@ class _ChatScreenState extends State<ChatScreen>
     }
     final pos = _scrollController.position;
     final itemCount = chatRounds.length * 2;
+    final viewportTop = _viewportTopOffset(pos);
     double heightOf(int idx) => _itemHeights[idx] ?? _avgItemHeightFor(idx);
-    double offsetOf(int idx) => _modeledItemOffset(idx);
+    double offsetOf(int idx) => _modeledItemOffset(idx, itemCount);
 
-    // 可视内容起始项：首个「底边 > 视口顶」的项。
+    // 可视内容起始项：按逻辑序（= 视觉自上而下）首个「底边 < 视口顶」的项。
     int? firstIndex;
     for (var idx = 0; idx < itemCount; idx++) {
-      if (offsetOf(idx) + heightOf(idx) > pos.pixels) {
+      if (offsetOf(idx) - heightOf(idx) < viewportTop) {
         firstIndex = idx;
         break;
       }
@@ -770,33 +828,34 @@ class _ChatScreenState extends State<ChatScreen>
     final round = chatRounds[firstIndex ~/ 2];
     final offset = offsetOf(firstIndex);
     final atStart = firstIndex.isEven &&
-        (offset - pos.pixels).abs() <= _kFloorJumpAtStartEpsilon;
+        (offset - viewportTop).abs() <= _kFloorJumpAtStartEpsilon;
     _setFloorJumpCurrent((roundIndex: round.roundIndex, atStart: atStart));
   }
 
-  /// 计算指定列表项起点的滚动偏移（完整偏移模型）：
+  /// 计算指定列表项**顶边**的滚动偏移（完整偏移模型）：
   /// - 已上报项：直接返回实测偏移；
-  /// - 未上报项：从最近已上报锚点推算（优先向前找下方锚点，其次上方），
-  ///   间距用已测高度/分类型均值补齐——锚点近、链条短，误差小。
-  double _modeledItemOffset(int itemIndex) {
+  /// - 未上报项：从最近已上报锚点推算（逻辑序在前的锚点在视口上方、偏移更大；
+  ///   在后的锚点在视口下方、偏移更小），间距用已测高度/分类型均值补齐——
+  ///   锚点近、链条短，误差小。
+  double _modeledItemOffset(int itemIndex, int itemCount) {
     final reported = _itemOffsets[itemIndex];
     if (reported != null) return reported;
-    int? below; // 最近的已上报且 index < itemIndex
-    int? above; // 最近的已上报且 index > itemIndex
+    int? above; // 最近的已上报且 index < itemIndex（视觉上在**上方**）
+    int? below; // 最近的已上报且 index > itemIndex（视觉上在**下方**）
     for (final e in _itemOffsets.entries) {
       if (e.key < itemIndex) {
-        if (below == null || e.key > below) below = e.key;
+        if (above == null || e.key > above) above = e.key;
       } else if (e.key > itemIndex) {
-        if (above == null || e.key < above) above = e.key;
+        if (below == null || e.key < below) below = e.key;
       }
     }
-    if (below != null) {
-      return _itemOffsets[below]! + _estimateGap(below, itemIndex);
-    }
     if (above != null) {
-      return _itemOffsets[above]! - _estimateGap(itemIndex, above);
+      return _itemOffsets[above]! - _estimateGap(above, itemIndex);
     }
-    return _estimateItemOffset(itemIndex);
+    if (below != null) {
+      return _itemOffsets[below]! + _estimateGap(itemIndex, below);
+    }
+    return _estimateItemOffset(itemIndex, itemCount);
   }
 
   void _setFloorJumpCurrent(({int roundIndex, bool atStart})? value) {
@@ -868,15 +927,20 @@ class _ChatScreenState extends State<ChatScreen>
     return -1;
   }
 
-  /// 跳转到指定列表项：标记目标（唯一 GlobalKey 挂载到该项供精确对齐），
-  /// 先按估算偏移粗定位，再帧末校准到精确偏移。
+  /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）：
+  /// 标记目标（唯一 GlobalKey 挂载到该项供精确对齐），先按估算偏移粗定位，
+  /// 再帧末校准到精确偏移。
   void _jumpToItem(int itemIndex) {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     if (_floorJumpTargetIndex != itemIndex) {
       setState(() => _floorJumpTargetIndex = itemIndex);
     }
-    final estimate = _modeledItemOffset(itemIndex).clamp(0.0, pos.maxScrollExtent);
+    final itemCount = _chatRoundsNow().length * 2;
+    final estimate = _modeledItemOffset(
+      itemIndex,
+      itemCount,
+    ).clamp(pos.minScrollExtent, pos.maxScrollExtent);
     pos.jumpTo(estimate);
     _scheduleRefineJump(itemIndex, 0);
   }
@@ -902,8 +966,12 @@ class _ChatScreenState extends State<ChatScreen>
         : null;
     if (ro != null && ro.attached) {
       final vp = RenderAbstractViewport.of(ro);
-      final reveal = vp.getOffsetToReveal(ro, 0.0).offset;
-      final target = reveal.clamp(0.0, pos.maxScrollExtent);
+      // `alignment` 是「目标在视口里的相对位置」：0 = 目标前缘贴视口前缘、
+      // 1 = 目标后缘贴视口后缘。`reverse: true` 下视口的**前缘是底部**、
+      // 后缘才是顶部，因此「把条目顶边对齐视口顶」必须用 1.0
+      // （正向列表用 0.0；见 `rendering/viewport.dart:1166-1174, 1219`）。
+      final reveal = vp.getOffsetToReveal(ro, 1.0).offset;
+      final target = reveal.clamp(pos.minScrollExtent, pos.maxScrollExtent);
       pos
           .animateTo(
             target,
@@ -927,7 +995,13 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
     // 目标未构建：用完整偏移模型校正方向与距离。
-    pos.jumpTo(_modeledItemOffset(itemIndex).clamp(0.0, pos.maxScrollExtent));
+    final itemCount = _chatRoundsNow().length * 2;
+    pos.jumpTo(
+      _modeledItemOffset(
+        itemIndex,
+        itemCount,
+      ).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+    );
     _scheduleRefineJump(itemIndex, attempt + 1);
   }
 
@@ -940,14 +1014,15 @@ class _ChatScreenState extends State<ChatScreen>
     return sum;
   }
 
-  /// 估算指定列表项在滚动坐标系中的起点偏移：
-  /// 顶部 padding + 前序各项高度（已测用实测，未测用分类型均值）。
-  double _estimateItemOffset(int itemIndex) {
-    var sum = 24.0; // ListView 顶部 padding。
-    for (var i = 0; i < itemIndex; i++) {
+  /// 估算指定列表项**顶边**在滚动坐标系中的起点偏移：
+  /// 前导 padding（`reverse: true` 下贴底一侧的底部留白）+ 逻辑序在其**之后**
+  /// （视口下方）各项高度 + 自身高度（已测用实测，未测用分类型均值）。
+  double _estimateItemOffset(int itemIndex, int itemCount) {
+    var sum = _composerHeight + 8; // ListView 前导 padding（底部留白）。
+    for (var i = itemIndex + 1; i < itemCount; i++) {
       sum += _itemHeights[i] ?? _avgItemHeightFor(i);
     }
-    return sum;
+    return sum + (_itemHeights[itemIndex] ?? _avgItemHeightFor(itemIndex));
   }
 
   /// 分类型平均高度：偶数项（用户气泡）小、奇数项（AI 气泡）大，分开估算更准。
@@ -1466,6 +1541,9 @@ class _ChatScreenState extends State<ChatScreen>
   /// 把 [key] 对应控件放回切换前在视口中的纵向位置（按控件锚点补偿滚动，
   /// 而不是以总滚动偏移为准——否则「新代正文更长/更短」会让控件漂出视口）。
   ///
+  /// 补偿方向随列表方向反转：`reverse: true` 下滚动偏移**增大**内容**下移**，
+  /// 故 [step] 用 `pixels − delta` 抵消「控件下移」。
+  ///
   /// 懒加载列表的高度在随后几帧继续收敛（更长正文会逐帧撑开），故按本文件既有
   /// 的「帧末复查 + 补滚」模式逐帧校准，最多 [_kAnchorRefineMax] 帧。
   ///
@@ -1481,8 +1559,10 @@ class _ChatScreenState extends State<ChatScreen>
         final delta = afterTop - beforeTop;
         if (delta.abs() >= 0.5) {
           final position = _scrollController.position;
+          // reverse: true 下视觉坐标为 `y = viewportDimension + pixels − offset`：
+          // 滚动偏移增大内容**下移**，故取 `pixels − delta`（正向列表为 `+`）。
           _scrollController.jumpTo(
-            (position.pixels + delta).clamp(
+            (position.pixels - delta).clamp(
               position.minScrollExtent,
               position.maxScrollExtent,
             ),
@@ -2190,22 +2270,46 @@ class _ChatScreenState extends State<ChatScreen>
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
     // 左右留 20px 边距，避免内容在窄窗口下贴边（滚动条在最右，不计入边距）。
     // 外层监听用户主动滚动：上翻/滑动时暂停自动跟随，避免触屏滑动被拉回底部。
+    //
+    // **`reverse: true`（底部锚定）**：offset 0 即列表底部，新条目插在坐标起点，
+    // 贴底时由框架自动保持（`rendering/sliver_list.dart:173-195`、
+    // `widgets/sliver.dart:994-998`），因此「打开书籍自动到底部」「流式贴底跟随」
+    // 都不再需要脚本跳转（旧实现要 `jumpTo(懒加载估算的 maxScrollExtent)` 再逐帧
+    // 补滚，估算偏大时会先冲过头再回弹：L0 实测 45/80 帧越界、最大 390.7px）。
+    //
+    // 代价是**视图下标与逻辑序号相反**（视图 0 = 逻辑最后一项 = 视觉底部），
+    // 所以：① 条目必须带稳定 Key 并配 [findChildIndexCallback]——末尾追加新条目会
+    // 让所有已有条目的视图下标 +1，只有键能让框架把元素（连同 State）搬到新下标
+    // （缺回调时实测：6 个可见条目全部重建）；② 涉及「视觉位置」的换算
+    // （楼层跳转、代次切换补偿、自绘滚动条方向）都要按 reverse 取反，见各处注释。
+    final itemKeys = _chatItemKeys(
+      chatRounds: chatRounds,
+      showFailure: showFailure,
+      showPendingUser: showPendingUser,
+      showPending: showPending,
+    );
     final messagesList = NotificationListener<ScrollNotification>(
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
         controller: _scrollController,
+        reverse: true,
+        // reverse 下 `padding.bottom` 是**前导**（贴底一侧）留白、
+        // `padding.top` 是后置留白（见 `rendering/sliver_padding.dart:41-69`），
+        // 语义与改动前一致：底部留白避开伪悬浮输入面板。
         padding: EdgeInsets.fromLTRB(20, 24, 20, _composerHeight + 8),
-        itemCount:
-            chatRounds.length * 2 +
-            (showFailure ? 1 : 0) +
-            (showPending ? 1 : 0) +
-            (showPendingUser ? 1 : 0),
+        itemCount: itemKeys.length,
+        findChildIndexCallback: (key) => _viewIndexOfChatItem(itemKeys, key),
+        // 离底阅读期间保持阅读位置：视口下方条目长高时把增长量补回滚动偏移
+        // （见 [ReadingAnchor]；贴底时不补偿，保留「新内容顶上去」的语义）。
+        physics: _chatScrollPhysics,
         itemBuilder: (context, index) {
+          // reverse：视图下标 0 在视觉底部（最新条目）→ 逻辑序号需翻转。
+          final logicalIndex = itemKeys.length - 1 - index;
           Widget item;
           // 虚拟条目起点：历史轮次之后（失败条目 → 待定用户气泡 → 流式气泡）。
           final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
           // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
-          if (showFailure && index == chatRounds.length * 2) {
+          if (showFailure && logicalIndex == chatRounds.length * 2) {
             // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 未产出正文：
             // 说明状态改动已作废，与红色错误框语义不同）。
             final pendingIndex = shell.nextRoundIndex;
@@ -2238,7 +2342,7 @@ class _ChatScreenState extends State<ChatScreen>
                 ],
               ),
             );
-          } else if (showPendingUser && index == virtualBase) {
+          } else if (showPendingUser && logicalIndex == virtualBase) {
             // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -2249,7 +2353,7 @@ class _ChatScreenState extends State<ChatScreen>
               ),
             );
           } else if (showPending &&
-              index == virtualBase + (showPendingUser ? 1 : 0)) {
+              logicalIndex == virtualBase + (showPendingUser ? 1 : 0)) {
             // 生成中的气泡插槽：**自身**订阅流式字段，使每个增量只重建这一块
             // （见 [_StreamingSlot]）。
             item = _StreamingSlot(
@@ -2257,8 +2361,8 @@ class _ChatScreenState extends State<ChatScreen>
               roundIndex: shell.nextRoundIndex,
             );
           } else {
-            final round = chatRounds[index ~/ 2];
-            final isAi = index.isOdd;
+            final round = chatRounds[logicalIndex ~/ 2];
+            final isAi = logicalIndex.isOdd;
             if (!isAi) {
               item = Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -2319,16 +2423,25 @@ class _ChatScreenState extends State<ChatScreen>
           // 每条消息居中限宽（视觉约束），滚动区域仍为全屏。
           // 楼层跳转：包一层自上报部件（帧末回报该项位置/高度，不使用逐项
           // GlobalKey）；跳转目标项额外挂载唯一的 [_floorJumpTargetKey]。
+          // 条目 Key 落在 delegate 的**直接子项**上（`_FloorMeasuredItem`）：
+          // reverse 列表追加条目时框架按它把元素搬回新视图下标。
           return _FloorMeasuredItem(
-            itemIndex: index,
+            key: itemKeys[logicalIndex],
+            itemIndex: logicalIndex,
             onReport: _onItemMeasured,
             child: Center(
-              key: index == _floorJumpTargetIndex
+              key: logicalIndex == _floorJumpTargetIndex
                   ? _floorJumpTargetKey
                   : null,
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
-                child: item,
+                // 视口下方最近的条目 = 列表逻辑末尾（reverse 下即视觉底部）：
+                // 流式正文就长在这里，它的长高会推动可视内容（见 [ReadingAnchor]）。
+                child: ReadingAnchorItem(
+                  anchor: _readingAnchor,
+                  active: logicalIndex == itemKeys.length - 1,
+                  child: item,
+                ),
               ),
             ),
           );
@@ -3492,6 +3605,7 @@ class _FloorMeasuredItem extends StatefulWidget {
   final Widget child;
 
   const _FloorMeasuredItem({
+    super.key,
     required this.itemIndex,
     required this.onReport,
     required this.child,
