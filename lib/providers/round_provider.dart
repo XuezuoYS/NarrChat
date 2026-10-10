@@ -411,7 +411,10 @@ class RoundProvider extends ChangeNotifier {
   static String _rawGenerationKey(Round round) =>
       round.useStackUuid.isEmpty
           ? 'round:${round.bookUuid}:${round.roundIndex}'
-          : 'gen:${round.useStackUuid}';
+          : _rawGenerationKeyOf(round.useStackUuid);
+
+  /// 按代号取 RAW 键（单代删除时据此清理该代的内存时间线）。
+  static String _rawGenerationKeyOf(String useStackUuid) => 'gen:$useStackUuid';
 
   /// 失败条目的 RAW 时间线（无数据返回 null）。
   List<RawExchange>? get failedRawExchanges {
@@ -2483,6 +2486,47 @@ class RoundProvider extends ChangeNotifier {
     } catch (e) {
       _error = e.toString();
       notifyListeners();
+    }
+  }
+
+  /// 删除某轮**当前这一代**（用户端单代删除）：
+  /// 1. 物理删除该代**及其分支后代**（父代已删的子代不可达）；
+  /// 2. 该轮当前代自动回落到相邻存活代（**前一代优先**；第一代被删则回落后面一代）；
+  /// 3. 投影按回落代重建，后续轮次随父回来 / 随分支消失。
+  ///
+  /// 与 [deleteRound] 的区别：只动**一代**，其余代与序号原样保留（**不重排**），
+  /// 「最新第 y 代」仍是存活代中的最大序号（只有删掉最大号才变小）。
+  ///
+  /// 返回是否真的删除了：唯一一代（无回落目标）/ 正在生成 / 无当前代 → `false`
+  /// 且**不改动任何数据**（提示由调用方给出）。
+  Future<bool> deleteCurrentGeneration(Round round) async {
+    if (_bookUuid.isEmpty || isSending) return false;
+    final generationUuid = versionInfoFor(round.roundIndex)?.currentUuid;
+    if (generationUuid == null) return false;
+    try {
+      await _clearFailureForRoundOp();
+      final deleted = await _stack.deleteGeneration(
+        bookUuid: round.bookUuid,
+        roundIndex: round.roundIndex,
+        generationUuid: generationUuid,
+      );
+      if (!deleted) return false;
+      _bumpVersions();
+      // RAW 按代归属：被删代的记录随代消失（其余代的 RAW 不受影响）。
+      _rawByGeneration.remove(_rawGenerationKeyOf(generationUuid));
+      final gen = _gens[round.bookUuid];
+      if (gen != null) _dropRoundWarningsFrom(gen, round.roundIndex);
+      if (_bookUuid.isNotEmpty) {
+        await loadRounds(_bookUuid);
+      }
+      // 删除是内容部件的真实变更：与 [deleteRound] 一致触发一次自动同步。
+      _cloudSyncProvider?.triggerSync();
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
     }
   }
 

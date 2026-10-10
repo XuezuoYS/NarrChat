@@ -10,7 +10,8 @@ import 'helpers/fakes.dart';
 ///
 /// 覆盖：失败态严格按 v18（OP-7）、同步版本索引（UI-1 的取数口径）、
 /// 切换编排（切换后不滚不生成、清黄框 / 失败态；**RAW 按代保留、不随切换清**）、
-/// 采纳入口、失败条目重试下沉、RAW 的「代」归属（换书才清）。
+/// 采纳入口、失败条目重试下沉、RAW 的「代」归属（换书才清；删除代随代清）、
+/// 单代删除的编排（走服务删除 + 重载 + 版本计数；拒绝时不改动）。
 void main() {
   const book = Book(uuid: 'b1', title: '测试书');
 
@@ -322,5 +323,88 @@ void main() {
       isNull,
       reason: '换书即整体清空（RAW 为本机内存数据）',
     );
+  });
+
+  test('删除此代：删当前代走服务删除 + 自增版本 + 重载；被删代的 RAW 随之清理', () async {
+    final env = build();
+    await env.provider.loadRounds('b1');
+    await env.provider.sendRound(userInput: '第一章', book: book);
+    final anchorA = env.provider.rounds.last.useStackUuid;
+    expect(
+      env.provider.rawExchangesFor(env.provider.rounds.last.id!),
+      isNotNull,
+      reason: '夹具：本代有 RAW',
+    );
+
+    // 同分组补一代（模拟「按意见修改」留下的旧代），再把投影切回第 1 代。
+    await env.stack.attachNewGeneration(
+      bookUuid: 'b1',
+      round: Round(
+        bookUuid: 'b1',
+        roundIndex: 1,
+        aiNarrative: '另一代正文',
+        createdAt: DateTime.now(),
+      ),
+      fatherUuid: null,
+    );
+    await env.provider.loadRounds('b1');
+    env.stack.onSwitch = (bookUuid, roundIndex, targetUuid) {
+      final index = env.dao.rounds.indexWhere((r) => r.roundIndex == roundIndex);
+      env.dao.rounds[index] =
+          env.dao.rounds[index].copyWith(useStackUuid: targetUuid);
+    };
+    expect(
+      await env.provider.switchRoundVersion(1, forward: false),
+      isTrue,
+      reason: '夹具：存在可回落的上一代',
+    );
+    var round = env.provider.rounds.last;
+    expect(round.useStackUuid, anchorA);
+    expect(env.provider.rawExchangesFor(round.id!), isNotNull);
+    final before = env.provider.versionsRevision;
+
+    expect(await env.provider.deleteCurrentGeneration(round), isTrue);
+
+    expect(env.stack.generationDeletes, hasLength(1));
+    expect(env.stack.generationDeletes.single.roundIndex, 1);
+    expect(env.stack.generationDeletes.single.generationUuid, anchorA);
+    expect(env.provider.versionsRevision, greaterThan(before));
+    round = env.provider.rounds.last;
+    expect(
+      env.provider.rawExchangesFor(round.id!),
+      isNull,
+      reason: '被删代的 RAW 随代清理（其余代的 RAW 不受影响）',
+    );
+  });
+
+  test('删除此代：服务拒绝（唯一一代等）→ 返回 false，不重载、不累计版本', () async {
+    final env = build();
+    await env.provider.loadRounds('b1');
+    await env.provider.sendRound(userInput: '第一章', book: book);
+    final round = env.provider.rounds.last;
+    // 真库的「唯一一代拒绝删除」见 round_stack_service_test.dart 的 OP-13c。
+    env.stack.deleteGenerationResult = false;
+
+    final before = env.provider.versionsRevision;
+    expect(await env.provider.deleteCurrentGeneration(round), isFalse);
+    expect(env.provider.versionsRevision, before, reason: '没删成 → 不累计版本');
+    expect(env.provider.rounds.last.useStackUuid, round.useStackUuid);
+  });
+
+  test('删除此代：无当前代（失败态 / 未采纳）→ 不触碰服务', () async {
+    final env = build();
+    await env.provider.loadRounds('b1');
+    await env.provider.sendRound(userInput: '第一章', book: book);
+    // 影射「投影行不存在」：没有当前代就没有可删的一代。
+    await env.dao.deleteRound(env.provider.rounds.last.id!);
+    await env.provider.loadRounds('b1');
+
+    expect(
+      await env.provider.deleteCurrentGeneration(
+        const Round(bookUuid: 'b1', roundIndex: 1),
+      ),
+      isFalse,
+    );
+    expect(env.stack.generationDeletes, isEmpty);
   });
 }

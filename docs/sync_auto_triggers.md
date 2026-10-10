@@ -90,6 +90,7 @@ WebDAV）下，仅下列节点会请求同步（kind 见括号）：
 | 打开书籍设置 | `BookSettingsScreen.initState` 首帧回调 | both | 静默同步：编辑前先拉取最新书籍设置 |
 | 生成结束（成功 / 失败 / 中断） | `RoundProvider.sendRound` finally | both | 轮次落库后触发；轮次可能带图，图片补跑一起排 |
 | 删除轮次（本轮 / 本轮及之后） | `RoundProvider.deleteRound` | both | 轮次（含量部件）物理删除后触发，避免被远端当作 remoteOnly 推回 |
+| 删除代（单代删除） | `RoundProvider.deleteCurrentGeneration` | both | 版本树 + 投影同事务变更（属轮次部件），与删除轮次同一口径触发 |
 | 书籍设置修改保存 | `BookProvider.createBook` / `updateBook` | both | 书籍设置、世界书、Mod 配置保存后 |
 | 世界书条目增/改/删 | `WorldBookProvider.addEntry` / `updateEntry` / `removeEntry` | both | 世界书属书籍设置部件，修改即触发 |
 | Mod 修改保存 | `ModProvider.addMod` / `updateMod` / `deleteMod` / `saveBookModConfigs` | both | Mod 新增 / 编辑 / 删除 / 书籍挂载保存后 |
@@ -105,6 +106,7 @@ WebDAV）下，仅下列节点会请求同步（kind 见括号）：
   切换版本（`switchRoundVersion`）**不**触发同步——采纳的调用方（同步完成 /
   导入 db / 启动指纹）本身已是上表节点，自身再触发会与正在跑的同步自激；
   切换只改投影锚点（内容权威未变），由随后任一次节点触发带走。
+  （「删除代」不是派生收敛：它是真实内容删除 + 投影重建，故照上表触发。）
 - **回前台节流**：`resumeSyncThrottle = 2 分钟`。每次 `triggerSync()`（含手动
   `sync()`）都会记录 `lastSyncRequestAt`；resumed 时距该时刻不足 2 分钟直接跳过
   （被跳过的触发不改写基准）。Android 切后台返回、Windows 从最小化恢复、

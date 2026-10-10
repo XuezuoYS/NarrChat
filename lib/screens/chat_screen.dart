@@ -1642,6 +1642,46 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  /// 「删除此代」：删掉本轮**当前这一代**（及其分支后代），并自动切换到相邻存活代
+  /// （优先前一代；第一代被删则切换后面一代）。序号不重排，「最新第 y 代」取存活
+  /// 最大号，左右箭头按有无相邻代置灰——这是删除后的主要 UI 反馈。
+  ///
+  /// 入口只在 ≥2 存活代时出现（见 [_canDeleteGeneration]）；此处仍做守卫——菜单
+  /// 开着的期间版本树可能已变化（或在途生成），此时按「不可操作」给出悬浮提示，
+  /// **不做任何删除**（含「特殊手段触发」的路径）。
+  Future<void> _handleDeleteGeneration(Round round) async {
+    final rp = context.read<RoundProvider>();
+    final info = rp.versionInfoFor(round.roundIndex);
+    if (info == null || info.currentUuid == null) return;
+    if (info.aliveCount < 2) {
+      context.notices.warning('唯一代不可删除，请删除此轮。');
+      return;
+    }
+    if (rp.isSending) {
+      context.notices.warning('正在生成中，暂不可删除此代。');
+      return;
+    }
+    final confirmed = await showDeleteGenerationConfirmDialog(
+      context,
+      roundIndex: round.roundIndex,
+      currentSerial: info.currentSerial ?? info.latestSerial,
+      fallbackSerial: info.prevSerial ?? info.nextSerial ?? info.latestSerial,
+      remaining: info.aliveCount - 1,
+    );
+    if (!confirmed || !mounted) return;
+    // 与切换代次同一套「视图停在控件」补偿：删除后正文长度变化不让控件漂走。
+    final anchorKey = _stepperKeyFor(round.roundIndex);
+    final beforeTop = _globalTopOf(anchorKey);
+    _skipAutoFollowOnce = true;
+    final deleted = await rp.deleteCurrentGeneration(round);
+    if (!mounted) return;
+    if (!deleted) {
+      context.notices.warning('删除失败，请稍后重试');
+      return;
+    }
+    _keepAnchorInPlace(anchorKey, beforeTop);
+  }
+
   /// 长按 / 右键气泡触发的上下文菜单。
   void _onBubbleContextMenu(Round round, bool isAi, Offset position) {
     final items = _buildMenuItems(round, isAi);
@@ -1679,6 +1719,8 @@ class _ChatScreenState extends State<ChatScreen>
           _onViewSidebar(round);
         case 'raw':
           _showRawDialog(round);
+        case 'deleteGen':
+          _handleDeleteGeneration(round);
         case 'delete':
           _handleDelete(round);
       }
@@ -1733,6 +1775,15 @@ class _ChatScreenState extends State<ChatScreen>
           value: 'raw',
           child: AppMenuAction(icon: Icons.raw_on, label: 'RAW'),
         ),
+        if (_canDeleteGeneration(round))
+          const PopupMenuItem(
+            value: 'deleteGen',
+            child: AppMenuAction(
+              icon: Icons.layers_clear_outlined,
+              label: '删除此代',
+              color: Color(0xFFE5484D),
+            ),
+          ),
         const PopupMenuItem(
           value: 'delete',
           child: AppMenuAction(
@@ -1743,6 +1794,16 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       ],
     ];
+  }
+
+  /// 是否给出「删除此代」入口：本轮**当前代**在库，且还有可回落的相邻存活代。
+  ///
+  /// 唯一一代不显示（没有可切换目标，语义等同「删除本轮」，用既有入口）；这与
+  /// 「入口不按数据显隐」的历史教训不冲突——RAW 那种「有数据就该有入口」的语义
+  /// 在这里不成立，单代删除物理上没有落点。
+  bool _canDeleteGeneration(Round round) {
+    final info = context.read<RoundProvider>().versionInfoFor(round.roundIndex);
+    return info != null && info.currentUuid != null && info.aliveCount >= 2;
   }
 
   /// 复制气泡内容到剪贴板。

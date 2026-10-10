@@ -639,4 +639,183 @@ void main() {
       ['leaf'],
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // OP-13 单代删除（用户端「删除此代」）
+  // ---------------------------------------------------------------------------
+
+  /// 预置：第 1 轮 3 代（gen1 序号 1 / gen2 序号 2 / gen3 序号 3，gen3 为当前代）。
+  Future<({String root, String gen1, String gen2, String gen3})> seedThreeGens() async {
+    await bootstrap();
+    final root = (await roundAt(0)).useStackUuid;
+    final gen1 = (await roundAt(1)).useStackUuid;
+    await service.attachNewGeneration(
+      bookUuid: bookUuid,
+      round: newRound(1, narrative: '第 2 代正文'),
+      fatherUuid: root,
+    );
+    final gen2 = (await roundAt(1)).useStackUuid;
+    await service.attachNewGeneration(
+      bookUuid: bookUuid,
+      round: newRound(1, narrative: '第 3 代正文'),
+      fatherUuid: root,
+    );
+    final gen3 = (await roundAt(1)).useStackUuid;
+    return (root: root, gen1: gen1, gen2: gen2, gen3: gen3);
+  }
+
+  test('OP-13 单代删除：删中间代 → 回落前一代，序号不重排、最新号不变，分支后代一并删除', () async {
+    final seed = await seedThreeGens();
+    // 第 2 轮有两条分支：A 挂在第 1 代下、B 挂在第 2 代下（当前显示 B）。
+    await service.attachNewGeneration(
+      bookUuid: bookUuid,
+      round: newRound(2, narrative: '第 2 轮 A 分支'),
+      fatherUuid: seed.gen1,
+    );
+    await service.attachNewGeneration(
+      bookUuid: bookUuid,
+      round: newRound(2, narrative: '第 2 轮 B 分支'),
+      fatherUuid: seed.gen2,
+    );
+    expect((await roundAt(2)).aiNarrative, '第 2 轮 B 分支', reason: '夹具：当前显示 B 分支');
+
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: seed.gen2,
+      ),
+      isTrue,
+    );
+
+    expect(await stackDao.getByUuid(seed.gen2), isNull, reason: '被删代物理删除');
+    expect(
+      (await stack()).map((r) => r.uuid).toSet(),
+      {seed.root, seed.gen1, seed.gen3, (await roundAt(2)).useStackUuid},
+      reason: '其余代保留；以被删代为父的第 2 轮 B 分支随之一并删除',
+    );
+    final group = await stackDao.loadGroup(bookUuid, 1, seed.root);
+    expect(group.map((m) => m.roundSerialNum), [1, 3], reason: '序号不重排（仍是 1、3）');
+    expect(group.last.roundSerialNum, 3, reason: '最新号仍是 3（未被删）');
+    expect(group.where((m) => m.isUse).map((m) => m.uuid), [seed.gen1]);
+
+    final first = await roundAt(1);
+    expect(first.useStackUuid, seed.gen1, reason: '自动回落到前一代');
+    expect(first.aiNarrative, '正文1', reason: '投影内容随回落代');
+    expect(
+      (await roundAt(2)).aiNarrative,
+      '第 2 轮 A 分支',
+      reason: '第 2 轮随回落代（第 1 代）的分支回来',
+    );
+    expect((await projection()).map((r) => r.roundIndex), [0, 1, 2]);
+    await expectChainInvariant();
+  });
+
+  test('OP-13b 单代删除：删第一代（无前一代）→ 回落后面一代，最大号不变', () async {
+    final seed = await seedThreeGens();
+
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: seed.gen1,
+      ),
+      isTrue,
+    );
+
+    expect((await roundAt(1)).useStackUuid, seed.gen2, reason: '第一代删除 → 回落后面一代');
+    expect((await roundAt(1)).aiNarrative, '第 2 代正文');
+    final group = await stackDao.loadGroup(bookUuid, 1, seed.root);
+    expect(group.map((m) => m.roundSerialNum), [2, 3]);
+    expect(group.last.roundSerialNum, 3, reason: '删的不是最大号 → 最新号不变');
+    expect(group.where((m) => m.isUse).map((m) => m.uuid), [seed.gen2]);
+    await expectChainInvariant();
+  });
+
+  test('OP-13c 单代删除：删最大号 → 回落前一代且最新号变小；唯一一代拒绝删除', () async {
+    final seed = await seedThreeGens();
+
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: seed.gen3,
+      ),
+      isTrue,
+    );
+    expect((await roundAt(1)).useStackUuid, seed.gen2, reason: '删最大号 → 回落前一代');
+    expect(
+      (await stackDao.loadGroup(bookUuid, 1, seed.root))
+          .map((m) => m.roundSerialNum),
+      [1, 2],
+      reason: '删掉最大号后「最新第 y 代」随之变小',
+    );
+
+    // 再删一代 → 只剩唯一一代。
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: seed.gen2,
+      ),
+      isTrue,
+    );
+    expect((await roundAt(1)).useStackUuid, seed.gen1);
+    expect(
+      (await stackDao.loadGroup(bookUuid, 1, seed.root))
+          .map((m) => m.roundSerialNum),
+      [1],
+    );
+
+    // 唯一一代：拒绝删除（一行不动、投影不动）。
+    final before = await projection();
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: seed.gen1,
+      ),
+      isFalse,
+      reason: '没有可回落的相邻代 → 无可删除',
+    );
+    expect(await stackDao.getByUuid(seed.gen1), isNotNull);
+    final after = await projection();
+    expect(after.map((r) => r.id), before.map((r) => r.id), reason: '投影行一行不动');
+    expect(after.map((r) => r.useStackUuid), before.map((r) => r.useStackUuid));
+
+    // 代号不存在 / 轮号不匹配 → false（不改动任何数据）。
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: 'nope',
+      ),
+      isFalse,
+    );
+    expect(
+      await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 2,
+        generationUuid: seed.gen1,
+      ),
+      isFalse,
+    );
+    await expectChainInvariant();
+  });
+
+  test('OP-13d 纯函数 fallbackSerialFor：前一代优先，无前一代取后一代，唯一 / 空 → null', () {
+    expect(RoundStackService.fallbackSerialFor([1, 2, 3], 2), 1);
+    expect(
+      RoundStackService.fallbackSerialFor([1, 3], 3),
+      1,
+      reason: '序号可跳步，取「更小的最大者」',
+    );
+    expect(
+      RoundStackService.fallbackSerialFor([2, 3], 2),
+      3,
+      reason: '没有更小者 → 取「更大的最小者」',
+    );
+    expect(RoundStackService.fallbackSerialFor([1], 1), isNull);
+    expect(RoundStackService.fallbackSerialFor(const [], 4), isNull);
+  });
 }

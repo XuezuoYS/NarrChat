@@ -276,6 +276,93 @@ class RoundStackService {
   // 写：删除
   // ---------------------------------------------------------------------------
 
+  /// 单代删除的**回落代**序号：优先「前一代」（比 [targetSerial] 小的最大序号），
+  /// 没有更小者才取「后一代」（比它大的最小序号）；两者都没有（唯一一代）→ `null`。
+  ///
+  /// 纯函数（UI 文案与库内落点同一口径：等价于 `RoundVersionInfo` 的
+  /// `prevSerial ?? nextSerial`）。
+  static int? fallbackSerialFor(Iterable<int> serials, int targetSerial) {
+    int? prev;
+    int? next;
+    for (final serial in serials) {
+      if (serial < targetSerial && (prev == null || serial > prev)) {
+        prev = serial;
+      } else if (serial > targetSerial && (next == null || serial < next)) {
+        next = serial;
+      }
+    }
+    return prev ?? next;
+  }
+
+  /// 删除「当前这一代」（用户端单代删除）：物理删除该代**及其后代子树**，
+  /// 并把该轮当前代回落到相邻存活代（优先前一代；第一代被删则回落后面一代）。
+  ///
+  /// - **不重排序号**：同分组其余代的 `round_serial_num` 原样保留，故「最新第 y 代」
+  ///   （= 存活代最大序号）只在删掉最大号时才变小；
+  /// - 与 [switchTo] 同一分支语义：投影按回落代重建，后续轮次随父回来 / 随分支消失；
+  /// - 唯一一代（没有回落目标）→ **不做任何改动**并返回 `false`。
+  Future<bool> deleteGeneration({
+    required String bookUuid,
+    required int roundIndex,
+    required String generationUuid,
+  }) async {
+    if (bookUuid.isEmpty || generationUuid.isEmpty) return false;
+    return _inTxn((txn) async {
+      final target = await RoundStackDao.getByUuidFrom(txn, generationUuid);
+      if (target == null ||
+          target.bookUuid != bookUuid ||
+          target.roundIndex != roundIndex) {
+        return false;
+      }
+      // 该分组先自愈（多 use / 重复序号）：避免在脏分组上挑回落代。
+      await _normalizeGroupInTxn(txn, bookUuid, roundIndex, target.fatherUuid);
+      final rows = await RoundStackDao.loadByBookFrom(txn, bookUuid);
+      final anchor = rows.where((r) => r.uuid == generationUuid).firstOrNull;
+      if (anchor == null) return false;
+      // 后代子树（含自身）：父代被物理删除 → 子代不可达 → 一并删除。
+      // 根守卫：`father_uuid` 为空的行不是任何代的后代，不受影响。
+      final doomed = subtreeUuids(anchor, childRows(rows));
+      bool sameGroup(RoundStackRow row) =>
+          row.roundIndex == anchor.roundIndex &&
+          row.fatherUuid == anchor.fatherUuid;
+      final fallbackSerial = fallbackSerialFor(
+        [
+          for (final row in rows)
+            if (sameGroup(row) && !doomed.contains(row.uuid))
+              row.roundSerialNum,
+        ],
+        anchor.roundSerialNum,
+      );
+      if (fallbackSerial == null) return false;
+      final fallback = rows.firstWhere(
+        (row) =>
+            sameGroup(row) &&
+            !doomed.contains(row.uuid) &&
+            row.roundSerialNum == fallbackSerial,
+      );
+      await _stack.deleteByUuids(txn, doomed);
+      await _stack.setGroupUseState(
+        txn,
+        setUse: [fallback.uuid],
+        clearUse: [
+          for (final row in rows)
+            if (sameGroup(row) && row.isUse && row.uuid != fallback.uuid)
+              row.uuid,
+        ],
+      );
+      final fresh = await RoundStackDao.loadByBookFrom(txn, bookUuid);
+      final chain = planChain(anchor: fallback, byGroup: groupRows(fresh));
+      await _rounds.replaceProjectionFrom(
+        txn,
+        bookUuid,
+        roundIndex,
+        [for (final row in chain) row.toRound()],
+      );
+      await DatabaseHelper.touchBook(txn, bookUuid, rounds: true);
+      return true;
+    });
+  }
+
   /// 用户删除轮次。
   ///
   /// - [deleteFollowing] = true：删该轮及之后（投影 + **跨分支全部代**）；

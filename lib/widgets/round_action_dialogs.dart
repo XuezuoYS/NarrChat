@@ -40,6 +40,45 @@ Future<DeleteRoundChoice?> showDeleteRoundDialog(
   );
 }
 
+/// 「删除此代」确认对话框（单代删除）。
+///
+/// 体验与「删除本轮」一致：同一个气泡扩展菜单入口 + 二次确认。
+/// 文案如实交代落点（自动切换到第几代 / 本轮剩余几代）与代价
+/// （以该代为基础生成的后续轮次内容一并移除且无法恢复）。
+Future<bool> showDeleteGenerationConfirmDialog(
+  BuildContext context, {
+  required int roundIndex,
+  required int currentSerial,
+  required int fallbackSerial,
+  required int remaining,
+}) async {
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('删除此代'),
+      content: Text(
+        '将删除第 $roundIndex 轮的第 $currentSerial 代，'
+        '并自动切换到第 $fallbackSerial 代（本轮剩余 $remaining 代）。\n'
+        '以该代为基础生成的后续轮次内容会一并移除，且无法恢复。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(ctx).colorScheme.error,
+          ),
+          child: const Text('删除'),
+        ),
+      ],
+    ),
+  );
+  return result ?? false;
+}
+
 /// 「刷新本轮」二次确认对话框（**唯一入口的确认框**）。
 ///
 /// 「刷新本轮」= 删除该轮起的投影行，再以该轮的用户输入重新请求 AI（新增一代，

@@ -479,6 +479,37 @@ class FakeRoundStackService extends RoundStackService {
     );
   }
 
+  /// 单代删除记录（bookUuid, roundIndex, generationUuid）。
+  final List<({String bookUuid, int roundIndex, String generationUuid})>
+      generationDeletes = [];
+
+  /// 单代删除的返回值（false = 模拟「唯一一代 / 失败」）。
+  bool deleteGenerationResult = true;
+
+  /// 删除钩子：可在删除「落地」时改写注入的 [RoundDao]（模拟真实服务
+  /// 「删这一代 + 投影按回落代重建」的结果），与 [onSwitch] 同一套路。
+  void Function(String bookUuid, int roundIndex, String generationUuid)?
+      onDeleteGeneration;
+
+  @override
+  Future<bool> deleteGeneration({
+    required String bookUuid,
+    required int roundIndex,
+    required String generationUuid,
+  }) async {
+    generationDeletes.add((
+      bookUuid: bookUuid,
+      roundIndex: roundIndex,
+      generationUuid: generationUuid,
+    ));
+    if (!deleteGenerationResult) return false;
+    // 该代退出索引与内存版本树（真实服务里「最新号 / 存活代数」随之更新）。
+    metas.removeWhere((meta) => meta.uuid == generationUuid);
+    _rowsFor(bookUuid).removeWhere((row) => row.uuid == generationUuid);
+    onDeleteGeneration?.call(bookUuid, roundIndex, generationUuid);
+    return true;
+  }
+
   @override
   Future<RoundStackAdoptionReport?> adoptIfNeeded(
     String bookUuid, {
