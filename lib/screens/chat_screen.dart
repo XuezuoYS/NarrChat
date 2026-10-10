@@ -51,6 +51,7 @@ import '../widgets/round_action_dialogs.dart';
 import '../widgets/round_version_stepper.dart';
 import '../widgets/sidebar_panel.dart';
 import '../widgets/sidebar_resize_divider.dart';
+import '../widgets/streaming_markdown.dart';
 import '../widgets/text_field_context_menu.dart';
 import 'book_settings_screen.dart';
 import 'settings_screen.dart';
@@ -4644,9 +4645,16 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     return blocks;
   }
 
+  /// 生成中的正文：按块增量渲染（见 [StreamingMarkdown]）。
+  ///
+  /// 流式期间正文每帧都在增长，整段重解析 + 重排的成本随正文长度线性上升
+  /// （实测 8000 字时单次增量约 10ms）。已封闭的段落在此被冻结复用，
+  /// 每帧只重排尾部残块；末尾光标经 [StreamingMarkdown.trailing] 附着，
+  /// 不参与块切分。
   Widget _narrativeText(BuildContext context, String content) {
-    return MarkdownPreview(
-      data: '$content▍',
+    return StreamingMarkdown(
+      data: content,
+      trailing: '▍',
       base: TextStyle(
         fontSize: 15,
         height: 1.65,

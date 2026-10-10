@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
+import 'package:narrchat/widgets/streaming_markdown.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -62,6 +65,63 @@ void main() {
       isTrue,
       reason: '侧栏不应随流式增量重建',
     );
+
+    expect(await finishStream(tester, ai, provider, sendFuture), isTrue);
+  });
+
+  testWidgets('流式正文按块增量渲染：已封闭段落不随增量重建', (tester) async {
+    final ai = FakeStreamingAiService();
+    final provider = await pumpChatScreen(tester, ai: ai, seedRounds: 1);
+
+    final sendFuture = provider.sendRound(userInput: '继续剧情', book: book);
+    await tester.pump();
+    // 第一段写完（出现空行）→ 冻结；随后只有尾部残块增长。
+    ai.emit('第一段。\n\n');
+    await tester.pump();
+    ai.emit('第二段开头');
+    await tester.pump();
+
+    List<MarkdownPreview> streamingPreviews() =>
+        tester
+            .widgetList<MarkdownPreview>(
+              find.descendant(
+                of: find.byType(StreamingMarkdown),
+                matching: find.byType(MarkdownPreview),
+              ),
+            )
+            .toList();
+    List<MarkdownBody> streamingBodies() => tester
+        .widgetList<MarkdownBody>(
+          find.descendant(
+            of: find.byType(StreamingMarkdown),
+            matching: find.byType(MarkdownBody),
+          ),
+        )
+        .toList();
+
+    final previewsBefore = streamingPreviews();
+    expect(previewsBefore.length, 2, reason: '已冻结段落 + 尾部残块各一个');
+    expect(previewsBefore.first.data, '第一段。\n\n');
+    final frozenBodyBefore = streamingBodies().first;
+
+    // 尾部残块写完后升级为冻结块。
+    ai.emit('，写完了。\n\n');
+    await tester.pump();
+
+    final previewsAfter = streamingPreviews();
+    expect(previewsAfter.length, 3, reason: '两个已冻结段落 + 尾部光标块');
+    expect(
+      identical(previewsAfter.first, previewsBefore.first),
+      isTrue,
+      reason: '已封闭段落必须复用同一 widget 实例（否则每个增量都会重解析重排）',
+    );
+    expect(
+      identical(streamingBodies().first, frozenBodyBefore),
+      isTrue,
+      reason: '已封闭段落的 MarkdownBody 实例不变 ⇒ 未重新解析',
+    );
+    expect(find.textContaining('第一段。'), findsOneWidget);
+    expect(find.textContaining('第二段开头，写完了。'), findsOneWidget);
 
     expect(await finishStream(tester, ai, provider, sendFuture), isTrue);
   });

@@ -164,6 +164,13 @@ class GitHubMarkdownStyle {
   /// 一致；单独渲染列表项（如推荐行动选项行）时按此宽度对齐符号列。
   static const double listBulletWidth = listIndent + listBulletRightPadding;
 
+  /// 块与块之间的垂直间距（`MarkdownBody` 内部相邻块的间距）。
+  ///
+  /// 把一段 Markdown 拆成多个 `MarkdownBody` 渲染时（见
+  /// `StreamingMarkdown` 的按块增量渲染），块间隔由调用方按本值补出，
+  /// 观感才与整体解析一致。
+  static const double blockSpacing = 12;
+
   /// 依据当前主题亮度返回 GitHub 风格的样式表。
   ///
   /// [base] 为正文基样式（默认主题 `bodyMedium`）；h1/h2 底部边框线由
@@ -250,7 +257,7 @@ class GitHubMarkdownStyle {
           left: BorderSide(width: 3, color: git.divider),
         ),
       ),
-      blockSpacing: 12,
+      blockSpacing: blockSpacing,
       listIndent: listIndent,
       listBullet: p.copyWith(color: colors.textSecondary),
       listBulletPadding: listBulletPadding,
