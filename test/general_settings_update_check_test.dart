@@ -65,16 +65,19 @@ void main() {
     );
   }
 
-  /// 打开「通用设置」面板（检查更新开关位于其「其它设置」子分区），
-  /// 并让 initState 中的真实配置读取完成。
-  Future<void> openGeneralSettings(WidgetTester tester) async {
+  /// pump 设置页并落定（预扫描系统字体，避免字体扫描真实 IO 挂起）。
+  Future<void> pumpSettings(WidgetTester tester) async {
     // 预扫描系统字体：字体扫描是真实 IO，在 fake zone 中永不完成，
     // 会让 UiSettingsForm 一直显示转圈动画，导致 pumpAndSettle 超时。
     await tester.runAsync(() => SystemFontsService.instance.scan());
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
-    await tester.tap(find.text('通用设置'));
-    await tester.pumpAndSettle();
+  }
+
+  /// 打开「通用设置」面板（设置页首页即是；检查更新开关位于其
+  /// 「其它设置」子分区），并让 initState 中的真实配置读取完成。
+  Future<void> openGeneralSettings(WidgetTester tester) async {
+    await pumpSettings(tester);
     await flushConfig(tester);
   }
 
@@ -119,9 +122,17 @@ void main() {
     expect(config![UpdateCheckFlow.keyUpdateCheckEnabled], isTrue);
   });
 
+  testWidgets('设置页首页即「通用设置」（无需切换面板）', (tester) async {
+    await openGeneralSettings(tester);
+
+    // 默认落在通用面板：其「其它设置」子分区的开关直接可见，无需任何点按。
+    expect(find.byKey(const ValueKey('other_update_check_switch')), findsOneWidget);
+    // 左侧导航第一项也是「通用设置」（导航项 + 面板标题共两处同名文本）。
+    expect(find.text('通用设置'), findsNWidgets(2));
+  });
+
   testWidgets('「关于」面板不再显示检查更新开关（已迁移）', (tester) async {
-    await tester.pumpWidget(buildSettings());
-    await tester.pumpAndSettle();
+    await pumpSettings(tester);
     await tester.tap(find.text('关于'));
     await tester.pumpAndSettle();
 

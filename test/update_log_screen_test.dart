@@ -31,6 +31,8 @@ void main() {
       // 2) 换树为设置页：关于面板入口可打开更新日志页。
       // ⚠️ 同一测试内完成（rootBundle 缓存同一已完成 Future），避免跨测试
       // 加载同一资源键时 Future 挂起导致 pumpAndSettle 超时。
+      // 直达「关于」面板（设置页首页为通用设置，依赖更多 Provider；
+      // 用 initialIndex 跳过首页挂载，保持脚手架最小）。
       await tester.pumpWidget(
         ChangeNotifierProvider(
           create: (_) => AiSettingsProvider(),
@@ -38,15 +40,13 @@ void main() {
             create: (_) => CloudSyncProvider(),
             child: MaterialApp(
               theme: NarrChatTheme.light,
-              home: const SettingsScreen(),
+              home: const SettingsScreen(
+                initialIndex: SettingsScreen.pageIndexAbout,
+              ),
             ),
           ),
         ),
       );
-      await tester.pumpAndSettle();
-
-      // 切到「关于」标签。
-      await tester.tap(find.text('关于'));
       await tester.pumpAndSettle();
 
       expect(find.text('更新日志'), findsOneWidget);

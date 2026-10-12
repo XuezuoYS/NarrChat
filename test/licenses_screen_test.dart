@@ -95,6 +95,8 @@ void main() {
         yield const LicenseEntryWithLineBreaks(['demo'], 'MIT License');
       });
 
+      // 直达「关于」面板（设置页首页为通用设置，依赖更多 Provider；
+      // 本用例仅需 API / 云同步两个，故用 initialIndex 跳过首页挂载）。
       await tester.pumpWidget(
         ChangeNotifierProvider(
           create: (_) => AiSettingsProvider(),
@@ -102,15 +104,13 @@ void main() {
             create: (_) => CloudSyncProvider(),
             child: MaterialApp(
               theme: NarrChatTheme.light,
-              home: const SettingsScreen(),
+              home: const SettingsScreen(
+                initialIndex: SettingsScreen.pageIndexAbout,
+              ),
             ),
           ),
         ),
       );
-      await tester.pumpAndSettle();
-
-      // 切到「关于」标签。
-      await tester.tap(find.text('关于'));
       await tester.pumpAndSettle();
 
       expect(find.text('开放源代码许可'), findsOneWidget);

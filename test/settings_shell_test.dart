@@ -13,7 +13,8 @@ Widget _buildPage(BuildContext context, int index) => Text('面板 $index');
 ///
 /// 重点：
 /// - 宽屏（≥760）：左侧竖向导航切换，无 PageView；内容区**靠左**（限宽 860）
-///   且滚动视图铺满内容区（滚动条贴内容区右缘）；
+///   且滚动视图铺满内容区（滚动条贴内容区右缘）；`centered` 面板豁免靠左骨架，
+///   改为限宽 400 水平居中（纵向仍从顶部排布）；
 /// - 宽屏内容溢出（出现滚动条）前后内容位置一致，不发生时靠左/时居中的跳变；
 /// - 窄屏：顶部横向标签 + 内容区 PageView，左右滑动 / 点击标签均可切换子页面，
 ///   标签高亮与显示内容保持同步；宽窄布局切换时显示页与选中项一致。
@@ -25,7 +26,11 @@ void main() {
     SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
   ];
 
-  Widget buildShell({Widget Function(BuildContext context, int index)? page}) {
+  Widget buildShell({
+    List<SettingsNavItem>? items,
+    Widget Function(BuildContext context, int index)? page,
+    int initialIndex = 0,
+  }) {
     return MaterialApp(
       theme: NarrChatTheme.light,
       // 桌面平台由自绘滚动条接管纵向滚动视图（内容溢出即出现滚动条）。
@@ -33,7 +38,8 @@ void main() {
       home: SettingsShell(
         title: '设置',
         icon: Icons.settings,
-        navItems: navItems,
+        navItems: items ?? navItems,
+        initialIndex: initialIndex,
         contentBuilder: page ?? _buildPage,
       ),
     );
@@ -42,12 +48,16 @@ void main() {
   Future<void> pumpShell(
     WidgetTester tester, {
     Size size = const Size(500, 800),
+    List<SettingsNavItem>? items,
     Widget Function(BuildContext context, int index)? page,
+    int initialIndex = 0,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(buildShell(page: page));
+    await tester.pumpWidget(
+      buildShell(items: items, page: page, initialIndex: initialIndex),
+    );
     await tester.pumpAndSettle();
   }
 
@@ -132,6 +142,65 @@ void main() {
 
     debugDefaultTargetPlatformOverride = null;
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('宽屏：centered 面板豁免靠左骨架 —— 水平居中且限宽 400', (tester) async {
+    const items = [
+      SettingsNavItem(icon: Icons.tune_outlined, label: '通用设置'),
+      SettingsNavItem(icon: Icons.info_outline, label: '关于', centered: true),
+    ];
+    double? contentMaxWidth;
+    await pumpShell(
+      tester,
+      size: const Size(1400, 800),
+      items: items,
+      initialIndex: 1,
+      page: (context, i) => LayoutBuilder(
+        builder: (context, constraints) {
+          contentMaxWidth = constraints.maxWidth;
+          return SizedBox(
+            key: const ValueKey('panel_box'),
+            width: double.infinity,
+            height: 200,
+            child: Text('面板 $i'),
+          );
+        },
+      ),
+    );
+
+    // 内容列限宽 400（而非靠左面板的 860）。
+    expect(contentMaxWidth, 400);
+    final panel = tester.getRect(find.byKey(const ValueKey('panel_box')));
+    final scroll = tester.getRect(find.byType(SingleChildScrollView));
+    // 水平居中于内容区（滚动视图即内容区）。
+    expect(panel.center.dx, closeTo(scroll.center.dx, 0.5));
+    // 纵向从顶部排布（不做垂直居中）：顶边落在滚动区顶部 + 24 内边距处。
+    expect(panel.top, closeTo(scroll.top + 24, 0.5));
+  });
+
+  testWidgets('宽屏：centered 面板内容超一屏时照常滚动，仍水平居中', (tester) async {
+    const items = [
+      SettingsNavItem(icon: Icons.info_outline, label: '关于', centered: true),
+      SettingsNavItem(icon: Icons.tune_outlined, label: '通用设置'),
+    ];
+    await pumpShell(
+      tester,
+      size: const Size(1400, 800),
+      items: items,
+      page: (context, i) => SizedBox(
+        key: const ValueKey('panel_box'),
+        width: double.infinity,
+        height: 2000,
+        child: Text('面板 $i'),
+      ),
+    );
+
+    final panel = tester.getRect(find.byKey(const ValueKey('panel_box')));
+    final scroll = tester.getRect(find.byType(SingleChildScrollView));
+    // 超一屏：仍从顶部开始滚动（首屏顶边 = 滚动区顶部 + 内边距）。
+    expect(panel.top, closeTo(scroll.top + 24, 0.5));
+    // 水平仍居中于内容区。
+    expect(panel.center.dx, closeTo(scroll.center.dx, 0.5));
   });
 
   testWidgets('宽屏：内容溢出出现滚动条前后，内容左边界不变（不再跳变）', (tester) async {

@@ -8,23 +8,26 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
 void main() {
-  Widget buildSettings() {
-    return ChangeNotifierProvider(
-      create: (_) => AiSettingsProvider(),
-      child: ChangeNotifierProvider(
-        create: (_) => CloudSyncProvider(),
-        child: MaterialApp(
-          theme: NarrChatTheme.light,
-          home: const SettingsScreen(),
+  /// 直接以「关于」面板为初始页打开设置页。
+  ///
+  /// 设置页首页已是「通用设置」（依赖 UI / 实验性设置 Provider 与系统字体
+  /// 扫描），本用例只测版本号连点，故用 [SettingsScreen.pageIndexAbout]
+  /// 直达关于面板，保持脚手架最小（仅需 API / 云同步两个 Provider）。
+  Future<void> openAbout(WidgetTester tester) async {
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => AiSettingsProvider(),
+        child: ChangeNotifierProvider(
+          create: (_) => CloudSyncProvider(),
+          child: MaterialApp(
+            theme: NarrChatTheme.light,
+            home: const SettingsScreen(
+              initialIndex: SettingsScreen.pageIndexAbout,
+            ),
+          ),
         ),
       ),
     );
-  }
-
-  Future<void> openAbout(WidgetTester tester) async {
-    await tester.pumpWidget(buildSettings());
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('关于'));
     await tester.pumpAndSettle();
   }
 

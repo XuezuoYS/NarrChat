@@ -5,18 +5,39 @@ import '../theme/app_theme.dart';
 import 'island_bar.dart';
 import 'narr_chat_app_bar.dart';
 
+/// 内容区滚动容器的四边内边距。
+const double _contentPadding = 24;
+
+/// 靠左面板的内容限宽。
+const double _maxStartWidth = 860;
+
+/// 居中面板（[SettingsNavItem.centered]）的内容限宽。
+const double _maxCenteredWidth = 400;
+
 /// 设置页导航项。
 class SettingsNavItem {
   final IconData icon;
   final String label;
 
-  const SettingsNavItem({required this.icon, required this.label});
+  /// 内容区是否**豁免靠左骨架**、改为在内容区内水平居中（默认 false，即靠左）。
+  ///
+  /// 供「关于」这类信息型短面板使用：其卡片式内容不撑满 860 的内容列，
+  /// 水平居中排布比挂在左侧空白区更协调；纵向仍从顶部排布，不做垂直居中
+  /// （布局约定见 [SettingsShell] 顶部说明）。
+  final bool centered;
+
+  const SettingsNavItem({
+    required this.icon,
+    required this.label,
+    this.centered = false,
+  });
 }
 
 /// 全窗口设置页通用外壳：
 /// - 顶栏：品牌图标 + 标题 + 自定义操作（如统一「保存」）+ 关闭按钮；
-/// - 宽屏（≥760）：左侧竖向导航 + 右侧内容区（内容**靠左**、限宽 860；有左侧
-///   导航栏的页面靠左，无左侧导航栏的页面保持居中）；
+/// - 宽屏（≥760）：左侧竖向导航 + 右侧内容区（内容**靠左**、限宽 860）；
+///   标记 [SettingsNavItem.centered] 的面板（如「关于」）豁免靠左骨架，
+///   在内容区内水平居中、限宽 400（纵向从顶部排布）；
 /// - 窄屏：顶部横向标签 + 内容区 PageView（左右滑动切换子页面）。
 class SettingsShell extends StatefulWidget {
   final String title;
@@ -193,21 +214,25 @@ class _SettingsShellState extends State<SettingsShell> {
     // 避免区内 SwitchListTile/ListTile 的墨迹与选中背景被 ColoredBox 遮挡而触发
     // 「ListTile background color or ink splashes may be invisible」断言。
     //
-    // 布局约定（宽屏有左侧导航栏 → 内容**靠左**，与导航栏同属一个左对齐骨架；
-    // 无左侧导航栏的页面仍居中）：
+    // 布局约定（宽屏有左侧导航栏 → 内容**靠左**，与导航栏同属一个左对齐骨架）：
     // - 滚动视图自身铺满整个内容区（高度/宽度均取满），滚动条因此贴内容区右缘
     //   而不是内容列右缘；
     // - 限宽 860 的内容列在滚动视图内靠左排布（[Align] 必须放在滚动视图**内部**：
     //   放在外层时滚动视图在 loose 约束下收缩包裹，内容列宽度会写成内容自身的
-    //   固有宽度）。
+    //   固有宽度）；
+    // - [SettingsNavItem.centered] 的面板（如「关于」）豁免靠左骨架：内容列
+    //   限宽 400 并在内容区内**水平居中**，纵向仍从顶部排布（不做垂直居中）。
+    final centered = widget.navItems[index].centered;
     return Material(
       color: context.narrColors.surface,
       child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(_contentPadding),
         child: Align(
-          alignment: Alignment.topLeft,
+          alignment: centered ? Alignment.topCenter : Alignment.topLeft,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 860),
+            constraints: BoxConstraints(
+              maxWidth: centered ? _maxCenteredWidth : _maxStartWidth,
+            ),
             child: widget.contentBuilder(context, index),
           ),
         ),

@@ -181,7 +181,10 @@ class _BookListScreenState extends State<BookListScreen> {
               const Spacer(),
               // 云同步状态章：点击进入设置 → 云同步面板。
               SyncStatusChip(
-                onTap: () => SettingsScreen.open(context, initialIndex: 3),
+                onTap: () => SettingsScreen.open(
+                  context,
+                  initialIndex: SettingsScreen.pageIndexCloudSync,
+                ),
               ),
               const SizedBox(width: 8),
               Text(
