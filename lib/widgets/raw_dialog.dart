@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph, RenderProxyBox;
 import 'package:flutter/services.dart';
 
 import '../models/raw_exchange.dart';
@@ -216,9 +217,130 @@ List<TextSpan> highlightSpans(
   return spans;
 }
 
+/// 把 [text] 按硬换行切成若干段，每段至多 [budget] 字符（末段与超长单行除外）。
+///
+/// 切点一律落在 `\n` **之后**，各段拼回原样逐字相同 —— 跨段选中复制才不出错。
+/// 纯函数，便于测试。
+List<String> splitAtNewlines(String text, int budget) {
+  assert(budget > 0);
+  final pieces = <String>[];
+  var start = 0;
+  while (start < text.length) {
+    if (start + budget >= text.length) {
+      pieces.add(text.substring(start));
+      break;
+    }
+    // 优先在预算内收尾于换行；一行超长（无换行可用）就一路吃到下一个换行。
+    final prev = text.lastIndexOf('\n', start + budget);
+    int end;
+    if (prev >= start) {
+      end = prev + 1;
+    } else {
+      final next = text.indexOf('\n', start + budget);
+      end = next < 0 ? text.length : next + 1;
+    }
+    if (end <= start) end = start + 1; // 兜底：绝不出空段
+    pieces.add(text.substring(start, end));
+    start = end;
+  }
+  return pieces;
+}
+
+/// 一个展示块的派生结果：处理完毕的展示文本 + 该块折叠掉的图片。
+///
+/// 展示文本要先折叠 base64 图片、再按开关转义，两步都是对整块的一次全量扫描，
+/// 故只在 [_RawDialogState._blocks] 里算一次，之后渲染 / 检索只读结果。
+class _RawBlock {
+  const _RawBlock({
+    required this.text,
+    required this.mono,
+    this.images = const [],
+  });
+
+  /// 展示文本（已折叠图片、已按「转译换行符」处理）。
+  final String text;
+
+  /// 是否用等宽字体（请求体与增量帧是 JSON）。
+  final bool mono;
+
+  /// 本块被折叠掉的 base64 图片（只有请求体块可能非空）。
+  final List<RawImageData> images;
+}
+
+/// 派生快照所依赖的「AI 返回侧」字段值副本。
+///
+/// `RawExchange` 的这四个字段要等请求返回后才回填，而快照手里就是**同一个对象**，
+/// 拿 `snap.exchanges[i].content` 去比 `widget.exchanges[i].content` 等于自己比
+/// 自己、永远相等。所以派生时把值取出来存一份，之后比的是这份副本。
+class _RawReturnFields {
+  const _RawReturnFields({
+    required this.thinking,
+    required this.toolCalls,
+    required this.content,
+    required this.error,
+  });
+
+  final String thinking;
+  final String toolCalls;
+  final String content;
+  final String error;
+
+  /// 从交换当前值抄一份。
+  factory _RawReturnFields.of(RawExchange ex) => _RawReturnFields(
+    thinking: ex.thinking,
+    toolCalls: ex.toolCalls,
+    content: ex.content,
+    error: ex.error,
+  );
+
+  /// 四个字段是否与 [ex] 的当前值完全一致。
+  bool matches(RawExchange ex) =>
+      thinking == ex.thinking &&
+      toolCalls == ex.toolCalls &&
+      content == ex.content &&
+      error == ex.error;
+}
+
+/// 一次派生好的全部展示块快照，连同算它时用到的输入。
+///
+/// 输入任一项变化（换开关 / 某条交换的回填字段 / 预览模式 / 帧列表）都必须重建，
+/// 否则会把旧文本当成新内容展示。
+class _RawBlockSnapshot {
+  const _RawBlockSnapshot({
+    required this.escapeNewlines,
+    required this.previewRequestOnly,
+    required this.failedError,
+    required this.exchanges,
+    required this.returns,
+    required this.frames,
+    required this.blocks,
+  });
+
+  /// 派生时的「转译换行符」开关。
+  final bool escapeNewlines;
+
+  /// 派生时的预览请求体模式。
+  final bool previewRequestOnly;
+
+  /// 派生时的失败原因（决定无返回块写什么）。
+  final String? failedError;
+
+  /// 派生时的交换列表（只比对象身份：`requestBody` 构造后不再变）。
+  final List<RawExchange> exchanges;
+
+  /// 与 [exchanges] 一一对应的返回侧字段值副本。
+  final List<_RawReturnFields> returns;
+
+  /// 派生时的「后续可用帧」列表（非预览模式恒为空）。
+  final List<PlannedFrame> frames;
+
+  /// 按文档顺序排列的块，下标即全局块序号。
+  final List<_RawBlock> blocks;
+}
+
 /// 检索命中（跨块全局匹配列表的一项）。
 class _RawMatch {
-  /// 所属块（全局块序号，见 [_RawDialogState._forEachBlock]）。
+  /// 所属块（全局块序号，见 [_RawDialogState._blocks]）。
   final int blockIndex;
 
   /// 块内局部命中序号。
@@ -246,8 +368,10 @@ const double _kScrollTopPadding = 40;
 ///   `narrchat_webSearch` / `narrchat_edit*` 等全部工具）/ 正文块，
 ///   缺失显示「（无）」；
 /// - 每个块（请求体与三块）均可折叠，**默认折叠**（长内容不撑满对话框）；
-/// - 顶部提供关键词检索（高亮 + 计数）与「转译换行符」开关
-///   （默认开启，把 `\n` 等转义序列展开为真实换行，便于阅读）；
+/// - 顶部提供关键词检索与「转译换行符」开关（默认开启，把 `\n` 等转义序列
+///   展开为真实换行，便于阅读）。检索**手动触发**（点「搜索」或按回车）：
+///   每块标题给出本块命中数「· N 处」，全部命中都可按「上一处 / 下一处」循环
+///   定位，但一次只展开当前定位的那一块（命中很密时同时展开全部命中块会冻屏）；
 /// - [previewRequestOnly] 为真时进入「预览请求体」模式：只展示请求体块，
 ///   不渲染【AI返回】区（标题相应改为「预览请求体」）；
 /// - [subsequentFrames] 非空时，在请求体之后追加「后续可用帧」区（仅预览模式）：
@@ -289,8 +413,30 @@ class _RawDialogState extends State<RawDialog> {
   /// 当前定位的匹配在 [_matches] 中的下标（-1 = 无）。
   int _currentMatch = -1;
 
-  /// 已展开的块（全局块序号）。
+  /// 每块命中数（下标对齐 [_blocks] 的块序号；未检索时为空）。
+  List<int> _blockCounts = const [];
+
+  /// 是否有一次检索已排队、还没执行完（用于「搜索中」提示）。
+  bool _searching = false;
+
+  /// 展示块快照：把「折叠图片 + 转义」的全量扫描结果缓存下来复用。
+  _RawBlockSnapshot? _snapshot;
+
+  /// 手点标题展开的块（全局块序号）。
   final Set<int> _expandedBlocks = <int>{};
+
+  /// 检索 / 定位当前展开的那一块（全局块序号；-1 = 无）。
+  ///
+  /// 与手点展开分开记：命中很多块时**一次全部展开**要在同一帧里排完所有命中块
+  /// 的高亮文字，实测 20 万字符 / 1.25 万处就要 10 s 以上（爆点是普通段与高亮段
+  /// 交替产生的样式切换数，不是字数也不是命中数），手机上就是点完搜索冻死。
+  /// 所以检索只展开当前定位的一块，其余命中块靠标题上的「· N 处」提示，
+  /// 点标题或按「上一处 / 下一处」走过去时才展开——每帧只排一块。
+  int _searchBlock = -1;
+
+  /// 块是否展开：手点点开的，或检索正定位到的。
+  bool _isBlockExpanded(int blockIndex) =>
+      _expandedBlocks.contains(blockIndex) || blockIndex == _searchBlock;
 
   /// 时间线滚动控制与视口锚点。
   final ScrollController _scrollController = ScrollController();
@@ -302,16 +448,96 @@ class _RawDialogState extends State<RawDialog> {
   /// 按「转译换行符」开关转译后的展示文本（开启 = 展开转义序列）。
   String _display(String text) => _escapeNewlines ? expandEscapes(text) : text;
 
-  /// 请求体展示文本：先按开关转译，再把长图片 data URL 折叠为短占位符，
-  /// 避免 base64 撑满对话框（图片详情收进二级扩展菜单）。
-  String _requestDisplay(RawExchange ex) {
-    final text = _display(ex.requestBody);
-    return collapseRawImages(text, extractRawImages(text));
+  /// 当前输入下的全部展示块：快照仍有效时零扫描，否则重建一次。
+  ///
+  /// 大 RAW 下单个请求体可达数 MB，「折叠图片」「转义」「检索」每遍都是对整块
+  /// 的全量扫描；以前每次 build、每次按键、每个块都要重扫好几遍，这正是手机端
+  /// 打开 RAW / 搜索时明显卡顿的来源。
+  List<_RawBlock> _blocks() {
+    final cached = _snapshot;
+    if (cached != null && _isSnapshotUsable(cached)) return cached.blocks;
+    final built = _buildSnapshot();
+    _snapshot = built;
+    return built.blocks;
   }
 
-  /// 请求体文本中引用的图片 data URL 列表（用于二级扩展菜单）。
-  List<RawImageData> _requestImages(RawExchange ex) =>
-      extractRawImages(_display(ex.requestBody));
+  /// 生效的「后续可用帧」列表（非预览模式恒为空）。
+  List<PlannedFrame> get _plannedFrames => widget.previewRequestOnly
+      ? widget.subsequentFrames
+      : const <PlannedFrame>[];
+
+  /// 快照的派生输入是否仍然有效。
+  ///
+  /// 交换的 `requestBody` 构造后不再变（比对象身份即可），但思考 / 工具调用 /
+  /// 正文 / 错误是**请求返回后才回填**的，要比派生时抄下的值副本
+  /// （见 [_RawReturnFields]）。
+  bool _isSnapshotUsable(_RawBlockSnapshot snap) {
+    if (snap.escapeNewlines != _escapeNewlines ||
+        snap.previewRequestOnly != widget.previewRequestOnly ||
+        snap.failedError != widget.failedError) {
+      return false;
+    }
+    final exchanges = widget.exchanges;
+    if (snap.exchanges.length != exchanges.length) return false;
+    for (var i = 0; i < exchanges.length; i++) {
+      if (!identical(snap.exchanges[i], exchanges[i])) return false;
+      if (!snap.returns[i].matches(exchanges[i])) return false;
+    }
+    final frames = _plannedFrames;
+    if (snap.frames.length != frames.length) return false;
+    for (var i = 0; i < frames.length; i++) {
+      if (!identical(snap.frames[i], frames[i])) return false;
+    }
+    return true;
+  }
+
+  /// 走一遍全部交换，算出每个块的展示文本（每块的折叠与转义各只做一次）。
+  _RawBlockSnapshot _buildSnapshot() {
+    final frames = _plannedFrames;
+    final blocks = <_RawBlock>[];
+    final returns = <_RawReturnFields>[];
+    for (final ex in widget.exchanges) {
+      // 先抄一份返回侧的值：这次派生认的是这份副本。
+      returns.add(_RawReturnFields.of(ex));
+      // 请求体：先在原文上定位并折叠 base64，再转义（顺序可互换：base64 区间
+      // 与折叠占位符里都不含 `\n` 这类反斜杠转义，两遍结果逐字一致）。
+      final images = extractRawImages(ex.requestBody);
+      blocks.add(
+        _RawBlock(
+          text: _display(collapseRawImages(ex.requestBody, images)),
+          mono: true,
+          images: images,
+        ),
+      );
+      // 预览请求体模式不渲染 AI 返回区，序号也不为它占位。
+      if (widget.previewRequestOnly) continue;
+      if (_hasReturn(ex)) {
+        blocks.add(_RawBlock(text: _display(ex.thinking), mono: false));
+        blocks.add(_RawBlock(text: _display(ex.toolCalls), mono: false));
+        blocks.add(_RawBlock(text: _display(ex.content), mono: false));
+      } else {
+        // 无返回：把失败原因（若有）也纳入检索与定位。
+        blocks.add(_RawBlock(text: _noReturnText(ex), mono: false));
+      }
+    }
+    for (final frame in frames) {
+      // diffJson 是每次取值都重新编码的 getter，这里只取一次。
+      blocks.add(_RawBlock(text: frame.diffJson, mono: true));
+    }
+    return _RawBlockSnapshot(
+      escapeNewlines: _escapeNewlines,
+      previewRequestOnly: widget.previewRequestOnly,
+      failedError: widget.failedError,
+      exchanges: List.of(widget.exchanges),
+      returns: returns,
+      frames: List.of(frames),
+      blocks: blocks,
+    );
+  }
+
+  /// 块内命中数（未检索或越界时为 0）。
+  int _countOf(int blockIndex) =>
+      blockIndex < _blockCounts.length ? _blockCounts[blockIndex] : 0;
 
   @override
   void dispose() {
@@ -322,32 +548,19 @@ class _RawDialogState extends State<RawDialog> {
 
   /// 是否有返回内容（任一区块非空）。
   bool _hasReturn(RawExchange ex) =>
-      ex.thinking.isNotEmpty || ex.toolCalls.isNotEmpty || ex.content.isNotEmpty;
+      ex.thinking.isNotEmpty ||
+      ex.toolCalls.isNotEmpty ||
+      ex.content.isNotEmpty;
 
-  /// 按文档顺序遍历全部块（请求体 + 思考/搜索/正文，预览模式再追加后续可用帧），
-  /// 回调传入全局块序号、展示文本与是否等宽。
+  /// 第 [blockIndex] 个块（越界返回 null）。
   ///
-  /// 序号必须与 [_buildTimeline] 的渲染一一对应（检索定位按序号取 GlobalKey）。
-  void _forEachBlock(void Function(int blockIndex, String text, bool mono) fn) {
-    var blockIndex = 0;
-    for (final ex in widget.exchanges) {
-      fn(blockIndex++, _requestDisplay(ex), true);
-      // 预览请求体模式不渲染 AI 返回区，序号也不为它占位。
-      if (widget.previewRequestOnly) continue;
-      if (_hasReturn(ex)) {
-        fn(blockIndex++, _display(ex.thinking), false);
-        fn(blockIndex++, _display(ex.toolCalls), false);
-        fn(blockIndex++, _display(ex.content), false);
-      } else {
-        // 无返回：把失败原因（若有）纳入检索与定位。
-        fn(blockIndex++, _noReturnText(ex), false);
-      }
-    }
-    for (final frame in widget.previewRequestOnly
-        ? widget.subsequentFrames
-        : const <PlannedFrame>[]) {
-      fn(blockIndex++, frame.diffJson, true);
-    }
+  /// 块序号由 [_buildSnapshot] 的顺序定义，与 [_buildTimeline] 的渲染一一对应
+  /// （检索定位按序号取 GlobalKey）。
+  _RawBlock? _blockAt(int blockIndex) {
+    final blocks = _blocks();
+    return blockIndex >= 0 && blockIndex < blocks.length
+        ? blocks[blockIndex]
+        : null;
   }
 
   /// 无返回时的说明行：优先展示**本次请求的失败原因**（协议兼容降级前的探测
@@ -360,32 +573,91 @@ class _RawDialogState extends State<RawDialog> {
     return widget.failedError == null ? '（无 AI 返回内容）' : '请求失败，无 AI 返回';
   }
 
-  /// 计算全部匹配（按文档顺序、大小写不敏感）。
-  List<_RawMatch> _computeMatches() {
-    if (_query.isEmpty) return const [];
-    final q = _query.toLowerCase();
+  /// 计算全部匹配（按文档顺序、大小写不敏感），并记下每块命中数。
+  ///
+  /// 这是对全部块的一次全量扫描，只由「搜索」按钮 / 回车触发（见 [_runSearch]）。
+  void _applySearch() {
+    if (!mounted) return;
+    final query = _searchController.text;
+    final blocks = _blocks();
     final matches = <_RawMatch>[];
-    _forEachBlock((blockIndex, text, _) {
-      if (text.isEmpty) return;
-      final lower = text.toLowerCase();
-      var start = 0;
-      var localIndex = 0;
-      while (true) {
-        final idx = lower.indexOf(q, start);
-        if (idx < 0) break;
-        matches.add(
-          _RawMatch(
-            blockIndex: blockIndex,
-            localIndex: localIndex,
-            start: idx,
-            end: idx + q.length,
-          ),
-        );
-        localIndex++;
-        start = idx + q.length;
+    final counts = List<int>.filled(blocks.length, 0);
+    if (query.isNotEmpty) {
+      final q = query.toLowerCase();
+      for (var bi = 0; bi < blocks.length; bi++) {
+        final text = blocks[bi].text;
+        if (text.isEmpty) continue;
+        final lower = text.toLowerCase();
+        var start = 0;
+        var localIndex = 0;
+        while (true) {
+          final idx = lower.indexOf(q, start);
+          if (idx < 0) break;
+          matches.add(
+            _RawMatch(
+              blockIndex: bi,
+              localIndex: localIndex,
+              start: idx,
+              end: idx + q.length,
+            ),
+          );
+          localIndex++;
+          counts[bi] = localIndex;
+          start = idx + q.length;
+        }
+      }
+    }
+    setState(() {
+      _query = query;
+      _matches = matches;
+      _blockCounts = counts;
+      _currentMatch = matches.isEmpty ? -1 : 0;
+      _searching = false;
+      if (query.isEmpty) {
+        // 清空搜索 → 恢复默认全部折叠。
+        _expandedBlocks.clear();
+        _searchBlock = -1;
+      } else {
+        // 只展开第一处所在的块（其余命中块看标题上的「· N 处」）。
+        _searchBlock = matches.isEmpty ? -1 : matches.first.blockIndex;
       }
     });
-    return matches;
+    if (matches.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToBlockOffset(_matches.first);
+      });
+    }
+  }
+
+  /// 「搜索」按钮 / 回车：只对输入框里当前的词执行一次检索。
+  ///
+  /// 常见词要扫完全部块（大 RAW 下上百毫秒），所以先排一帧画出「搜索中」，
+  /// 再在帧回调里扫描 —— 同步扫会让点下去像没反应。
+  void _runSearch() {
+    if (_searching) return;
+    setState(() => _searching = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applySearch());
+  }
+
+  /// 清空搜索词并复位（不触发检索）。
+  void _clearSearch() {
+    _searchController.clear();
+    setState(() {
+      _query = '';
+      _matches = const [];
+      _blockCounts = const [];
+      _currentMatch = -1;
+      _searching = false;
+      _expandedBlocks.clear();
+      _searchBlock = -1;
+    });
+  }
+
+  /// 转译换行符开关变化：展示文本变了，已算出的命中位置需重算。
+  void _setEscapeNewlines(bool value) {
+    if (value == _escapeNewlines) return;
+    setState(() => _escapeNewlines = value);
+    if (_query.isNotEmpty) _runSearch();
   }
 
   /// 块内「当前定位」命中的局部序号（-1 = 无）。
@@ -395,51 +667,16 @@ class _RawDialogState extends State<RawDialog> {
     return m.blockIndex == blockIndex ? m.localIndex : -1;
   }
 
-  /// 搜索词变化：重算匹配、自动展开含匹配的块、定位到第一处。
-  void _onQueryChanged(String value) {
-    setState(() {
-      _query = value;
-      _matches = _computeMatches();
-      _currentMatch = _matches.isEmpty ? -1 : 0;
-      if (_query.isEmpty) {
-        // 清空搜索 → 恢复默认全部折叠。
-        _expandedBlocks.clear();
-      } else {
-        // 浏览器 Ctrl+F 式：自动展开含匹配的块，便于浏览全部命中。
-        for (final m in _matches) {
-          _expandedBlocks.add(m.blockIndex);
-        }
-      }
-    });
-    if (_matches.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBlockOffset(_matches.first);
-      });
-    }
-  }
-
-  /// 转译换行符开关变化：转译后文本变化，需重算匹配与定位。
-  void _setEscapeNewlines(bool value) {
-    setState(() {
-      _escapeNewlines = value;
-      _matches = _computeMatches();
-      _currentMatch = _matches.isEmpty ? -1 : 0;
-    });
-    if (_matches.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBlockOffset(_matches.first);
-      });
-    }
-  }
-
-  /// 定位到指定匹配（循环取模；自动展开所属块并平滑滚动）。
+  /// 定位到指定匹配（循环取模；把「检索展开的那一块」移到目标块并平滑滚动）。
   void _goToMatch(int newIndex) {
     if (_matches.isEmpty) return;
     final count = _matches.length;
     final idx = ((newIndex % count) + count) % count;
     setState(() {
       _currentMatch = idx;
-      _expandedBlocks.add(_matches[idx].blockIndex);
+      // 只跟着当前定位展开一块：上一块随着本槽位移走自动收回，
+      // 手点点开的块（[_expandedBlocks]）不受影响。
+      _searchBlock = _matches[idx].blockIndex;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBlockOffset(_matches[idx]);
@@ -453,48 +690,87 @@ class _RawDialogState extends State<RawDialog> {
         _expandedBlocks.add(blockIndex);
       } else {
         _expandedBlocks.remove(blockIndex);
+        // 折叠正在定位的块：连检索那份展开一起收掉，否则点了折叠没反应。
+        if (_searchBlock == blockIndex) _searchBlock = -1;
       }
     });
   }
 
-  /// 把 [match] 所在块（已展开）平滑滚动到匹配行：
-  /// 用同款样式的 TextPainter 按字符偏移估算行位置，再换算滚动目标。
+  /// 收集块内容里所有真正排版文字的 [RenderParagraph]，顺序与 [_HighlightText] 的
+  /// 分段一致。
+  ///
+  /// 块的 GlobalKey 挂在 `_HighlightText` 上，`findRenderObject()` 只停在链首的
+  /// `RenderSemanticsAnnotations`，必须顺子节点往下走才能到达各段文字。
+  List<RenderParagraph> _paragraphsOf(BuildContext? context) {
+    final node = context?.findRenderObject();
+    if (node == null) return const [];
+    final found = <RenderParagraph>[];
+    void visit(RenderObject child) {
+      if (child is RenderParagraph) {
+        found.add(child);
+        return;
+      }
+      child.visitChildren(visit);
+    }
+
+    node.visitChildren(visit);
+    return found;
+  }
+
+  /// 整段 span 树的字符总数（用来判断命中落在哪一段）。
+  int _spanCharCount(InlineSpan span) {
+    if (span is! TextSpan) return 0; // WidgetSpan 之类不占文字偏移
+    var count = span.text?.length ?? 0;
+    for (final child in span.children ?? const <InlineSpan>[]) {
+      count += _spanCharCount(child);
+    }
+    return count;
+  }
+
+  /// 全文第 [offset] 个字符所在的那一段，以及它在该段内的偏移。
+  ({RenderParagraph paragraph, int offset})? _segmentAt(
+    List<RenderParagraph> paragraphs,
+    int offset,
+  ) {
+    var consumed = 0;
+    for (final paragraph in paragraphs) {
+      final length = _spanCharCount(paragraph.text);
+      if (offset < consumed + length) {
+        return (paragraph: paragraph, offset: offset - consumed);
+      }
+      consumed += length;
+    }
+    if (paragraphs.isEmpty) return null;
+    // 越界兜底（正常不会走到）：钉在末段末尾，至少滚到那块附近。
+    final last = paragraphs.last;
+    return (paragraph: last, offset: _spanCharCount(last.text));
+  }
+
+  /// 把 [match] 所在块（已展开）平滑滚动到匹配行。
+  ///
+  /// 直接用块内已经排好版的 [RenderParagraph] 取光标位置（内部只在文字变化时才
+  /// 重排），不再为定位另起一个 TextPainter 把整块文字排一遍 —— 后者在数百 KB 的
+  /// 请求体上单次就要 200 ms 以上。块是分段的，故先按字符数找到命中所在的那一段。
   void _scrollToBlockOffset(_RawMatch match) {
-    final contentCtx = _blockContentKeys[match.blockIndex]?.currentContext;
-    final contentBox = contentCtx?.findRenderObject() as RenderBox?;
     final viewportBox =
         _scrollViewKey.currentContext?.findRenderObject() as RenderBox?;
-    if (contentBox == null ||
-        viewportBox == null ||
-        !_scrollController.hasClients) {
-      return;
-    }
-    String? blockText;
-    bool? blockMono;
-    _forEachBlock((bi, text, mono) {
-      if (bi == match.blockIndex) {
-        blockText = text;
-        blockMono = mono;
-      }
-    });
-    if (blockText == null) return;
-    final painter = TextPainter(
-      text: TextSpan(
-        text: blockText,
-        style: _blockStyle(blockMono ?? false),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: contentBox.size.width);
-    final caret = painter.getOffsetForCaret(
-      TextPosition(offset: match.start),
-      Rect.zero,
+    if (viewportBox == null || !_scrollController.hasClients) return;
+    final block = _blockAt(match.blockIndex);
+    if (block == null) return;
+    final located = _segmentAt(
+      _paragraphsOf(_blockContentKeys[match.blockIndex]?.currentContext),
+      match.start.clamp(0, block.text.length),
     );
-
-    final contentTopGlobal = contentBox.localToGlobal(Offset.zero).dy;
-    final viewportTopGlobal = viewportBox.localToGlobal(Offset.zero).dy;
-    final contentTopInViewport = contentTopGlobal - viewportTopGlobal;
+    if (located == null) return;
+    final paragraph = located.paragraph;
+    final caret = paragraph.getOffsetForCaret(
+      TextPosition(offset: located.offset),
+      const Rect.fromLTWH(0, 0, 1, 1),
+    );
     final matchYInContent =
-        _scrollController.offset + contentTopInViewport + caret.dy;
+        _scrollController.offset +
+        paragraph.localToGlobal(caret).dy -
+        viewportBox.localToGlobal(Offset.zero).dy;
     final target = (matchYInContent - _kScrollTopPadding).clamp(
       0.0,
       _scrollController.position.maxScrollExtent,
@@ -505,13 +781,6 @@ class _RawDialogState extends State<RawDialog> {
       curve: Curves.easeOut,
     );
   }
-
-  /// 与内容一致的块文本样式（TextPainter 估算布局用）。
-  static TextStyle _blockStyle(bool mono) => TextStyle(
-    fontSize: 12.5,
-    height: 1.5,
-    fontFamily: mono ? 'monospace' : null,
-  );
 
   @override
   Widget build(BuildContext context) {
@@ -540,7 +809,10 @@ class _RawDialogState extends State<RawDialog> {
                   const Spacer(),
                   Text(
                     '转译换行符',
-                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                   Switch(
                     value: _escapeNewlines,
@@ -556,6 +828,9 @@ class _RawDialogState extends State<RawDialog> {
               ),
             ),
             // 关键词检索 + 上一处 / 下一处定位（浏览器 Ctrl+F 式）。
+            //
+            // **手动触发**：输入过程中不扫描（大 RAW 下每敲一个字扫一遍会让
+            // 输入框明显卡），只有点「搜索」或按回车才执行一次检索。
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
               child: Row(
@@ -564,8 +839,7 @@ class _RawDialogState extends State<RawDialog> {
                     child: TextField(
                       key: const Key('raw_search_field'),
                       controller: _searchController,
-                      onChanged: _onQueryChanged,
-                      onSubmitted: (_) => _goToMatch(_currentMatch + 1),
+                      onSubmitted: (_) => _runSearch(),
                       onTapOutside: unfocusOnTapOutside,
                       decoration: InputDecoration(
                         hintText: '关键词检索…',
@@ -575,10 +849,7 @@ class _RawDialogState extends State<RawDialog> {
                             : IconButton(
                                 icon: const Icon(Icons.clear, size: 16),
                                 tooltip: '清空',
-                                onPressed: () {
-                                  _searchController.clear();
-                                  _onQueryChanged('');
-                                },
+                                onPressed: _clearSearch,
                               ),
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(
@@ -591,7 +862,25 @@ class _RawDialogState extends State<RawDialog> {
                       ),
                     ),
                   ),
-                  if (_query.isNotEmpty) ...[const SizedBox(width: 4),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    key: const Key('raw_search_button'),
+                    onPressed: _runSearch,
+                    child: const Text('搜索'),
+                  ),
+                  // 常见词要扫完全部块，扫描期间先给出「搜索中」提示。
+                  if (_searching)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Text(
+                        '搜索中…',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    )
+                  else if (_query.isNotEmpty) ...[
                     IconButton(
                       key: const Key('raw_match_prev'),
                       icon: const Icon(Icons.arrow_upward, size: 16),
@@ -689,14 +978,12 @@ class _RawDialogState extends State<RawDialog> {
   }
 
   /// 预览模式的「后续可用帧」区：每帧一个**可折叠增量块**（默认折叠，
-  /// 参与关键词检索与定位——命中即自动展开）。
+  /// 参与关键词检索与定位——定位到该帧时展开这一块）。
   ///
   /// 这些帧是否真的发出取决于模型响应，故标题写清前提；块内只有相对上一帧的
-  /// 追加 / 省略字段（[PlannedFrame.diffJson]）。
+  /// 追加 / 省略字段（[PlannedFrame.diffJson]，已在派生块里算好一次）。
   List<Widget> _buildSubsequentFrames(BuildContext context, int firstBlock) {
-    final frames = widget.previewRequestOnly
-        ? widget.subsequentFrames
-        : const <PlannedFrame>[];
+    final frames = _plannedFrames;
     if (frames.isEmpty) return const [];
     final scheme = Theme.of(context).colorScheme;
     final children = <Widget>[
@@ -718,6 +1005,7 @@ class _RawDialogState extends State<RawDialog> {
       const SizedBox(height: 6),
     ];
     var blockIndex = firstBlock;
+    final blocks = _blocks();
     for (var i = 0; i < frames.length; i++) {
       final frame = frames[i];
       final index = blockIndex;
@@ -730,10 +1018,11 @@ class _RawDialogState extends State<RawDialog> {
             children: [
               _CollapsibleBlock(
                 label: '【${frame.label}】',
-                text: frame.diffJson,
+                text: blocks[index].text,
                 query: _query,
+                count: _countOf(index),
                 mono: true,
-                expanded: _expandedBlocks.contains(index),
+                expanded: _isBlockExpanded(index),
                 onToggle: (v) => _setBlockExpanded(index, v),
                 currentMatchIndex: _localCurrentIndex(index),
                 contentKey: _blockContentKeys.putIfAbsent(
@@ -761,6 +1050,9 @@ class _RawDialogState extends State<RawDialog> {
   }
 
   /// 构建一次交换（请求体 + AI 返回三块），返回构建结果与下一个全局块序号。
+  ///
+  /// 块内容一律取自 [_blocks]（一次派生的快照），这里只按下标取用；
+  /// 下标越界说明渲染顺序与 [_buildSnapshot] 不一致，应当直接暴露。
   ({Widget widget, int nextBlockIndex}) _buildExchange(
     BuildContext context,
     RawExchange ex,
@@ -768,16 +1060,19 @@ class _RawDialogState extends State<RawDialog> {
     int blockIndex,
   ) {
     final scheme = Theme.of(context).colorScheme;
+    final blocks = _blocks();
     final requestBlockIndex = blockIndex;
-    final requestImages = _requestImages(ex);
+    final requestExpanded = _isBlockExpanded(requestBlockIndex);
+    final requestBlock = blocks[requestBlockIndex];
     final children = <Widget>[
       // 请求体：可折叠块（默认折叠，长图片 data URL 折叠为短占位符）。
       _CollapsibleBlock(
         label: '【请求体 ${index + 1}】',
-        text: _requestDisplay(ex),
+        text: requestBlock.text,
         query: _query,
+        count: _countOf(requestBlockIndex),
         mono: true,
-        expanded: _expandedBlocks.contains(requestBlockIndex),
+        expanded: requestExpanded,
         onToggle: (v) => _setBlockExpanded(requestBlockIndex, v),
         currentMatchIndex: _localCurrentIndex(requestBlockIndex),
         contentKey: _blockContentKeys.putIfAbsent(
@@ -786,11 +1081,12 @@ class _RawDialogState extends State<RawDialog> {
         ),
       ),
       // 请求体展开且含图片时，追加「图像 N 个」二级扩展菜单展示 base64。
-      if (requestImages.isNotEmpty && _expandedBlocks.contains(requestBlockIndex))
-        _ImageListBlock(images: requestImages),
+      // 折叠时不构建，省掉整棵图片列表子树。
+      if (requestExpanded && requestBlock.images.isNotEmpty)
+        _ImageListBlock(images: requestBlock.images),
     ];
     // 预览请求体模式：只展示请求体块，不渲染 AI 返回区（序号也要按「只占一个块」
-    // 推进，与 [_forEachBlock] 保持一致——后续可用帧接着编号）。
+    // 推进，与 [_buildSnapshot] 保持一致——后续可用帧接着编号）。
     if (widget.previewRequestOnly) {
       return (
         widget: Column(
@@ -817,19 +1113,16 @@ class _RawDialogState extends State<RawDialog> {
     children.add(const SizedBox(height: 2));
     blockIndex++;
     if (_hasReturn(ex)) {
-      final parts = <(String, String)>[
-        ('思考块', _display(ex.thinking)),
-        ('工具调用块', _display(ex.toolCalls)),
-        ('正文块', _display(ex.content)),
-      ];
-      for (final (label, text) in parts) {
+      const partLabels = <String>['思考块', '工具调用块', '正文块'];
+      for (final label in partLabels) {
         final partBlockIndex = blockIndex;
         children.add(
           _CollapsibleBlock(
             label: label,
-            text: text,
+            text: blocks[partBlockIndex].text,
             query: _query,
-            expanded: _expandedBlocks.contains(partBlockIndex),
+            count: _countOf(partBlockIndex),
+            expanded: _isBlockExpanded(partBlockIndex),
             onToggle: (v) => _setBlockExpanded(partBlockIndex, v),
             currentMatchIndex: _localCurrentIndex(partBlockIndex),
             contentKey: _blockContentKeys.putIfAbsent(
@@ -842,8 +1135,8 @@ class _RawDialogState extends State<RawDialog> {
       }
     } else {
       // 无返回：以与其它文本块**同款的可选中文本**展示说明（失败原因 / 中性提示），
-      // 既能鼠标选中复制，也参与关键词检索与定位（块序号与 `_forEachBlock`
-      // 的遍历保持一一对应）。
+      // 既能鼠标选中复制，也参与关键词检索与定位（块序号与 [_buildSnapshot]
+      // 的派生顺序保持一一对应）。
       final partBlockIndex = blockIndex;
       children.add(
         Padding(
@@ -853,7 +1146,7 @@ class _RawDialogState extends State<RawDialog> {
               partBlockIndex,
               () => GlobalKey(),
             ),
-            text: _noReturnText(ex),
+            text: blocks[partBlockIndex].text,
             query: _query,
             currentIndex: _localCurrentIndex(partBlockIndex),
           ),
@@ -875,15 +1168,18 @@ class _RawDialogState extends State<RawDialog> {
 
 /// 可折叠内容块：标题行（标签 + 匹配计数 + 折叠箭头），默认**折叠**，
 /// 点击标题展开内容；空内容直接显示「（无）」，不提供展开。
-/// 展开状态由父级控制（供检索定位联动：命中块自动展开）。
+/// 展开状态由父级控制（供检索定位联动：当前定位块展开）。
 class _CollapsibleBlock extends StatelessWidget {
   final String label;
 
   /// 展示文本（已按「转译换行符」处理）。
   final String text;
 
-  /// 关键词（用于高亮与计数）。
+  /// 关键词（用于高亮）。
   final String query;
+
+  /// 本块命中数（由父级的检索结果按块记下，避免每次重建都扫一遍全文）。
+  final int count;
 
   /// 等宽字体（用于 JSON 展示）。
   final bool mono;
@@ -904,6 +1200,7 @@ class _CollapsibleBlock extends StatelessWidget {
     required this.label,
     required this.text,
     required this.query,
+    required this.count,
     this.mono = false,
     required this.expanded,
     required this.onToggle,
@@ -914,7 +1211,6 @@ class _CollapsibleBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final count = countMatches(text, query);
     final isEmpty = text.isEmpty;
 
     final header = Row(
@@ -963,7 +1259,10 @@ class _CollapsibleBlock extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (isEmpty)
-          Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: header)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: header,
+          )
         else ...[
           InkWell(
             borderRadius: BorderRadius.circular(6),
@@ -1112,8 +1411,23 @@ class _ImageListBlockState extends State<_ImageListBlock> {
   }
 }
 
-/// 可选中文本：按关键词高亮（命中黄底加粗，「当前定位」橙底），
-/// 等宽字体用于 JSON 展示。
+/// 可选中文本：按关键词高亮（命中黄底，「当前定位」橙底），等宽字体用于 JSON 展示。
+///
+/// **高亮刻意只换底色、不动字重**（debug / Ahem 实测，见 `.agents/2026-10-12-raw-perf.md`）：
+/// 一块 20 万字符 / 12500 处命中的文本里普通段与高亮段交替出现，加粗要另走一套字形，
+/// 排版从 0.7 s 涨到 12 s。只给「当前定位」那一处加粗也不划算——它随定位来回挪动，
+/// 每点一次上一处 / 下一处都要整块重排（实测 0.55 s 涨到 2.6 s）。
+/// 底色与前景色不换字形，交替着来几乎不要钱。
+///
+/// **排版刻意不用 `SelectableText.rich`**：它内层是 `EditableText` / `RenderEditable`，
+/// 同一块 20 万字符 / 25 001 个 span 冷排版要 2.2 s；换成 `SelectionArea` + [RichText]
+/// （`RenderParagraph`）只要 1.1 s，再按下述分段摊薄到 0.56 s，挪动「当前定位」的重排
+/// 从 545 ms 降到 86 ms。
+///
+/// 分段用 [splitAtNewlines] 按硬换行切（预算 [_segmentBudget] 字符），段尾的 `\n`
+/// 照旧留在本段——各段拼回原样，跨段选中复制才逐字相同。代价是每段都多一个段尾空行
+/// （引擎把「最后一个换行之后」也算一行），由 [_TrimLine] 从各段容器的 size 里裁掉，
+/// 于是总高与逐字位置和整块完全一致（实测 3819.00 = 3819.00，偏移 0.00 px）。
 class _HighlightText extends StatelessWidget {
   final String text;
   final String query;
@@ -1130,9 +1444,15 @@ class _HighlightText extends StatelessWidget {
     this.currentIndex = -1,
   });
 
+  /// 一段的字符预算：够大以免段数失控（每段都要一层合成层），够小以摊薄重排。
+  /// 实测同一块 20 万字符：整块 545 ms / 2 万一段 86 ms / 5 千一段 75 ms /
+  /// 2 千一段 66 ms——再切细收益递减，故取 2 万。
+  static const int _segmentBudget = 20000;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final textScaler = MediaQuery.textScalerOf(context);
     final base = TextStyle(
       fontSize: 12.5,
       height: 1.5,
@@ -1141,23 +1461,134 @@ class _HighlightText extends StatelessWidget {
     );
     final highlight = base.copyWith(
       backgroundColor: const Color(0xFFFFF176).withValues(alpha: 0.5),
-      fontWeight: FontWeight.w700,
     );
     final current = base.copyWith(
       backgroundColor: const Color(0xFFFFB74D).withValues(alpha: 0.6),
-      fontWeight: FontWeight.w700,
     );
-    return SelectableText.rich(
-      TextSpan(
-        children: highlightSpans(
-          text,
-          query,
-          base,
-          highlight,
-          currentIndex: currentIndex,
-          currentStyle: current,
-        ),
+    final pieces = splitAtNewlines(text, _segmentBudget);
+    final rowHeight = _rowHeightOf(base, textScaler);
+    final selectionColor = scheme.primary.withValues(alpha: 0.4);
+    return SelectionArea(
+      child: Builder(
+        builder: (BuildContext context) {
+          // registrar 由 SelectionArea 下发的 SelectionContainer 提供，必须在它下面取。
+          final registrar = SelectionContainer.maybeOf(context);
+          final segments = <Widget>[];
+          var hitsBefore = 0;
+          for (var i = 0; i < pieces.length; i++) {
+            // 检索框是单行输入，关键词不含 `\n`，故逐段扫描与整块扫描结果一致。
+            final hitsHere = countMatches(pieces[i], query);
+            final localIndex =
+                currentIndex >= hitsBefore &&
+                    currentIndex < hitsBefore + hitsHere
+                ? currentIndex - hitsBefore
+                : -1;
+            hitsBefore += hitsHere;
+            segments.add(
+              _TrimLine(
+                // 末段那个空行整块本来就有，只裁前面各段的。
+                amount: i == pieces.length - 1 ? 0.0 : rowHeight,
+                child: RichText(
+                  textScaler: textScaler,
+                  selectionRegistrar: registrar,
+                  selectionColor: selectionColor,
+                  text: TextSpan(
+                    children: highlightSpans(
+                      pieces[i],
+                      query,
+                      base,
+                      highlight,
+                      currentIndex: localIndex,
+                      currentStyle: current,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: segments,
+          );
+        },
       ),
     );
   }
+}
+
+/// 一行的真实高度：量一个字。
+///
+/// 行盒按物理像素吸附，名义值（fontSize × height = 12.5 × 1.5 = 18.75）在实测环境里
+/// 是 19.00；拿名义值会让每个段间接缝差四分之一像素、越往后漂得越多。
+double _rowHeightOf(TextStyle style, TextScaler scaler) {
+  final painter = TextPainter(
+    text: TextSpan(text: 'M', style: style),
+    textDirection: TextDirection.ltr,
+    textScaler: scaler,
+  )..layout();
+  final height = painter.height;
+  painter.dispose();
+  return height;
+}
+
+/// 把子节点末尾 `amount` 像素从**自己的 size** 里裁掉；绘制与命中坐标一律照旧
+/// （子节点仍从 (0,0) 画满、不偏移）。
+///
+/// 用于 [_HighlightText] 的分段：段尾那个空行照样画得出来（它本来什么都不画），
+/// 却不再占位；被裁掉的那条横带归下一段的容器，下一段首行也就正好落回整块里的
+/// 原始位置。
+///
+/// 现成的负偏移容器全被框架断言拦住（`RenderPadding` 要求 inset 非负、`RenderFlex`
+/// 要求 `spacing >= 0`、`CustomMultiChildLayout` 的 size 不许依赖子节点），
+/// 故只能自己写这一层 render object。
+class _TrimLine extends SingleChildRenderObjectWidget {
+  const _TrimLine({required this.amount, super.child});
+
+  final double amount;
+
+  @override
+  _RenderTrimLine createRenderObject(BuildContext context) =>
+      _RenderTrimLine(amount: amount);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderTrimLine renderObject) {
+    if (renderObject.amount == amount) return;
+    renderObject.amount = amount;
+    renderObject.markNeedsLayout();
+  }
+}
+
+class _RenderTrimLine extends RenderProxyBox {
+  _RenderTrimLine({required this.amount});
+
+  /// 末尾要裁掉的像素数；改动后须由 [updateRenderObject] 标脏。
+  double amount;
+
+  double _trimmed(double height) => height <= amount ? 0.0 : height - amount;
+
+  @override
+  void performLayout() {
+    final RenderBox boxedChild = child!;
+    boxedChild.layout(constraints, parentUsesSize: true);
+    size = constraints.constrain(
+      Size(boxedChild.size.width, _trimmed(boxedChild.size.height)),
+    );
+  }
+
+  @override
+  Size computeDryLayout(covariant BoxConstraints constraints) {
+    final childSize = child!.getDryLayout(constraints);
+    return constraints.constrain(
+      Size(childSize.width, _trimmed(childSize.height)),
+    );
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _trimmed(child!.getMinIntrinsicHeight(width));
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _trimmed(child!.getMaxIntrinsicHeight(width));
 }

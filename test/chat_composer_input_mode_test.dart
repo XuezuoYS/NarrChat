@@ -8,6 +8,7 @@ import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
+import 'helpers/raw_dialog_harness.dart';
 
 /// 输入卡「临时用途」（灰条）的形态与既有「修改并重新提问」的接入测试。
 ///
@@ -91,11 +92,7 @@ void main() {
 
   testWidgets('提交修改：直接上屏（无二次确认），删除本轮及后续轮次并以新输入重新生成', (tester) async {
     // 正文短：两轮同时可见，可直接对第 1 轮气泡操作（列表打开时已滚到底部）。
-    final rp = await pumpChatScreen(
-      tester,
-      seedRounds: 2,
-      seedBodyRepeats: 1,
-    );
+    final rp = await pumpChatScreen(tester, seedRounds: 2, seedBodyRepeats: 1);
 
     await tapEditAndReAsk(tester, '第 1 轮的用户输入');
     await tester.enterText(composerField(), '改后的输入');
@@ -137,10 +134,7 @@ void main() {
 
   testWidgets('非识图模型：进入用途只载入文本、不携带图片', (tester) async {
     final settings = ChatCompatibleSettings();
-    settings.setSelectedModel(
-      AiPlatforms.defaultPlatformId,
-      'deepseek-v4-pro',
-    );
+    settings.setSelectedModel(AiPlatforms.defaultPlatformId, 'deepseek-v4-pro');
     final dao = await seedRoundWithImages(['img/aaa.png']);
     await pumpChatScreen(tester, roundDao: dao, settings: settings);
 
@@ -252,20 +246,15 @@ void main() {
 
   Finder previewButton() => find.byTooltip('预览请求体');
 
-  /// 预览对话框里的请求体文本（块默认折叠 → 先点标题展开；只取对话框内的
-  /// 可选中文本，避免命中底层对话气泡里的文本）。
+  /// 预览对话框里的请求体文本（块默认折叠 → 先点标题展开；只取对话框内的 RAW
+  /// 内容块，避免命中底层对话气泡里的选中区域）。
   Future<String> previewBodyText(WidgetTester tester) async {
     final dialog = find.byType(RawDialog);
-    await tester.tap(find.descendant(of: dialog, matching: find.text('【请求体 1】')));
+    await tester.tap(
+      find.descendant(of: dialog, matching: find.text('【请求体 1】')),
+    );
     await tester.pumpAndSettle();
-    return tester
-        .widget<SelectableText>(
-          find
-              .descendant(of: dialog, matching: find.byType(SelectableText))
-              .first,
-        )
-        .textSpan!
-        .toPlainText();
+    return rawBlockText(dialog, tester);
   }
 
   Future<void> closeDialog(WidgetTester tester) async {
@@ -285,16 +274,8 @@ void main() {
     expect(find.text('预览请求体'), findsOneWidget);
     final body = await previewBodyText(tester);
     expect(body, contains('改后的输入'));
-    expect(
-      body,
-      isNot(contains('第 1 轮的用户输入')),
-      reason: '该轮已被截断重发，不再作为历史',
-    );
-    expect(
-      body,
-      isNot(contains('第 2 轮的用户输入')),
-      reason: '后续轮次随截断一起离开投影',
-    );
+    expect(body, isNot(contains('第 1 轮的用户输入')), reason: '该轮已被截断重发，不再作为历史');
+    expect(body, isNot(contains('第 2 轮的用户输入')), reason: '后续轮次随截断一起离开投影');
 
     // 预览零副作用：不删轮次、不消费用途（灰条与编辑内容原样保留）。
     await closeDialog(tester);
@@ -317,11 +298,7 @@ void main() {
 
     final body = await previewBodyText(tester);
     expect(body, contains('把这段写紧凑些'), reason: '意见进请求');
-    expect(
-      body,
-      contains('第 1 轮的用户输入'),
-      reason: '修改轮历史 = n 轮 + 被重写轮自身',
-    );
+    expect(body, contains('第 1 轮的用户输入'), reason: '修改轮历史 = n 轮 + 被重写轮自身');
 
     await closeDialog(tester);
     expect(rp.rounds.map((r) => r.roundIndex).toList(), [1]);
