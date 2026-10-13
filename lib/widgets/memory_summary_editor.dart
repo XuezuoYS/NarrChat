@@ -1,10 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../utils/memory_entry_format.dart';
+import 'app_menu.dart';
+import 'app_notice_overlay.dart';
+import 'bubble_pointer_listener.dart';
 import 'editable_field_state.dart';
 import 'markdown_editing_controller.dart';
+
+/// 一条记忆条目的长按 / 右键菜单动作。
+enum MemoryEntryAction {
+  copyTime,
+  copyContent,
+  jumpToEntry,
+}
 
 /// 「记忆总结」专用编辑组件。
 ///
@@ -13,6 +24,9 @@ import 'markdown_editing_controller.dart';
 /// （而非通用 Markdown 预览）：
 ///
 /// - 每条记忆 = 一个卡片：左侧「第N轮」徽标，下方时间 + 内容；
+/// - **长按（触屏）/ 右键（桌面）条目卡片**弹出扩展菜单：
+///   [kMemoryEntryCopyTimeLabel] / [kMemoryEntryCopyContentLabel] /
+///   [kMemoryEntryJumpLabel]（详见 [_showEntryMenu]）；
 /// - 新格式（`- 34 | {时间} | {内容}`）与旧格式
 ///   （`- 第N轮｜日期：xxx｜概括内容`）共用 [memoryEntryLineRegex] 解析，
 ///   旧数据无需迁移即可继续渲染；
@@ -24,7 +38,7 @@ import 'markdown_editing_controller.dart';
 /// - 时间段的标签允许省略或使用「时间：」（兼容历史数据），同样按条目卡片渲染；
 /// - 未命中条目格式的杂散行会以普通文本追加在条目列表之后（不丢数据，
 ///   判定与 [parseMemoryEntries] 同源，见 [unmatchedMemoryLines]）；
-/// - 点击标题栏「编辑」或双击进入原始文本编辑模式；
+/// - 点击标题栏「编辑」按钮进入原始文本编辑模式；
 /// - 不自动保存：仅保存/退出编辑触发 [onSave]，取消编辑丢弃修改。
 class MemorySummaryEditor extends StatefulWidget {
   final TextEditingController controller;
@@ -40,6 +54,17 @@ class MemorySummaryEditor extends StatefulWidget {
   /// 进入 / 退出编辑模式时回调（供外部标题栏切换【保存】/【取消】按钮）。
   final ValueChanged<bool>? onEditingChanged;
 
+  /// 条目菜单「跳转至对应条目」：把该条目对应的轮次交给上层定位
+  /// （合并条目一律取**起始轮**，见 `memory_entry_format.dart` 的区间归一）。
+  ///
+  /// [entryAt] = 触发菜单的**指针全局坐标**（右键 = 鼠标位置，长按 = 手指位置），
+  /// 供上层按「同屏对齐」细化落点（菜单本身也按该坐标弹出）。
+  ///
+  /// 为 null 时条目卡片**不挂载长按 / 右键菜单**（三项都不显示）：没有跳转
+  /// 落点的一方不必伪装可跳转。本组件当前只有侧栏一个使用方
+  /// （见 `SidebarPanel.onJumpToRound`），已接线。
+  final void Function(int roundIndex, Offset entryAt)? onJumpToRound;
+
   const MemorySummaryEditor({
     super.key,
     required this.controller,
@@ -48,6 +73,7 @@ class MemorySummaryEditor extends StatefulWidget {
     this.showToolbar = true,
     this.onSave,
     this.onEditingChanged,
+    this.onJumpToRound,
   });
 
   @override
@@ -228,7 +254,7 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
         mainAxisSize: MainAxisSize.min,
         children: [
           for (var i = 0; i < entries.length; i++) ...[
-            _entryCard(theme, entries[i]),
+            _buildEntry(theme, entries[i]),
             if (i < entries.length - 1) const SizedBox(height: 8),
           ],
           if (unmatched.isNotEmpty) ...[
@@ -248,6 +274,8 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
   }
 
   /// 记忆条目卡片外框（底色 + 细边框；单轮与合并条目共用）。
+  ///
+  /// 交互（长按 / 右键）由 [_entryCardShell] 单独包裹，本方法只管外观。
   Widget _card(ThemeData theme, Widget child) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -258,6 +286,102 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
       ),
       child: child,
     );
+  }
+
+  /// 记忆条目卡片的交互外壳：长按（触屏）/ 右键（桌面）都走
+  /// [BubblePointerListener]（与气泡同一套手势口径：右键立即触发、触屏长按
+  /// 500ms、滑动超过 18px（`kTouchSlop` 同量级）取消），并包一层 [InkWell]
+  /// 提供悬停 / 按压反馈。
+  ///
+  /// 菜单锚点用 [BubblePointerListener] 回调给的**指针全局坐标**：桌面右键因此
+  /// 在鼠标处弹出（符合右键菜单的一贯预期），触屏在手指处弹出。
+  /// 长按与右键**不走** `InkWell.onLongPress`——那样只能拿到卡片原点，
+  /// 无法跟随指针，且会与 [BubblePointerListener] 的长按判定重复触发。
+  Widget _entryCardShell(
+    Widget card, {
+    required void Function(Offset globalPosition) onContextMenu,
+  }) {
+    const radius = BorderRadius.all(Radius.circular(8));
+    return BubblePointerListener(
+      onContextMenu: onContextMenu,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: radius,
+        child: InkWell(
+          onTap: () {}, // 空实现：仅借 InkWell 提供悬停 / 按压反馈。
+          borderRadius: radius,
+          child: card,
+        ),
+      ),
+    );
+  }
+
+  /// 条目卡片：卡片内容 + 外框；[MemorySummaryEditor.onJumpToRound] 非空
+  /// （即本卡片确有跳转目标）时再包一层「长按 / 右键菜单」。
+  Widget _buildEntry(ThemeData theme, MemoryEntry e) {
+    final content = _entryContent(theme, e);
+    if (widget.onJumpToRound == null) return _card(theme, content);
+    return _entryCardShell(
+      _card(theme, content),
+      onContextMenu: (globalPosition) => _showEntryMenu(e, globalPosition),
+    );
+  }
+
+  /// 条目扩展菜单：复制时间 / 复制内容 / 跳转至对应条目。
+  ///
+  /// 合并条目的时间与轮次口径（与卡片展示一致）：
+  /// - 「复制时间」复制条目时间段的原文（合并条目的时间本就是区间文本）；
+  /// - 「跳转至对应条目」传 [MemoryEntry.round]（区间**小端** = 起始轮）；
+  /// - [menuAt] 既作菜单弹出位置，也原样交给上层作跳转锚点。
+  Future<void> _showEntryMenu(MemoryEntry e, Offset menuAt) async {
+    if (!mounted) return;
+    final action = await showAppMenu<MemoryEntryAction>(
+      context: context,
+      position: menuAt,
+      items: const [
+        PopupMenuItem(
+          value: MemoryEntryAction.copyTime,
+          child: AppMenuAction(
+            icon: Icons.schedule,
+            label: kMemoryEntryCopyTimeLabel,
+          ),
+        ),
+        PopupMenuItem(
+          value: MemoryEntryAction.copyContent,
+          child: AppMenuAction(
+            icon: Icons.copy_outlined,
+            label: kMemoryEntryCopyContentLabel,
+          ),
+        ),
+        PopupMenuItem(
+          value: MemoryEntryAction.jumpToEntry,
+          child: AppMenuAction(
+            icon: Icons.my_location,
+            label: kMemoryEntryJumpLabel,
+          ),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case MemoryEntryAction.copyTime:
+        await _copy(memoryEntryTimeText(e));
+      case MemoryEntryAction.copyContent:
+        await _copy(e.content);
+      case MemoryEntryAction.jumpToEntry:
+        widget.onJumpToRound?.call(e.round, menuAt);
+    }
+  }
+
+  /// 复制文本到系统剪贴板，并给出应用内提示（与气泡「复制」同一口径）。
+  ///
+  /// 通知中心在 `await` **之前**取出（见 `app_notice_overlay.dart` 的约定）：
+  /// 剪贴板写入期间组件可能被卸载，届时不再触碰 context。
+  Future<void> _copy(String text) async {
+    final notices = context.notices;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    notices.success('已复制', dwell: const Duration(seconds: 1));
   }
 
   /// 轮次徽标（合并区间保留原文分隔符，如 `第11~15轮`）。
@@ -323,7 +447,9 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     );
   }
 
-  Widget _entryCard(ThemeData theme, MemoryEntry e) {
+  /// 条目卡片：**卡片内容**（不含外框）——外观与交互由 [_card] / [_entryCardShell]
+  /// 在 [_buildEntry] 里包上。
+  Widget _entryContent(ThemeData theme, MemoryEntry e) {
     final badge = _roundBadge(theme, e);
     final time = _timeRow(e);
     final content = _contentText(theme, e);
@@ -331,45 +457,39 @@ class MemorySummaryEditorState extends State<MemorySummaryEditor>
     // 合并条目（覆盖多轮、内容通常更长）改两行：首行「轮次 + 时间」（时间紧接
     // 徽标同一行），次行「记忆内容」整宽（与徽标左对齐）；
     if (e.isMerged) {
-      return _card(
-        theme,
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                badge,
-                const SizedBox(width: 8),
-                Expanded(child: time),
-              ],
-            ),
-            const SizedBox(height: 6),
-            content,
-          ],
-        ),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              badge,
+              const SizedBox(width: 8),
+              Expanded(child: time),
+            ],
+          ),
+          const SizedBox(height: 6),
+          content,
+        ],
       );
     }
 
     // 单轮条目保持原布局：左侧徽标，右侧「时间 + 内容」。
-    return _card(
-      theme,
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          badge,
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                time,
-                const SizedBox(height: 4),
-                content,
-              ],
-            ),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        badge,
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              time,
+              const SizedBox(height: 4),
+              content,
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

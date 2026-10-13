@@ -134,6 +134,25 @@ class MemoryEntry {
       isMerged ? '$round$roundSeparator$roundEnd' : '$round';
 }
 
+/// 条目卡片长按 / 右键菜单的「复制时间」项文案（UI 与测试共用同一字面量）。
+const String kMemoryEntryCopyTimeLabel = '复制时间';
+
+/// 条目卡片长按 / 右键菜单的「复制内容」项文案（UI 与测试共用同一字面量）。
+const String kMemoryEntryCopyContentLabel = '复制内容';
+
+/// 条目卡片长按 / 右键菜单的「跳转至对应条目」项文案
+/// （跳转落点见 `SidebarPanel.onJumpToRound`，UI 与测试共用同一字面量）。
+const String kMemoryEntryJumpLabel = '跳转至对应条目';
+
+/// 「复制时间」实际写入剪贴板的文本：条目时间段的原文。
+///
+/// 合并条目的时间在库内本就是一个区间（如
+/// `仙历十四年五月二十日 ~ 仙历十四年七月八日`），因此**原样返回**即可，
+/// 无需另拼区间；时间缺失时返回「（未标注时间）」，与卡片展示文案一致
+/// （界面上显示什么，就复制什么）。
+String memoryEntryTimeText(MemoryEntry entry) =>
+    entry.time.isEmpty ? '（未标注时间）' : entry.time;
+
 /// 记忆条目行的正则：新格式 `- 34 | {时间} | {内容}` 与旧格式
 /// `- 第N轮｜日期：xxx｜概括内容` 一并对齐为「轮次 / 时间 / 内容」三段；
 /// 轮次额外容忍**合并区间**（`11~15` / `第11～15轮`，见 [roundEnd]）。

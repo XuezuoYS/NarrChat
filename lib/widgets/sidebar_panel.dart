@@ -23,6 +23,8 @@ import 'quick_scroll_rail.dart';
 ///   （`recommended_action` 不在侧边栏编辑，展示于对话区 AI 气泡正文下方。）
 /// - 可折叠子模块：每个大区块（当前时间/世界状态/角色状态/记忆总结）都有吸顶标题栏，
 ///   滚动到下方时标题栏固定在视口顶部；点击标题栏可折叠/展开该区块内容。
+/// - 记忆总结的条目卡片支持长按 / 右键扩展菜单（复制时间 / 复制内容 /
+///   跳转至对应条目，跳转落点见 [onJumpToRound]）。
 /// - 手动保存：编辑时**不自动写库**；每个子模块通过标题栏【编辑】进入编辑、
 ///   【保存】（或编辑模式内「完成」）退出编辑并调用 [onSaveField] 持久化，
 ///   【取消】放弃本次修改（还原为已保存内容）。
@@ -51,6 +53,16 @@ class SidebarPanel extends StatefulWidget {
   /// 顶栏“收起”按钮回调（为空则不显示该按钮）。
   final VoidCallback? onClose;
 
+  /// 记忆条目菜单「跳转至对应条目」：把条目对应的轮次交给上层定位。
+  ///
+  /// - [roundIndex] = 条目轮次，合并条目一律取**起始轮**（区间小端）；
+  /// - [entryAt] = 触发菜单的指针全局坐标（右键 = 鼠标位置，长按 = 手指位置），
+  ///   供上层做同屏对齐用。
+  ///
+  /// 为 null 时记忆条目卡片不挂载长按 / 右键菜单（复制两项同样不出现：
+  /// 没有跳转落点的一方不必伪装可跳转）。
+  final void Function(int roundIndex, Offset entryAt)? onJumpToRound;
+
   const SidebarPanel({
     super.key,
     required this.round,
@@ -60,6 +72,7 @@ class SidebarPanel extends StatefulWidget {
     this.onNextRound,
     this.onBackToCurrent,
     this.onClose,
+    this.onJumpToRound,
   });
 
   @override
@@ -276,6 +289,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                             controller: _memorySummary,
                             hintText: '记忆总结',
                             showToolbar: false,
+                            onJumpToRound: widget.onJumpToRound,
                             onSave: (v) => _saveFieldNow(RoundField.memorySummary, v),
                             onEditingChanged: (e) =>
                                 _onEditingChanged(RoundField.memorySummary, e),

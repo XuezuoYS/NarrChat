@@ -1058,6 +1058,41 @@ class _ChatScreenState extends State<ChatScreen>
     return -1;
   }
 
+  /// 侧栏记忆条目菜单「跳转至对应条目」：把对话区滚动到该轮气泡起点。
+  ///
+  /// 与楼层跳转共用 [_jumpToItem]（分帧推进 + 落到视口顶），因此跳转后
+  /// 「当前轮」判定与楼层跳转一致；宽屏下侧栏常驻，跳转后卡片与目标气泡同屏。
+  ///
+  /// 落点口径：
+  /// - [roundIndex] 为**条目轮次**，合并条目由菜单传区间**起始轮**；
+  /// - 目标轮不在对话区（roundIndex 有缺口 / 轮次已删）时按「向下就近取整」
+  ///   落在其前一轮（与 [_resolveFloorTarget] 同语义）；连前一轮都没有
+  ///   才提示无法跳转，不做无声失败。
+  /// - [entryAt] 为触发菜单的指针全局坐标（菜单回调契约的一部分，见
+  ///   `SidebarPanel.onJumpToRound`）；当前定位只用轮次，保留该信息以便
+  ///   后续按「同屏对齐」细化落点，不参与本次计算。
+  ///
+  /// 窄屏抽屉形态下顺带收起抽屉——否则跳过去了也被抽屉盖住，等于没跳。
+  void _jumpToMemoryEntry(int roundIndex, Offset entryAt) {
+    final chatRounds = _chatRoundsNow();
+    Round? target;
+    for (final r in chatRounds) {
+      if (r.roundIndex == roundIndex) {
+        target = r;
+        break;
+      }
+      if (r.roundIndex < roundIndex) target = r; // 列表升序：最后一个更小的即落点
+    }
+    final position = target == null ? -1 : chatRounds.indexOf(target);
+    if (position < 0) {
+      context.notices.warning('第 $roundIndex 轮不在对话中，无法跳转');
+      return;
+    }
+    _closeDrawer();
+    _userScrolledAway = true;
+    _jumpToItem(2 * position);
+  }
+
   /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）。
   ///
   /// 分帧推进：标记目标（唯一 GlobalKey 挂载到该项供精确对齐）→ 每帧朝目标
@@ -3231,6 +3266,7 @@ class _ChatScreenState extends State<ChatScreen>
           ? () => context.read<SidebarProvider>().showCurrent()
           : null,
       onClose: onClose,
+      onJumpToRound: _jumpToMemoryEntry,
       onSaveField: (round, field, value) => context
           .read<RoundProvider>()
           .updateRoundField(round.id!, field, value),
