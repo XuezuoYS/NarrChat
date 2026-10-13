@@ -1,22 +1,24 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../services/app_paths.dart';
 import '../utils/uuid_utils.dart';
+import 'local_sync_db.dart';
+import 'sqflite_desktop.dart';
 
 /// 数据库访问入口（单例）。
 ///
 /// - Android/iOS：使用 sqflite 原生插件；
 /// - Windows/Linux/macOS：自动切换到 sqflite_common_ffi（基于 sqlite3 的 FFI 实现）。
 /// - 数据库位于 `<文档目录>/NarrChat/user_data/narrchat.db`（用户数据，可云同步）。
+/// - 同步元数据（`sync_*` 三表）自 v20 起数据存本地同步库（[LocalSyncDb]），
+///   本库仅保留同 schema **空表壳**（回退兼容，见 v20 迁移分支）。
 class DatabaseHelper {
   DatabaseHelper._();
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 19;
+  static const int _dbVersion = 20;
 
   Database? _database;
 
@@ -33,11 +35,7 @@ class DatabaseHelper {
   }
 
   Future<Database> _open() async {
-    // 桌面端需要 FFI 数据库工厂。
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
-    }
+    ensureDesktopSqfliteFactory();
     final dbPath = debugDatabasePathOverride ?? await AppPaths.userDatabasePath();
     return openDatabase(
       dbPath,
@@ -53,7 +51,9 @@ class DatabaseHelper {
         await _createModsTable(db);
         await _createBookModsTable(db);
         await _createBookIndexes(db);
-        await _createSyncTables(db);
+        // 同步元数据表自 v20 起仅存本地同步库（[LocalSyncDb]）；此处建的是
+        // 同 schema 空表壳（回退兼容），DDL 唯一来源在 LocalSyncDb.createSyncTables。
+        await LocalSyncDb.createSyncTables(db);
       },
       onUpgrade: migrate,
     );
@@ -209,7 +209,7 @@ class DatabaseHelper {
             'deleted_at',
             'ALTER TABLE mods ADD COLUMN deleted_at INTEGER',
           );
-          await _createSyncTables(db);
+          await LocalSyncDb.createSyncTables(db);
         }
         if (oldVersion < 13) {
           // 同步身份层：书籍 / Mod 引入跨设备 UUID（v13，尚未发布即重构）。
@@ -301,6 +301,14 @@ class DatabaseHelper {
             'use_stack_uuid',
             "ALTER TABLE rounds ADD COLUMN use_stack_uuid TEXT DEFAULT ''",
           );
+        }
+        if (oldVersion < 20) {
+          // v20：同步元数据表迁出用户库。数据迁入本地同步库
+          // （`local_config/local_db/narrchat_sync.db`，见 [LocalSyncDb]），
+          // 本库重建**空表壳**——用户库整库字节即云端快照，元数据不再随快照
+          // 上传；空壳保证「v20 → 回退 ≤v19 旧版」时旧版 SyncStateDao 读到
+          // 空共基（功能可用）而非 no such table（同步报错）。
+          await _moveSyncTablesToLocalDb(db);
         }
   }
 
@@ -544,7 +552,7 @@ class DatabaseHelper {
   /// 把仅存在于未发布开发/测试库中的旧同步表（title/name 主键）重建为 uuid 主键。
   ///
   /// 已发布版本（v11 及以下）没有同步表，无需处理；v12 开发库按主键列名检测，
-  /// 命中旧 schema 时 DROP 后交由 [_createSyncTables] 重建（同步表仅存合并元数据，
+  /// 命中旧 schema 时 DROP 后交由 `LocalSyncDb.createSyncTables` 重建（同步表仅存合并元数据，
   /// 非用户资产，重建无损）。
   static Future<void> _rebuildSyncTablesForUuid(Database db) async {
     for (final table in const ['sync_book_base', 'sync_mod_base']) {
@@ -558,7 +566,51 @@ class DatabaseHelper {
         await db.execute('DROP TABLE IF EXISTS $table');
       }
     }
-    await _createSyncTables(db);
+    await LocalSyncDb.createSyncTables(db);
+  }
+
+  /// v19 → v20：把用户库内的 3 张同步元数据表（`sync_state` / `sync_book_base` /
+  /// `sync_mod_base`）的**数据**迁入本地同步库（[LocalSyncDb]），并在本库重建
+  /// **空表壳**（同 schema，见 [LocalSyncDb.createSyncTables]）。
+  ///
+  /// 红线：
+  /// - 本库无任何同步表时直接返回（不打开本地库）：v20 对「从不带同步表的库」
+  ///   零副作用，未注入本地库路径的迁移测试也不受影响；
+  /// - 迁移按「先全量读出 → 再逐表搬入」顺序执行，中途失败不会留下「本库已删、
+  ///   本地库没落全」的半成品（重跑幂等：搬 0 行 + DROP + 重建空壳）；
+  /// - 本地库 insert 用 replace（uuid / id 即主键），重复迁移不产生重复行。
+  static Future<void> _moveSyncTablesToLocalDb(Database db) async {
+    const tables = ['sync_state', 'sync_book_base', 'sync_mod_base'];
+    final rowsByTable = <String, List<Map<String, Object?>>>{};
+    var anyExists = false;
+    for (final t in tables) {
+      if (!await _tableExists(db, t)) {
+        rowsByTable[t] = const [];
+        continue;
+      }
+      anyExists = true;
+      rowsByTable[t] = await db.query(t);
+    }
+    if (!anyExists) return;
+
+    final local = await LocalSyncDb.instance.database;
+    for (final t in tables) {
+      for (final row in rowsByTable[t]!) {
+        await local.insert(t, row, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await db.execute('DROP TABLE IF EXISTS $t');
+    }
+    // 回退兼容空表壳（见 migrate v20 分支注释）。
+    await LocalSyncDb.createSyncTables(db);
+  }
+
+  /// 判断 [table] 是否存在于本库。
+  static Future<bool> _tableExists(Database db, String table) async {
+    final rows = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+      [table],
+    );
+    return rows.isNotEmpty;
   }
 
   /// 重建 `rounds` 表：移除历史中间版本（v6/v7）加入的失败列，
@@ -852,58 +904,11 @@ class DatabaseHelper {
   }
 
 
-  /// 云同步相关辅助表。
+  /// 云同步辅助表的 DDL 已迁移至 [LocalSyncDb.createSyncTables]（唯一来源）。
   ///
-  /// - `sync_state`：单行，记录本设备标识、上次同步时间/代数、同步进行中标记与上次阶段/错误；
-  /// - `sync_book_base`：per‑book 三向合并的 common base（主键即书籍 uuid；
-  ///   title 仅供展示，从不参与身份匹配）；
-  /// - `sync_mod_base`：per‑mod 合并共基（主键即 Mod uuid；name 同上）。
-  ///
-  /// 图片删除墓碑**不在数据库中**：由 `img_tombstones.dart` 的云端文件 +
-  /// 本地工作副本承载；开发期遗留的 `sync_pending_del` / `sync_image_revived`
-  /// 已在 v16 迁移里彻底移除，此处不再建表。
-  static Future<void> _createSyncTables(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        device_id TEXT DEFAULT '',
-        last_synced_at INTEGER NOT NULL DEFAULT 0,
-        last_generation INTEGER NOT NULL DEFAULT 0,
-        sync_in_flight INTEGER NOT NULL DEFAULT 0,
-        last_phase TEXT DEFAULT '',
-        last_error TEXT DEFAULT ''
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_book_base (
-        uuid TEXT PRIMARY KEY,
-        title TEXT NOT NULL DEFAULT '',
-        info_fp TEXT DEFAULT '',
-        roles_fp TEXT DEFAULT '',
-        base_setting_fp TEXT DEFAULT '',
-        prompts_fp TEXT DEFAULT '',
-        failed_fp TEXT DEFAULT '',
-        settings_fp TEXT DEFAULT '',
-        rounds_fp TEXT DEFAULT '',
-        worldbook_fp TEXT DEFAULT '',
-        bookmods_fp TEXT DEFAULT '',
-        settings_updated_at INTEGER NOT NULL DEFAULT 0,
-        rounds_updated_at INTEGER NOT NULL DEFAULT 0,
-        worldbook_updated_at INTEGER NOT NULL DEFAULT 0,
-        bookmods_updated_at INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sync_mod_base (
-        uuid TEXT PRIMARY KEY,
-        name TEXT NOT NULL DEFAULT '',
-        fingerprint TEXT DEFAULT '',
-        updated_at INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-    // 图片删除墓碑已文件化（img_tombstones.dart），不再进数据库：
-    // 仅保留版本注释，避免后续误加同表。
-  }
+  /// 本库（用户库）自 v20 起只保留同 schema **空表壳**：数据在本地同步库，
+  /// 空壳仅供「回退 ≤v19 旧版」时旧代码读到空共基。历史 v12/v13 迁移分支
+  /// 仍经 [LocalSyncDb.createSyncTables] 在本库建过渡表，由 v20 分支迁出。
 
   Future<void> close() async {
     await _database?.close();

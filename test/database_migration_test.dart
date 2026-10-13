@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/database_helper.dart';
+import 'package:narrchat/database/local_sync_db.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -17,6 +18,18 @@ void main() {
   setUpAll(() {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  });
+
+  // 迁移链中 v20 会把同步元数据表迁入本地同步库（[LocalSyncDb]）：
+  // 每个用例注入独立的临时路径，避免触碰真实本地配置目录。
+  setUp(() async {
+    await LocalSyncDb.instance.close();
+    LocalSyncDb.debugDatabasePathOverride = _newLocalSyncDbPath();
+  });
+
+  tearDown(() async {
+    LocalSyncDb.debugDatabasePathOverride = null;
+    await LocalSyncDb.instance.close();
   });
 
   tearDownAll(() async {
@@ -323,12 +336,24 @@ void main() {
         .toList();
     expect(modCols, contains('deleted_at'));
 
+    // v20 起同步表数据只存本地同步库，用户库保留同 schema 空表壳（回退兼容）。
     for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base']) {
       final t = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         [table],
       );
-      expect(t, isNotEmpty, reason: '缺少表 $table');
+      expect(t, isNotEmpty, reason: '用户库缺少回退兼容空表壳 $table');
+      expect(await db.rawQuery('SELECT COUNT(*) AS c FROM "$table"'), [
+        {'c': 0},
+      ], reason: '空表壳不应有数据（数据在本地同步库）');
+    }
+    final local = await LocalSyncDb.instance.database;
+    for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base']) {
+      final t = await local.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        [table],
+      );
+      expect(t, isNotEmpty, reason: '本地同步库缺少表 $table');
     }
     // 图片删除墓碑已文件化（img_tombstones.dart），不再进数据库。
     for (final table in ['sync_pending_del', 'sync_image_revived']) {
@@ -438,13 +463,85 @@ void main() {
     final ver = await db.rawQuery('PRAGMA user_version');
     expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
     // 旧单值 settings_fp 回填到 5 个子部件列（整书兼容直到下次同步重写）。
-    final baseRow = (await db.rawQuery('SELECT * FROM sync_book_base')).first;
+    // v20 起共基数据在本地同步库，用户库仅存空表壳。
+    expect(await db.rawQuery('SELECT COUNT(*) AS c FROM sync_book_base'), [
+      {'c': 0},
+    ], reason: '用户库仅存空表壳，共基数据已迁入本地同步库');
+    final local = await LocalSyncDb.instance.database;
+    final baseRow = (await local.rawQuery('SELECT * FROM sync_book_base')).first;
     expect(baseRow['info_fp'], 'S0');
     expect(baseRow['roles_fp'], 'S0');
     expect(baseRow['base_setting_fp'], 'S0');
     expect(baseRow['prompts_fp'], 'S0');
     expect(baseRow['failed_fp'], 'S0');
     expect(baseRow['rounds_fp'], 'R1');
+    await db.close();
+  });
+
+  test('v15→v20 迁移：同步元数据迁入本地同步库，用户库留空表壳且重跑幂等', () async {
+    final path = _newDbPath();
+
+    final db15 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 15, onCreate: _createV15Schema),
+    );
+    await db15.insert('books', {'title': '书S', 'uuid': 'u-s'});
+    // 三张同步表都有数据（v15 夹具经 v12~v14 链已建表）。
+    await db15.insert('sync_state', {
+      'id': 1,
+      'device_id': 'device-A',
+      'last_synced_at': 111,
+      'last_generation': 7,
+    });
+    await db15.insert('sync_book_base', {
+      'uuid': 'u-s',
+      'title': '书S',
+      'settings_fp': 'S0',
+      'rounds_fp': 'R1',
+      'worldbook_fp': 'W2',
+      'bookmods_fp': 'B3',
+    });
+    await db15.insert('sync_mod_base', {
+      'uuid': 'm-1',
+      'name': '风格S',
+      'fingerprint': 'F9',
+      'updated_at': 50,
+    });
+    await db15.close();
+
+    final db = await _openUpgraded(path);
+
+    // 用户库：三张同步表保留同 schema 空表壳（回退 ≤v19 旧版读空共基，功能可用）。
+    final userTables = await _tableNames(db);
+    for (final table in ['sync_state', 'sync_book_base', 'sync_mod_base']) {
+      expect(userTables, contains(table), reason: '用户库应保留空表壳 $table');
+      expect(await db.rawQuery('SELECT COUNT(*) AS c FROM "$table"'), [
+        {'c': 0},
+      ], reason: '空表壳不应有数据');
+    }
+
+    // 本地同步库：数据原样搬入（共基 / 本机状态都不丢）。
+    final local = await LocalSyncDb.instance.database;
+    final state = (await local.query('sync_state')).single;
+    expect(state['device_id'], 'device-A');
+    expect(state['last_generation'], 7);
+    final bookBase = (await local.query('sync_book_base')).single;
+    expect(bookBase['uuid'], 'u-s');
+    expect(bookBase['settings_fp'], 'S0');
+    expect(bookBase['rounds_fp'], 'R1');
+    final modBase = (await local.query('sync_mod_base')).single;
+    expect(modBase['uuid'], 'm-1');
+    expect(modBase['fingerprint'], 'F9');
+
+    // 迁移幂等：重跑 v20 分支（空壳已存在）不丢数据、不产生重复行。
+    await DatabaseHelper.migrate(db, 19, 20);
+    expect(await local.query('sync_state'), hasLength(1));
+    expect(await local.query('sync_book_base'), hasLength(1));
+    expect(await local.query('sync_mod_base'), hasLength(1));
+    expect(await db.rawQuery('SELECT COUNT(*) AS c FROM sync_book_base'), [
+      {'c': 0},
+    ], reason: '重跑后用户库仍是空表壳');
+
     await db.close();
   });
 
@@ -1112,8 +1209,7 @@ void main() {
 
     final db = await _openUpgraded(path);
     final ver = await db.rawQuery('PRAGMA user_version');
-    expect(ver.first.values.first, 19);
-    expect(DatabaseHelper.currentDbVersion, 19, reason: '代码期望版本必须与迁移目标一致');
+    expect(ver.first.values.first, DatabaseHelper.currentDbVersion);
 
     // 新表逐列核对（列名与顺序即 DDL 契约）。
     expect(
@@ -1258,7 +1354,8 @@ void main() {
     await downgraded.close();
 
     final reupgraded = await _openUpgraded(path);
-    expect((await reupgraded.rawQuery('PRAGMA user_version')).first.values.first, 19);
+    expect((await reupgraded.rawQuery('PRAGMA user_version')).first.values.first,
+        DatabaseHelper.currentDbVersion);
     expect((await reupgraded.query('round_stack')).single['uuid'], 'g1');
     expect((await reupgraded.query('rounds')).single['ai_narrative'], '老客户端正文');
     await reupgraded.close();
@@ -1320,6 +1417,13 @@ String _newDbPath() {
   final dir = Directory.systemTemp.createTempSync('db_migration_test_');
   _tempDirs.add(dir);
   return p.join(dir.path, 'narrchat.db');
+}
+
+/// 本地同步库临时路径（v20 迁移搬入目标，注册进 _tempDirs 统一清理）。
+String _newLocalSyncDbPath() {
+  final dir = Directory.systemTemp.createTempSync('local_sync_db_test_');
+  _tempDirs.add(dir);
+  return p.join(dir.path, 'narrchat_sync.db');
 }
 
 /// 历史 v11 schema（v10 + books.failed_user_images；尚无同步列/辅助表）。

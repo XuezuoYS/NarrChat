@@ -1,6 +1,6 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'database_helper.dart';
+import 'local_sync_db.dart';
 
 /// `sync_state` 单行记录：本设备同步状态与崩溃恢复标记。
 class SyncStateRecord {
@@ -114,9 +114,10 @@ abstract class SyncStateStore {
   Future<void> deleteModBase(String uuid);
 }
 
-/// 云同步状态 / 共基数据访问对象（仅读写同步辅助表，不触碰业务表）。
+/// 云同步状态 / 共基数据访问对象（仅读写本地同步元数据库 [LocalSyncDb]，
+/// 不触碰用户库业务表）。
 class SyncStateDao implements SyncStateStore {
-  final DatabaseHelper _helper = DatabaseHelper.instance;
+  final LocalSyncDb _helper = LocalSyncDb.instance;
 
   // ---------------------------------------------------------------------------
   // sync_state

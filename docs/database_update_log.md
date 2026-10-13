@@ -3,7 +3,7 @@
 > **文档定位**：**只追加**的数据库台账——按 DB 版本（`user_version`）记录每一次 schema 变更：
 > 改了什么、**随哪个 app 版本发布**、有哪些**破坏性 / 易踩坑**的注意点、迁移保障与测试锚点。
 > - **数据库说明（表 / 列 / 索引 / 不变量与边界语义）**：见 `docs/database.md`（随变更就地更新）
-> - **最新版本**：`19`（未发布，预计随 2.4.0）——最新条目即 §2 首条
+> - **最新版本**：`20`（未发布，预计随 2.4.0）——最新条目即 §2 首条
 > - **权威来源**：`lib/database/database_helper.dart` 的 `migrate()` 与 `_dbVersion`；历史提交可 `git log` 复核
 > - app 面向用户的更新说明在 `update_log.md`（**未经明确许可不改**）；本文件只记数据库维度
 
@@ -46,10 +46,41 @@
 | 17 | `3cd241b` | 2026-09-10 | **2.2.0** | 🔴 重建 `rounds`：Token 列改可空 + 新增 `cached_tokens_in` |
 | 18 | `d440029` | 2026-10-01 | **2.3.0** | `books.memory_summary_rounds`（记忆总结压缩档位） |
 | 19 | `d2e5d9a` | 2026-10-05 | **未发布**（预计 2.4.0） | `round_stack` 版本树 + `rounds.use_stack_uuid`（修改还原） |
+| 20 | 待提交 | 2026-10-13 | **未发布**（预计 2.4.0） | 同步元数据三表迁出用户库至本地同步库 `narrchat_sync.db`，用户库留空表壳 |
 
 ---
 
 ## 2. 逐版本条目
+
+### v20 · 2026-10-13 · 待提交 · **未发布**（预计随 2.4.0）
+
+**变更**
+- 同步元数据三表（`sync_state` / `sync_book_base` / `sync_mod_base`）**数据迁出用户库**，
+  改存本地同步库 `local_config/local_db/narrchat_sync.db`（新单例 `LocalSyncDb`，自身 `_dbVersion = 1`）。
+- 用户库内保留**同 schema 空表壳**：新装 onCreate 与 v20 迁移末尾都用
+  `LocalSyncDb.createSyncTables`（三表 DDL 唯一来源）建壳。
+- `SyncStateDao` 改指向 `LocalSyncDb`，API 不变；桌面 FFI 初始化抽公共方法
+  `ensureDesktopSqfliteFactory()`（`sqflite_desktop.dart`），两个 helper 共用。
+- `AppPaths` 新增 `localDbDir()` / `localSyncDatabasePath()`，目录预留后续 `narrchat_xxx.db` 式本地库。
+
+**破坏性与注意**
+- 🟢 业务无损：三表只存合并元数据 / 本机状态，非用户资产；迁移逐行搬入本地库（replace），
+  合并逻辑从不读它们，同步照常运行。
+- 🟡 **快照口径变化**：用户库整库字节即云端快照，v20 起快照只携带空表壳（0 行）——
+  不再把 `device_id` 等本机信息上云，也省体积；老快照里的共基行不参与合并（合并从不读元数据）。
+- 🟡 **回退兼容**：「新版 v20 → 回退 ≤v19 旧版」时旧版 `SyncStateDao` 直接查用户库，
+  读到空壳 = 空共基，同步可用而非 `no such table`——这是留壳而非删表的原因。
+- 🟡 对**从不带同步表的库**（如 v16/v18 形状）v20 分支早退、不触碰本地库，零副作用。
+
+**迁移保障**
+- v20 = 先全量读出三表行 → 打开 `LocalSyncDb` 逐行 replace 写入 → 用户库 DROP →
+  重建空壳；任何一张都不存在时直接 return（不开本地库）。
+- 幂等：重跑 v20 分支时壳内无行、本地库 replace 不重复；`CREATE TABLE IF NOT EXISTS`。
+- 新装库 ≡ 迁移库：两处空壳共用 `LocalSyncDb.createSyncTables`，DDL 逐字一致（测试锁定）。
+
+**测试**：`test/database_migration_test.dart`（v15→v20 迁库数据保留、用户库空表壳、重跑幂等、
+v11→v12 / v13→v14 断言改锚定本地库）、`test/local_sync_db_test.dart`（三表 schema、
+`SyncStateDao` CRUD 往返、新装用户库空表壳与本地库 DDL 一致）。
 
 ### v19 · 2026-10-05 · `d2e5d9a` · **未发布**（预计随 2.4.0）
 

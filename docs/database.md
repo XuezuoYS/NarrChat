@@ -14,10 +14,10 @@
 | 项 | 值 |
 | --- | --- |
 | 引擎 | SQLite（Android/iOS：`sqflite` 原生插件；Windows/Linux/macOS：`sqflite_common_ffi`，见 `DatabaseHelper._open()`） |
-| 当前 schema 版本 | **19**（`DatabaseHelper._dbVersion` / `currentDbVersion`；随每次 schema 变更就地更新，历史见 `docs/database_update_log.md`） |
-| 库文件 | `<系统文档目录>/NarrChat/user_data/narrchat.db`（`AppPaths.userDatabasePath()`；测试可注入 `DatabaseHelper.debugDatabasePathOverride`） |
-| 访问入口 | `DatabaseHelper.instance.database`（单例，`onConfigure` 里 `PRAGMA foreign_keys = ON`） |
-| 表数量 | 9 张业务/同步表 + `sqlite_sequence` |
+| 当前 schema 版本 | **20**（`DatabaseHelper._dbVersion` / `currentDbVersion`；随每次 schema 变更就地更新，历史见 `docs/database_update_log.md`） |
+| 库文件 | 用户库 `<系统文档目录>/NarrChat/user_data/narrchat.db`（`AppPaths.userDatabasePath()`；测试可注入 `DatabaseHelper.debugDatabasePathOverride`）；本地同步库 `<系统文档目录>/NarrChat/local_config/local_db/narrchat_sync.db`（`AppPaths.localSyncDatabasePath()`；测试可注入 `LocalSyncDb.debugDatabasePathOverride`） |
+| 访问入口 | 用户库：`DatabaseHelper.instance.database`；本地同步库：`LocalSyncDb.instance.database`（均为单例，用户库 `onConfigure` 里 `PRAGMA foreign_keys = ON`） |
+| 表数量 | 用户库 9 张（6 业务 + 3 同步表壳）+ 本地同步库 3 张 + `sqlite_sequence` |
 | 恢复点 | 云端快照 `narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db`（`keepVersions` 默认 **5**） |
 
 数据分层的硬约定（见 `AGENTS.md`）：
@@ -26,13 +26,14 @@
 | --- | --- | --- |
 | 用户数据 | `user_data/narrchat.db`（书籍、轮次、版本树、Mod、世界书） | ✅ 走云同步（部件级） |
 | 本地数据 | `local_config/*.json`（见 §3） | ❌ 不云同步 |
+| 同步元数据 | `local_config/local_db/narrchat_sync.db`（本机同步状态 + 合并共基，见 §4/§5.6） | ❌ 不云同步（v20 起从用户库迁出） |
 | 令牌（AI / WebDAV） | 系统密钥库（`flutter_secure_storage`） | ❌ 禁止明文、禁止入云 |
 
 ---
 
 ## 2. 版本号与降级行为（重要）
 
-- `user_version` 即 schema 版本，代码期望值 = `DatabaseHelper.currentDbVersion`（19）。
+- `user_version` 即 schema 版本，代码期望值 = `DatabaseHelper.currentDbVersion`（20）。
   调试页「数据库检查」会并列展示「代码期望版本 vs `user_version`」，用于定位回退问题。
 - **老客户端（低版本）打开新库不会报错**：sqflite 在 `options.version < oldVersion` 时**什么都不做**，
   随后把 `user_version` 写回低版本 → schema 与数据原样保留。
@@ -52,6 +53,7 @@
 | `round_warnings.json` | `local_config/` | 轮次常驻「黄框」警告（本地提示，不入库、不云同步），`FileRoundWarningsStore` |
 | `db_fingerprint.json` | `local_config/` | 库文件基线（`size` + `mtimeMs` + `updatedAt`），`DbFingerprintStore`：启动发现不一致 → 全量采纳一次（**不做整库哈希**） |
 | `img_tombstones.json` | `local_config/` + 云端 | 图片删除墓碑（工作副本 + 云端同一文件），`ImgTombstones` |
+| `narrchat_sync.db` | `local_config/local_db/` | 同步元数据库（本机同步状态 + 三向合并共基），`LocalSyncDb` / `SyncStateDao`；v20 起从用户库迁出，目录预留后续 `narrchat_xxx.db` 式本地库 |
 | `manifest.json` | 云端（WebDAV 根） | 同步清单：代数、各部件指纹、图片清单 |
 | `sync_config.json` | 云端 | 同步配置（`keepVersions`，默认 5） |
 | `narrchat.db` 快照 | 云端 | `narrchat_snapshot_g<gen>_<yyyyMMdd_HHmmss>.db`，按 `keepVersions` 保留份数 |
@@ -68,9 +70,15 @@
 | `world_book_entries` | `id`（自增） | 世界书条目 | 设置部件 |
 | `mods` | `uuid` | 用户 Mod（提示词内容包） | Mod 部件 |
 | `book_mods` | `id`（自增） | 书籍 ↔ Mod 挂载与顺序（含预置 Mod） | 设置部件 |
-| `sync_state` | `id`（恒 1） | 本机同步状态：设备 id、上次同步时间/代数、进行中标记、上次阶段/错误 | ❌ 本地 |
-| `sync_book_base` | `uuid` | 三向合并共基（per-book 各部件指纹） | ❌ 本地 |
-| `sync_mod_base` | `uuid` | 三向合并共基（per-mod 指纹） | ❌ 本地 |
+| `sync_state` | `id`（恒 1） | 本机同步状态：设备 id、上次同步时间/代数、进行中标记、上次阶段/错误 | ❌ 本地同步库 |
+| `sync_book_base` | `uuid` | 三向合并共基（per-book 各部件指纹） | ❌ 本地同步库 |
+| `sync_mod_base` | `uuid` | 三向合并共基（per-mod 指纹） | ❌ 本地同步库 |
+
+> **v20 起同步表数据只存本地同步库**（`local_config/local_db/narrchat_sync.db`，`LocalSyncDb`）：
+> 用户库整库字节即云端快照，元数据随快照上传既带本机信息（`device_id`）又徒增体积，故迁出。
+> 用户库内保留**同 schema 空表壳**（新装与迁移后均存在），兼容「新版 v20 → 回退 ≤v19 旧版」：
+> 旧版 `SyncStateDao` 直接查用户库，读到空壳 = 空共基，同步照常可用而非 `no such table`。
+> 三表 DDL 的唯一来源是 `LocalSyncDb.createSyncTables`（本地库 onCreate、用户库空壳、历史迁移分支共用）。
 
 > 图片删除墓碑**不在数据库**（已文件化，见 §3）；早期开发库的 `sync_pending_del` /
 > `sync_image_revived` 两张表在 v16 迁移里被无条件 `DROP`，现行 schema 从不创建它们。
@@ -196,7 +204,10 @@
 - `mods`：`uuid` PK；`name` NOT NULL；`description` / `pre_prompt` / `post_prompt` / `system_prompt` / `world_book` DEFAULT `''`；`created_at` / `updated_at` DATETIME；`deleted_at` INTEGER（软删墓碑，v12 加列）。
 - `book_mods`：`id` PK AUTOINCREMENT；`book_uuid`（FK → `books.uuid` CASCADE）；`preset_key`（预置 Mod 用键）；`mod_uuid`（用户 Mod，**预置行为 NULL**，FK → `mods.uuid` CASCADE）；`sort_order` NOT NULL DEFAULT 0；`is_enabled` NOT NULL DEFAULT 1。
 
-### 5.6 同步辅助表（都是**本地**数据，不入云）
+### 5.6 同步辅助表（**本地同步库** `local_config/local_db/narrchat_sync.db`，不入云）
+
+> v20 起数据只在本地同步库；用户库中同名表是**同 schema 空表壳**（回退兼容，见 §4 注），
+> 下列列定义对两处都适用（同一 DDL 来源 `LocalSyncDb.createSyncTables`）。
 
 - `sync_state`：单行（`id INTEGER PRIMARY KEY CHECK (id = 1)`）；`device_id` / `last_synced_at` /
   `last_generation` / `sync_in_flight` / `last_phase` / `last_error`。
@@ -241,6 +252,9 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
   老备份无表 → 保留本地 stack；合并决策页每侧显示只读代次标签（`versionLabel`）。
 - **图片平面**：`cloud_sync_provider._referencedImages()` 把 `round_stack` 的图片也计入引用集，
   避免"只被历史代引用"的图被图片同步当垃圾删除（切回旧代会裂图）。
+- **快照不再携带同步元数据（v20 起）**：`sync_state` / `sync_book_base` / `sync_mod_base` 已迁至
+  本地同步库（`local_config/local_db/narrchat_sync.db`），用户库整库快照里只剩同 schema 空表壳（0 行）；
+  老快照里的共基行不参与合并（合并从不读同步元数据），下载采纳后被 v20 迁移搬进本地库并清空壳。
 - **自动同步触发**：生成、删除轮次触发；**采纳与切换不触发**（采纳的调用方本身就是触发节点；
   切换只改投影锚点、内容权威未变，靠下一次节点带走）。白名单见 `docs/sync_auto_triggers.md`。
 
@@ -277,7 +291,8 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
 
 | 测试文件 | 覆盖 |
 | --- | --- |
-| `test/database_migration_test.dart` | 逐版本迁移分支、**迁移产物 ≡ 新装库 DDL**、幂等重跑、**降级回退后重升**、数据零改写、外键顺序陷阱 |
+| `test/database_migration_test.dart` | 逐版本迁移分支、**迁移产物 ≡ 新装库 DDL**、幂等重跑、**降级回退后重升**、数据零改写、外键顺序陷阱、v20 同步元数据迁库（空表壳 + 幂等） |
+| `test/local_sync_db_test.dart` | 本地同步库三表 schema（uuid 主键 / 单行约束 / 子部件列）、`SyncStateDao` CRUD 往返、`putBookBase` 清子部件列、新装用户库空表壳与本地库 DDL 逐字一致 |
 | `test/round_stack_dao_test.dart` | 分组读写、序号分配 / 复用、use 落库、物理删除、整体替换排序、根口径（`NULL` ≡ 空串）、索引命中（`EXPLAIN QUERY PLAN`）、删书无孤儿、删软墓碑清 stack |
 | `test/round_stack_model_test.dart` | 版本树模型 ↔ 库列互转（时间戳 ms ↔ ISO、空父亲归一化、`use` 状态）、`Round.useStackUuid` 往返 |
 | `test/round_stack_service_test.dart` | 归一化、活动链、投影重建、生成 / 原地改 / 切换 / 删除 / 孤儿清理、断裂轮号上溯与跳空洞 |
