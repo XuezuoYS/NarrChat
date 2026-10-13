@@ -9,7 +9,7 @@ import 'package:narrchat/widgets/notice_visuals.dart';
 import 'helpers/notice_harness.dart';
 
 /// 悬浮通知渠道（[FloatingNoticeHost]）的 widget 测试：
-/// 窗口正中半透明、200ms 进 / 3s 驻 / 1s 出、点击与按住划过提前消失、
+/// 窗口正中半透明、200ms 进 / 3s 驻 / 400ms 出、点击与按住划过提前消失、
 /// 鼠标悬停不触发、单槽位排队与去重、窄屏可查阅。
 void main() {
   testWidgets('无通知时不占位', (tester) async {
@@ -45,7 +45,7 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('窗口正中 + 半透明：驻留 3s 后进入 1s 消失动画', (tester) async {
+  testWidgets('窗口正中 + 半透明：驻留 3s 后进入消失动画', (tester) async {
     final center = await pumpNoticeApp(tester);
     center.show('已复制');
     await settleNoticeEnter(tester);
@@ -67,7 +67,7 @@ void main() {
     expect(center.isExiting, isFalse);
     expect(find.text('已复制'), findsOneWidget);
 
-    // 到点：进入退出动画（1s 内仍在树上）。
+    // 到点：进入退出动画（动画期间仍在树上）。
     await tester.pump(const Duration(seconds: 1));
     expect(center.isExiting, isTrue);
     expect(find.text('已复制'), findsOneWidget);

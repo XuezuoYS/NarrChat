@@ -13,7 +13,7 @@
 
 | 渠道 | 承载内容 | 位置 | 生命周期 | 实现 |
 | --- | --- | --- | --- | --- |
-| **悬浮** | 普通短提示：保存 / 复制 / 校验 / 失败摘要 | 窗口正中、半透明卡片 | 进入 200ms → 驻留 3s → 消失 1000ms | `AppNoticeCenter` + `FloatingNoticeHost` |
+| **悬浮** | 普通短提示：保存 / 复制 / 校验 / 失败摘要 | 窗口正中、半透明卡片 | 进入 200ms → 驻留 3s → 消失 400ms | `AppNoticeCenter` + `FloatingNoticeHost` |
 | **驻场** | 云同步进度、云同步结果、正在生成 | 顶部居中（标题栏下方 + 8） | 有内容才存在，条目按类型自动撤销 | `PinnedNoticeIsland` |
 | **系统** | 生成完成、后台保活、更新失败 | 操作系统通知中心 | 由系统管理 | `GenerationNotificationService` |
 
@@ -44,14 +44,14 @@ class AppNotice { int id; String message; NoticeKind kind; Duration dwell; bool 
 ### 2.2 状态机与时序
 
 ```
-入队 → queued → visible(进入 200ms) → dwelling(dwell) → exiting(1000ms) → removed → 下一条
+入队 → queued → visible(进入 200ms) → dwelling(dwell) → exiting(400ms) → removed → 下一条
 ```
 
 | 项 | 常量 | 值 |
 | --- | --- | --- |
 | 进入动画 | `AppNoticeCenter.enterDuration` | 200ms（fade + scale 0.96→1.0） |
 | 驻留时长 | `AppNoticeCenter.defaultDwell` | 3s（驻留计时自入队起算，含进入动画；可由 `dwell:` 覆盖） |
-| 退出动画 | `AppNoticeCenter.exitDuration` | 1000ms（`animateBack(0)`，无论动画进度如何都走满 1s） |
+| 退出动画 | `AppNoticeCenter.exitDuration` | 400ms（`animateBack(0)`，无论动画进度如何都走满整个时长） |
 | 队列上限 | `AppNoticeCenter.maxPending` | 8（超出丢弃最旧待显示条目） |
 
 **计时归中心，动画归宿主**：驻留与兜底定时器在 `AppNoticeCenter`，
@@ -64,7 +64,7 @@ class AppNotice { int id; String message; NoticeKind kind; Duration dwell; bool 
 
 | 触发 | 行为 |
 | --- | --- |
-| 驻留到点 | 自动进入 1000ms 消失动画 |
+| 驻留到点 | 自动进入 400ms 消失动画 |
 | **点击**悬浮通知 | 立即进入消失动画 |
 | **按住划过**（触控 / 鼠标按下后拖动） | 立即进入消失动画 |
 | **鼠标悬停** | **不触发**（划过不等于点击） |
@@ -342,7 +342,7 @@ RoundProvider.activeGenerationBookUuids ─┘
 | 文件 | 覆盖 |
 | --- | --- |
 | `test/app_notice_center_test.dart` | 单槽 FIFO、去重、上限淘汰、驻留到点、点击/划过提前退出、兜底移除、`reset` / `dispose` 无悬挂定时器 |
-| `test/floating_notice_test.dart` | 居中 + 半透明、**黑底白字与半透明度（≤ 0.85）**、200ms/3s/1s 时序、点击与按住划过提前消失、悬停不触发、去重、320 宽可换行不溢出、`copyable` |
+| `test/floating_notice_test.dart` | 居中 + 半透明、**黑底白字与半透明度（≤ 0.85）**、200ms/3s/400ms 时序、点击与按住划过提前消失、悬停不触发、去重、320 宽可换行不溢出、`copyable` |
 | `test/pinned_notice_island_test.dart` | 空闲不占位、**正在查看的那本书不提示 / 离开页面才提示 / 返回后消失 / 看别的书时仍提示**（回归：曾在当前书生成时也提示）、**出现 / 消失动画（200ms 淡入淡出 + 淡出期间保留快照）**、**黑底白字视觉**、收起态无取消按钮、展开后分平面取消、生成段计数与跳转、结果 3s/15s 自动撤销、「已读」提前收起、主文案优先级、窄屏不溢出 |
 | `test/narr_chat_app_bar_test.dart` | 统一顶栏自身：无左键时标题保留 16px 标准左留白且不显示返回键、**无常驻岛时标题用满顶栏宽度（不被预留）**、可返回路由自动出返回键并让位、**返回根路由后返回键不残留**（回归） |
 | `test/island_bar_test.dart` | 顶栏 × 岛协作：**窄屏收起（无岛）时顶栏原有元素不被附加行挤压**（回归：曾被 0 高槽位里的占位框把工具栏压成 28px）、**切换页面（返回）后岛仍嵌在新顶栏槽位里**（回归：曾被旧槽位销毁发布 `null` 打回悬浮位）、**窄屏时岛在附加行内居中且上下都有顶栏背景留白**、**附加行 140ms 内拉满且中间态为过渡值**、无常驻岛时标题不受挤压、宽屏嵌入（槽位在工具栏内、水平居中、标题被挤压且不重叠、保底 8 字宽）、**嵌入态非线性收放宽度 + 标题逐帧跟随**、**内容变长时宽度带动画过渡（首帧不跳变、中段在两端之间）**、消失收窄后撤下、展开脱离（悬浮在顶栏下方 + 槽位收缩为小标记 + 点击收回）、无顶栏页面回退悬浮、岛消失后附加行收回 |

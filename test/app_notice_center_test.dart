@@ -9,6 +9,14 @@ void main() {
   /// 进入动画 + 默认驻留：驻留计时从入队时刻起算（含进入动画）。
   final fullDwell = AppNoticeCenter.enterDuration + AppNoticeCenter.defaultDwell;
 
+  test('退出动画时长保持在 300~500ms 轻快区间', () {
+    expect(
+      AppNoticeCenter.exitDuration.inMilliseconds,
+      inInclusiveRange(300, 500),
+      reason: '消失动画过慢会显得拖沓，过快则看不清退场',
+    );
+  });
+
   test('单槽位：新条目排队，前一条移除后接上下一条', () {
     final center = AppNoticeCenter();
     center.show('第一条');

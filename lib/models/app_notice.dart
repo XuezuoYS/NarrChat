@@ -17,7 +17,7 @@ enum NoticeKind {
 
   /// 驻场岛里结果条目的自动撤销时长（到点无条件移除；[error] 另提供「已读」提前收起）。
   ///
-  /// 悬浮渠道不使用本值：悬浮通知统一「常驻 3 秒 + 消失动画 1 秒」，
+  /// 悬浮渠道不使用本值：悬浮通知统一「常驻 3 秒 + 消失动画 400ms」，
   /// 仅由调用点显式传入的 `dwell` 覆盖（见 `AppNotice.dwell`）。
   Duration get dwell => switch (this) {
     NoticeKind.info => const Duration(seconds: 3),
@@ -30,7 +30,7 @@ enum NoticeKind {
 /// 一条悬浮通知（[AppNoticeCenter] 的队列条目）。
 ///
 /// 只承载「短提示」：内容在窗口正中半透明悬浮，进入 200ms → 驻留 `dwell`
-/// → 退出 1000ms；点击 / 按住划过可提前进入退出动画。
+/// → 退出 400ms；点击 / 按住划过可提前进入退出动画。
 class AppNotice {
   const AppNotice({
     required this.id,

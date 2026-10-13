@@ -10,7 +10,7 @@ import 'notice_visuals.dart';
 /// 悬浮通知渠道宿主：窗口正中半透明悬浮弹出（挂在应用顶层 [Stack]）。
 ///
 /// 时序（常量见 [AppNoticeCenter]）：进入 200ms → 常驻 3s（可被调用点覆盖）
-/// → 消失动画 1000ms；点击或按住划过立即进入消失动画，**鼠标悬停不触发**。
+/// → 消失动画 400ms；点击或按住划过立即进入消失动画，**鼠标悬停不触发**。
 /// 单槽位：一次只显示一条，队列与去重由 [AppNoticeCenter] 负责。
 class FloatingNoticeHost extends StatelessWidget {
   const FloatingNoticeHost({super.key});
@@ -89,10 +89,10 @@ class _FloatingNoticeCardState extends State<_FloatingNoticeCard>
     super.dispose();
   }
 
-  /// 播放 1s 消失动画；播完回报中心移除本条并接上队列下一条。
+  /// 播放消失动画；播完回报中心移除本条并接上队列下一条。
   ///
   /// 用 [AnimationController.animateBack] 而非 `reverse()`：无论当前动画进度
-  /// 如何（例如进入动画尚未播完就被点击），消失动画都保证走满 1 秒。
+  /// 如何（例如进入动画尚未播完就被点击），消失动画都保证走满整个时长。
   void _playExit() {
     _controller.animateBack(0, duration: AppNoticeCenter.exitDuration).whenComplete(() {
       // 未挂载说明宿主已被整体移除（中心另有兜底定时器），不再回报。

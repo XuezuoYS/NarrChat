@@ -68,7 +68,7 @@ Future<void> settleNoticeEnter(WidgetTester tester) async {
   await tester.pump(AppNoticeCenter.enterDuration); // 进入动画完成
 }
 
-/// 走完悬浮通知的消失动画（1s），并让宿主完成移除。
+/// 走完悬浮通知的消失动画，并让宿主完成移除。
 Future<void> settleNoticeExit(WidgetTester tester) async {
   await tester.pump(AppNoticeCenter.exitDuration);
   await tester.pump(AppNoticeCenter.exitDuration);
@@ -77,7 +77,7 @@ Future<void> settleNoticeExit(WidgetTester tester) async {
 
 /// 清空通知中心：取消驻留 / 兜底定时器，避免 `testWidgets` 结束时报「悬挂定时器」。
 ///
-/// 用例若未把提示自然走完（3s 驻留 + 1s 退出），须在结束前调用一次并 `pump()`。
+/// 用例若未把提示自然走完（3s 驻留 + 退出动画），须在结束前调用一次并 `pump()`。
 void drainNotices(AppNoticeCenter center) => center.reset();
 
 /// 当前树上的通知中心（页面用例收尾 / 额外断言用）。

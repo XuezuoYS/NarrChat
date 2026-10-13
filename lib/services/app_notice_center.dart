@@ -22,7 +22,7 @@ class AppNoticeCenter extends ChangeNotifier {
   static const Duration enterDuration = Duration(milliseconds: 200);
 
   /// 退出动画时长（宿主据此播放）。
-  static const Duration exitDuration = Duration(milliseconds: 1000);
+  static const Duration exitDuration = Duration(milliseconds: 400);
 
   /// 默认驻留时长（进入动画结束后开始计时）。
   static const Duration defaultDwell = Duration(seconds: 3);
