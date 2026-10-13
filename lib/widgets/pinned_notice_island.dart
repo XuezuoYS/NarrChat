@@ -25,7 +25,7 @@ import 'notice_visuals.dart';
 /// - 顶栏把「槽位矩形」发布出来 → 收起态胶囊画在该矩形里（宽屏居中嵌入工具栏，
 ///   窄屏 / 预算不足时顶栏向下多出一行）；
 /// - 点击胶囊 → 200ms 从槽位脱离到悬浮位置（顶栏下方 +8、居中、宽 `min(360, 窗口-24)`），
-///   槽位处留下一枚小标记，点击标记即可把岛收回顶栏；
+///   槽位处留下一枚小标记；点击小标记 / 头部箭头 / **岛外任意位置**均可收回顶栏；
 /// - 页面没有槽位（对话框 / 独立窗口 / 未接顶栏的页面）时退化为顶部悬浮。
 class PinnedNoticeIsland extends StatefulWidget {
   const PinnedNoticeIsland({super.key, required this.onOpenBook});
@@ -290,6 +290,27 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
     }
   }
 
+  /// 收回展开态（岛外遮罩点击用；头部箭头 / 小标记走 [_toggle]）。
+  void _collapse() {
+    if (!_expanded) return;
+    _toggle();
+  }
+
+  /// 展开态的岛外点击收回遮罩：透明、铺满全窗口、吸收点击（不穿透到页面）。
+  ///
+  /// 作为 [Stack] 首个子件铺在岛卡片下层，岛自身的点击照常由卡片处理；
+  /// 与系统弹层 / 下拉菜单「点击外部关闭」的语义一致。仅展开态挂载。
+  Widget _buildDismissBarrier() {
+    return Positioned.fill(
+      child: GestureDetector(
+        key: const ValueKey('island_dismiss_barrier'),
+        behavior: HitTestBehavior.opaque,
+        onTap: _collapse,
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sync = context.watch<CloudSyncProvider>();
@@ -442,6 +463,8 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
         final visible = _visibleWidth.clamp(0.0, targetWidth);
         return Stack(
           children: [
+            // 展开态：岛外点击收回遮罩（透明、吸收点击，不穿透到页面）。
+            if (_expanded) _buildDismissBarrier(),
             // 宽度为 0 时也照常布局（只是被裁成不可见）：胶囊需要先参与布局才能
             // 测出自然宽度，否则「先有宽度再测量、先测量才有宽度」互相等待。
             if (present || visible > 0.5)
@@ -501,47 +524,53 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
   ) {
     final media = MediaQuery.of(context);
     final panelWidth = math.min(_panelWidth, media.size.width - 24);
-    return Align(
-      alignment: Alignment.topCenter,
-      child: Padding(
-        padding: EdgeInsets.only(
-          top: media.padding.top + kToolbarHeight + 8,
-          left: 12,
-          right: 12,
-        ),
-        child: AnimatedBuilder(
-          animation: Listenable.merge([_presence, _widthAnim]),
-          builder: (context, child) {
-            final t = Curves.easeOutCubic.transform(_presence.value);
-            // 淡出播完且已无内容 → 从树上撤下（出现首帧仍保留内容，避免闪空）。
-            if (t == 0 && !present) return const SizedBox.shrink();
-            return Opacity(
-              key: const ValueKey('island_presence'),
-              opacity: t,
-              child: Transform.translate(
-                offset: Offset(0, -_presenceSlide * (1 - t)),
-                // 悬浮态同样把「长度变化」做成动画（文字变长变短不跳变）。
-                child: ClipPath(
-                  clipper: _CenteredCapsuleClipper(
-                    width: _visibleWidth,
-                    radius: _expanded ? kNoticeRadius : 999,
+    return Stack(
+      children: [
+        // 展开态：岛外点击收回遮罩（透明、吸收点击，不穿透到页面）。
+        if (_expanded) _buildDismissBarrier(),
+        Align(
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: EdgeInsets.only(
+              top: media.padding.top + kToolbarHeight + 8,
+              left: 12,
+              right: 12,
+            ),
+            child: AnimatedBuilder(
+              animation: Listenable.merge([_presence, _widthAnim]),
+              builder: (context, child) {
+                final t = Curves.easeOutCubic.transform(_presence.value);
+                // 淡出播完且已无内容 → 从树上撤下（出现首帧仍保留内容，避免闪空）。
+                if (t == 0 && !present) return const SizedBox.shrink();
+                return Opacity(
+                  key: const ValueKey('island_presence'),
+                  opacity: t,
+                  child: Transform.translate(
+                    offset: Offset(0, -_presenceSlide * (1 - t)),
+                    // 悬浮态同样把「长度变化」做成动画（文字变长变短不跳变）。
+                    child: ClipPath(
+                      clipper: _CenteredCapsuleClipper(
+                        width: _visibleWidth,
+                        radius: _expanded ? kNoticeRadius : 999,
+                      ),
+                      child: child,
+                    ),
                   ),
-                  child: child,
-                ),
+                );
+              },
+              child: _buildCard(
+                context,
+                content: content,
+                contentWidth: panelWidth,
+                panelMaxHeight: media.size.height * _panelMaxHeightRatio,
+                radius: _expanded ? 16 : 999,
+                elevation: 6,
+                measurePill: !_expanded,
               ),
-            );
-          },
-          child: _buildCard(
-            context,
-            content: content,
-            contentWidth: panelWidth,
-            panelMaxHeight: media.size.height * _panelMaxHeightRatio,
-            radius: _expanded ? 16 : 999,
-            elevation: 6,
-            measurePill: !_expanded,
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 

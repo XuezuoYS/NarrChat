@@ -43,6 +43,7 @@ class _FakeRoundProvider extends RoundProvider {
 
 /// 驻场岛（[PinnedNoticeIsland]）测试：
 /// 收起态只有图标 + 主文案（无取消按钮）、点击展开后含分平面取消与生成书列表、
+/// 展开后点击岛外任意位置收回（且点击不穿透到页面）、
 /// 结果条目成功 3s / 失败 15s 自动收起、「已读」提前收起、空闲不占位。
 ///
 /// 注意：岛上常驻转圈动画（无限 ticker），**不能用 `pumpAndSettle`**，
@@ -54,6 +55,7 @@ void main() {
     RoundProvider? roundProvider,
     List<Book> books = const [],
     void Function(String bookUuid)? onOpenBook,
+    Widget? home,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
@@ -83,7 +85,7 @@ void main() {
             onOpenBook: onOpenBook ?? (_) {},
             child: child ?? const SizedBox.shrink(),
           ),
-          home: const Scaffold(body: SizedBox.expand()),
+          home: home ?? const Scaffold(body: SizedBox.expand()),
         ),
       ),
     );
@@ -230,6 +232,51 @@ void main() {
     await tester.tap(find.byIcon(Icons.expand_less));
     await tester.pump();
     expect(find.byTooltip('取消数据同步'), findsNothing);
+  });
+
+  /// 带点击计数的页面：验证岛外点击是否穿透到岛下方的页面。
+  Widget tapCountingHome(void Function() onTap) {
+    return Scaffold(
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+
+  testWidgets('展开态：点击岛外任意位置收回，且点击不穿透到页面', (tester) async {
+    var pageTaps = 0;
+    final sync = await pumpIsland(
+      tester,
+      home: tapCountingHome(() => pageTaps++),
+    );
+    sync.debugSetSyncState(SyncPlane.data, SyncState.syncing);
+    await expand(tester);
+    expect(find.byTooltip('取消数据同步'), findsOneWidget, reason: '确认已展开');
+
+    // 点击岛外空白处（窗口底部正中，远离顶部的岛）。
+    await tester.tapAt(const Offset(700, 800));
+    await tester.pump();
+    expect(find.byTooltip('取消数据同步'), findsNothing, reason: '岛收回为收起态');
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    expect(pageTaps, 0, reason: '点击被遮罩吸收，不穿透到下方页面');
+  });
+
+  testWidgets('收起态：不挂遮罩，岛外点击照常落到页面', (tester) async {
+    var pageTaps = 0;
+    final sync = await pumpIsland(
+      tester,
+      home: tapCountingHome(() => pageTaps++),
+    );
+    sync.debugSetSyncState(SyncPlane.data, SyncState.syncing);
+    await settlePresence(tester);
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+
+    await tester.tapAt(const Offset(700, 800));
+    await tester.pump();
+    expect(pageTaps, 1, reason: '收起态岛外点击照常穿透到页面');
+    expect(find.byIcon(Icons.expand_more), findsOneWidget, reason: '岛维持收起态');
   });
 
   testWidgets('两平面同时在跑：收起态显示主平面 + "+1"，展开后各段独立取消', (tester) async {
