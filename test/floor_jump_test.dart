@@ -650,4 +650,52 @@ void main() {
     await tester.pumpAndSettle();
     expectRoundStartAligned(tester, 5);
   });
+
+  testWidgets('超长用户气泡展开成全文后：跳转仍精确落到目标轮起点（高度账本随展开更新）',
+      (tester) async {
+    // 第 4 轮的用户输入 400 行：收起 7 行、展开后高数千 px。展开只改气泡**内部**
+    // 的高度，itemBuilder 不重跑 —— 高度账本必须由条目自己上报；沿用陈旧高度时，
+    // 未构建条目的偏移估算会被带偏数千 px，跳转落点跟着乱。
+    final dao = FakeRoundDao();
+    for (var i = 1; i <= 6; i++) {
+      await dao.insertRound(
+        Round(
+          bookUuid: kHarnessBookUuid,
+          roundIndex: i,
+          userInput: i == 4
+              ? List.generate(400, (n) => '第 ${n + 1} 行超长输入').join('\n')
+              : '第 $i 轮的用户输入',
+          aiNarrative: '第 $i 轮的剧情正文。' * 40,
+          currentTime: '第一天 午时',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      roundDao: dao,
+    );
+    await tester.pump();
+
+    // 跳到第 4 轮，展开超长用户气泡（控件在气泡最底行，此时在视口内）。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '4');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    final expandArrow = find.byIcon(Icons.keyboard_arrow_down_rounded);
+    expect(expandArrow, findsOneWidget, reason: '第 4 轮正文超过 7 行 → 有展开控件');
+    await tester.tap(expandArrow);
+    await tester.pump();
+    expect(find.byIcon(Icons.keyboard_arrow_up_rounded), findsOneWidget,
+        reason: '正文已展开为全文');
+
+    // 再跳到第 2 轮（位于展开气泡的**上方**）：它的偏移估算要用到第 4 轮的新高度。
+    await openFloorBar(tester);
+    await tester.enterText(numberField(), '2');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expectRoundStartAligned(tester, 2);
+    expect(tester.takeException(), isNull);
+  });
 }

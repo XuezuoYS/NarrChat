@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart'
     show
         RenderAbstractViewport,
+        RenderProxyBox,
         RenderSliverMultiBoxAdaptor,
         ScrollDirection,
         SliverMultiBoxAdaptorParentData;
@@ -192,10 +193,16 @@ class _ChatScreenState extends State<ChatScreen>
   /// （见 [ReadingAnchor] 的说明与 [ReadingAnchorScrollPhysics]）。
   final ReadingAnchor _readingAnchor = ReadingAnchor();
 
-  /// 消息列的滚动物理：在平台默认物理之上叠加阅读位置补偿。
-  /// 实例在 State 生命周期内保持稳定（物理按约定不可变，测量值放在 [_readingAnchor]）。
+  /// 用户气泡展开 / 收起时「锁住气泡顶边」的待补偿偏移（见 [ScrollLockAnchor]）。
+  final ScrollLockAnchor _scrollLockAnchor = ScrollLockAnchor();
+
+  /// 消息列的滚动物理：在平台默认物理之上叠加阅读位置补偿与展开 / 收起锁顶边。
+  /// 实例在 State 生命周期内保持稳定（物理按约定不可变，测量值放在两个锚点里）。
   late final ReadingAnchorScrollPhysics _chatScrollPhysics =
-      ReadingAnchorScrollPhysics(anchor: _readingAnchor);
+      ReadingAnchorScrollPhysics(
+    anchor: _readingAnchor,
+    lock: _scrollLockAnchor,
+  );
 
   /// 当前待发送的用户消息附件（图片，相对路径 `img/<hash>.<ext>`）。
   final List<String> _pendingImages = [];
@@ -2651,7 +2658,8 @@ class _ChatScreenState extends State<ChatScreen>
           return _FloorMeasuredItem(
             key: itemKeys[logicalIndex],
             itemIndex: logicalIndex,
-            onReport: _onItemMeasured,            child: Center(
+            onReport: _onItemMeasured,
+            child: Center(
               key: logicalIndex == _floorJumpTargetIndex
                   ? _floorJumpTargetKey
                   : null,
@@ -3832,56 +3840,97 @@ class _FloorJumpBarAppearanceState extends State<_FloorJumpBarAppearance>
   }
 }
 
-/// 楼层跳转：列表项**高度**自上报部件。
+/// 楼层跳转：列表项**高度**自上报部件（纯代理，不改变布局）。
 ///
-/// 构建/内容变化后在帧末回报该项实测高度（通过 [onReport]），供楼层跳转估算
-/// 未构建条目的偏移使用。刻意**不使用逐项 GlobalKey**（避免虚拟化列表中大量
-/// GlobalKey 带来的元素/键冲突风险）：部件通过自身 context 找到 RenderBox 读取
-/// 尺寸，且仅在帧末、mounted 时读取，无需父级持有任何键。
+/// 高度变化时在帧末把实测高度交给 [onReport]，供楼层跳转估算未构建条目的偏移
+/// 使用。刻意**不使用逐项 GlobalKey**（避免虚拟化列表中大量 GlobalKey 带来的
+/// 元素/键冲突风险）：部件本身就是渲染对象，自己读自己的尺寸。
+///
+/// 上报挂在**渲染对象**的 `performLayout` 上，而不是 State 的 `initState` /
+/// `didUpdateWidget`：条目内部的状态变化会改高度却**不会**让 itemBuilder 重跑
+/// （用户气泡展开 / 收起、代次控件显隐、流式正文增长），State 那套钩子根本收不到
+/// —— 陈旧高度留在账本里，楼层估算（[_avgItemHeightFor] / [_estimateItemOffset]）
+/// 就会偏出几千 px，跳转落点跟着乱。
 ///
 /// 只上报高度、**不上报偏移**：偏移随懒加载列表的「范围估算」重排而失效
 /// （详见 [_liveChatItems]）。
-class _FloorMeasuredItem extends StatefulWidget {
+class _FloorMeasuredItem extends SingleChildRenderObjectWidget {
   final int itemIndex;
   final void Function(int itemIndex, double height) onReport;
-  final Widget child;
 
   const _FloorMeasuredItem({
     super.key,
     required this.itemIndex,
     required this.onReport,
-    required this.child,
+    required Widget super.child,
   });
 
   @override
-  State<_FloorMeasuredItem> createState() => _FloorMeasuredItemState();
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderFloorMeasuredItem(itemIndex: itemIndex, onReport: onReport);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderFloorMeasuredItem renderObject,
+  ) {
+    renderObject
+      ..itemIndex = itemIndex
+      ..onReport = onReport;
+  }
 }
 
-class _FloorMeasuredItemState extends State<_FloorMeasuredItem> {
-  @override
-  void initState() {
-    super.initState();
+/// [_FloorMeasuredItem] 的渲染对象：自身高度变化时帧末上报。
+class _RenderFloorMeasuredItem extends RenderProxyBox {
+  _RenderFloorMeasuredItem({
+    required int itemIndex,
+    required void Function(int itemIndex, double height) onReport,
+  })  :
+        // ignore: prefer_initializing_formals
+        _itemIndex = itemIndex,
+        // ignore: prefer_initializing_formals
+        _onReport = onReport;
+
+  int _itemIndex;
+
+  set itemIndex(int value) {
+    if (_itemIndex == value) return;
+    _itemIndex = value;
+    // 下标含义变了（轮次增删）：同一高度也要按新下标重新记账。
     _scheduleReport();
   }
 
+  void Function(int itemIndex, double height) _onReport;
+
+  set onReport(void Function(int itemIndex, double height) value) =>
+      _onReport = value;
+
+  /// 上次已上报的高度；-1 = 本对象尚未上报过。
+  double _reportedHeight = -1;
+
+  /// 本帧是否已排过一次上报（同一帧多次布局只排队一次）。
+  bool _reportScheduled = false;
+
   @override
-  void didUpdateWidget(covariant _FloorMeasuredItem oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // 内容/宽度变化导致高度变化时重新上报。
-    _scheduleReport();
+  void performLayout() {
+    super.performLayout();
+    if (size.height != _reportedHeight) _scheduleReport();
   }
 
   void _scheduleReport() {
+    if (_reportScheduled) return;
+    _reportScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final ro = context.findRenderObject();
-      if (ro is! RenderBox) return;
-      widget.onReport(widget.itemIndex, ro.size.height);
+      _reportScheduled = false;
+      if (!attached) return;
+      // 帧末现读：本帧后续布局可能又改过尺寸。
+      final height = size.height;
+      // 0 高（条目刚插入尚未量到内容）不该进账本，否则把均值模型拉偏。
+      if (height <= 0) return;
+      _reportedHeight = height;
+      _onReport(_itemIndex, height);
     });
   }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }
 
 /// 输入面板上方的 1:1 方形按钮（40×40）。

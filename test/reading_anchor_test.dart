@@ -194,5 +194,165 @@ void main() {
       expect(identical(composed.anchor, anchor), isTrue);
       expect(composed.parent, isA<ClampingScrollPhysics>());
     });
+
+    test('applyTo 同样传递锁顶边锚（与平台物理叠加后仍读得到请求）', () {
+      final lock = ScrollLockAnchor();
+      final composed = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: lock,
+      ).applyTo(const ClampingScrollPhysics());
+      expect(identical(composed.lock, lock), isTrue);
+    });
+  });
+
+  group('ScrollLockAnchor（展开 / 收起补偿请求）', () {
+    ScrollMetrics metrics({required double pixels, double max = 2000}) =>
+        FixedScrollMetrics(
+          minScrollExtent: 0,
+          maxScrollExtent: max,
+          pixels: pixels,
+          viewportDimension: 800,
+          axisDirection: AxisDirection.up,
+          devicePixelRatio: 1.0,
+        );
+
+    /// 造一个「已上报 300 → 长高到 300 + growth」的锚点。
+    ReadingAnchor anchored(double growth) {
+      final anchor = ReadingAnchor();
+      final source = Object();
+      anchor.record(source, 300);
+      anchor.takeGrowth();
+      anchor.record(source, 300 + growth);
+      return anchor;
+    }
+
+    test('请求的偏移在布局阶段补进位置，且读取即清零', () {
+      final lock = ScrollLockAnchor()..request(shift: 300);
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: lock,
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        800,
+        reason: '展开 300px → 偏移 +300（顶边视觉位置不动）',
+      );
+      expect(lock.takeRequest().isEmpty, isTrue, reason: '同一次布局的重试不重复补偿');
+    });
+
+    test('贴底也要补：贴底展开正是「内容向下铺开」需要的那次滚动', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: ScrollLockAnchor()..request(shift: 300),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 0),
+          newPosition: metrics(pixels: 0),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        300,
+        reason: '阅读锚定的贴底规则不适用于用户主动展开',
+      );
+    });
+
+    test('补偿用**新**范围夹取：超过新 max 时停在端点，不会反向', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: ScrollLockAnchor()..request(shift: 5000),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 1900, max: 2000),
+          newPosition: metrics(pixels: 1900, max: 2000),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        2000,
+      );
+    });
+
+    test('零偏移 + 压掉锚定增长：位置完全不动（顶边已滚出视口时的收起）', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: anchored(-800),
+        lock: ScrollLockAnchor()..request(suppressAnchorGrowth: true),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        500,
+        reason: '用户主动改高度时不该被当成「视口下方长高」再补一次',
+      );
+      // 压掉只作用于这一次布局。
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        500,
+        reason: '增长量已被清零，后续布局不再补偿',
+      );
+    });
+
+    test('锁顶边与阅读锚定的增长各自独立相加', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: anchored(80),
+        lock: ScrollLockAnchor()..request(shift: 40),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        620,
+        reason: '两件事分别补：展开 40 + 视口下方长高 80',
+      );
+    });
+
+    test('未声明压掉时，锚定增长照旧补偿', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: anchored(80),
+        lock: ScrollLockAnchor()..request(shift: 40, suppressAnchorGrowth: false),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        620,
+      );
+    });
+
+    test('极小的请求被忽略（不产生无意义位移）', () {
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: ScrollLockAnchor()..request(shift: 0.2),
+      );
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        500,
+      );
+    });
   });
 }

@@ -52,22 +52,99 @@ class ReadingAnchor {
   }
 }
 
+/// 一次「展开 / 收起」补偿请求（见 [ScrollLockAnchor]）。
+class ScrollLockRequest {
+  const ScrollLockRequest({this.shift = 0, this.suppressAnchorGrowth = false});
+
+  /// 要补进滚动偏移的量（px）：正 = 内容下移（锁顶边时"长高"）。
+  final double shift;
+
+  /// 本次布局是否不再叠加阅读锚定的增长量。
+  ///
+  /// 用户主动改气泡高度时，这个高度变化会被阅读锚定看成「视口下方内容长高」
+  /// 再补一次（它是为流式生长设计的），于是整屏位移翻倍；由发起方明确声明
+  /// 「这次变化归我」，就不会重复补。
+  final bool suppressAnchorGrowth;
+
+  /// 空请求（无补偿、不干预锚定）。
+  static const ScrollLockRequest none = ScrollLockRequest();
+
+  bool get isEmpty => shift == 0 && !suppressAnchorGrowth;
+}
+
+/// 「展开 / 收起」时对滚动偏移的显式请求（待补偿量 + 是否压掉阅读锚定）。
+///
+/// 用法：气泡在切换展开状态前把请求交给 [request]；
+/// [ReadingAnchorScrollPhysics] 在**下一帧的布局阶段**取走它再落地。
+///
+/// 为什么不在气泡里直接 `jumpTo`：切换瞬间列表还是**旧尺寸**，
+/// `maxScrollExtent` 尚未把新高度算进去，自己夹紧会把补偿量吃掉
+/// （超长气泡 Δ 数千 px 时正好差出几个端点）；而越过旧范围的偏移又不会被框架
+/// 夹回（`RangeMaintainingScrollPhysics` 在「本次位置已变」时不再强制边界），
+/// 会留下空白。放到布局阶段就都用**新**范围夹取，且修正发生在视口重排的重试
+/// 循环里，本帧即按补偿后的位置重排重绘。
+///
+/// 也刻意**不做**「帧末按实测位置再补一次」：那是点击之后再移动内容，
+/// 会把正在按下 / 抬起的点击从控件下面挪走（点击被吞），且能反向甩动。
+class ScrollLockAnchor {
+  double _pendingShift = 0;
+  bool _suppressAnchorGrowth = false;
+
+  /// 请求下次布局把滚动偏移补 [shift]、并按需压掉阅读锚定的增长。
+  void request({double shift = 0, bool suppressAnchorGrowth = false}) {
+    if (shift.abs() >= _kMinimumShift) _pendingShift += shift;
+    if (suppressAnchorGrowth) _suppressAnchorGrowth = true;
+  }
+
+  /// 取走本次请求（读取即清零）；无请求时为 [ScrollLockRequest.none]。
+  ScrollLockRequest takeRequest() {
+    if (_pendingShift == 0 && !_suppressAnchorGrowth) {
+      return ScrollLockRequest.none;
+    }
+    final request = ScrollLockRequest(
+      shift: _pendingShift,
+      suppressAnchorGrowth: _suppressAnchorGrowth,
+    );
+    _pendingShift = 0;
+    _suppressAnchorGrowth = false;
+    return request;
+  }
+}
+
+/// 小于该偏移（px）的补偿直接跳过（避免无意义的位移）。
+const double _kMinimumShift = 0.5;
+
 /// 把「视口下方内容长高」补回滚动偏移的滚动物理。
 ///
 /// 贴底（`pixels == minScrollExtent`）时**不补偿**：保留「新内容自动把旧内容顶上去」
 /// 的贴底语义；只有读者已离开底部时才补偿，从而保持阅读位置。
+///
+/// 另外承担 [ScrollLockAnchor] 的显式请求（气泡展开 / 收起）：那一份是**用户主动
+/// 改内容高度**，贴底也要补（贴底时正是「内容向下铺开」需要的那次滚动），
+/// 并且可以声明「压掉锚定的增长」，避免同一次高度变化被补两遍。
 class ReadingAnchorScrollPhysics extends ScrollPhysics {
-  const ReadingAnchorScrollPhysics({required this.anchor, super.parent});
+  const ReadingAnchorScrollPhysics({
+    required this.anchor,
+    this.lock,
+    super.parent,
+  });
 
   /// 测量来源（由宿主 State 持有，见 [ReadingAnchor]）。
   final ReadingAnchor anchor;
+
+  /// 「展开 / 收起」的请求来源；不接此功能的列表传 null。
+  final ScrollLockAnchor? lock;
 
   /// 视为「已贴底、不补偿」的残余误差（px）。
   static const double atBottomEpsilon = 0.5;
 
   @override
   ReadingAnchorScrollPhysics applyTo(ScrollPhysics? ancestor) =>
-      ReadingAnchorScrollPhysics(anchor: anchor, parent: buildParent(ancestor));
+      ReadingAnchorScrollPhysics(
+        anchor: anchor,
+        lock: lock,
+        parent: buildParent(ancestor),
+      );
 
   @override
   double adjustPositionForNewDimensions({
@@ -77,15 +154,24 @@ class ReadingAnchorScrollPhysics extends ScrollPhysics {
     required double velocity,
   }) {
     // 先让父级物理（平台默认 + RangeMaintaining）把位置修到合法范围。
-    final result = super.adjustPositionForNewDimensions(
+    var result = super.adjustPositionForNewDimensions(
       oldPosition: oldPosition,
       newPosition: newPosition,
       isScrolling: isScrolling,
       velocity: velocity,
     );
+    // 展开 / 收起锁顶边：显式请求，贴底也补（见 [ScrollLockAnchor]）。
+    final request = lock?.takeRequest() ?? ScrollLockRequest.none;
+    if (request.shift != 0) {
+      result = (result + request.shift).clamp(
+        newPosition.minScrollExtent,
+        newPosition.maxScrollExtent,
+      );
+    }
     // 读取即清零：同一次布局的重试（本修正会触发 `RenderViewport` 重排一次）
     // 再进来时增量已为 0，不会重复补偿。
-    final growth = anchor.takeGrowth();
+    var growth = anchor.takeGrowth();
+    if (request.suppressAnchorGrowth) growth = 0;
     if (growth == 0) return result;
     if (newPosition.pixels <= newPosition.minScrollExtent + atBottomEpsilon) {
       // 贴底：不补偿，让新内容把旧内容顶上去。
