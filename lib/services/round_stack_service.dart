@@ -26,6 +26,8 @@ class RoundStackIndex {
   factory RoundStackIndex.fromMetas(List<RoundStackMeta> metas) {
     final byGroup = <String, List<RoundStackMeta>>{};
     for (final meta in metas) {
+      // 失败占位代不是「代」：不进索引（不参与代次控件、存活代数与回落目标）。
+      if (meta.isFailed) continue;
       (byGroup[RoundStackService.groupKey(meta.roundIndex, meta.fatherUuid)] ??=
               <RoundStackMeta>[])
           .add(meta);
@@ -138,6 +140,14 @@ class RoundStackService {
     return RoundStackIndex.fromMetas(metas);
   }
 
+  /// 读出该书全部**代级提示**（稀疏：只返回带提示的行；含失败占位代）。
+  ///
+  /// UI 的提示唯一来源：提示挂在代上，切换 / 删除 / 同步都随行而行。
+  Future<List<RoundStackMessage>> loadMessages(String bookUuid) async {
+    if (bookUuid.isEmpty) return const [];
+    return _stack.loadMessagesByBook(bookUuid);
+  }
+
   // ---------------------------------------------------------------------------
   // 写：生成 / 原地修改
   // ---------------------------------------------------------------------------
@@ -148,10 +158,15 @@ class RoundStackService {
   /// [fatherUuid]：上一轮**当前代**的 uuid（第零轮 / 无前轮传 null）。重写第 i
   /// 轮时应先删该轮起的投影行（见 [deleteProjectionFrom]）再调用，
   /// 旧代**保留**为同父兄弟代，供 `← / →` 切回。
+  ///
+  /// [message] / [messageStatus]：本代的提示（常驻警告等），随建代同一事务落库；
+  /// 与内容指纹无关，故「同内容不同提示」不会长出新代。
   Future<int> attachNewGeneration({
     required String bookUuid,
     required Round round,
     String? fatherUuid,
+    String message = '',
+    String? messageStatus,
   }) async {
     final father = RoundStackRow.normalizeFather(fatherUuid);
     return _inTxn((txn) async {
@@ -167,6 +182,8 @@ class RoundStackService {
         fatherUuid: father,
         roundSerialNum: _nextSerial(group.map((m) => m.roundSerialNum)),
         roundState: 'use',
+        message: message,
+        messageStatus: messageStatus,
       );
       await _stack.insertGeneration(txn, row);
       await _stack.setGroupUseState(
@@ -179,6 +196,89 @@ class RoundStackService {
       final id = await _rounds.upsertProjectionRow(txn, round, row.uuid);
       await DatabaseHelper.touchBook(txn, bookUuid, rounds: true);
       return id;
+    });
+  }
+
+  /// 追加 / 覆盖某一代的提示（`message` 空 = 清除该代提示）。
+  ///
+  /// 与内容无关的一次写：[touchBook] 照碰轮次时间戳（提示属「轮次部件」的变化，
+  /// 不碰就会出现「本机清了、对端下次推送又把它带回来」）。
+  Future<void> setGenerationMessage({
+    required String bookUuid,
+    required String generationUuid,
+    String message = '',
+    String? messageStatus,
+  }) async {
+    if (bookUuid.isEmpty || generationUuid.isEmpty) return;
+    await _inTxn((txn) async {
+      final row = await RoundStackDao.getByUuidFrom(txn, generationUuid);
+      if (row == null || row.bookUuid != bookUuid) return;
+      await _stack.setMessage(
+        txn,
+        generationUuid,
+        message: message,
+        status: messageStatus,
+      );
+      await DatabaseHelper.touchBook(txn, bookUuid, rounds: true);
+    });
+  }
+
+  /// 记录一次**生成失败**：为「本该产生的那一轮」写一个失败占位代
+  /// （`round_state = 'failed'`，内容全空、只带提示，级别固定 `error`）。
+  ///
+  /// - 先清掉本书旧的失败占位代（失败态语义 = 只保留**最近一次**，与
+  ///   `books.failed_*` 的清除时机完全一致）；
+  /// - 失败占位代**不进**活动链 / 代次控件 / 回落目标，也不参与采纳的内容比对
+  ///   （见 `RoundStackIndex.fromMetas` / [planChain] / `_adoptInTxn`）；
+  /// - [message] 为空 = 用户中断（与 `FailedAttempt.isTruncated` 同一语义：
+  ///   「这一轮没产出」由占位代本身表达）。
+  ///
+  /// 返回新建占位代的 uuid（调用方缓存其提示）。
+  Future<String> recordFailure({
+    required String bookUuid,
+    required int roundIndex,
+    String? fatherUuid,
+    String message = '',
+  }) async {
+    if (bookUuid.isEmpty) return '';
+    final father = RoundStackRow.normalizeFather(fatherUuid);
+    return _inTxn((txn) async {
+      await _stack.deleteFailedRows(txn, bookUuid);
+      final group = await RoundStackDao.loadGroupFrom(
+        txn,
+        bookUuid,
+        roundIndex,
+        father,
+      );
+      final uuid = UuidUtils.generateUuidV4();
+      final row = RoundStackRow(
+        uuid: uuid,
+        bookUuid: bookUuid,
+        fatherUuid: father,
+        roundIndex: roundIndex,
+        roundSerialNum: _nextSerial(group.map((m) => m.roundSerialNum)),
+        roundState: 'failed',
+        roundCreatedAt: DateTime.now(),
+        message: message,
+        messageStatus: 'error',
+      );
+      await _stack.insertGeneration(txn, row);
+      await DatabaseHelper.touchBook(txn, bookUuid, rounds: true);
+      return uuid;
+    });
+  }
+
+  /// 清除本书全部失败占位代（新请求开始 / 清除失败条目 / 轮次操作前）。
+  ///
+  /// 返回是否有行被删除（调用方据此决定要不要触发同步）。**不预读元数据**：
+  /// 一次 `DELETE`（走 `ix_stack_book`）即可，避免每次生成都白读整书版本树。
+  Future<bool> clearFailures(String bookUuid) async {
+    if (bookUuid.isEmpty) return false;
+    return _inTxn((txn) async {
+      final removed = await _stack.deleteFailedRows(txn, bookUuid);
+      if (removed == 0) return false;
+      await DatabaseHelper.touchBook(txn, bookUuid, rounds: true);
+      return true;
     });
   }
 
@@ -325,20 +425,19 @@ class RoundStackService {
       bool sameGroup(RoundStackRow row) =>
           row.roundIndex == anchor.roundIndex &&
           row.fatherUuid == anchor.fatherUuid;
+      // 回落代只在「真代」里挑：失败占位代内容全空，回落过去会让该轮气泡变空。
+      bool candidate(RoundStackRow row) =>
+          sameGroup(row) && !doomed.contains(row.uuid) && !row.isFailed;
       final fallbackSerial = fallbackSerialFor(
         [
           for (final row in rows)
-            if (sameGroup(row) && !doomed.contains(row.uuid))
-              row.roundSerialNum,
+            if (candidate(row)) row.roundSerialNum,
         ],
         anchor.roundSerialNum,
       );
       if (fallbackSerial == null) return false;
       final fallback = rows.firstWhere(
-        (row) =>
-            sameGroup(row) &&
-            !doomed.contains(row.uuid) &&
-            row.roundSerialNum == fallbackSerial,
+        (row) => candidate(row) && row.roundSerialNum == fallbackSerial,
       );
       await _stack.deleteByUuids(txn, doomed);
       await _stack.setGroupUseState(
@@ -501,6 +600,9 @@ class RoundStackService {
   /// ① 分组内 `state='use'` 的行；② 无 `use` → 序号最大者；
   /// ③ 找不到「以现任 uuid 为父」的更大轮号分组（含**轮号断裂**处）→ 链在此结束。
   ///
+  /// **失败占位代不参与选择**：整组只有失败占位代时该处链不延续（否则会把
+  /// 「没产出内容的一轮」插进投影，气泡变空）。
+  ///
   /// 轮号可断裂（用户删掉中间某一轮、老客户端留空洞）：此处**跳过空洞**向后找
   /// 最近一个以现任 uuid 为父的分组，因此 `1,2,50` 这种轮号序列在切换到第 2 轮
   /// 的某一代时，第 50 轮仍会随父一起出现。
@@ -514,16 +616,18 @@ class RoundStackService {
     var current = anchor;
     while (true) {
       int? next;
+      RoundStackRow? selected;
       for (final j in indexes) {
         if (j <= current.roundIndex) continue;
         final group = byGroup[groupKey(j, current.uuid)];
-        if (group != null && group.isNotEmpty) {
-          next = j;
-          break;
-        }
+        if (group == null) continue;
+        final picked = _pickInGroup(group);
+        if (picked == null) continue; // 该分组只有失败占位代 → 链不在此延续
+        next = j;
+        selected = picked;
+        break;
       }
-      if (next == null) break;
-      final selected = _pickInGroup(byGroup[groupKey(next, current.uuid)]!);
+      if (next == null || selected == null) break;
       if (!seen.add(selected.uuid)) break; // 脏数据成环时兜底
       chain.add(selected);
       current = selected;
@@ -662,6 +766,8 @@ class RoundStackService {
           byGroup[groupKey(round.roundIndex, father)] ?? const <RoundStackRow>[];
       RoundStackRow? hit;
       for (final candidate in group) {
+        // 失败占位代不是内容：不参与「同内容代复用」（它内容全空）。
+        if (candidate.isFailed) continue;
         if (contentFpOfStack(candidate) == fp) {
           hit = candidate;
           break;
@@ -707,6 +813,9 @@ class RoundStackService {
     //
     // 扫描上限取「投影行与版本树行的最大轮号」：老客户端删掉末尾轮次时
     // `rounds` 里已看不到该轮，但它的代仍在库里（必须按缺口处理）。
+    //
+    // **失败占位代不算缺口**：它天然位于「尚未产生的那一轮」（`rounds` 里本来
+    // 就没有该轮），是要保留的提示载体，不参与缺口子树删除。
     var removedSubtree = 0;
     final fresh = await RoundStackDao.loadByBookFrom(e, bookUuid);
     final maxIndex = [
@@ -722,7 +831,8 @@ class RoundStackService {
       final father = nearestEarlierAnchor(anchorByIndex, i);
       final roots = [
         for (final row in fresh)
-          if (row.roundIndex == i && row.fatherUuid == father) row,
+          if (row.roundIndex == i && row.fatherUuid == father && !row.isFailed)
+            row,
       ];
       if (roots.isEmpty) continue;
       removedSubtree++;
@@ -822,7 +932,10 @@ class RoundStackService {
     }
 
     // use 归一化：多个 use → 序号最大者；无 use → 存活代中序号最大者。
-    final ordered = [...metas]..sort(_byOldestFirst);
+    // **失败占位代不参与**：整组只有失败占位代时保持原样（不能把「没产出的代」设成 use）。
+    final alive = [for (final meta in metas) if (!meta.isFailed) meta];
+    if (alive.isEmpty) return changes;
+    final ordered = [...alive]..sort(_byOldestFirst);
     final uses = [
       for (final meta in ordered)
         if (meta.isUse) meta,
@@ -841,13 +954,15 @@ class RoundStackService {
     return changes + 1 + clearUse.length;
   }
 
-  /// 分组内选中的活着代：优先 `use`，否则序号最大者。
-  static RoundStackRow _pickInGroup(List<RoundStackRow> group) {
-    for (final row in group) {
+  /// 分组内选中的活着代：优先 `use`，否则序号最大者；**整组只有失败占位代 → null**。
+  static RoundStackRow? _pickInGroup(List<RoundStackRow> group) {
+    final alive = [for (final row in group) if (!row.isFailed) row];
+    if (alive.isEmpty) return null;
+    for (final row in alive) {
       if (row.isUse) return row;
     }
-    var best = group.first;
-    for (final row in group) {
+    var best = alive.first;
+    for (final row in alive) {
       if (_byOldestFirstRow(row, best) > 0) best = row;
     }
     return best;

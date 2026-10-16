@@ -1068,8 +1068,9 @@ void main() {
     expect(provider.roundWarningsFor(1), isEmpty);
   });
 
-  test('AGENT 空正文轮：不写库、失败条目保留输入 + 黄框说明状态作废', () async {
+  test('AGENT 空正文轮：不写库、失败条目保留输入 + 提示说明状态作废', () async {
     final dao = FakeRoundDao();
+    final stack = FakeRoundStackService(roundDao: dao);
     final ai = AiService(
       client: MockClient((request) async => sse([
         // 每帧只有状态工具调用，从不产出正文 → 正文轮耗尽 → 本轮判失败。
@@ -1082,7 +1083,7 @@ void main() {
     );
     final provider = RoundProvider(
       dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
+      roundStackService: stack,
       bookDao: FakeBookDao(),
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
@@ -1095,14 +1096,19 @@ void main() {
     // 不写入半截轮次；用户输入走既有失败条目（可一键重试）。
     expect(dao.rounds.where((r) => r.roundIndex > 0), isEmpty);
     expect(provider.failedAttempt.userInput, '只调工具');
-    // 黄框挂在「本该产生的那一轮」上，说明状态改动已作废（仅内存）。
+    // 提示挂在失败占位代上（`round_stack` 的 error 行），说明状态改动已作废；
+    // 失败原因与过程警告合并为同一条提示。
     expect(
-      provider.roundWarningsFor(provider.nextRoundIndex),
+      provider.failureMessageLines,
       contains('本轮未产出正文（模型只返回了工具调用），本轮的状态改动已作废。'),
     );
-    // 清除失败条目 → 该黄框一并清除。
+    final failure = stack.rows['b1']!.singleWhere((row) => row.isFailed);
+    expect(failure.messageStatus, 'error');
+    expect(failure.roundIndex, provider.nextRoundIndex);
+    // 清除失败条目 → 该提示一并清除。
     await provider.clearFailedAttempt();
-    expect(provider.roundWarningsFor(provider.nextRoundIndex), isEmpty);
+    expect(provider.failureMessageLines, isEmpty);
+    expect(stack.rows['b1']!.any((row) => row.isFailed), isFalse);
   });
 }
 

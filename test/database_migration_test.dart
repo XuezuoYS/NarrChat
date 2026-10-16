@@ -1235,6 +1235,8 @@ void main() {
         'model_name',
         'user_images',
         'ai_images',
+        'message',
+        'message_status',
       ],
     );
     expect(
@@ -1407,6 +1409,96 @@ void main() {
         'use_stack_uuid',
       ),
     );
+    await migrated.close();
+  });
+
+  test('v20 → v21：round_stack 增加提示两列（列尾 / 老行零改写 / 幂等重跑 / 降级再升）',
+      () async {
+    final path = _newDbPath();
+    final db20 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 20, onCreate: _createV20Schema),
+    );
+    await db20.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db20.insert('round_stack', {
+      'uuid': 'g-1',
+      'book_uuid': 'u-1',
+      'round_index': 1,
+      'round_serial_num': 1,
+      'round_state': 'use',
+      'round_created_at': 1700000000000,
+      'user_input': '输入',
+      'ai_narrative': '正文',
+      'user_images': '[]',
+      'ai_images': '[]',
+    });
+    await db20.close();
+
+    final migrated = await _openUpgraded(path);
+    expect(
+      (await migrated.rawQuery('PRAGMA user_version')).first.values.first,
+      DatabaseHelper.currentDbVersion,
+    );
+    final cols =
+        _columnNames(await migrated.rawQuery('PRAGMA table_info(round_stack)'));
+    expect(
+      cols.sublist(cols.length - 2),
+      ['message', 'message_status'],
+      reason: '迁移用 ADD COLUMN，两列必须落在表尾（与新装库 DDL 同位置）',
+    );
+    // 老行零改写：内容原样 + 新增列取默认空串。
+    final row = (await migrated.query('round_stack')).single;
+    expect(row['user_input'], '输入');
+    expect(row['ai_narrative'], '正文');
+    expect(row['round_state'], 'use');
+    expect(row['message'], '');
+    expect(row['message_status'], '');
+    await migrated.close();
+
+    // 降级回退后再升（v9 时代的真实事故场景：列已存在 + user_version 已回退）
+    // → 必须靠列预检跳过，不得报 `duplicate column name`。
+    final downgraded = await databaseFactoryFfi.openDatabase(path);
+    await downgraded.execute('PRAGMA user_version = 20');
+    await downgraded.close();
+    final reupgraded = await _openUpgraded(path);
+    expect(
+      _columnNames(await reupgraded.rawQuery('PRAGMA table_info(round_stack)')),
+      cols,
+      reason: '重跑 v21 分支不得重复建列',
+    );
+    expect((await reupgraded.query('round_stack')).single['user_input'], '输入');
+    await reupgraded.close();
+  });
+
+  test('v21 提示两列的迁移产物 ≡ 新装库（类型 / 非空 / 默认值）', () async {
+    final migratedPath = _newDbPath();
+    final db20 = await databaseFactoryFfi.openDatabase(
+      migratedPath,
+      options: OpenDatabaseOptions(version: 20, onCreate: _createV20Schema),
+    );
+    await db20.insert('books', {'uuid': 'u-1', 'title': '书A'});
+    await db20.close();
+    final migrated = await _openUpgraded(migratedPath);
+
+    final freshPath = _newDbPath();
+    DatabaseHelper.debugDatabasePathOverride = freshPath;
+    final fresh = await DatabaseHelper.instance.database;
+    addTearDown(() async {
+      DatabaseHelper.debugDatabasePathOverride = null;
+      await DatabaseHelper.instance.close();
+    });
+
+    final migratedInfo =
+        _columnInfo(await migrated.rawQuery('PRAGMA table_info(round_stack)'));
+    final freshInfo =
+        _columnInfo(await fresh.rawQuery('PRAGMA table_info(round_stack)'));
+    for (final column in ['message', 'message_status']) {
+      expect(
+        _columnSpec(migratedInfo, column),
+        _columnSpec(freshInfo, column),
+        reason: '$column 在迁移库与新装库之间不一致（应复用同一 DDL 口径）',
+      );
+    }
     await migrated.close();
   });
 }
@@ -1707,6 +1799,53 @@ Future<void> _createV18Schema(Database db, int version) async {
     'ALTER TABLE books ADD COLUMN memory_summary_rounds INTEGER NOT NULL DEFAULT 0',
   );
   await db.execute('ALTER TABLE rounds ADD COLUMN cached_tokens_in INTEGER');
+}
+
+/// 已发布 v20 schema：v18 + v19 的 `round_stack`（**不含 v21 的提示两列**）
+/// + `rounds.use_stack_uuid`。
+///
+/// 说明：v20 的「同步元数据迁出用户库」不在此复刻——迁移只走 v21 分支
+/// （`oldVersion = 20` 不进 v20 分支），残留的同步表壳不影响任何断言。
+Future<void> _createV20Schema(Database db, int version) async {
+  await _createV18Schema(db, version);
+  await db.execute('''
+    CREATE TABLE round_stack (
+      uuid             TEXT PRIMARY KEY,
+      book_uuid        TEXT NOT NULL,
+      father_uuid      TEXT,
+      round_index      INTEGER NOT NULL,
+      round_serial_num INTEGER NOT NULL,
+      round_state      TEXT,
+      round_created_at INTEGER NOT NULL DEFAULT 0,
+      user_input         TEXT DEFAULT '',
+      ai_narrative       TEXT DEFAULT '',
+      world_state        TEXT DEFAULT '',
+      character_state    TEXT DEFAULT '',
+      memory_summary     TEXT DEFAULT '',
+      current_time       TEXT DEFAULT '',
+      recommended_action TEXT DEFAULT '',
+      tokens_in          INTEGER,
+      tokens_out         INTEGER,
+      cached_tokens_in   INTEGER,
+      model_name         TEXT DEFAULT '',
+      user_images        TEXT NOT NULL DEFAULT '[]',
+      ai_images          TEXT NOT NULL DEFAULT '[]',
+      FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE
+    )
+  ''');
+  await db.execute(
+    'CREATE INDEX ix_stack_group ON round_stack '
+    '(book_uuid, round_index, father_uuid, round_serial_num)',
+  );
+  await db.execute(
+    'CREATE INDEX ix_stack_father ON round_stack (father_uuid)',
+  );
+  await db.execute(
+    'CREATE INDEX ix_stack_book ON round_stack (book_uuid, round_index)',
+  );
+  await db.execute(
+    "ALTER TABLE rounds ADD COLUMN use_stack_uuid TEXT DEFAULT ''",
+  );
 }
 
 /// 库内全部表名（墓碑表等「不应存在」的断言用）。

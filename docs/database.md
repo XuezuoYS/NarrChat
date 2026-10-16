@@ -14,7 +14,7 @@
 | 项 | 值 |
 | --- | --- |
 | 引擎 | SQLite（Android/iOS：`sqflite` 原生插件；Windows/Linux/macOS：`sqflite_common_ffi`，见 `DatabaseHelper._open()`） |
-| 当前 schema 版本 | **20**（`DatabaseHelper._dbVersion` / `currentDbVersion`；随每次 schema 变更就地更新，历史见 `docs/database_update_log.md`） |
+| 当前 schema 版本 | **21**（`DatabaseHelper._dbVersion` / `currentDbVersion`；随每次 schema 变更就地更新，历史见 `docs/database_update_log.md`） |
 | 库文件 | 用户库 `<系统文档目录>/NarrChat/user_data/narrchat.db`（`AppPaths.userDatabasePath()`；测试可注入 `DatabaseHelper.debugDatabasePathOverride`）；本地同步库 `<系统文档目录>/NarrChat/local_config/local_db/narrchat_sync.db`（`AppPaths.localSyncDatabasePath()`；测试可注入 `LocalSyncDb.debugDatabasePathOverride`） |
 | 访问入口 | 用户库：`DatabaseHelper.instance.database`；本地同步库：`LocalSyncDb.instance.database`（均为单例，用户库 `onConfigure` 里 `PRAGMA foreign_keys = ON`） |
 | 表数量 | 用户库 9 张（6 业务 + 3 同步表壳）+ 本地同步库 3 张 + `sqlite_sequence` |
@@ -50,7 +50,7 @@
 | 文件 | 位置 | 作用 |
 | --- | --- | --- |
 | `app_settings.json` | `local_config/` | 本地设置（AI / UI / 实验性开关等），`LocalConfigService` |
-| `round_warnings.json` | `local_config/` | 轮次常驻「黄框」警告（本地提示，不入库、不云同步），`FileRoundWarningsStore` |
+| ~~`round_warnings.json`~~ | ~~`local_config/`~~ | **v21 起取消**：轮次提示改存 `round_stack.message`（随代持久化 + 云同步），`FileRoundWarningsStore` 与旧文件一并删除，不做迁移（老文件可能残留在磁盘上，但不再读也不再写） |
 | `db_fingerprint.json` | `local_config/` | 库文件基线（`size` + `mtimeMs` + `updatedAt`），`DbFingerprintStore`：启动发现不一致 → 全量采纳一次（**不做整库哈希**） |
 | `img_tombstones.json` | `local_config/` + 云端 | 图片删除墓碑（工作副本 + 云端同一文件），`ImgTombstones` |
 | `narrchat_sync.db` | `local_config/local_db/` | 同步元数据库（本机同步状态 + 三向合并共基），`LocalSyncDb` / `SyncStateDao`；v20 起从用户库迁出，目录预留后续 `narrchat_xxx.db` 式本地库 |
@@ -66,7 +66,7 @@
 | --- | --- | --- | --- |
 | `books` | `uuid` | 书籍：设置、失败条目、写时间戳、软删墓碑 | 设置部件 / 轮次部件（失败列与时间戳） |
 | `rounds` | `id`（自增） | **轮次投影**（读权威）：当前生效的每一轮 | 轮次部件 |
-| `round_stack` | `uuid` | **版本树**：每一轮的历次生成（"代"） | 轮次部件（摘要折入） |
+| `round_stack` | `uuid` | **版本树**：每一轮的历次生成（"代"）+ 每代的提示 | 轮次部件（摘要 + 提示折入） |
 | `world_book_entries` | `id`（自增） | 世界书条目 | 设置部件 |
 | `mods` | `uuid` | 用户 Mod（提示词内容包） | Mod 部件 |
 | `book_mods` | `id`（自增） | 书籍 ↔ Mod 挂载与顺序（含预置 Mod） | 设置部件 |
@@ -135,7 +135,7 @@
 - 类型陷阱：`created_at` 是 **ISO8601 文本**，而版本树的 `round_created_at` 是 **epoch ms**；
   两者互转只在 `RoundStackRow.fromRound` / `toRound` 一处完成（`ms <= 0` ↔ `NULL`）。
 
-### 5.3 `round_stack`（版本树；v19 引入）
+### 5.3 `round_stack`（版本树；v19 引入，v21 增提示两列）
 
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
@@ -144,9 +144,51 @@
 | `father_uuid` | TEXT | NULL | 上一轮**当时活动代**的 uuid；`NULL`/空串 = 根（链首）。**刻意不建自引用外键** |
 | `round_index` | INTEGER | NOT NULL | 本代所属轮号 |
 | `round_serial_num` | INTEGER | NOT NULL | 分组内序号（可跳步；物理删除后**允许复用**） |
-| `round_state` | TEXT | NULL | `'use'` = 分组内选中记忆；`NULL` = 闲置（无第三态，删除即物理删除） |
+| `round_state` | TEXT | NULL | `'use'` = 分组内选中记忆；`'failed'` = **失败占位代**（见下）；`NULL` = 闲置 |
 | `round_created_at` | INTEGER | NOT NULL DEFAULT 0 | 本代创建时间（epoch ms；**不参与任何指纹**；0 = 无） |
 | 内容列 | — | 与 `rounds` 同形 | `user_input` … `recommended_action`、`tokens_*`、`model_name`、`user_images`、`ai_images` |
+| `message` | TEXT | DEFAULT `''`（v21 加列） | 本代的**提示文本**（多行用 `\n` 合并）；空 = 无提示 |
+| `message_status` | TEXT | DEFAULT `''`（v21 加列） | 提示级别：`'info'`（预留）/ `'warning'`（黄条）/ `'error'`（红条）；其余值一律按「无级别」处理 |
+
+**提示（`message` / `message_status`）的语义与不变量**：
+
+1. **提示是「代」的附注，不是内容**：不进 `RoundStackRow.contentMap()`、不进
+   `contentFpOfStack` / `contentFpOfRound`。否则「加一条提示」会被采纳判成内容变化 →
+   同内容长出新的代（代次爆炸 + 双设备反复推送）。
+2. 一条代一行提示；多行内容用 `\n` 合并，级别取**最高**（`error > warning > info`）。
+   失败尝试的提示 = 失败原因 + 本轮过程警告，合并为一条 `error` 提示。
+3. **读时归一化**（白名单 + 自愈）：级别只认 `info` / `warning` / `error`（大小写与空白宽容），
+   其它值 → 无级别；提示文本为空（含纯空白）→ 视为无提示、级别一并忽略。
+   写入侧截断到 4000 字符（`RoundStackRow.clampMessage`），防单行超大拖慢 B-tree 与快照。
+4. **进同步摘要**：`SyncFingerprint.stackDigest` 按行**稀疏追加**提示两项——
+   该行无提示时编码与「不含提示列」的历史版本**逐字节一致**，因此没有提示的书在
+   「新老客户端混用」期不会反复互推代数（细节见 §7）。
+5. **随代而行**：切换版本看到那一代自己的提示；删除代 / 删除轮次提示随行消失；
+   同步整体替换版本树时提示一起搬运。**不做逐代合并**（与轮次部件的既有粒度一致：
+   双端各改不同代的提示 → 冲突页整部件取舍，最后写入者胜）。
+6. **收窄的读取路径**：UI 热路径走 `RoundStackDao.loadMessagesByBook`（**稀疏查询**：
+   只取有提示的行），`metaColumns` 不加这两列——「元数据投影不含正文」的约定不变。
+
+**失败占位代（`round_state = 'failed'`，v21 起）**：
+
+生成失败时为「本该产生的那一轮」写一行占位代：身份 / 父锚点 / 序号与正常代同一套，
+**内容列全空**、`message_status = 'error'`、`message` = 失败原因（为空 = 用户中断，
+与 `FailedAttempt.isTruncated` 同一语义）。它**不是一代**：
+
+- 不进代次控件与存活代数（`RoundStackIndex.fromMetas` 过滤）；
+- 不被活动链选中（`planChain` / `_pickInGroup` 过滤）——否则投影会插进一个空轮；
+- 不被归一化设成 `'use'`、不作为单代删除的回落目标；
+- 不参与采纳的内容比对与「缺口子树删除」（它是刻意保留的提示载体）；
+- **失败仍不写 `rounds`**：投影与 `books.failed_*` 的既有行为不变。
+
+失败态仍是「**只保留最近一次**」：新请求开始 / 清除失败条目 / 任何轮次操作前，
+失败占位代与 `books.failed_*` **一起清除**。
+
+> **双写与版本兼容**：失败同时写 `books.failed_*`（旧语义：用户输入 / 图片 / 中断判定，
+> 继续随轮次部件同步，供 ≤v20 的旧版本读取）与失败占位代（提示文本的新版权威载体）。
+> 新版本展示提示时**以 `round_stack` 为准**，缺位时回落到 `books.failed_*`。
+> 旧版本读到 `round_state = 'failed'` 会按「闲置代」处理（可能多出一个可切换的空代），
+> 这是降级期的已知代价。
 
 **不变量与规则**（实现见 `lib/services/round_stack_service.dart`）：
 
@@ -183,6 +225,10 @@
     唯一一代没有回落目标 → **拒绝删除**（界面入口也不显示，提示改用"删除本轮"）。
     **序号不重排**：同分组其余代的 `round_serial_num` 原样保留，故"最新第 y 代"只在删掉最大号时
     才变小；投影按回落代重建（与**切换**同一分支语义：后续轮次随父回来 / 随分支消失）。
+
+13. **提示随代而行（v21）**：`message` / `message_status` 挂在「代」上——切换版本看到那一代
+    自己的提示、删除代/轮次提示随行消失、同步整体替换时一起搬运；**不参与**活动链、
+    代次计数、归一化与采纳内容比对（失败占位代同理，见上文本节表格后说明）。
 
 **投影重建**（切换后）：单事务内 `DELETE rounds WHERE book_uuid=? AND round_index>=i`
 → 按活动链插入（内容取版本树行、`use_stack_uuid` = 该行 uuid、`created_at` = `round_created_at`、
@@ -245,6 +291,14 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
   `rounds` / `failed` / 新增的 `stack` 键；`stackDigest` 按 `(round_index, father_uuid, round_serial_num, uuid)`
   稳定排序后 sha256，**排除 `round_created_at`**（时间戳会随保存刷新）。
   老客户端只读 `rounds` 键，多余键天然忽略 → 相容。
+- **提示参与摘要（v21，稀疏编码）**：`stackDigest` 逐行比对时，**该行有提示**才在行末追加
+  `[message_status ?? '', message]`；无提示的行与历史版本（不含提示列）编码**逐字节一致**。
+  好处：提示能触发推送/下发（不接指纹就会「本机改了不推、还会被对端快照覆盖」），
+  同时「没有提示的书」在新老客户端混用期不会因算法差异反复互推代数。
+  代价：真有提示的那本书，在新旧版本混用期每次同步会多推一次快照（两端都升级后消失）。
+  `message_status` 的取值在摘要里先按白名单归一化（脏值 → `''`），避免两端算出不同摘要。
+- **提示的同步粒度 = 轮次部件**：与 `rounds` 同一件，整部件胜出、**不做逐代合并**；
+  双端各改不同代的提示会落进冲突页（整部件取舍，最后写入者胜，见 `docs/sync_auto_triggers.md`）。
 - **快照兼容**：远端快照 / 老备份库可能**没有 `round_stack` 表** → 先 `sqlite_master` 守卫，
   缺表时**保留本地**版本树，交由采纳按 `rounds` 收敛。
 - **整本复制 / 部件下发**：有该表时连版本树一起复制或整体替换（先清后插，按 `round_index ASC`）。
@@ -255,13 +309,18 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
 - **快照不再携带同步元数据（v20 起）**：`sync_state` / `sync_book_base` / `sync_mod_base` 已迁至
   本地同步库（`local_config/local_db/narrchat_sync.db`），用户库整库快照里只剩同 schema 空表壳（0 行）；
   老快照里的共基行不参与合并（合并从不读同步元数据），下载采纳后被 v20 迁移搬进本地库并清空壳。
-- **自动同步触发**：生成、删除轮次触发；**采纳与切换不触发**（采纳的调用方本身就是触发节点；
-  切换只改投影锚点、内容权威未变，靠下一次节点带走）。白名单见 `docs/sync_auto_triggers.md`。
+- **自动同步触发**：生成、删除轮次、删除代、**关闭某轮提示**、**清除失败条目**触发；
+  **采纳与切换不触发**（采纳的调用方本身就是触发节点；切换只改投影锚点与「看哪一代」，
+  内容权威未变，靠下一次节点带走）。白名单见 `docs/sync_auto_triggers.md`。
 
 **存储代价与容量（既定事实，不随版本变动）**：
 
 - **双存储**：`round_stack` 每代各存一份全文（与 `rounds` 的"当前代"重复），并随整库快照上云
   （`keepVersions` 默认 5）→ 存储随"改写次数"乘性增长，这是本功能的**已知代价**。
+- **提示两列的开销（v21 实测）**：两列全空 ≈ **+1.7 B/行**（整库 +0.02%）；12% 的代带 60 汉字
+  提示 ≈ 整库 +0.31%；每代都带 30 / 80 汉字 ≈ +0.84% / +1.77%；最坏（每代 400 汉字错误）
+  ≈ +11.7%（云端按 `keepVersions` 再乘份数）。`ALTER TABLE ADD COLUMN` 本身**不重写任何行**。
+  探针与原始输出见 `.agents/perf/round_stack_message_size_probe_2026_10_17.py`。
 - **暂不做裁剪**：结构已预留——`round_created_at`（按时间淘汰）+ `round_state`（是否在用）。
   将来引入裁剪时**只动版本树**，不改 `rounds`（读权威不变），且必须保持"切换可得旧代"的语义边界。
 - **序号复用**：物理删除后 `max+1` 会复用旧号（身份靠 `uuid`），不引入分配器。
@@ -291,14 +350,16 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
 
 | 测试文件 | 覆盖 |
 | --- | --- |
-| `test/database_migration_test.dart` | 逐版本迁移分支、**迁移产物 ≡ 新装库 DDL**、幂等重跑、**降级回退后重升**、数据零改写、外键顺序陷阱、v20 同步元数据迁库（空表壳 + 幂等） |
+| `test/database_migration_test.dart` | 逐版本迁移分支、**迁移产物 ≡ 新装库 DDL**、幂等重跑、**降级回退后重升**、数据零改写、外键顺序陷阱、v20 同步元数据迁库（空表壳 + 幂等）、**v20→v21 提示两列**（列尾 / 老行零改写 / 重跑幂等 / 规格 ≡ 新装库） |
 | `test/local_sync_db_test.dart` | 本地同步库三表 schema（uuid 主键 / 单行约束 / 子部件列）、`SyncStateDao` CRUD 往返、`putBookBase` 清子部件列、新装用户库空表壳与本地库 DDL 逐字一致 |
 | `test/round_stack_dao_test.dart` | 分组读写、序号分配 / 复用、use 落库、物理删除、整体替换排序、根口径（`NULL` ≡ 空串）、索引命中（`EXPLAIN QUERY PLAN`）、删书无孤儿、删软墓碑清 stack |
 | `test/round_stack_model_test.dart` | 版本树模型 ↔ 库列互转（时间戳 ms ↔ ISO、空父亲归一化、`use` 状态）、`Round.useStackUuid` 往返 |
-| `test/round_stack_service_test.dart` | 归一化、活动链、投影重建、生成 / 原地改 / 切换 / 删除 / 孤儿清理、断裂轮号上溯与跳空洞 |
+| `test/round_stack_service_test.dart` | 归一化、活动链、投影重建、生成 / 原地改 / 切换 / 删除 / 孤儿清理、断裂轮号上溯与跳空洞、**代级提示读写与失败占位代隔离**（不进活动链 / 代次 / 回落 / 采纳缺口 / 版本标签） |
 | `test/round_stack_adoption_test.dart` | 采纳：复用同内容代、新建代、删除匹配到的父、缺父一律新建、链式重建、幂等、根懒建、断裂轮号 |
-| `test/sync_*_test.dart` / `test/remote_snapshot_applier_test.dart` / `test/database_merge_*_test.dart` | 摘要指纹、读取快照、整本复制 / 部件下发 / 老快照守卫、合并搬运与代次标签 |
-| `test/round_return_versions_test.dart` / `test/chat_round_version_test.dart` / `test/round_version_stepper_test.dart` / `test/floor_jump_test.dart` | Provider 版本索引 / 切换 / 失败态还原、UI 控件与滚动锚点、楼层跳转高度缓存失效 |
+| `test/round_messages_test.dart` | 提示随代入库（warning）、失败占位代与 `books.failed_*` 双写、关闭提示触发同步、提示随代（切换 / 删除）而行、红条以库内提示为准（缺位回落）、UI 展示与关闭 |
+| `test/sync_fingerprint_test.dart` | 提示稀疏进摘要：无提示行与历史版本逐字节一致、有提示必定改变摘要、脏级别归一化后才进摘要 |
+| `test/sync_*_test.dart` / `test/remote_snapshot_applier_test.dart` / `test/database_merge_*_test.dart` | 摘要指纹、读取快照、整本复制 / 部件下发 / 老快照守卫（**含提示随代搬运保真**）、合并搬运与代次标签 |
+| `test/round_return_versions_test.dart` / `test/chat_round_version_test.dart` / `test/round_version_stepper_test.dart` / `test/floor_jump_test.dart` | Provider 版本索引 / 切换 / 失败态还原（失败只写 `books.failed_*` + 失败占位代、不写 `rounds`）、UI 控件与滚动锚点、楼层跳转高度缓存失效 |
 
 跑法：`flutter test`（全量）；单文件 `flutter test test/<文件>`。
 

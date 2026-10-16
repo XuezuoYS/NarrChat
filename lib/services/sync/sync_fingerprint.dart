@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import '../../models/book.dart';
+import '../../models/round_stack.dart';
 
 /// 云同步用内容指纹工具。
 ///
@@ -90,10 +91,14 @@ class SyncFingerprint {
   }
 
   /// 「版本树」摘要：按 `(round_index, father_uuid, round_serial_num, uuid)` 稳定
-  /// 排序后哈希全部内容列。
+  /// 排序后哈希全部内容列与提示列。
   ///
   /// - `uuid` / `father_uuid` 是跨设备稳定身份（同步原样复制）→ 参与指纹；
   /// - `round_created_at` **排除**（时间戳会随保存刷新，纳入即造成假变更）；
+  /// - **提示（`message` / `message_status`）按行稀疏追加**：该行无提示时编码与
+  ///   历史版本（不含提示列）**逐字节一致**，故「没有提示的书」在「新老客户端
+  ///   混用」期间不会反复互推代数；只有真有提示的书在混用期会多推几次，
+  ///   两端都升级后即消失。
   /// - 空表 → `''`。
   static String stackDigest(List<Map<String, Object?>> rows) {
     if (rows.isEmpty) return '';
@@ -130,6 +135,11 @@ class SyncFingerprint {
           r['model_name'],
           r['user_images'],
           r['ai_images'],
+          // 稀疏追加：无提示的行到此为止（与历史版本编码逐字节一致）。
+          if (RoundStackRow.hasMessageText(r['message'] as String?)) ...[
+            RoundStackRow.normalizeStatus(r['message_status']) ?? '',
+            r['message'],
+          ],
         ],
     ]);
     return sha256.convert(utf8.encode(canonical)).toString();

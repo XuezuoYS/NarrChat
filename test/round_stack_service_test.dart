@@ -818,4 +818,191 @@ void main() {
     expect(RoundStackService.fallbackSerialFor([1], 1), isNull);
     expect(RoundStackService.fallbackSerialFor(const [], 4), isNull);
   });
+
+  // ---------------------------------------------------------------------------
+  // 代级提示（v21）：message / message_status 与「失败占位代」
+  // ---------------------------------------------------------------------------
+
+  group('代级提示与失败占位代', () {
+    /// 生成一轮成功（建真代），返回该轮的当前代 uuid。
+    ///
+    /// 父锚点 = 更早一轮的当前代（该轮还不存在时按根处理，等价于 `_fatherAnchorFor`）。
+    Future<String> attach(int index, {String message = '', String? status}) async {
+      String? father;
+      if (index > 0) {
+        final earlier =
+            (await projection()).where((r) => r.roundIndex == index - 1);
+        father = earlier.isEmpty ? null : earlier.first.useStackUuid;
+      }
+      final id = await service.attachNewGeneration(
+        bookUuid: bookUuid,
+        round: newRound(index),
+        fatherUuid: father,
+        message: message,
+        messageStatus: status,
+      );
+      expect(id, greaterThan(0));
+      return (await roundAt(index)).useStackUuid;
+    }
+
+    test('生成结束时写入提示：随代落库、按 uuid 读出、级别白名单归一化', () async {
+      final uuid = await attach(1, message: '世界状态本轮未更新', status: 'warning');
+
+      final row = await stackRow(uuid);
+      expect(row.message, '世界状态本轮未更新');
+      expect(row.messageStatus, 'warning');
+      // 提示不是内容：内容指纹不含它（同内容仍会被采纳复用）。
+      expect(row.contentMap().containsKey('message'), isFalse);
+
+      final messages = await service.loadMessages(bookUuid);
+      expect(messages.single.uuid, uuid);
+      expect(messages.single.lines, ['世界状态本轮未更新']);
+
+      // 脏级别 → 无级别；空文本 → 整条查询都不返回（稀疏）。
+      await service.setGenerationMessage(
+        bookUuid: bookUuid,
+        generationUuid: uuid,
+        message: '提示',
+        messageStatus: 'SUCCESS',
+      );
+      final dirty = await stackRow(uuid);
+      expect(dirty.messageStatus, isNull, reason: '白名单之外一律按「无级别」');
+      await service.setGenerationMessage(
+        bookUuid: bookUuid,
+        generationUuid: uuid,
+        message: '',
+        messageStatus: 'warning',
+      );
+      final cleared = await stackRow(uuid);
+      expect(cleared.message, isEmpty);
+      expect(cleared.messageStatus, isIn(const [null, '']),
+          reason: '清空文本时级别一并清掉');
+      expect(await service.loadMessages(bookUuid), isEmpty);
+    });
+
+    test('失败占位代：内容全空 + error 提示；不进活动链、不换代次、不被回落选中', () async {
+      await attach(1, message: '第一轮提示', status: 'warning');
+      // 第 2 轮失败（本该产生的那一轮），父 = 第 1 轮当前代。
+      await service.recordFailure(
+        bookUuid: bookUuid,
+        roundIndex: 2,
+        fatherUuid: (await roundAt(1)).useStackUuid,
+        message: '连接超时：容器未就绪',
+      );
+
+      final rows = await stack();
+      final failure = rows.singleWhere((row) => row.isFailed);
+      expect(failure.roundIndex, 2);
+      expect(failure.messageStatus, 'error');
+      expect(failure.aiNarrative, isEmpty);
+      expect(failure.userInput, isEmpty);
+      expect(failure.isUse, isFalse);
+
+      // ① 不出现在代次索引里（UI 不显示为可切换的一代）。
+      final index = await service.loadIndex(bookUuid);
+      expect(index.infoFor(2, fatherUuid: failure.fatherUuid, currentUuid: null), isNull);
+      // ② 活动链不会选中它（从第 1 轮当前代向下：第 2 轮分组只有失败占位代 → 链止）。
+      final chain = RoundStackService.planChain(
+        anchor: rows.singleWhere((row) => row.uuid == failure.fatherUuid!),
+        byGroup: RoundStackService.groupRows(rows),
+      );
+      expect(chain.map((r) => r.roundIndex), [1]);
+      // ③ 归一化不会把「失败占位代」设成 use（否则投影会插一个空轮）。
+      await service.normalizeGroup(bookUuid, 2, failure.fatherUuid);
+      expect((await stackRow(failure.uuid)).isUse, isFalse);
+      // ④ 采纳（`rounds` 为准）不得把它当缺口子树删掉，也不得复用它当内容代。
+      final report = await service.adoptIfNeeded(bookUuid, force: true);
+      expect(report?.removedSubtree ?? 0, 0);
+      expect((await stack()).any((row) => row.isFailed), isTrue,
+          reason: '失败占位代是要保留的提示载体');
+      expect((await stack()).where((row) => row.isFailed).single.uuid, failure.uuid);
+      // ⑤ 投影里仍然只有已成功的那一轮（失败的那一轮没有落库）。
+      expect((await projection()).map((r) => r.roundIndex), [1]);
+      await expectChainInvariant();
+    });
+
+    test('单代删除的回落目标只在真代里挑（不会回落到失败占位代）', () async {
+      final first = await attach(1);
+      await service.recordFailure(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        fatherUuid: null,
+        message: '失败原因',
+      );
+
+      // 删掉唯一真代：分组里只剩失败占位代 → 没有回落目标，拒绝删除。
+      expect(
+        await service.deleteGeneration(
+          bookUuid: bookUuid,
+          roundIndex: 1,
+          generationUuid: first,
+        ),
+        isFalse,
+        reason: '失败占位代内容全空，回落过去会让该轮气泡变空',
+      );
+      expect((await stackRow(first)).isUse, isTrue);
+      expect((await projection()).map((r) => r.roundIndex), [1]);
+    });
+
+    test('失败占位代只保留最近一次：recordFailure 覆盖旧行，clearFailures 全清', () async {
+      await service.recordFailure(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        message: '第一次失败',
+      );
+      await service.recordFailure(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        message: '第二次失败',
+      );
+
+      final failed = (await stack()).where((row) => row.isFailed).toList();
+      expect(failed, hasLength(1), reason: '语义 = 只保留最近一次未完成的尝试');
+      expect(failed.single.message, '第二次失败');
+
+      expect(await service.clearFailures(bookUuid), isTrue);
+      expect((await stack()).any((row) => row.isFailed), isFalse);
+      expect(await service.clearFailures(bookUuid), isFalse, reason: '无失败占位代 → 无变化');
+    });
+
+    test('提示随行而行：切换代看到那一代自己的提示；删除代提示一并消失', () async {
+      final oldUuid = await attach(1, message: '旧提示', status: 'warning');
+      final newUuid = await attach(1, message: '新提示', status: 'warning');
+
+      expect((await service.loadMessages(bookUuid)).map((m) => m.uuid).toSet(),
+          {oldUuid, newUuid});
+      expect(await service.switchTo(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        targetUuid: oldUuid,
+      ), isTrue);
+      expect((await roundAt(1)).useStackUuid, oldUuid);
+      expect((await stackRow(oldUuid)).message, '旧提示');
+
+      // 删掉当前这一代（旧代）→ 它的提示随行消失，回落的新代提示仍在。
+      expect(await service.deleteGeneration(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        generationUuid: oldUuid,
+      ), isTrue);
+      final left = await service.loadMessages(bookUuid);
+      expect(left.map((m) => m.uuid), [newUuid]);
+    });
+
+    test('版本标签不把失败占位代算作「最新代」', () async {
+      await attach(1, message: '真代提示', status: 'warning');
+      await service.recordFailure(
+        bookUuid: bookUuid,
+        roundIndex: 1,
+        message: '失败原因',
+      );
+
+      final db = await DatabaseHelper.instance.database;
+      expect(
+        await RoundStackDao.versionLabel(db, bookUuid),
+        '第 1 代 / 最新第 1 代',
+        reason: '失败占位代不是「代」',
+      );
+    });
+  });
 }

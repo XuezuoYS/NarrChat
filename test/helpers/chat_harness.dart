@@ -21,7 +21,6 @@ import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/non_stream_replay.dart';
 import 'package:narrchat/services/round_stack_service.dart';
-import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
@@ -59,8 +58,6 @@ const String kHarnessBookUuid = 'book-1';
 /// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；楼层跳转等需要
 ///   “单轮高于视口”的场景可加大）；
 /// - [theme]：应用主题（默认浅色主题；深色置灰等外观用例可传 dark）；
-/// - [warningsStore]：常驻黄框警告的本地存储（默认新建内存替身，
-///   冷启动恢复场景可预置数据）；
 /// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）；
 /// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作，
 ///   需要断言跳转的用例注入自己的实现）；
@@ -83,7 +80,6 @@ Future<RoundProvider> pumpChatScreen(
   Duration retryDelay = const Duration(milliseconds: 800),
   HtmlSearchService? searchService,
   NonStreamReplayer? nonStreamReplayer,
-  RoundWarningsStore? warningsStore,
   RoundStackService? roundStackService,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
@@ -124,7 +120,6 @@ Future<RoundProvider> pumpChatScreen(
     retryDelay: retryDelay,
     searchService: searchService,
     nonStreamReplayer: nonStreamReplayer,
-    warningsStore: warningsStore ?? FakeRoundWarningsStore(),
     roundStackService: roundStackService ?? FakeRoundStackService(roundDao: dao),
     onGenerationCompleted: onGenerationCompleted,
   );

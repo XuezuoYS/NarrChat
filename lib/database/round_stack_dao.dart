@@ -158,12 +158,79 @@ class RoundStackDao {
   }
 
   // ---------------------------------------------------------------------------
+  // 读：代级提示（稀疏）
+  // ---------------------------------------------------------------------------
+
+  /// 全书「代级提示」（**稀疏**：只取有提示文本的行）。
+  ///
+  /// UI 热路径用它代替「逐代读正文」：通常只有极少数代带提示，代价与提示条数成正比。
+  /// 失败占位代（`round_state = 'failed'`）也在其中（`isFailure` 区分）。
+  Future<List<RoundStackMessage>> loadMessagesByBook(String bookUuid) async {
+    final db = await _helper.database;
+    return loadMessagesByBookFrom(db, bookUuid);
+  }
+
+  /// [loadMessagesByBook] 的显式执行器版本。
+  static Future<List<RoundStackMessage>> loadMessagesByBookFrom(
+    DatabaseExecutor e,
+    String bookUuid,
+  ) async {
+    final rows = await e.query(
+      table,
+      columns: [
+        'uuid',
+        'round_index',
+        'round_state',
+        'message',
+        'message_status',
+      ],
+      where: "book_uuid = ? AND message IS NOT NULL AND message != ''",
+      whereArgs: [bookUuid],
+      orderBy: 'round_index ASC, round_serial_num ASC',
+    );
+    return rows.map(RoundStackMessage.fromMap).toList();
+  }
+
+  // ---------------------------------------------------------------------------
   // 写
   // ---------------------------------------------------------------------------
 
   /// 新建一代（`insertGeneration`）：uuid 冲突即抛（uuid 是身份，撞号属于 bug）。
   Future<void> insertGeneration(DatabaseExecutor e, RoundStackRow row) async {
     await e.insert(table, row.toMap());
+  }
+
+  /// 写入某一代的提示（[message] 空 = 清除，级别一并清空）。
+  ///
+  /// 与内容列分开：提示不是内容，`updateContent` 不碰它、它也不进内容指纹。
+  Future<void> setMessage(
+    DatabaseExecutor e,
+    String uuid, {
+    required String message,
+    String? status,
+  }) async {
+    await e.update(
+      table,
+      {
+        'message': RoundStackRow.clampMessage(message),
+        'message_status':
+            RoundStackRow.hasMessageText(message) ? (status ?? '') : '',
+      },
+      where: 'uuid = ?',
+      whereArgs: [uuid],
+    );
+  }
+
+  /// 物理删除本书全部「失败占位代」（`round_state = 'failed'`）；返回删除行数。
+  ///
+  /// 失败态的既定语义是「**只保留最近一次**未完成的尝试」：新请求开始 / 清除失败
+  /// 条目 / 任何轮次操作前都先清空，与 `books.failed_*` 的清除时机完全一致。
+  Future<int> deleteFailedRows(DatabaseExecutor e, String bookUuid) async {
+    return e.delete(
+      table,
+      where: "book_uuid = ? AND round_state = 'failed'",
+      whereArgs: [bookUuid],
+    );
   }
 
   /// 原地修改某一代的内容列（**不动** uuid / 序号 / 父 / 状态 / 创建时间）。
@@ -338,8 +405,10 @@ class RoundStackDao {
       anchor.roundIndex,
       anchor.fatherUuid,
     );
-    if (group.isEmpty) return '';
-    return '第 ${anchor.roundSerialNum} 代 / 最新第 ${group.last.roundSerialNum} 代';
+    // 失败占位代不算「代」：它只带提示、不参与代次计数。
+    final alive = [for (final meta in group) if (!meta.isFailed) meta];
+    if (alive.isEmpty) return '';
+    return '第 ${anchor.roundSerialNum} 代 / 最新第 ${alive.last.roundSerialNum} 代';
   }
 
   /// 分组条件：根（[father] 为 null / 空串）走 `IS NULL OR = ''`，否则 `= ?`。

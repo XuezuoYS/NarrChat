@@ -647,6 +647,91 @@ void main() {
     expect(rows.single.aiNarrative, '远端第一代');
   });
 
+  test('SY-4b 代级提示随代搬运：整本复制 / 部件下发后 message 与级别原样落地', () async {
+    // 远端独有书：整本复制路径。
+    final snapshotBytes = await _buildRemoteSnapshot(
+      title: '远端书',
+      rounds: const [(1, '你好', '正文')],
+      stackRows: <Map<String, Object?>>[
+        _stackRow(
+          uuid: 'rs-1-1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          aiNarrative: '第一代正文',
+          message: '世界状态本轮未更新',
+          messageStatus: 'warning',
+        ),
+        _stackRow(
+          uuid: 'rs-1-2',
+          roundIndex: 1,
+          roundSerialNum: 2,
+          fatherUuid: 'rs-1-1',
+          roundState: '',
+          message: '连接超时：容器未就绪',
+          messageStatus: 'error',
+        ),
+      ],
+    );
+    await const RemoteSnapshotApplier().apply(
+      mergePlan: SyncMergePlan(
+        books: [
+          decision(
+            '远端书',
+            remoteUuid: kRemoteBookUuid,
+            presence: SyncBookPresence.remoteOnly,
+          ),
+        ],
+      ),
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+
+    final copied = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(
+      {for (final row in copied) row.uuid: (row.message, row.messageStatus)},
+      {
+        'rs-1-1': ('世界状态本轮未更新', 'warning'),
+        'rs-1-2': ('连接超时：容器未就绪', 'error'),
+      },
+      reason: '提示是「代」的附注：随代整体搬运，级别原样保留',
+    );
+    expect(
+      copied.singleWhere((r) => r.uuid == 'rs-1-2').isFailed,
+      isFalse,
+      reason: '远端这一行 round_state 为空（闲置代），不是失败占位代',
+    );
+
+    // 部件下发（本地已有同一本书，仅轮次部件来自远端）：同样保真。
+    // 上一段整本复制已把这本书建好，这里把它改成本地自己的版本树。
+    final localDb = await DatabaseHelper.instance.database;
+    await RoundStackDao().replaceBookStack(localDb, kRemoteBookUuid, <RoundStackRow>[
+      _localStackRow(uuid: 'local-1-1', aiNarrative: '本地第一代'),
+    ]);
+    await const RemoteSnapshotApplier().apply(
+      mergePlan: SyncMergePlan(
+        books: [
+          decision(
+            'X',
+            localUuid: kRemoteBookUuid,
+            remoteUuid: kRemoteBookUuid,
+            presence: SyncBookPresence.both,
+            rounds: SyncPartStatus.remoteOnly,
+          ),
+        ],
+      ),
+      action: action(const [kRemoteBookUuid]),
+      snapshotBytes: snapshotBytes,
+    );
+
+    final replaced = await RoundStackDao().loadByBook(kRemoteBookUuid);
+    expect(replaced.map((r) => r.uuid).toList(), ['rs-1-1', 'rs-1-2']);
+    expect(
+      replaced.singleWhere((r) => r.uuid == 'rs-1-1').message,
+      '世界状态本轮未更新',
+      reason: '先清后插也必须把提示写回去（模型 toMap 是唯一列清单来源）',
+    );
+  });
+
   test('SY-5 远端快照无 round_stack 表（老 v18 快照）→ 不报错、保留本地版本树', () async {
     final bookDao = BookDao();
     await bookDao.insertBook(const Book(uuid: kRemoteBookUuid, title: 'X'));
@@ -827,7 +912,9 @@ Future<Uint8List> _buildRemoteSnapshot({
         cached_tokens_in INTEGER,
         model_name TEXT DEFAULT '',
         user_images TEXT NOT NULL DEFAULT '[]',
-        ai_images TEXT NOT NULL DEFAULT '[]'
+        ai_images TEXT NOT NULL DEFAULT '[]',
+        message TEXT DEFAULT '',
+        message_status TEXT DEFAULT ''
       )
     ''');
   }
@@ -905,6 +992,8 @@ Map<String, Object?> _stackRow({
   String aiNarrative = '',
   String? bookUuid,
   int roundCreatedAt = 1000,
+  String message = '',
+  String messageStatus = '',
 }) {
   return <String, Object?>{
     'uuid': uuid,
@@ -918,6 +1007,8 @@ Map<String, Object?> _stackRow({
     'ai_narrative': aiNarrative,
     'user_images': '[]',
     'ai_images': '[]',
+    'message': message,
+    'message_status': messageStatus,
   };
 }
 

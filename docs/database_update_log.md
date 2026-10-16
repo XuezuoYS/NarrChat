@@ -3,7 +3,7 @@
 > **文档定位**：**只追加**的数据库台账——按 DB 版本（`user_version`）记录每一次 schema 变更：
 > 改了什么、**随哪个 app 版本发布**、有哪些**破坏性 / 易踩坑**的注意点、迁移保障与测试锚点。
 > - **数据库说明（表 / 列 / 索引 / 不变量与边界语义）**：见 `docs/database.md`（随变更就地更新）
-> - **最新版本**：`20`（未发布，预计随 2.4.0）——最新条目即 §2 首条
+> - **最新版本**：`21`（未发布，预计随 2.5.0，见根目录 `update_log.md`）——最新条目即 §2 首条
 > - **权威来源**：`lib/database/database_helper.dart` 的 `migrate()` 与 `_dbVersion`；历史提交可 `git log` 复核
 > - app 面向用户的更新说明在 `update_log.md`（**未经明确许可不改**）；本文件只记数据库维度
 
@@ -47,10 +47,61 @@
 | 18 | `d440029` | 2026-10-01 | **2.3.0** | `books.memory_summary_rounds`（记忆总结压缩档位） |
 | 19 | `d2e5d9a` | 2026-10-05 | **未发布**（预计 2.4.0） | `round_stack` 版本树 + `rounds.use_stack_uuid`（修改还原） |
 | 20 | 待提交 | 2026-10-13 | **未发布**（预计 2.4.0） | 同步元数据三表迁出用户库至本地同步库 `narrchat_sync.db`，用户库留空表壳 |
+| 21 | 待提交 | 2026-10-17 | **未发布**（预计 2.5.0） | `round_stack.message` / `message_status`（代级提示）+ 失败占位代；提示接入同步摘要（稀疏编码） |
 
 ---
 
 ## 2. 逐版本条目
+
+### v21 · 2026-10-17 · 待提交 · **未发布**（预计随 2.5.0）
+
+**变更**
+- `round_stack` 增加两列（`ALTER TABLE ADD COLUMN` 追加到表尾，与新建表同位置）：
+  - `message TEXT DEFAULT ''`：本代**提示文本**（多行用 `\n` 合并）；
+  - `message_status TEXT DEFAULT ''`：级别白名单 `info`（预留）/ `warning`（原黄条）/ `error`（原红条）。
+- 新增 `round_state = 'failed'`：**失败占位代**——生成失败时为「本该产生的那一轮」写一行
+  内容全空、只带提示（`message_status = 'error'`）的行；它与 `books.failed_*` **双写**，
+  清除时机完全一致（新请求开始 / 清除失败条目 / 任何轮次操作前）。
+- 提示接入同步：`SyncFingerprint.stackDigest` **按行稀疏**追加 `[status, message]`；提示是
+  「代」的附注，**不进** `contentMap()` / 内容指纹，因此同内容不会因提示不同而长出新的代。
+- **删除** `round_warnings.json` 与 `FileRoundWarningsStore` / `MemoryRoundWarningsStore`
+  （本地 json 提示层整体取消，不做数据迁移——提示属诊断信息，丢了不影响用户资产）。
+- 相关代码：`RoundStackDao.setMessage` / `loadMessagesByBook`（稀疏） / `deleteFailedRows`、
+  `RoundStackService.recordFailure` / `clearFailures` / `setGenerationMessage` / `loadMessages`、
+  `RoundProvider` 提示改为以库为权威（`roundWarningsFor` / `dismissRoundWarnings` / `failureMessageLines`）。
+- 新增自动同步节点：**关闭某轮提示**、**清除失败条目**（白名单同步更新，见 `docs/sync_auto_triggers.md`）。
+
+**破坏性与注意**
+- 🟢 纯加列 + 加一个状态值：既有列语义不变、既有行**零改写**（实测 ALTER 后文件大小不变）；
+  从 v18/v19 升上来的库在 v19 分支建表时就带上两列（同一 helper），v21 的列预检会跳过。
+- 🟡 **提示参与同步摘要**带来两条已知代价：① 真有提示的书在「新老客户端混用期」每次同步会多推
+  一次快照（稀疏编码已把影响限制在「有提示的书」——无提示的编码与旧算法逐字节一致）；② 双端
+  各改不同代提示会落进冲突页（轮次部件整部件取舍，最后写入者胜，**不做逐代合并**）。
+- 🟡 **失败的双写与降级**：`books.failed_*` 保留旧语义并继续同步（≤v20 旧版本仍能显示红条）；
+  旧版本读到 `round_state = 'failed'` 会当「闲置代」处理（可能多出一个可切换的空代），
+  升级后恢复正常。旧快照整体替换版本树时，本机提示会被清空（与轮次部件同粒度，属既定语义）。
+- 🟡 **旧库写入**：`RoundStackRow.toMap()` 在无提示时**不写这两列**（照 `Round.toMap` 的
+  `use_stack_uuid` 先例），因此对「没有这两列的老库 / 老备份」写入不会报 `no column`；
+  反之「先清后插 / `INSERT OR REPLACE`」时缺列即取默认值 = 提示被清空，正是期望语义。
+- 🟡 提示文本在写入侧截断到 4000 字符（`RoundStackRow.clampMessage`，防单行超大拖慢 B-tree
+  与云端快照）；`metaColumns` **不加**两列，UI 热路径走稀疏查询，
+  `round_stack` 的三个索引与查询计划均不变。
+
+**迁移保障**
+- v21 = `_addColumnIfMissing('round_stack', 'message' | 'message_status')` → 幂等：
+  「2.4 → 回退 → 再升 2.4」不会 `duplicate column name`；`onCreate` 与 v19 分支共用同一 DDL helper。
+- 新装库 ≡ 迁移库：两列写在 `_createRoundStackTable` 的**列尾**，与 `ADD COLUMN` 落位一致
+  （类型 / 非空 / 默认值逐项一致，列序不参与判定）。
+- 失败占位代对既有算法的影响已逐点隔离：`RoundStackIndex.fromMetas`（不进代次）、
+  `planChain` / `_pickInGroup`（不进活动链）、`_normalizeGroupInTxn`（不被设成 `use`）、
+  `deleteGeneration` 回落目标、`_adoptInTxn`（不参与同内容复用与缺口子树删除）、
+  `RoundStackDao.versionLabel`（不计入「最新第 y 代」）。
+
+**测试**：`test/database_migration_test.dart`（v20→v21 列尾 / 老行零改写 / 重跑幂等 / 规格 ≡ 新装库、
+v18→v19 列清单补两列）、`test/round_stack_service_test.dart`（提示读写 + 失败占位代隔离）、
+`test/round_messages_test.dart`（提示随代 / 双写 / 关闭触发同步 / UI）、
+`test/sync_fingerprint_test.dart`（稀疏编码与跨版本等价）、
+`test/remote_snapshot_applier_test.dart`（提示随代搬运保真，含老 schema 快照不报错）。
 
 ### v20 · 2026-10-13 · 待提交 · **未发布**（预计随 2.4.0）
 

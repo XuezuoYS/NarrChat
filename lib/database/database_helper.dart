@@ -18,7 +18,7 @@ class DatabaseHelper {
 
   static final DatabaseHelper instance = DatabaseHelper._();
 
-  static const int _dbVersion = 20;
+  static const int _dbVersion = 21;
 
   Database? _database;
 
@@ -309,6 +309,25 @@ class DatabaseHelper {
           // 上传；空壳保证「v20 → 回退 ≤v19 旧版」时旧版 SyncStateDao 读到
           // 空共基（功能可用）而非 no such table（同步报错）。
           await _moveSyncTablesToLocalDb(db);
+        }
+        if (oldVersion < 21) {
+          // v21：`round_stack` 增加「代级提示」两列（消息文本 + 级别）。
+          // 只加列、不改既有行；两条升级路径结果一致：
+          // - 从 v18 / v19 升上来的库：v19 分支建表时已由同一 helper 带上两列，
+          //   这里被 `_addColumnIfMissing` 的列预检跳过；
+          // - 从 v20 升上来的库：ALTER 追加到表尾（与新建表的列尾位置一致）。
+          await _addColumnIfMissing(
+            db,
+            'round_stack',
+            'message',
+            "ALTER TABLE round_stack ADD COLUMN message TEXT DEFAULT ''",
+          );
+          await _addColumnIfMissing(
+            db,
+            'round_stack',
+            'message_status',
+            "ALTER TABLE round_stack ADD COLUMN message_status TEXT DEFAULT ''",
+          );
         }
   }
 
@@ -726,16 +745,20 @@ class DatabaseHelper {
     '''.replaceAll('@S@', suffix).replaceAll('@B@', booksTable));
   }
 
-  /// `round_stack`：修改还原的版本树（v19 新增）。
+  /// `round_stack`：修改还原的版本树（v19 新增；v21 增 `message` / `message_status`）。
   ///
   /// - 每「代」一行：`father_uuid` 指向**上一轮当时活动代**（根为 NULL），
   ///   同一 `(book_uuid, round_index, father_uuid)` 分组内以 `round_serial_num` 记序；
-  /// - `round_state = 'use'` 是「分组内选中记忆」（闲置为 NULL）；
+  /// - `round_state`：`'use'` = 分组内选中记忆；`'failed'` = 「本该产生这一轮但生成
+  ///   失败」的占位代（只带提示、内容全空、**不进活动链也不换代次控件**）；`NULL` = 闲置；
+  /// - `message` / `message_status`：本代的提示（见 `docs/database.md` §5.3），
+  ///   级别只认 `'info'` / `'warning'` / `'error'`，其它一律按「无级别」处理；
   /// - **不建** `father_uuid` 自引用外键：删除是物理删除，自引用外键会阻止删父行
   ///   或级联掉要保留的非活动分支；不可达行靠「孤儿规则 + purgeOrphans」清理；
   /// - 外键只指向 `books(uuid)`（删书级联），并由 `BookDao` 显式删除兜底。
   ///
-  /// 新装库（`onCreate`）与 v19 迁移共用本 helper，保证两侧 DDL 逐字一致。
+  /// 新装库（`onCreate`）与 v19 迁移共用本 helper，保证两侧 DDL 逐字一致；
+  /// v21 对既有库用 `ADD COLUMN` 追加到**表尾**，故两列必须写在列尾。
   static Future<void> _createRoundStackTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS round_stack (
@@ -759,6 +782,8 @@ class DatabaseHelper {
         model_name         TEXT DEFAULT '',
         user_images        TEXT NOT NULL DEFAULT '[]',
         ai_images          TEXT NOT NULL DEFAULT '[]',
+        message            TEXT DEFAULT '',
+        message_status     TEXT DEFAULT '',
         FOREIGN KEY (book_uuid) REFERENCES books (uuid) ON DELETE CASCADE
       )
     ''');

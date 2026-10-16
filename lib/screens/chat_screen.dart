@@ -17,6 +17,7 @@ import 'package:provider/provider.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
+import '../models/app_notice.dart';
 import '../models/book.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
@@ -2540,36 +2541,26 @@ class _ChatScreenState extends State<ChatScreen>
           final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
           // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
           if (showFailure && logicalIndex == chatRounds.length * 2) {
-            // 失败尝试「本该产生的那一轮」上的常驻黄框（如 AGENT 未产出正文：
-            // 说明状态改动已作废，与红色错误框语义不同）。
             final pendingIndex = shell.nextRoundIndex;
-            final notes = roundProvider.roundWarningsFor(pendingIndex);
+            // 提示文本以失败占位代（`round_stack` 的 `error` 行）为准，缺位时
+            // 回落到 `books.failed_*` 的失败原因（老库 / 老快照兼容）。
+            final failureLines = roundProvider.failureMessageLines;
+            final attempt = failureLines.isEmpty
+                ? roundProvider.failedAttempt
+                : roundProvider.failedAttempt.copyWith(
+                    errorMessage: failureLines.join('\n'),
+                  );
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FailedAttemptBubble(
-                    attempt: roundProvider.failedAttempt,
-                    // 「刷新本轮」：与正常轮次同一入口（确认框 / Provider 路径都同一处）。
-                    onRefresh: _handleRefreshFailure,
-                    onEditAndRetry: _startEditAndRetryFailure,
-                    onClear: _clearFailure,
-                    versionStepper: _failureVersionStepper(pendingIndex),
-                    // RAW 入口恒在（无数据时由对话框前的提示说明）。
-                    onViewRaw: _showFailedRawDialog,
-                  ),
-                  if (notes.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    _AgentWarningsBox(
-                      warnings: notes,
-                      title: '本轮未正常完成（不影响已生成的轮次）',
-                      onDismiss: () =>
-                          roundProvider.dismissRoundWarnings(pendingIndex),
-                    ),
-                  ],
-                ],
+              child: FailedAttemptBubble(
+                attempt: attempt,
+                // 「刷新本轮」：与正常轮次同一入口（确认框 / Provider 路径都同一处）。
+                onRefresh: _handleRefreshFailure,
+                onEditAndRetry: _startEditAndRetryFailure,
+                onClear: _clearFailure,
+                versionStepper: _failureVersionStepper(pendingIndex),
+                // RAW 入口恒在（无数据时由对话框前的提示说明）。
+                onViewRaw: _showFailedRawDialog,
               ),
             );
           } else if (showPendingUser && logicalIndex == virtualBase) {
@@ -2605,8 +2596,9 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
               );
             } else {
-              // 本轮常驻警告（本地持久化，可手动关闭）：AGENT 状态未完整落地。
-              final warnings = roundProvider.roundWarningsFor(round.roundIndex);
+              // 本轮当前应用代的提示（库内 `round_stack.message`，可手动关闭）。
+              final message = roundProvider.roundMessageFor(round.roundIndex);
+              final warnings = message?.lines ?? const <String>[];
               item = Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: ChatBubble(
@@ -2628,6 +2620,7 @@ class _ChatScreenState extends State<ChatScreen>
                       if (warnings.isNotEmpty) ...[
                         _AgentWarningsBox(
                           warnings: warnings,
+                          status: _noticeKindOf(message?.status),
                           onDismiss: () => roundProvider.dismissRoundWarnings(
                             round.roundIndex,
                           ),
@@ -4464,35 +4457,39 @@ class _ToolEventBoxState extends State<_ToolEventBox> {
       );
 }
 
-/// 警告框（黄，Warning 级）：两种用法同一形态——
+/// 提示框（三态）：级别由 `round_stack.message_status` 决定——
+/// `warning`（黄，缺省）/ `error`（红）/ `info`（中性，预留给将来）。
+///
+/// 两种用法同一形态——
 /// - 生成中：流式气泡顶部实时提示本轮已跳过的状态修改（[onDismiss] 为空）；
-/// - 结束后：挂在对应轮次上的**常驻**提示（本地持久化、不入库不云同步，
-///   重启后恢复展示，可手动关闭）。
+/// - 结束后：挂在对应轮次上的**常驻**提示（随代入库、随代云同步，可手动关闭）。
 class _AgentWarningsBox extends StatelessWidget {
+  /// 缺省标题：说明这些提示的含义（状态修改未通过校验）。
+  static const String defaultTitle = '部分状态修改未通过校验，已跳过（不影响剧情正文）';
+
   final List<String> warnings;
 
-  /// 标题（缺省 = 状态修改被跳过）。
-  final String title;
+  /// 提示级别（`null` = 与 `info` 同款的中性视觉）。
+  final NoticeKind? status;
 
   /// 非空则右上角显示关闭按钮（常驻提示用）。
   final VoidCallback? onDismiss;
 
   const _AgentWarningsBox({
     required this.warnings,
-    this.title = '部分状态修改未通过校验，已跳过（不影响剧情正文）',
+    this.status,
     this.onDismiss,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final accent = _noticeColor(context, status);
     return Container(
       decoration: BoxDecoration(
-        color: context.narrColors.warning.withValues(alpha: 0.08),
+        color: accent.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: context.narrColors.warning.withValues(alpha: 0.4),
-        ),
+        border: Border.all(color: accent.withValues(alpha: 0.4)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       child: Column(
@@ -4503,11 +4500,11 @@ class _AgentWarningsBox extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  title,
+                  defaultTitle,
                   style: TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
-                    color: context.narrColors.warning,
+                    color: accent,
                   ),
                 ),
               ),
@@ -4515,7 +4512,7 @@ class _AgentWarningsBox extends StatelessWidget {
                 IconButton(
                   key: const ValueKey('dismiss_round_warning'),
                   icon: const Icon(Icons.close, size: 15),
-                  color: context.narrColors.warning,
+                  color: accent,
                   tooltip: '关闭提示',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
@@ -4545,6 +4542,21 @@ class _AgentWarningsBox extends StatelessWidget {
     );
   }
 }
+
+/// 提示级别 → [NoticeKind]（`null` / 未知级别按 `info` 的中性视觉处理）。
+NoticeKind? _noticeKindOf(String? status) => switch (status) {
+      'warning' => NoticeKind.warning,
+      'error' => NoticeKind.error,
+      'info' => NoticeKind.info,
+      _ => null,
+    };
+
+/// 提示级别 → 主题配色（`null` / `info` → 中性；`warning` → 黄；`error` → 红）。
+Color _noticeColor(BuildContext context, NoticeKind? kind) => switch (kind) {
+      NoticeKind.warning => context.narrColors.warning,
+      NoticeKind.error => Theme.of(context).colorScheme.error,
+      _ => Theme.of(context).colorScheme.onSurfaceVariant,
+    };
 
 /// 抓取跳转链的一行：URL + 状态码 / 应用重定向 / 失败终止点。
 class _HopLine extends StatelessWidget {

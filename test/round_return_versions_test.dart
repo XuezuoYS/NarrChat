@@ -148,7 +148,7 @@ void main() {
     expect(env.stack.switches, isEmpty);
   });
 
-  test('OP-7 失败态：只写 books.failed_*，不写 stack / rounds；轮次操作即清失败态', () async {
+  test('OP-7 失败态：写 books.failed_* 与失败占位代（不写 rounds）；轮次操作即清失败态', () async {
     final env = build();
     await env.provider.loadRounds('b1');
     expect(await env.provider.sendRound(userInput: '第一章', book: book), isTrue);
@@ -164,21 +164,33 @@ void main() {
       [0],
       reason: '失败不写 rounds（否则老客户端「空正文轮次 + 红条」双渲染）',
     );
+    final roundOneRows = env.stack.rows['b1']!
+        .where((r) => r.roundIndex == 1)
+        .toList();
     expect(
-      env.stack.rows['b1']!.where((r) => r.roundIndex == 1),
+      roundOneRows.where((r) => !r.isFailed),
       hasLength(1),
-      reason: '失败不写 stack；被重写的旧代仍在（可还原）',
+      reason: '失败不新增「真代」；被重写的旧代仍在（可还原）',
     );
+    final failure = roundOneRows.singleWhere((r) => r.isFailed);
+    expect(failure.messageStatus, 'error', reason: '失败占位代带 error 级提示');
+    expect(failure.isUse, isFalse, reason: '失败占位代不进活动链');
 
     // 失败态 + 单代：控件信息给出「可还原的上一代」。
     final info = env.provider.versionInfoFor(1);
     expect(info, isNotNull);
     expect(info!.currentSerial, isNull, reason: '失败态是临时代（无编号）');
     expect(info.prevUuid, isNotNull);
+    expect(info.aliveCount, 1, reason: '失败占位代不计入活跃代数');
 
     // 任何轮次操作先删失败态。
     await env.provider.updateUserInput(env.provider.rounds.first.id!, '改第零轮');
     expect(env.provider.hasFailureEntry, isFalse);
+    expect(
+      env.stack.rows['b1']!.any((r) => r.isFailed),
+      isFalse,
+      reason: '失败占位代与 books.failed_* 同时清除',
+    );
   });
 
   test('失败态「← 还原上一代」：切换被调用且失败态被清除', () async {

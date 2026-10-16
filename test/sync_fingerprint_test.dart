@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/sync/sync_fingerprint.dart';
 
@@ -31,6 +32,8 @@ void main() {
     String modelName = '',
     String userImages = '[]',
     String aiImages = '[]',
+    String message = '',
+    String messageStatus = '',
   }) {
     return {
       'uuid': uuid,
@@ -53,6 +56,8 @@ void main() {
       'model_name': modelName,
       'user_images': userImages,
       'ai_images': aiImages,
+      'message': message,
+      'message_status': messageStatus,
     };
   }
   Map<String, Object?> bookRow({
@@ -576,6 +581,121 @@ void main() {
         isNull,
         reason: '行内容非字符串 → 不可解析',
       );
+    });
+
+    group('提示（message / message_status）稀疏参与摘要', () {
+      /// 历史版本（不含提示列）的编码：与 `stackDigest` 的旧实现逐字节一致，
+      /// 用于锁定「无提示的行不改变摘要」这条跨版本兼容不变量。
+      String legacyDigest(List<Map<String, Object?>> rows) {
+        final sorted = [...rows]..sort(
+            (a, b) => (a['round_index'] as int).compareTo(b['round_index'] as int),
+          );
+        final canonical = jsonEncode([
+          for (final r in sorted)
+            [
+              r['uuid'],
+              r['round_index'],
+              r['father_uuid'],
+              r['round_serial_num'],
+              r['round_state'],
+              r['user_input'],
+              r['ai_narrative'],
+              r['world_state'],
+              r['character_state'],
+              r['memory_summary'],
+              r['current_time'],
+              r['recommended_action'],
+              r['tokens_in'],
+              r['tokens_out'],
+              r['cached_tokens_in'],
+              r['model_name'],
+              r['user_images'],
+              r['ai_images'],
+            ],
+        ]);
+        return sha256.convert(utf8.encode(canonical)).toString();
+      }
+
+      test('无提示的行：摘要与历史版本（不含提示列）逐字节相同', () {
+        final rows = [
+          stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1),
+          stackRow(uuid: 'g-2', roundIndex: 2, roundSerialNum: 1, fatherUuid: 'g-1'),
+        ];
+
+        expect(
+          SyncFingerprint.stackDigest(rows),
+          legacyDigest(rows),
+          reason: '新老客户端混用期不得因为「新增提示列」而判成变更（否则反复互推代数）',
+        );
+        expect(
+          SyncFingerprint.stackDigest([
+            stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1, messageStatus: 'warning'),
+          ]),
+          legacyDigest([
+            stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1),
+          ]),
+          reason: '只有级别、没有文本 = 无提示（与空提示同编码）',
+        );
+        expect(
+          SyncFingerprint.stackDigest([
+            stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1, message: '   '),
+          ]),
+          legacyDigest([
+            stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1),
+          ]),
+          reason: '纯空白文本同样按「无提示」处理（与模型归一化同口径）',
+        );
+      });
+
+      test('有提示的行：文本或级别变化都会改变摘要', () {
+        final base = [
+          stackRow(uuid: 'g-1', roundIndex: 1, roundSerialNum: 1),
+        ];
+        final warned = [
+          stackRow(
+            uuid: 'g-1',
+            roundIndex: 1,
+            roundSerialNum: 1,
+            message: '世界状态本轮未更新',
+            messageStatus: 'warning',
+          ),
+        ];
+        final errored = [
+          stackRow(
+            uuid: 'g-1',
+            roundIndex: 1,
+            roundSerialNum: 1,
+            message: '世界状态本轮未更新',
+            messageStatus: 'error',
+          ),
+        ];
+        final otherText = [
+          stackRow(
+            uuid: 'g-1',
+            roundIndex: 1,
+            roundSerialNum: 1,
+            message: '当前时间本轮未更新',
+            messageStatus: 'warning',
+          ),
+        ];
+
+        final baseFp = SyncFingerprint.stackDigest(base);
+        expect(SyncFingerprint.stackDigest(warned), isNot(baseFp),
+            reason: '新增提示必须被同步感知，否则永远推不出去');
+        expect(SyncFingerprint.stackDigest(errored), isNot(SyncFingerprint.stackDigest(warned)),
+            reason: '级别是提示的一部分（黄 / 红必须能区分）');
+        expect(SyncFingerprint.stackDigest(otherText),
+            isNot(SyncFingerprint.stackDigest(warned)));
+        // 与内容无关：提示变化不影响内容指纹的稳定性（同输入同输出）。
+        expect(SyncFingerprint.stackDigest(warned), SyncFingerprint.stackDigest(warned));
+      });
+
+      test('`round_created_at` 仍不参与（提示不改变这条既有约定）', () {
+        final a = [stackRow(uuid: 'g-1', roundIndex: 1, roundCreatedAt: 1000, message: '提示', messageStatus: 'warning')];
+        final b = [stackRow(uuid: 'g-1', roundIndex: 1, roundCreatedAt: 9999, message: '提示', messageStatus: 'warning')];
+
+        expect(SyncFingerprint.stackDigest(a), SyncFingerprint.stackDigest(b));
+      });
     });
   });
 }

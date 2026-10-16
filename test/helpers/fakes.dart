@@ -24,7 +24,6 @@ import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/round_stack_service.dart';
-import 'package:narrchat/services/round_warnings_store.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
@@ -373,6 +372,8 @@ class FakeRoundStackService extends RoundStackService {
     required String bookUuid,
     required Round round,
     String? fatherUuid,
+    String message = '',
+    String? messageStatus,
   }) async {
     attachCalls++;
     // 与真实 `RoundDao.upsertProjectionRow` 同语义：该轮只保留一行。
@@ -401,9 +402,112 @@ class FakeRoundStackService extends RoundStackService {
       fatherUuid: father,
       roundSerialNum: serial,
       roundState: 'use',
+      message: message,
+      messageStatus: messageStatus,
     );
     list.add(row);
     return _rounds.insertRound(round.copyWith(useStackUuid: row.uuid));
+  }
+
+  @override
+  Future<List<RoundStackMessage>> loadMessages(String bookUuid) async {
+    if (bookUuid.isEmpty) return const [];
+    return [
+      for (final row in _rowsFor(bookUuid))
+        if (row.hasMessage)
+          RoundStackMessage(
+            uuid: row.uuid,
+            roundIndex: row.roundIndex,
+            isFailure: row.isFailed,
+            text: row.message,
+            status: RoundStackRow.normalizeStatus(row.messageStatus),
+          ),
+    ];
+  }
+
+  @override
+  Future<void> setGenerationMessage({
+    required String bookUuid,
+    required String generationUuid,
+    String message = '',
+    String? messageStatus,
+  }) async {
+    messageWrites.add((
+      bookUuid: bookUuid,
+      generationUuid: generationUuid,
+      message: message,
+      status: messageStatus,
+    ));
+    final list = _rowsFor(bookUuid);
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].uuid != generationUuid) continue;
+      list[i] = list[i].copyWith(
+        message: message,
+        messageStatus: messageStatus,
+        clearMessage: message.trim().isEmpty,
+      );
+    }
+  }
+
+  /// 提示写入记录（关闭提示 / 失败落库的断言锚点）。
+  final List<
+      ({
+        String bookUuid,
+        String generationUuid,
+        String message,
+        String? status,
+      })> messageWrites = [];
+
+  /// 失败占位代记录（bookUuid, roundIndex, message）。
+  final List<({String bookUuid, int roundIndex, String message})> failures = [];
+
+  @override
+  Future<String> recordFailure({
+    required String bookUuid,
+    required int roundIndex,
+    String? fatherUuid,
+    String message = '',
+  }) async {
+    failures.add((
+      bookUuid: bookUuid,
+      roundIndex: roundIndex,
+      message: message,
+    ));
+    final list = _rowsFor(bookUuid)..removeWhere((r) => r.isFailed);
+    final father = RoundStackRow.normalizeFather(fatherUuid);
+    final group = list
+        .where((r) => r.roundIndex == roundIndex && r.fatherUuid == father)
+        .toList();
+    final serial = group.isEmpty
+        ? 1
+        : group.map((r) => r.roundSerialNum).reduce(math.max) + 1;
+    final uuid = 'failed-$roundIndex-${_seq++}';
+    list.add(
+      RoundStackRow(
+        uuid: uuid,
+        bookUuid: bookUuid,
+        fatherUuid: father,
+        roundIndex: roundIndex,
+        roundSerialNum: serial,
+        roundState: 'failed',
+        roundCreatedAt: DateTime.now(),
+        message: message,
+        messageStatus: 'error',
+      ),
+    );
+    return uuid;
+  }
+
+  /// [clearFailures] 的调用次数。
+  int clearFailureCalls = 0;
+
+  @override
+  Future<bool> clearFailures(String bookUuid) async {
+    clearFailureCalls++;
+    final list = _rowsFor(bookUuid);
+    final had = list.any((r) => r.isFailed);
+    list.removeWhere((r) => r.isFailed);
+    return had;
   }
 
   @override
@@ -1240,46 +1344,3 @@ class StubCloudSyncProvider extends CloudSyncProvider {  StubCloudSyncProvider({
   }
 }
 
-/// 内存版 [RoundWarningsStore]：可预置 / 读取落盘结果（供「重启恢复」用例复用）。
-///
-/// 与 [MemoryRoundWarningsStore] 同语义，但公开底层数据以便断言，
-/// 并记录保存调用次数（供触发时机 / 校验回写断言）。
-class FakeRoundWarningsStore implements RoundWarningsStore {
-  /// 模拟本地数据：bookUuid → (roundIndex → 警告行)。
-  final Map<String, Map<int, List<String>>> data = {};
-
-  /// 每个保存周期（读-改-写）一次；无变化未触发保存时保持原值。
-  int saveCalls = 0;
-
-  /// 下一轮 load 抛出的异常（模拟本地文件损坏 / 读取失败）。
-  Object? nextLoadError;
-
-  @override
-  Future<Map<int, List<String>>> loadForBook(String bookUuid) async {
-    final err = nextLoadError;
-    if (err != null) {
-      nextLoadError = null;
-      throw err;
-    }
-    final book = data[bookUuid];
-    return book == null
-        ? const {}
-        : {for (final e in book.entries) e.key: List.of(e.value)};
-  }
-
-  @override
-  Future<void> saveForBook(
-    String bookUuid,
-    Map<int, List<String>> warnings,
-  ) async {
-    saveCalls++;
-    final book = warnings.isEmpty
-        ? null
-        : {for (final e in warnings.entries) e.key: List.of(e.value)};
-    if (book == null) {
-      data.remove(bookUuid);
-    } else {
-      data[bookUuid] = book;
-    }
-  }
-}
