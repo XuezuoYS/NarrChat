@@ -415,6 +415,6 @@ canonical = [ for (row in sorted) [
 
 ### 附：本次实测与调研的可复现信息
 
-- 空间探针：`.agents/perf/round_stack_message_size_probe_2026_10_17.py`（Python `sqlite3`，固定随机种子；原始输出 `.agents/perf/size_probe_output_2026_10_17.txt`）
+- 空间探针：`.agents/perf/round_stack_message_size_probe_2026_10_17.py`（Python `sqlite3`，固定随机种子，重跑即可复现下表全部数字）
 - 基线测试：`flutter test test/round_warnings_persistence_test.dart test/round_generation_failure_test.dart test/round_warnings_store_test.dart` → 24 passed
 - 关键证据文件：`lib/database/database_helper.dart`、`lib/models/round_stack.dart`、`lib/database/round_stack_dao.dart`、`lib/services/round_stack_service.dart`、`lib/services/sync/sync_fingerprint.dart`、`lib/services/sync/sync_merge_planner.dart`、`lib/providers/round_provider.dart`、`lib/services/round_warnings_store.dart`、`lib/database/book_dao.dart`
