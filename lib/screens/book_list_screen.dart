@@ -88,10 +88,29 @@ class _BookListScreenState extends State<BookListScreen> {
             // 系统通知未开启提示（Android）：后台生成成功将无法及时收到通知。
             Consumer<NotificationSettingsProvider>(
               builder: (context, settings, _) {
-                if (settings.notificationsEnabled != false) {
+                if (settings.notificationsEnabled == false) {
+                  return _buildNotificationHint(
+                    context,
+                    settings,
+                    message:
+                        '您没有开启系统通知，这会导致软件处于后台时，易生成失败且无法收到完成提示',
+                  );
+                }
+                // 通知总开关开着，但生成完成渠道的悬浮通知 / 铃声被系统侧关闭。
+                final channel = settings.generationDoneChannelState;
+                if (channel == null || channel.fullyEnabled) {
                   return const SizedBox.shrink();
                 }
-                return _buildNotificationHint(context, settings);
+                final disabled = [
+                  if (!channel.headsUp) '悬浮通知',
+                  if (!channel.sound) '通知铃声',
+                ].join('、');
+                return _buildNotificationHint(
+                  context,
+                  settings,
+                  message:
+                      '生成完成通知的$disabled已被关闭，软件处于后台时，生成完成将无法及时提醒您',
+                );
               },
             ),
             // 跨书进程与同步进度统一由应用级驻场岛展示（见 PinnedNoticeIsland），
@@ -118,11 +137,12 @@ class _BookListScreenState extends State<BookListScreen> {
     );
   }
 
-  /// 系统通知未开启提示卡片（Android 检测到未开启时显示）。
+  /// 通知异常提示卡片（Android：通知未开启 / 生成完成渠道悬浮或铃声被关时显示）。
   Widget _buildNotificationHint(
     BuildContext context,
-    NotificationSettingsProvider settings,
-  ) {
+    NotificationSettingsProvider settings, {
+    required String message,
+  }) {
     final colors = context.narrColors;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
@@ -142,7 +162,7 @@ class _BookListScreenState extends State<BookListScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '您没有开启系统通知，这会导致软件处于后台时，易生成失败且无法收到完成提示',
+                  message,
                   style: TextStyle(fontSize: 12.5, color: colors.textPrimary),
                 ),
               ),

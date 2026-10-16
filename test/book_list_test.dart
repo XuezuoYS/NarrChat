@@ -173,18 +173,31 @@ void main() {
     expect(find.text('新建书籍'), findsOneWidget);
   });
 
-  testWidgets('系统通知未开启时主页显示提示条', (tester) async {
-    const books = [Book(uuid: 'b1', title: '测试书')];
-    final bookDao = FakeBookDao(books: books);
-    final bookProvider = BookProvider(dao: bookDao)..loadBooks();
+  /// 构建已 refresh 的通知设置 Provider 与其假后端（模拟指定系统侧状态）。
+  Future<(NotificationSettingsProvider, FakeNotificationBackend)> makeSettings({
+    bool? notificationsEnabled,
+    GenerationDoneChannelState channelState =
+        const GenerationDoneChannelState(headsUp: true, sound: true),
+  }) async {
+    final bookProvider = BookProvider(dao: FakeBookDao())..loadBooks();
+    final backend = FakeNotificationBackend(
+      notificationsEnabled: notificationsEnabled,
+      channelState: channelState,
+    );
     final service = GenerationNotificationService(
       bookProvider: bookProvider,
-      backend: FakeNotificationBackend(notificationsEnabled: false),
+      backend: backend,
       attentionBackend: FakeTaskbarAttentionBackend(),
     );
-    // 用预构建（已 refresh）的设置 Provider pump 首页，模拟通知关闭态。
     final settings = NotificationSettingsProvider(service: service);
     await settings.refresh();
+    return (settings, backend);
+  }
+
+  testWidgets('系统通知未开启时主页显示提示条', (tester) async {
+    const books = [Book(uuid: 'b1', title: '测试书')];
+    // 用预构建（已 refresh）的设置 Provider pump 首页，模拟通知关闭态。
+    final (settings, _) = await makeSettings(notificationsEnabled: false);
     await pumpHomeScreen(
       tester,
       books: books,
@@ -193,5 +206,51 @@ void main() {
 
     expect(find.textContaining('您没有开启系统通知'), findsOneWidget);
     expect(find.text('去开启'), findsOneWidget);
+  });
+
+  testWidgets('通知总开关关闭时优先显示总开关提示而非渠道提示', (tester) async {
+    final (settings, _) = await makeSettings(notificationsEnabled: false);
+    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+
+    expect(find.textContaining('您没有开启系统通知'), findsOneWidget);
+    expect(find.textContaining('已被关闭'), findsNothing);
+  });
+
+  testWidgets('生成完成渠道悬浮通知被关闭时主页显示提示条并可跳转设置', (tester) async {
+    final (settings, backend) = await makeSettings(
+      notificationsEnabled: true,
+      channelState: const GenerationDoneChannelState(
+        headsUp: false,
+        sound: true,
+      ),
+    );
+    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+
+    expect(find.textContaining('悬浮通知已被关闭'), findsOneWidget);
+    expect(find.textContaining('您没有开启系统通知'), findsNothing);
+
+    await tester.tap(find.text('去开启'));
+    expect(backend.openSettingsCount, 1);
+  });
+
+  testWidgets('生成完成渠道悬浮与铃声均被关闭时提示两者', (tester) async {
+    final (settings, _) = await makeSettings(
+      notificationsEnabled: true,
+      channelState: const GenerationDoneChannelState(
+        headsUp: false,
+        sound: false,
+      ),
+    );
+    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+
+    expect(find.textContaining('悬浮通知、通知铃声已被关闭'), findsOneWidget);
+  });
+
+  testWidgets('生成完成渠道悬浮与铃声全开时主页不显示提示条', (tester) async {
+    final (settings, _) = await makeSettings(notificationsEnabled: true);
+    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+
+    expect(find.text('去开启'), findsNothing);
+    expect(find.textContaining('已被关闭'), findsNothing);
   });
 }

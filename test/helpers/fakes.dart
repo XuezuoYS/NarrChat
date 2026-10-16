@@ -859,12 +859,20 @@ class ToggleAiService extends AiService {
 
 /// 记录调用并可由测试手动触发点击的假通知后端。
 class FakeNotificationBackend implements NotificationBackend {
-  FakeNotificationBackend({this.notificationsEnabled, this.launchPayload});
+  FakeNotificationBackend({
+    this.notificationsEnabled,
+    this.launchPayload,
+    this.channelState = const GenerationDoneChannelState(
+      headsUp: true,
+      sound: true,
+    ),
+  });
 
   final List<({int id, String title, String body, String payload})> shown = [];
   final List<int> cancelled = [];
   final List<int> startedForeground = [];
   int stopForegroundCount = 0;
+  int openSettingsCount = 0;
   void Function(String bookUuid)? onTap;
 
   /// 是否允许通知（null = 非 Android / 未知）。
@@ -872,6 +880,9 @@ class FakeNotificationBackend implements NotificationBackend {
 
   /// 冷启动点通知的书籍 uuid（null = 非冷启动）。
   String? launchPayload;
+
+  /// 生成完成渠道的系统侧状态（默认全开；置 null 模拟渠道尚未创建）。
+  GenerationDoneChannelState? channelState;
 
   @override
   Future<void> init({required void Function(String bookUuid) onTap}) async {
@@ -898,7 +909,13 @@ class FakeNotificationBackend implements NotificationBackend {
   Future<bool?> areNotificationsEnabled() async => notificationsEnabled;
 
   @override
-  Future<void> openNotificationSettings() async {}
+  Future<GenerationDoneChannelState?> generationDoneChannelState() async =>
+      channelState;
+
+  @override
+  Future<void> openNotificationSettings() async {
+    openSettingsCount++;
+  }
 
   @override
   Future<void> startForeground({

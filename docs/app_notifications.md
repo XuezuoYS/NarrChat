@@ -297,6 +297,16 @@ RoundProvider.activeGenerationBookUuids ─┘
 - 点击系统通知进入对应书对话页的链路不变（`openChatBook`），
   驻场岛「正在生成的书」跳转复用它。
 
+### 6.1 生成完成渠道的悬浮 / 铃声（Android）
+
+- 渠道 `generation_done` 默认 `Importance.high` + 铃声 + 振动，即**系统默认启用
+  悬浮通知与通知铃声**；`init` 时显式 `createNotificationChannel` 让默认值
+  确定落地（渠道已存在时不覆盖用户改过的设置——渠道设置只在首次创建时生效）。
+- 运行时探测：`NotificationSettingsProvider` 在启动与回到前台时读取渠道实际
+  状态（`getNotificationChannels` → `GenerationDoneChannelState`），
+  悬浮或铃声被关时首页显示黄色提示条（与「未开启系统通知」同款），
+  「去开启」跳转系统通知设置页。
+
 ## 7. 调用点迁移
 
 规则（旧 `SnackBar` → 新渠道）：

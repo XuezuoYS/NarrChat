@@ -144,6 +144,10 @@ class GenerationNotificationService with WidgetsBindingObserver {
   /// 是否允许应用发送通知（Android；非 Android 返回 null 表示不适用）。
   Future<bool?> areNotificationsEnabled() => _backend.areNotificationsEnabled();
 
+  /// 生成完成通知渠道在系统侧的生效状态（Android；非 Android / 尚未创建返回 null）。
+  Future<GenerationDoneChannelState?> generationDoneChannelState() =>
+      _backend.generationDoneChannelState();
+
   /// 打开系统通知设置页（Android）。
   Future<void> openNotificationSettings() =>
       _backend.openNotificationSettings();
@@ -220,6 +224,32 @@ class GenerationNotificationService with WidgetsBindingObserver {
   }
 }
 
+/// 生成完成通知渠道在系统侧的生效状态（仅 Android 8.0+ 可探测）。
+///
+/// Android 渠道设置只在首次创建时生效、之后被系统锁定（用户可随时手动改），
+/// 因此「悬浮通知 / 铃声是否还开着」必须运行时探测，不能只看代码里的默认值。
+class GenerationDoneChannelState {
+  const GenerationDoneChannelState({required this.headsUp, required this.sound});
+
+  /// 悬浮通知（heads-up）是否生效：渠道重要级 ≥ high。
+  final bool headsUp;
+
+  /// 通知铃声是否生效：渠道声音未被关闭。
+  final bool sound;
+
+  /// 悬浮与铃声均开启（期望的默认状态）。
+  bool get fullyEnabled => headsUp && sound;
+
+  @override
+  bool operator ==(Object other) =>
+      other is GenerationDoneChannelState &&
+      other.headsUp == headsUp &&
+      other.sound == sound;
+
+  @override
+  int get hashCode => Object.hash(headsUp, sound);
+}
+
 /// 通知后端抽象：隔离 flutter_local_notifications，便于测试注入 Fake。
 abstract interface class NotificationBackend {
   /// 初始化插件；[onTap] 在用户点击通知时回调（参数为通知 payload 里的书籍
@@ -242,6 +272,9 @@ abstract interface class NotificationBackend {
 
   /// 是否允许应用发送通知（Android；非 Android 返回 null 表示不适用）。
   Future<bool?> areNotificationsEnabled();
+
+  /// 生成完成通知渠道的系统侧状态（非 Android / 渠道尚未创建返回 null）。
+  Future<GenerationDoneChannelState?> generationDoneChannelState();
 
   /// 打开系统通知设置页（Android；非 Android 为空操作）。
   Future<void> openNotificationSettings();
@@ -297,10 +330,22 @@ class FlutterLocalNotificationBackend implements NotificationBackend {
       },
     );
     // Android 13+：首次启动申请通知权限（用户已确认在启动时申请）。
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    await android?.requestNotificationsPermission();
+    // 显式创建「生成完成」渠道：渠道的悬浮 / 铃声等设置只在首次创建时按默认值
+    // 生效（之后被系统锁定），提前创建让默认值确定落地，也让渠道立刻出现在
+    // 系统设置页并可被运行时探测。渠道已存在时本调用不会覆盖用户改过的设置。
+    await android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        _channelId,
+        _channelName,
+        description: _channelDescription,
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      ),
+    );
   }
 
   @override
@@ -363,6 +408,26 @@ class FlutterLocalNotificationBackend implements NotificationBackend {
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.areNotificationsEnabled();
+  }
+
+  @override
+  Future<GenerationDoneChannelState?> generationDoneChannelState() async {
+    if (!Platform.isAndroid) return null;
+    final channels = await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.getNotificationChannels();
+    if (channels == null) return null;
+    for (final channel in channels) {
+      if (channel.id != _channelId) continue;
+      return GenerationDoneChannelState(
+        // 悬浮通知（heads-up）要求渠道重要级 ≥ high。
+        headsUp: channel.importance.value >= Importance.high.value,
+        sound: channel.playSound,
+      );
+    }
+    // 渠道尚未创建（首次生成完成前）视为未知，不误报。
+    return null;
   }
 
   @override
