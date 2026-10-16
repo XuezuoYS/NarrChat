@@ -4615,10 +4615,14 @@ class _HopLine extends StatelessWidget {
 
 /// 思考框：每个框独立展开/折叠状态（多思考框互不影响）。
 ///
-/// - 折叠：4~5 行固定高度、内容增长时自动向下滚动；**生成中只渲染末尾窗口**
-///   （[thinkingTailWindow]）——折叠区仅 4~5 行可见，而全文排版成本随思考链
-///   长度线性上升，是「思考链越长越卡」的主因；
+/// - 折叠：4~5 行固定高度、**恒贴内容末尾**、**不允许手动滚动**——折叠区只是
+///   「最新推理」的只读预览，在这么一条窄缝里翻找既费劲又容易停在半行上，
+///   要读全文请展开（见下）；**只渲染末尾窗口**（[thinkingTailWindow]）——
+///   折叠区仅 4~5 行可见，而全文排版成本随思考链长度线性上升，是「思考链
+///   越长越卡」的主因；
 /// - 展开：全部内容内联展示（自动跟随交由聊天区全局滚动）；
+///   **双击正文任意位置直接收起**——长思考链展开后头部早已滚出视口，
+///   只靠点击头部收起得先滚回顶端；
 /// - 思考进行中显示转圈，完成后显示 ✓。
 ///
 /// 正文按**纯文本**渲染（[PlainTextPreview]），不走 Markdown：
@@ -4640,58 +4644,16 @@ class _ThinkingBox extends StatefulWidget {
 }
 
 class _ThinkingBoxState extends State<_ThinkingBox> {
-  final ScrollController _collapsedController = ScrollController();
-  String? _lastContent;
   bool _expanded = false;
 
-  /// `done` 之后思考内容是否仍在增长。
+  /// 折叠态展示文案：**恒为末尾窗口**（[thinkingTailWindow]；内容未超上限时
+  /// 即全文）。
   ///
-  /// 正常线路下 done ⇒ 内容冻结（此时才渲染全文，全文排版只付一次成本）；
-  /// 少数线路会边出正文边续吐思考增量（追加到同一思考块）。一旦观察到
-  /// 「已 done 的框又变长」就锁定为生成中：宁可只显示末尾窗口，也不退化为
-  /// 每个增量重排全文——内容还在变时渲染全文没有任何收益。
-  bool _stillGrowing = false;
-
-  @override
-  void didUpdateWidget(covariant _ThinkingBox oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // 仅当上一帧已 done 时才判定「done 后继续增长」（同一帧内 done 与内容
-    // 同时更新属正常收尾，不计入）。
-    if (oldWidget.done &&
-        widget.done &&
-        oldWidget.content != widget.content) {
-      _stillGrowing = true;
-    }
-    // 折叠态：思考内容增长时自动滚动到底部。
-    if (widget.content != _lastContent && !_expanded) {
-      _lastContent = widget.content;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_collapsedController.hasClients) return;
-        final pos = _collapsedController.position;
-        // 已在底部（或内容尚不足一屏）时无需跳转：省掉一次滚动活动与
-        // 随之而来的选择几何刷新。
-        if (pos.maxScrollExtent > 0 && pos.pixels != pos.maxScrollExtent) {
-          _collapsedController.jumpTo(pos.maxScrollExtent);
-        }
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _collapsedController.dispose();
-    super.dispose();
-  }
-
-  /// 折叠态展示文案。
-  ///
-  /// 生成中只保留末尾窗口：内容持续增长且折叠区只露 4~5 行，全文渲染意味着
-  /// 每个增量都要整段重新排版（见 [thinkingTailWindow]）；思考结束且内容冻结
-  /// （[widget.done] 且未再增长）后恢复全文，折叠框内可继续上翻阅读。
+  /// 折叠区只露 4~5 行且不允许手动滚动，渲染全文的唯一效果就是每个流式增量
+  /// 多付一次整段排版（见 [thinkingTailWindow]）——「贴着末尾的窗口」与全文
+  /// 露出来的那几行完全一致，故内容是否冻结都不必放开全文。
   String get _collapsedData =>
-      widget.done && !_stillGrowing
-          ? widget.content
-          : (thinkingTailWindow(widget.content) ?? widget.content);
+      thinkingTailWindow(widget.content) ?? widget.content;
 
   /// 思考正文样式（13px / 1.5 行高 / 次要文本色，与既有一致）。
   TextStyle _baseStyle(BuildContext context) => TextStyle(
@@ -4758,21 +4720,36 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
               ),
             ),
           ),
-          // 折叠：4~5 行固定高度、内部自动滚动（生成中只渲染末尾窗口）；
-          // 展开：全部内容内联。两态均为纯文本渲染（见类文档）。
+          // 折叠：4~5 行固定高度、恒贴末尾、不可手动滚动（只渲染末尾窗口）；
+          // 展开：全部内容内联，双击正文即收起。两态均为纯文本渲染（见类文档）。
           if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-              child: PlainTextPreview(
-                data: widget.content,
-                base: _baseStyle(context),
+            GestureDetector(
+              // 整块正文（含四周留白）都可双击：长思考链展开后头部远在视口之外，
+              // 只能就近双击正文收起。行内双击识别器比外层选中区域的识别器更深，
+              // 故「双击选词」让位给「双击收起」（与推荐行动选项行同一约定）；
+              // 单击 / 长按 / 拖动仍归选中区域。
+              behavior: HitTestBehavior.opaque,
+              onDoubleTap: () => setState(() => _expanded = false),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                child: PlainTextPreview(
+                  data: widget.content,
+                  base: _baseStyle(context),
+                ),
               ),
             )
           else
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 96),
               child: SingleChildScrollView(
-                controller: _collapsedController,
+                // 反向：偏移 0 恒等于内容末尾 —— 折叠态不写一行程序滚动代码就永远
+                // 贴着最新思考（内容增长、窗口向后滑动都自动跟上）。
+                reverse: true,
+                // 折叠态不允许手动滚动：这里是只读预览，要读全文请展开。
+                physics: const NeverScrollableScrollPhysics(),
+                // 不继承 PrimaryScrollController：路由会提供一个（移动端默认继承），
+                // 继承等于把这个小框顶成「主滚动」。
+                primary: false,
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                 child: PlainTextPreview(
                   data: _collapsedData,
