@@ -29,7 +29,7 @@
 | 文件 | 改动 |
 |---|---|
 | [lib/widgets/markdown_preview.dart](../lib/widgets/markdown_preview.dart) | 统一选中容器 `SelectableTextArea` 自建分支由裸 `SelectionArea` 换成 `_SelectionCopyToolbar`：`Listener` 记录设备/位移/双击 + `SelectionArea.onSelectionChanged` 维护选区文本 + 选中结束弹横排工具条；框架自带工具栏照旧抑制 |
-| [test/selection_copy_toolbar_test.dart](../test/selection_copy_toolbar_test.dart) | 隔离层 17 例：鼠标拖拽 / 鼠标双击 / 触屏双击 / 触屏双击后拖动弹工具条；**弹出后原选区保留**；**横排形态**（含 `Theme.platform = windows` 的桌面条件）；**浮在选区上方**；**白底 / 字号 / 留白**；点「复制」落剪贴板 + 「已复制」提示；「全选」后工具条保持可用；长按、右键、原地单击均不弹；作用域内跨块选中同样弹且能复制跨块文本；点工具条外收起 |
+| [test/selection_copy_toolbar_test.dart](../test/selection_copy_toolbar_test.dart) | 隔离层 20 例：鼠标拖拽 / 鼠标双击 / 触屏双击 / 触屏双击后拖动弹工具条；**收起后再选仍弹**；**拖选区手柄改完选区抬手补弹**；**弹出后原选区保留**；**横排形态**（含 `Theme.platform = windows` 的桌面条件）；**浮在选区上方**；**白底 / 字号 / 留白**；点「复制」落剪贴板 + 「已复制」提示；「全选」后工具条保持可用；长按、右键、原地单击均不弹；作用域内跨块选中同样弹且能复制跨块文本；点工具条外收起 |
 | [test/selectable_text_scope_test.dart](../test/selectable_text_scope_test.dart) | 拖动选中后先收起自动弹出的工具条（同一用例里两段拖动连着做）；「框架工具栏被抑制」用例的语义改为「选中工具条由应用统一弹出」 |
 | [test/chat_selection_scope_test.dart](../test/chat_selection_scope_test.dart) | 对话页集成 1 例：跨气泡拖拽选中 → 自动弹工具条 → 点「复制」得到跨气泡文本 |
 | [lib/widgets/raw_dialog.dart](../lib/widgets/raw_dialog.dart) | RAW 内容块 `_HighlightText` 的裸 `SelectionArea` 换成 `SelectableTextArea`：框架默认工具栏（长按 / 双击才出现）改由统一容器的「选中即弹」工具条接管；块内分段 `RichText` + `SelectionContainer.maybeOf` 取 registrar 的既有做法不变 |
@@ -37,6 +37,9 @@
 | [test/raw_dialog_test.dart](../test/raw_dialog_test.dart) | 新增 1 例：RAW 块内拖拽选中 → 自动弹工具条 → 点「复制」得到块内文本 |
 | [test/token_usage_pill_test.dart](../test/token_usage_pill_test.dart) | 新增 1 例：明细气泡内拖拽选中「模型名」行 → 自动弹工具条 → 点「复制」落剪贴板 |
 | [test/helpers/raw_dialog_harness.dart](../test/helpers/raw_dialog_harness.dart) | 文档同步：块内 `SelectionArea` 现由统一选中容器提供 |
+| **第六轮：修复触控端两个实测缺陷** | |
+| [lib/widgets/markdown_preview.dart](../lib/widgets/markdown_preview.dart) | ①「拖选区手柄后工具条不再弹」：手柄是 Overlay 上的独立 widget，指针事件**不进**本组件 `Listener` 子树 → 新增**全局指针路由**（`GestureBinding.pointerRouter.addGlobalRoute`）收口；按下不在区域内、但本轮手势里选区确实被改过 → 抬手补弹（纯点别处仍不弹）。②「再次双击 / 选中常不弹」三处原因一并修：触发判据从「双击间隔 + 拖拽位移」换成**「本轮手势内选区是否变化过」**（更稳，不受时间戳抖动影响）；滚动收起只在 `dragDetails != null`（用户拖动滚动）时生效，不再被框架「让选区可见」的程序滚动误收；判定整体挪到**微任务**——框架的选区回调可能排在抬手之后（触屏双击的选词要等手势竞技场在抬手时裁决），在抬手处同步判定会读到「选区还没变」 |
+| [test/selection_copy_toolbar_test.dart](../test/selection_copy_toolbar_test.dart) | 新增 3 例：收起后再次选中仍会弹出（鼠标拖拽 / 触屏双击各一）、拖选区手柄（指针落在区域外）改完选区后抬手补弹 |
 | **第五轮：横条样式微调（用户确认后）** | |
 | [lib/widgets/selection_toolbar.dart](../lib/widgets/selection_toolbar.dart) | 底色由 `colorScheme.surfaceContainerHighest`（灰）改为主题 `NarrChatColors.surface`（**浅色即纯白**、深色自动转深灰，与 `popupMenuTheme` 同源）；字号 13 → 14；上下留白放大（按钮高度 30 且**去掉 `visualDensity.compact`**——它会把高度再压掉 8px，与「留白变大」相反；卡片上下各 4）；圆角 / 阴影对齐 `NarrChatTheme.menuRadius` 与菜单口径（12 / 3） |
 | [test/selection_copy_toolbar_test.dart](../test/selection_copy_toolbar_test.dart) | 新增 1 例：白底（`NarrChatColors.light.surface`）、字号 14、按钮与卡片的上下留白 |
@@ -69,12 +72,14 @@
 ## 4. 验证结论
 
 - `flutter analyze`（全项目）：无 issue。
-- `flutter test`（全量）：**1873 passed / 1 skipped**（本轮新增 21 例：隔离层 17 + 对话页集成 1 + RAW 1 + Token 气泡 1 + 输入框菜单横排 1；改造前基线 1852）。第三轮的 10 处 `SelectableText` 迁移为**等价替换**，不新增用例，改用例断言已随形态更新。
-- 开发中发现并修掉四个**真实缺陷**（均由新增用例兜住）：
+- `flutter test`（全量）：**1876 passed / 1 skipped**（本轮新增 24 例；改造前基线 1852）。第三轮的 10 处 `SelectableText` 迁移为**等价替换**，不新增用例，改用例断言已随形态更新。
+- 开发中（含用户实测反馈）发现并修掉六个**真实缺陷**，均由新增用例兜住：
   1. 「已有选区时原地单击」会重复弹出 → 引入按下位移判据；
   2. 触屏选区手柄盖住首版菜单项导致点不中 → 首版改在微任务里先 `hideToolbar()`（工具条化后位置避开手柄，已不再需要收手柄）；
-  3. **工具条弹出即清空选区**（用户实测反馈）→ 根因是模态路由夺焦点触发框架 `clearSelection()`，改为非模态 `OverlayEntry`；回归用例显式还原真机的 `lifecycleState == resumed` 前置条件，否则测试环境复现不出来；
-  4. **工具条/输入框菜单在桌面上是竖排**（用户截图反馈）→ 根因是框架 `AdaptiveTextSelectionToolbar` 的平台分派，改为自绘横条 `SelectionToolbar`，两类调用点共用。
+  3. **工具条弹出即清空选区** → 根因是模态路由夺焦点触发框架 `clearSelection()`，改为非模态 `OverlayEntry`；回归用例显式还原真机的 `lifecycleState == resumed` 前置条件；
+  4. **工具条 / 输入框菜单在桌面上是竖排** → 根因是框架 `AdaptiveTextSelectionToolbar` 的平台分派，改为自绘横条 `SelectionToolbar`；
+  5. **拖选区手柄后工具条不再弹** → 手柄在 Overlay 上、指针事件不进 `Listener` 子树，加全局指针路由收口；
+  6. **再次双击 / 选中时常不弹** → 触发判据换成「本轮手势内选区是否变化过」、滚动收起限定为用户拖动滚动、判定挪到微任务（框架选区回调可能排在抬手之后）。
 - 迁移等价性的依据：`SelectableText` 的 `style` 走 `DefaultTextStyle.merge`（`material/selectable_text.dart:745-751`），与 `Text` 一致；`maxLines` / 布局参数一一对应，因此这批展示位的排版不变。
 - 真机（Windows / Android）手测仍未做：工具条在真机上的视觉位置与手柄的相对关系、剪贴板真实写入、长按业务菜单与选中工具条的手感差异、各展示位迁移后的观感。
 - 本轮未做（超出用户口径）：触屏长按拖动选多词后弹工具条（长按已被气泡业务菜单占用，两边会打架，故触屏只认双击入口）；编辑类输入框（`TextField`）仍用各自的右键 / 长按菜单（全选 / 复制 / 粘贴 / 剪切），与只读文本的选中工具条是两套语义。

@@ -623,12 +623,6 @@ const String _copyLabel = '复制';
 /// 工具条「全选」项文案。
 const String _selectAllLabel = '全选';
 
-/// 鼠标 / 触控笔判定「拖拽选中」的最小位移。
-///
-/// 远小于触屏的 `kTouchSlop`：桌面上拖选一两个字符也只有几个像素，
-/// 阈值过大会把这类选择误判成「原地单击」而不弹工具条。
-const double _kPreciseDragSlop = 4;
-
 /// 「选中即弹」的复制工具条。
 ///
 /// **弹**：鼠标 / 触控笔拖拽选中、双击选词，触屏双击 / 三击选词（含双击后拖动
@@ -662,6 +656,18 @@ class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
   /// 当前选区文本（由 [SelectionArea.onSelectionChanged] 维护；空串 = 无选区）。
   String _selectedText = '';
 
+  /// 本次指针手势期间选区是否变过。
+  ///
+  /// 这是「该不该弹」的主判据（比双击间隔、拖拽位移稳）：拖选区手柄、双击选词、
+  /// 拖拽框选都会让选区变化；原地单击不会。
+  bool _selectionChangedInGesture = false;
+
+  /// 本次指针手势的按下是否落在选中区域的内容上（由 [Listener] 记录）。
+  ///
+  /// 选区手柄、工具条本身都是 Overlay 上的独立 widget，指针事件不会进本组件的
+  /// 子树；靠它区分「区域内手势」与「手柄等区域外手势」。
+  bool _downInsideRegion = false;
+
   /// 正在显示的横排工具条（null = 未显示）。
   ///
   /// 用 [OverlayEntry] 而不是模态路由：不夺焦点（失焦会让框架清空选区）、不铺
@@ -671,11 +677,9 @@ class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
   /// 本次按下的设备类型与按键（判断该不该弹的关键输入）。
   PointerDeviceKind? _downKind;
   bool _downIsSecondaryMouse = false;
-  Offset _downPosition = Offset.zero;
 
-  /// 本次按下后的最大位移：用于区分「拖拽选中」与「原地单击」
-  /// （单击只是收起选区，不该弹工具条）。
-  double _dragDistance = 0;
+  /// 本次按下的时刻（判断触屏长按；双击判定用 [_lastDownTime]）。
+  Duration? _downTime;
 
   /// 上一次按下的时刻与位置（双击判定，鼠标与触屏同一口径）。
   Duration? _lastDownTime;
@@ -685,26 +689,83 @@ class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
   bool _doubleTapCandidate = false;
 
   @override
+  void initState() {
+    super.initState();
+    // 全局指针收口：拖选区手柄改完选区抬手时，事件落在手柄（Overlay）上，
+    // 本组件的 Listener 收不到，得靠全局路由补弹工具条（见 [_handleGlobalPointer]）。
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_handleGlobalPointer);
+  }
+
+  @override
   void dispose() {
+    GestureBinding.instance.pointerRouter
+        .removeGlobalRoute(_handleGlobalPointer);
     _hideToolbar();
     super.dispose();
+  }
+
+  /// 全局指针收口：抬手后统一判定「该不该弹工具条」。
+  ///
+  /// 为什么放在这里、而不是本组件的 `Listener.onPointerUp`：
+  /// - 选区手柄在 Overlay 上，指针事件不进本组件子树，`Listener` 收不到；
+  /// - 框架的选区回调**可能排在抬手事件之后**（触屏双击的选词要等手势竞技场在
+  ///   抬手时裁决），所以在抬手处同步判定会读到「选区还没变」。
+  /// 故抬手事件只做记录，判定延后到微任务（此时代码里的选区已是最终值）。
+  void _handleGlobalPointer(PointerEvent event) {
+    if (event is! PointerUpEvent && event is! PointerCancelEvent) return;
+
+    final bool insideRegion = _downInsideRegion;
+    final PointerDeviceKind? kind = _downKind;
+    final bool secondaryMouse = _downIsSecondaryMouse;
+    final bool doubleTapped = _doubleTapCandidate;
+    final Duration held = _downTime == null
+        ? Duration.zero
+        : SchedulerBinding.instance.currentSystemFrameTimeStamp - _downTime!;
+
+    _downInsideRegion = false;
+    _downKind = null;
+    _downTime = null;
+    _downIsSecondaryMouse = false;
+    _doubleTapCandidate = false;
+
+    scheduleMicrotask(() {
+      final bool selectionChanged = _selectionChangedInGesture;
+      _selectionChangedInGesture = false;
+      if (!mounted || !selectionChanged) return;
+      if (_toolbarEntry != null || _selectedText.trim().isEmpty) return;
+      if (!insideRegion) {
+        // 按下不在选中区域内容上（典型是拖选区手柄）：选区确实被改了才补弹，
+        // 纯点击别处不该把工具条又弹回来。
+        _showToolbar();
+        return;
+      }
+      // 右键归业务右键菜单；触屏长按（「双击后拖动」除外）归气泡业务菜单。
+      if (kind == PointerDeviceKind.mouse && secondaryMouse) return;
+      if (kind == PointerDeviceKind.touch &&
+          held > kLongPressTimeout &&
+          !doubleTapped) {
+        return;
+      }
+      _showToolbar();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Listener(
+      // 只记「按下」：抬手统一在全局指针路由里收口（见 [_handleGlobalPointer]）。
       onPointerDown: _handlePointerDown,
-      onPointerMove: _handlePointerMove,
-      onPointerUp: _handlePointerUp,
       // 区域内滚轮（含触控板）：锚点位置随之失效，直接收起工具条。
       onPointerSignal: (_) => _hideToolbar(),
       child: NotificationListener<ScrollNotification>(
-        // 选区底下的滚动（如对话页消息列）会让锚点漂移：收起工具条。
         onNotification: (notification) {
-          if (notification is ScrollStartNotification ||
-              notification is ScrollUpdateNotification) {
-            _hideToolbar();
-          }
+          // 只在**用户拖动滚动**时收起：框架为「让选区可见」做的程序滚动
+          // （`dragDetails == null`）不该把刚弹出的工具条收掉。
+          final bool userDrag = (notification is ScrollStartNotification &&
+                  notification.dragDetails != null) ||
+              (notification is ScrollUpdateNotification &&
+                  notification.dragDetails != null);
+          if (userDrag) _hideToolbar();
           return false;
         },
         child: SelectionArea(
@@ -714,6 +775,7 @@ class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
               const SizedBox.shrink(),
           onSelectionChanged: (content) {
             _selectedText = content?.plainText ?? '';
+            _selectionChangedInGesture = true;
             // 选区被清掉（例如点别处）→ 工具条失去落点。
             if (_selectedText.trim().isEmpty) _hideToolbar();
           },
@@ -724,48 +786,22 @@ class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
   }
 
   void _handlePointerDown(PointerDownEvent event) {
+    _downInsideRegion = true;
+    // 新的一轮手势：本轮「选区是否变过」从头算（抬手后由全局路由判定并清空）。
+    _selectionChangedInGesture = false;
     _downKind = event.kind;
     _downIsSecondaryMouse = event.kind == PointerDeviceKind.mouse &&
         event.buttons == kSecondaryMouseButton;
-    _downPosition = event.position;
-    _dragDistance = 0;
 
-    // 双击判定用「按下—按下」间隔（与框架的手势口径一致）。
     final now = SchedulerBinding.instance.currentSystemFrameTimeStamp;
+    _downTime = now;
+    // 双击判定用「按下—按下」间隔（与框架的手势口径一致）。
     final last = _lastDownTime;
     _doubleTapCandidate = last != null &&
         now - last <= kDoubleTapTimeout &&
         (event.position - _lastDownPosition).distance <= kDoubleTapSlop;
     _lastDownTime = now;
     _lastDownPosition = event.position;
-  }
-
-  void _handlePointerMove(PointerMoveEvent event) {
-    final distance = (event.position - _downPosition).distance;
-    if (distance > _dragDistance) _dragDistance = distance;
-  }
-
-  void _handlePointerUp(PointerUpEvent event) {
-    if (_toolbarEntry != null) return;
-    final device = _downKind ?? event.kind;
-    final slop =
-        device == PointerDeviceKind.touch ? kTouchSlop : _kPreciseDragSlop;
-    final bool dragged = _dragDistance > slop;
-    final bool doubleTapped = _doubleTapCandidate;
-    // 触屏：只有双击（含「双击后拖动」扩展选区）才算选中文本，长按归业务菜单；
-    // 鼠标 / 触控笔：拖拽选中、双击选词都弹，右键归业务菜单。
-    final bool shouldShow = device == PointerDeviceKind.touch
-        ? doubleTapped
-        : !_downIsSecondaryMouse && (dragged || doubleTapped);
-
-    _doubleTapCandidate = false;
-    _downKind = null;
-    if (!shouldShow) return;
-    // 等本次事件分发结束（微任务）再弹：框架的「抬手」回调排在指针事件之后，
-    // 选区到那时才是最终值。
-    scheduleMicrotask(() {
-      if (mounted) _showToolbar();
-    });
   }
 
   /// 弹出横排工具条（选区为空时按需延后一个微任务再判断一次）。

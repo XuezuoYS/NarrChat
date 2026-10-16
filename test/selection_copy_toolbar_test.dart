@@ -332,6 +332,89 @@ void main() {
     );
   });
 
+  testWidgets('收起后再次选中仍会弹出（不会只弹一次）', (tester) async {
+    await tester.pumpWidget(_wrap(const PlainTextPreview(data: _alphaText)));
+    await tester.pumpAndSettle();
+
+    await _dragSelect(
+      tester,
+      textOffsetToPosition(tester, _alphaText, 0),
+      textOffsetToPosition(tester, _alphaText, 5),
+      kind: PointerDeviceKind.mouse,
+    );
+    expect(find.text('复制'), findsOneWidget);
+
+    // 点「复制」收起工具条（选区保留），再选一次应当**重新弹出**。
+    await tester.tap(find.text('复制'));
+    await tester.pumpAndSettle();
+    expect(find.text('复制'), findsNothing);
+
+    await _dragSelect(
+      tester,
+      textOffsetToPosition(tester, _alphaText, 6),
+      textOffsetToPosition(tester, _alphaText, 12),
+      kind: PointerDeviceKind.mouse,
+    );
+    expect(find.text('复制'), findsOneWidget, reason: '第二次选中同样要弹');
+  });
+
+  testWidgets('触屏：双击 → 收起 → 再双击仍会弹出', (tester) async {
+    await tester.pumpWidget(_wrap(const PlainTextPreview(data: _alphaText)));
+    await tester.pumpAndSettle();
+
+    final position = textOffsetToPosition(tester, _alphaText, 2);
+    await _doubleTapAt(tester, position);
+    expect(find.text('复制'), findsOneWidget);
+
+    // 点别处收起（顺带清掉选区）。随后停一拍：真实使用里两次双击之间本就有停顿，
+    // 否则框架会把连续的点击串成三击 / 四击（触屏三击不选词，反而清掉选区）。
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    expect(find.text('复制'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await _doubleTapAt(tester, position);
+    expect(find.text('复制'), findsOneWidget, reason: '第二次双击同样要弹');
+  });
+
+  testWidgets('拖选区手柄（指针落在区域外）改完选区，抬手补弹工具条', (tester) async {
+    await tester.pumpWidget(_wrap(const PlainTextPreview(data: _alphaText)));
+    await tester.pumpAndSettle();
+
+    await _dragSelect(
+      tester,
+      textOffsetToPosition(tester, _alphaText, 0),
+      textOffsetToPosition(tester, _alphaText, 5),
+      kind: PointerDeviceKind.mouse,
+    );
+    // 抓手柄前用户先点了别处 → 工具条已收起。
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    expect(find.text('复制'), findsNothing);
+
+    // 选区手柄是 Overlay 上的独立 widget，指针事件**不会**进选中区域子树：
+    // 这里在正文下方（区域外）按下，并在按住期间改变选区（等价于拖手柄）。
+    final gesture = await tester.startGesture(
+      textOffsetToPosition(tester, _alphaText, 5) + const Offset(0, 60),
+      kind: PointerDeviceKind.touch,
+    );
+    addTearDown(gesture.removePointer);
+    await tester.pump();
+    Actions.invoke(
+      tester.element(find.text(_alphaText)),
+      const SelectAllTextIntent(SelectionChangedCause.toolbar),
+    );
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('复制'),
+      findsOneWidget,
+      reason: '拖手柄改完选区，抬手应补弹工具条',
+    );
+  });
+
   testWidgets('已有选中内容时原地单击不再弹工具条（单击只是收起选区）', (tester) async {
     await tester.pumpWidget(_wrap(const PlainTextPreview(data: _alphaText)));
     await tester.pumpAndSettle();
