@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
 import '../services/app_notice_center.dart';
+import 'markdown_preview.dart';
 import 'notice_visuals.dart';
 
 /// 悬浮通知渠道宿主：窗口正中半透明悬浮弹出（挂在应用顶层 [Stack]）。
@@ -162,9 +163,11 @@ class _FloatingNoticeCardState extends State<_FloatingNoticeCard>
                       Flexible(
                         child: SingleChildScrollView(
                           child: widget.notice.copyable
-                              ? SelectableText(
-                                  widget.notice.message,
-                                  style: textStyle,
+                              ? SelectableTextArea(
+                                  child: Text(
+                                    widget.notice.message,
+                                    style: textStyle,
+                                  ),
                                 )
                               : Text(widget.notice.message, style: textStyle),
                         ),

@@ -66,7 +66,19 @@ Future<String?> copyAcrossBlocks(
 
   copySelection(tester, find.text(_alphaText));
   await tester.pump();
+  // 鼠标拖动选中后应用会自动弹出「复制 / 全选」工具条（见
+  // `selection_copy_toolbar_test.dart`）：它是浮层，不收起来会挡住本用例里
+  // 紧接着的第二次拖动（对照场景与作用域场景连着做）。
+  await dismissSelectionToolbar(tester);
   return copied.isEmpty ? null : copied.last;
+}
+
+/// 收起自动弹出的选中工具条（没有工具条时什么都不做）。
+Future<void> dismissSelectionToolbar(WidgetTester tester) async {
+  if (find.text('复制').evaluate().isEmpty) return;
+  // 点工具条之外任意处即收起（非模态，不铺遮罩）。
+  await tester.tapAt(Offset.zero);
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -150,8 +162,7 @@ void main() {
     expect(selected, contains('beta'));
   });
 
-  testWidgets('作用域抑制默认右键 / 长按菜单（与 SelectableTextArea 同约定）',
-      (tester) async {
+  testWidgets('作用域抑制框架选中工具栏（选中工具条由应用统一弹出）', (tester) async {
     await tester.pumpWidget(_wrap(SelectableTextScope(child: _stacked())));
     await tester.pumpAndSettle();
 
@@ -166,7 +177,11 @@ void main() {
       tester.element(find.text(_alphaText)),
       state,
     );
-    expect(menu, isA<SizedBox>(), reason: '默认菜单被抑制，避免与气泡菜单冲突');
+    expect(
+      menu,
+      isA<SizedBox>(),
+      reason: '框架工具栏被抑制（长按 / 右键归业务菜单），「复制 / 全选」由应用在选中结束时统一弹出',
+    );
   });
 
   testWidgets('作用域内的 SelectableTextArea 是纯代理：不改变布局与文本外观',

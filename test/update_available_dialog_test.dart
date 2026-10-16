@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/update_check_service.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
 import 'package:narrchat/widgets/update_available_dialog.dart';
 
 import 'helpers/notice_harness.dart';
@@ -56,9 +57,11 @@ void main() {
     expect(find.textContaining('当前版本 1.3.1'), findsOneWidget);
     expect(find.textContaining('下载地址'), findsOneWidget);
     expect(find.textContaining('更新内容'), findsOneWidget);
+    // 下载地址以可选中文本呈现（统一选中容器：选中即弹「复制 / 全选」）。
     expect(
-      find.byWidgetPredicate(
-        (w) => w is SelectableText && w.data == _release.pageUrl,
+      find.descendant(
+        of: find.byType(SelectableTextArea),
+        matching: find.text(_release.pageUrl),
       ),
       findsOneWidget,
     );

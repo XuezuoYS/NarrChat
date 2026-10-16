@@ -4,10 +4,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// RAW 对话框用例的公共脚手架。
 ///
-/// RAW 内容块的渲染形状是「一块一个 `SelectionArea`，块内按 2 万字符分段渲染多个
-/// `RichText`」（见 `lib/widgets/raw_dialog.dart` 的 `_HighlightText`），于是两个
-/// 惯用读法都失效：
-/// - `find.byType(SelectableText)` 数不到内容块（如今只剩图片详情行还是它）；
+/// RAW 内容块的渲染形状是「一块一个 `SelectionArea`（由统一选中容器
+/// `SelectableTextArea` 提供：选中即弹「复制 / 全选」工具条），块内按 2 万字符
+/// 分段渲染多个 `RichText`」（见 `lib/widgets/raw_dialog.dart` 的 `_HighlightText`），
+/// 于是两个惯用读法都失效：
+/// - `find.byType(SelectableText)` 在 RAW 对话框里已经找不到东西（内容块与图片
+///   详情行都并入了统一选中容器）；
 /// - `find.text(...)` 读不到块内文字（默认不看裸 `RichText`）。
 /// 统一走这里的 finder / 读取函数，`[dialog]` 一律传 `find.byType(RawDialog)`，
 /// 免得命中对话框之外（底层对话气泡）的选中区域。

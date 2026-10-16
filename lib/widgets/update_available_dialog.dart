@@ -97,11 +97,13 @@ class _UpdateAvailableDialog extends StatelessWidget {
                 style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
               ),
               const SizedBox(height: 2),
-              SelectableText(
-                release.pageUrl,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: NarrChatTheme.primary,
+              SelectableTextArea(
+                child: Text(
+                  release.pageUrl,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: NarrChatTheme.primary,
+                  ),
                 ),
               ),
             ],

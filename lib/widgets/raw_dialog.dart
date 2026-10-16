@@ -6,6 +6,7 @@ import '../models/raw_exchange.dart';
 import '../services/request_frame_outline.dart';
 import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
+import 'markdown_preview.dart';
 
 /// 从文本中提取一个 base64 图片 data URL（用于 RAW 请求体中折叠长图）。
 class RawImageData {
@@ -1370,7 +1371,9 @@ class _ImageListBlockState extends State<_ImageListBlock> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: SelectableText(_preview(img), style: mono, maxLines: 2),
+              child: SelectableTextArea(
+                child: Text(_preview(img), style: mono, maxLines: 2),
+              ),
             ),
             IconButton(
               icon: const Icon(Icons.copy, size: 16),
@@ -1468,7 +1471,9 @@ class _HighlightText extends StatelessWidget {
     final pieces = splitAtNewlines(text, _segmentBudget);
     final rowHeight = _rowHeightOf(base, textScaler);
     final selectionColor = scheme.primary.withValues(alpha: 0.4);
-    return SelectionArea(
+    // 与其他可选中区域共用同一容器：选中即弹「复制 / 全选」工具条
+    // （见 [SelectableTextArea]；框架自带的选中工具栏在此同样被抑制）。
+    return SelectableTextArea(
       child: Builder(
         builder: (BuildContext context) {
           // registrar 由 SelectionArea 下发的 SelectionContainer 提供，必须在它下面取。

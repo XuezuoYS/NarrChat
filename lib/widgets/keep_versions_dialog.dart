@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../services/sync/sync_models.dart';
 import '../utils/focus_utils.dart';
+import 'markdown_preview.dart';
 
 /// 「保留历史版本」设置弹窗：打开时拉取云端真值 → 编辑 → 保存到云端。
 ///
@@ -157,9 +158,11 @@ class _KeepVersionsDialogState extends State<_KeepVersionsDialog> {
             ],
             if (_remoteError != null) ...[
               const SizedBox(height: 12),
-              SelectableText(
-                _remoteError!,
-                style: TextStyle(fontSize: 12, color: colors.error),
+              SelectableTextArea(
+                child: Text(
+                  _remoteError!,
+                  style: TextStyle(fontSize: 12, color: colors.error),
+                ),
               ),
             ],
           ],

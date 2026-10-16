@@ -109,7 +109,7 @@ Future<void> _searchRaw(WidgetTester tester, String query) async {
 /// 展开着的 RAW 内容块。
 ///
 /// 每块一个 `SelectionArea`（内部按 2 万字符分段渲染多个 `RichText`）；
-/// `SelectableText` 如今只剩图片详情行，数「展开了几块」不能再靠它。
+/// 块内的 `SelectableText` 已全部并入统一选中容器，数「展开了几块」只能靠它。
 /// 读取函数统一在 `test/helpers/raw_dialog_harness.dart`。
 final Finder _rawDialog = find.byType(RawDialog);
 final Finder _rawBlocks = rawBlocks(_rawDialog);
@@ -1061,7 +1061,7 @@ void main() {
       // 默认全部折叠：请求体内容不渲染（唯一上屏的是常驻「无返回」说明块）。
       expect(_rawBlocks, findsOneWidget);
       expect(_rawBlockText(tester, 0), '（无 AI 返回内容）');
-      expect(find.byType(SelectableText), findsNothing);
+      expect(find.text('图 1 · png · 1 B'), findsNothing);
       expect(find.text('图像 1 个（base64 已折叠）'), findsNothing);
 
       // 展开请求体：出现折叠占位文本与「图像 1 个」二级菜单。
@@ -1076,8 +1076,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         find.byType(SelectableText),
-        findsOneWidget,
-      ); // 图片详情行仍是 SelectableText
+        findsNothing,
+        reason: '详情文本统一走选中容器（SelectableTextArea），不再用 SelectableText',
+      );
       expect(find.text('图 1 · png · 1 B'), findsOneWidget);
     });
 
@@ -1309,6 +1310,50 @@ void main() {
 
       expect(copied, hasLength(1), reason: '跨段拖动应产生一份可复制的选中内容');
       expect(copied.single, expected, reason: '切段后的复制必须与整块逐字相同（含接缝处的换行）');
+    });
+
+    testWidgets('块内选中文字后自动弹出「复制 / 全选」工具条（与其他可选中区域共用一个容器）',
+        (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: _bigRawBody(lines: 5),
+          thinking: '无',
+          toolCalls: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: RawDialog(exchanges: exchanges)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('【请求体 1】'));
+      await tester.pumpAndSettle();
+
+      final copied = mockClipboard(tester);
+      final onScreen = _rawBlockText(tester, 0);
+
+      // 鼠标拖拽选中开头 8 个字符：松手即弹工具条，不必再右键 / Ctrl+C。
+      final gesture = await tester.startGesture(
+        _rawOffsetAt(tester, 0, 0),
+        kind: PointerDeviceKind.mouse,
+      );
+      addTearDown(gesture.removePointer);
+      await tester.pump();
+      await gesture.moveTo(_rawOffsetAt(tester, 0, 8));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(find.text('复制'), findsOneWidget);
+      expect(find.text('全选'), findsOneWidget);
+
+      await tester.tap(find.text('复制'));
+      await tester.pumpAndSettle();
+
+      expect(copied, hasLength(1));
+      expect(copied.single, onScreen.substring(0, 8));
     });
   });
 }

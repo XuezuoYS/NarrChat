@@ -11,6 +11,7 @@ import '../providers/round_provider.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
 import 'island_bar.dart';
+import 'markdown_preview.dart';
 import 'notice_visuals.dart';
 
 /// 驻场通知渠道：**收起时嵌进顶栏、展开时脱离成悬浮卡片**的灵动岛式胶囊。
@@ -919,12 +920,14 @@ class _ResultRow extends StatelessWidget {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 1),
-              child: SelectableText(
-                toast.message,
-                style: const TextStyle(
-                  fontSize: 12.5,
-                  height: 1.3,
-                  color: kNoticeTextPrimary,
+              child: SelectableTextArea(
+                child: Text(
+                  toast.message,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    height: 1.3,
+                    color: kNoticeTextPrimary,
+                  ),
                 ),
               ),
             ),

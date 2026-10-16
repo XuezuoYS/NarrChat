@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/screens/database_inspect_screen.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
 
 import 'helpers/fakes.dart';
 
@@ -129,14 +130,14 @@ void main() {
     await tester.tap(find.text('books'));
     await tester.pumpAndSettle();
 
-    // 对话框尚未打开（无 SelectableText）。
-    expect(find.byType(SelectableText), findsNothing);
+    // 对话框尚未打开（无选中容器）。
+    expect(find.byType(SelectableTextArea), findsNothing);
 
     // 点击长文本单元格 → 打开完整内容对话框。
     await tester.tap(find.text(longTitle));
     await tester.pumpAndSettle();
 
-    expect(find.byType(SelectableText), findsOneWidget);
+    expect(find.byType(SelectableTextArea), findsOneWidget);
     expect(find.text('列：title'), findsOneWidget);
     expect(find.text('关闭'), findsOneWidget);
   });

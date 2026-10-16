@@ -6,6 +6,7 @@ import '../utils/formats.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_merge_preview.dart';
 import '../widgets/island_bar.dart';
+import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 
 /// 数据库合并冲突决策页面。
@@ -1296,12 +1297,14 @@ class _ModCompareDialog extends StatelessWidget {
                 color: colors.textSecondary,
               ),
             )
-          : SelectableText(
-              value,
-              style: TextStyle(
-                fontSize: 12.5,
-                height: 1.4,
-                color: colors.textPrimary,
+          : SelectableTextArea(
+              child: Text(
+                value,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.4,
+                  color: colors.textPrimary,
+                ),
               ),
             ),
     );

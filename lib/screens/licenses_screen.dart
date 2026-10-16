@@ -7,6 +7,7 @@ import '../utils/license_meta.dart';
 import '../widgets/app_empty_hint.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/island_bar.dart';
+import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 
 /// 单个包的可展示许可证数据。
@@ -282,12 +283,14 @@ class _LicenseDialog extends StatelessWidget {
                   border: Border.all(color: colors.divider),
                 ),
                 child: SingleChildScrollView(
-                  child: SelectableText(
-                    license.text,
-                    style: TextStyle(
-                      fontSize: 13,
-                      height: 1.6,
-                      color: colors.textPrimary,
+                  child: SelectableTextArea(
+                    child: Text(
+                      license.text,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.6,
+                        color: colors.textPrimary,
+                      ),
                     ),
                   ),
                 ),

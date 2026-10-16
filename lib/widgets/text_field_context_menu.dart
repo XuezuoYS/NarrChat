@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/clipboard_paste_service.dart';
+import 'selection_toolbar.dart';
 
 /// 文本输入框统一的右键菜单管理组件。
 ///
@@ -22,6 +23,9 @@ import '../services/clipboard_paste_service.dart';
 ///
 /// - [onPaste]：粘贴命令（含图片处理）；为 null 时隐藏「粘贴」项。
 /// - [readOnly]：为 true 时仅保留「全选」（表单只读场景也可复制）；默认 false。
+///
+/// 形态由 [SelectionToolbar] 统一：**恒为横排横条**（框架自带的
+/// `AdaptiveTextSelectionToolbar` 在 Windows 上会渲染成竖排列表）。
 EditableTextContextMenuBuilder textFieldContextMenuBuilder({
   required Future<void> Function() onPaste,
   bool readOnly = false,
@@ -51,9 +55,9 @@ EditableTextContextMenuBuilder textFieldContextMenuBuilder({
               editableTextState.cutSelection(SelectionChangedCause.toolbar),
         ),
     ];
-    return AdaptiveTextSelectionToolbar.buttonItems(
+    return SelectionToolbar(
       anchors: editableTextState.contextMenuAnchors,
-      buttonItems: items,
+      items: items,
     );
   };
 }

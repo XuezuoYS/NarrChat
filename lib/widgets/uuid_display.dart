@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
 import 'app_notice_overlay.dart';
+import 'markdown_preview.dart';
 
 /// 只读 UUID 展示行（标签 + 等宽值 + 一键复制）。
 ///
@@ -47,9 +48,11 @@ class UuidDisplay extends StatelessWidget {
         ),
         Expanded(
           child: hasUuid
-              ? SelectableText(
-                  uuid,
-                  style: baseStyle.copyWith(fontFamily: 'monospace'),
+              ? SelectableTextArea(
+                  child: Text(
+                    uuid,
+                    style: baseStyle.copyWith(fontFamily: 'monospace'),
+                  ),
                 )
               : Text(
                   hint,

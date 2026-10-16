@@ -12,6 +12,7 @@ import '../utils/focus_utils.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
+import 'markdown_preview.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'type_badge.dart';
@@ -160,12 +161,14 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
                   border: Border.all(color: ctx.narrColors.divider),
                 ),
                 child: SingleChildScrollView(
-                  child: SelectableText(
-                    jsonText,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      height: 1.4,
+                  child: SelectableTextArea(
+                    child: Text(
+                      jsonText,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.4,
+                      ),
                     ),
                   ),
                 ),

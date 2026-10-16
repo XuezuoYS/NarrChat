@@ -192,7 +192,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 展示一条云同步结果提示（由驻场岛跨页面渲染）。
   ///
   /// - [kind]：成功 / 中性（短暂驻留后自动收起）；错误（驻留更久 + 「已读」）；
-  /// - 内容在驻场岛展开区以可选中的 [SelectableText] 呈现（可长按复制报错详情）；
+  /// - 内容在驻场岛展开区以可选中的文本呈现（统一选中容器：选中即弹「复制 / 全选」）；
   /// - 相同文案去重（连续同步结果相同时不叠加）。
   void showSyncResult(
     String message, {

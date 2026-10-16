@@ -26,11 +26,19 @@
 ///   带 `border-bottom` 的容器），浅/深色边框颜色随主题。
 library;
 
+import 'dart:async';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:provider/provider.dart';
 
+import '../services/app_notice_center.dart';
 import '../theme/app_theme.dart';
+import 'selection_toolbar.dart';
 
 /// GitHub 语义色（浅色/深色两套精确取值，取自 GitHub 官方 palette）。
 ///
@@ -583,20 +591,20 @@ class _MarkdownPreviewState extends State<MarkdownPreview> {
   }
 }
 
-/// 统一选中容器：外层 [SelectionArea] 负责跨块连续选中，并抑制默认右键 /
-/// 长按菜单，避免与业务侧自定义气泡菜单冲突。
+/// 统一选中容器：外层 [SelectionArea] 负责跨块连续选中，选中后**自动弹出**
+/// 「复制 / 全选」横排工具条（见 [_SelectionCopyToolbar]）。
 ///
-/// [MarkdownPreview] 与 [PlainTextPreview] 共用，保证两种渲染的选中行为一致；
-/// 自定义组装的内容（如推荐行动选项列表）需要同样的选中/复制语义时复用它：
-/// 内部文本以 `selectable: false` 交给本容器统一处理，即可保持「长按选择 /
-/// 拖动框选 + 复制」与整体一致（触屏同样生效）。
+/// **全应用唯一的可选中文本入口**：要「可选中 / 可复制」的展示文本一律用它，
+/// 不要再引入 `SelectableText`（另一套 `EditableText` 选区，与作用域互斥、冷排版
+/// 更慢）或裸 `SelectionArea`（会绕过自动工具条与作用域让位）。
 ///
-/// **作用域内自动让位**：若上层已有 [SelectableTextScope]（整块内容统一选中，
-/// 如对话页消息列），本组件不再另建 [SelectionArea]。框架里两个
-/// [SelectableRegion] 互为**硬边界**（`widgets/selectable_region.dart:189-192`：
-/// 父区域选不进子区域、子区域也选不出父区域），嵌套会让「跨条目连续选中」
-/// 失效。因此子组件无需知道自己在不在作用域内：默认自建区域，上层一旦统一
-/// 接管就自动让位。
+/// [MarkdownPreview] 与 [PlainTextPreview] 共用；自定义组装的内容（如推荐行动
+/// 选项行）把它当代理用即可（内部文本 `selectable: false`）。
+///
+/// **作用域内自动让位**：上层已有 [SelectableTextScope]（整块内容统一选中，如对话页
+/// 消息列）时不再另建 [SelectionArea]——框架里两个 [SelectableRegion] 互为硬边界
+/// （`widgets/selectable_region.dart:189-192`），嵌套会让「跨条目连续选中」失效。
+/// 因此子组件无需知道自己在不在作用域内。
 class SelectableTextArea extends StatelessWidget {
   const SelectableTextArea({super.key, required this.child});
 
@@ -605,11 +613,243 @@ class SelectableTextArea extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (_SelectableScopeMarker.isInside(context)) return child;
-    return SelectionArea(
-      contextMenuBuilder: (context, selectableRegionState) =>
-          const SizedBox.shrink(),
-      child: child,
+    return _SelectionCopyToolbar(child: child);
+  }
+}
+
+/// 工具条「复制」项文案（[ContextMenuButtonItem.label] 优先于平台默认文案）。
+const String _copyLabel = '复制';
+
+/// 工具条「全选」项文案。
+const String _selectAllLabel = '全选';
+
+/// 鼠标 / 触控笔判定「拖拽选中」的最小位移。
+///
+/// 远小于触屏的 `kTouchSlop`：桌面上拖选一两个字符也只有几个像素，
+/// 阈值过大会把这类选择误判成「原地单击」而不弹工具条。
+const double _kPreciseDragSlop = 4;
+
+/// 「选中即弹」的复制工具条。
+///
+/// **弹**：鼠标 / 触控笔拖拽选中、双击选词，触屏双击 / 三击选词（含双击后拖动
+/// 扩展选区）——都在指针抬起、选区落定之后。
+/// **不弹**：触屏长按归气泡业务菜单（复制正文 / 刷新本轮…），鼠标右键归业务右键
+/// 菜单；原地单击只是收起选区，没有内容可复制。
+///
+/// 形态见 [SelectionToolbar]（恒为横排横条、不铺遮罩）；点条以外、滚动、选区被
+/// 清空都会收起。改这里前先读两个坑：
+/// - `showMenu` 不能用：它是模态路由，会夺走焦点，框架 `SelectableRegionState`
+///   失焦即 `clearSelection()`（`widgets/selectable_region.dart:526-543`），刚框选
+///   的区域会当场消失。所以用 [OverlayEntry] 自己挂（见 [_toolbarEntry]）。
+/// - 桌面平台（Windows / macOS / Linux）在拖拽与双击结束后**不会**显示框架自带的
+///   选中工具栏（`selectable_region.dart` 的 `_handleMouseDragEnd` /
+///   `_handleMouseTapUp` 桌面分支直接 break），所以只能自己弹。
+class _SelectionCopyToolbar extends StatefulWidget {
+  const _SelectionCopyToolbar({required this.child});
+
+  /// 选中区域的内容子树。
+  final Widget child;
+
+  @override
+  State<_SelectionCopyToolbar> createState() => _SelectionCopyToolbarState();
+}
+
+class _SelectionCopyToolbarState extends State<_SelectionCopyToolbar> {
+  /// 选中区域：用于「全选」与读取选区锚点。
+  final GlobalKey<SelectionAreaState> _areaKey =
+      GlobalKey<SelectionAreaState>();
+
+  /// 当前选区文本（由 [SelectionArea.onSelectionChanged] 维护；空串 = 无选区）。
+  String _selectedText = '';
+
+  /// 正在显示的横排工具条（null = 未显示）。
+  ///
+  /// 用 [OverlayEntry] 而不是模态路由：不夺焦点（失焦会让框架清空选区）、不铺
+  /// 遮罩，选区原样保留，用户还能接着拖手柄微调（详见类文档）。
+  OverlayEntry? _toolbarEntry;
+
+  /// 本次按下的设备类型与按键（判断该不该弹的关键输入）。
+  PointerDeviceKind? _downKind;
+  bool _downIsSecondaryMouse = false;
+  Offset _downPosition = Offset.zero;
+
+  /// 本次按下后的最大位移：用于区分「拖拽选中」与「原地单击」
+  /// （单击只是收起选区，不该弹工具条）。
+  double _dragDistance = 0;
+
+  /// 上一次按下的时刻与位置（双击判定，鼠标与触屏同一口径）。
+  Duration? _lastDownTime;
+  Offset _lastDownPosition = Offset.zero;
+
+  /// 本次按下是否为「双击的第二下」。
+  bool _doubleTapCandidate = false;
+
+  @override
+  void dispose() {
+    _hideToolbar();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerUp,
+      // 区域内滚轮（含触控板）：锚点位置随之失效，直接收起工具条。
+      onPointerSignal: (_) => _hideToolbar(),
+      child: NotificationListener<ScrollNotification>(
+        // 选区底下的滚动（如对话页消息列）会让锚点漂移：收起工具条。
+        onNotification: (notification) {
+          if (notification is ScrollStartNotification ||
+              notification is ScrollUpdateNotification) {
+            _hideToolbar();
+          }
+          return false;
+        },
+        child: SelectionArea(
+          key: _areaKey,
+          // 框架自带工具栏照旧抑制：长按 / 右键归业务菜单（见类文档）。
+          contextMenuBuilder: (context, selectableRegionState) =>
+              const SizedBox.shrink(),
+          onSelectionChanged: (content) {
+            _selectedText = content?.plainText ?? '';
+            // 选区被清掉（例如点别处）→ 工具条失去落点。
+            if (_selectedText.trim().isEmpty) _hideToolbar();
+          },
+          child: widget.child,
+        ),
+      ),
     );
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _downKind = event.kind;
+    _downIsSecondaryMouse = event.kind == PointerDeviceKind.mouse &&
+        event.buttons == kSecondaryMouseButton;
+    _downPosition = event.position;
+    _dragDistance = 0;
+
+    // 双击判定用「按下—按下」间隔（与框架的手势口径一致）。
+    final now = SchedulerBinding.instance.currentSystemFrameTimeStamp;
+    final last = _lastDownTime;
+    _doubleTapCandidate = last != null &&
+        now - last <= kDoubleTapTimeout &&
+        (event.position - _lastDownPosition).distance <= kDoubleTapSlop;
+    _lastDownTime = now;
+    _lastDownPosition = event.position;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    final distance = (event.position - _downPosition).distance;
+    if (distance > _dragDistance) _dragDistance = distance;
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (_toolbarEntry != null) return;
+    final device = _downKind ?? event.kind;
+    final slop =
+        device == PointerDeviceKind.touch ? kTouchSlop : _kPreciseDragSlop;
+    final bool dragged = _dragDistance > slop;
+    final bool doubleTapped = _doubleTapCandidate;
+    // 触屏：只有双击（含「双击后拖动」扩展选区）才算选中文本，长按归业务菜单；
+    // 鼠标 / 触控笔：拖拽选中、双击选词都弹，右键归业务菜单。
+    final bool shouldShow = device == PointerDeviceKind.touch
+        ? doubleTapped
+        : !_downIsSecondaryMouse && (dragged || doubleTapped);
+
+    _doubleTapCandidate = false;
+    _downKind = null;
+    if (!shouldShow) return;
+    // 等本次事件分发结束（微任务）再弹：框架的「抬手」回调排在指针事件之后，
+    // 选区到那时才是最终值。
+    scheduleMicrotask(() {
+      if (mounted) _showToolbar();
+    });
+  }
+
+  /// 弹出横排工具条（选区为空时按需延后一个微任务再判断一次）。
+  void _showToolbar() {
+    if (_toolbarEntry != null) return;
+    if (_selectedText.trim().isEmpty) {
+      // 兜底：选区回调偶发排在指针事件之后（如拖到视口边缘时选区仍在滚动扩展）。
+      scheduleMicrotask(() {
+        if (mounted && _toolbarEntry == null && _selectedText.trim().isNotEmpty) {
+          _showToolbar();
+        }
+      });
+      return;
+    }
+    final OverlayState? overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) return;
+    final entry = OverlayEntry(builder: _buildToolbar);
+    _toolbarEntry = entry;
+    overlay.insert(entry);
+  }
+
+  void _hideToolbar() {
+    final entry = _toolbarEntry;
+    if (entry == null) return;
+    _toolbarEntry = null;
+    if (entry.mounted) entry.remove();
+  }
+
+  /// 「复制 / 全选」横排工具条（外观与定位见 [SelectionToolbar]）。
+  Widget _buildToolbar(BuildContext context) {
+    final SelectableRegionState? region = _areaKey.currentState?.selectableRegion;
+    if (region == null || _selectedText.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final TextSelectionToolbarAnchors anchors;
+    try {
+      anchors = region.contextMenuAnchors;
+    } catch (_) {
+      // 选区几何已消失（如刚被外部清空）：本帧留白，选区回调会收起工具条。
+      return const SizedBox.shrink();
+    }
+    return TapRegion(
+      // 点工具条之外即收起（不铺遮罩、不吃掉这次点击）。
+      onTapOutside: (_) => _hideToolbar(),
+      child: SelectionToolbar(
+        anchors: anchors,
+        items: [
+          ContextMenuButtonItem(label: _copyLabel, onPressed: _copySelection),
+          ContextMenuButtonItem(label: _selectAllLabel, onPressed: _selectAll),
+        ],
+      ),
+    );
+  }
+
+  /// 复制当前选区（并收起工具条；选区保留，可继续操作）。
+  void _copySelection() {
+    final text = _selectedText;
+    _hideToolbar();
+    if (text.trim().isEmpty) return;
+    unawaited(_copyToClipboard(text));
+  }
+
+  /// 全选：工具条保持显示（用户接着多半要「复制」）。
+  ///
+  /// 框架的 `selectAll` 内部会先 `clearSelection()`，那一次「选区清空」回调会
+  /// 把工具条收掉；故等新选区落定后按新锚点重新弹回来（同一轮微任务内完成，
+  /// 用户看不到闪动）。
+  void _selectAll() {
+    _areaKey.currentState?.selectableRegion
+        .selectAll(SelectionChangedCause.toolbar);
+    scheduleMicrotask(() {
+      if (mounted) _showToolbar();
+    });
+  }
+
+  /// 写入系统剪贴板，并给出与气泡「复制」同一口径的应用内提示。
+  ///
+  /// 通知中心取自上层 Provider：隔离用例等没有通知中心的环境下静默跳过。
+  Future<void> _copyToClipboard(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    context
+        .read<AppNoticeCenter?>()
+        ?.success('已复制', dwell: const Duration(seconds: 1));
   }
 }
 

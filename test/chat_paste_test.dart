@@ -33,6 +33,27 @@ void main() {
     expect(find.text('剪切'), findsOneWidget);
   });
 
+  testWidgets('输入框菜单是横排横条（四项在同一行，不是竖排列表）', (tester) async {
+    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+
+    await tester.longPress(composerField());
+    await tester.pumpAndSettle();
+
+    // 框架自带的 DesktopTextSelectionToolbar 在 Windows 上是 Column（竖排），
+    // 故这里改用应用自己的横条（SelectionToolbar），四项必须同行。
+    final centers = [
+      for (final label in const ['全选', '复制', '粘贴', '剪切'])
+        tester.getRect(find.text(label)).center,
+    ];
+    for (final center in centers) {
+      expect(center.dy, closeTo(centers.first.dy, 1), reason: '四项应在同一行');
+    }
+    // 排布顺序与菜单项顺序一致（从左到右）。
+    for (var i = 1; i < centers.length; i++) {
+      expect(centers[i].dx, greaterThan(centers[i - 1].dx));
+    }
+  });
+
   testWidgets('右键→粘贴文本：插入到输入框', (tester) async {
     await pumpChatScreen(
       tester,

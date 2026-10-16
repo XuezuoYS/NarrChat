@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/round.dart';
 import '../utils/formats.dart';
+import 'markdown_preview.dart';
 
 /// 悬浮气泡里的一行 Token 明细。
 ///
@@ -17,7 +18,9 @@ class TokenUsageRow {
 /// 本轮 Token 计费明细气泡（点击 Token 栏弹出，点击气泡外关闭）。
 ///
 /// 逐行展示：模型名、输入 token、缓存命中输入 token、缓存命中率、输出 token、
-/// 总 token。无数据的行显示斜体「（无）」；气泡内文字可选中复制。
+/// 总 token。无数据的行显示斜体「（无）」；气泡内文字可选中复制，并与其他
+/// 可选中区域同一套交互（[SelectableTextArea]：鼠标拖拽 / 触屏双击选中后
+/// 自动弹出「复制 / 全选」工具条）。
 class TokenUsageBubble extends StatelessWidget {
   final Round round;
 
@@ -61,8 +64,8 @@ class TokenUsageBubble extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 280),
-        // 气泡内全部文字可选中复制（含拖动跨行选择）。
-        child: SelectionArea(
+        // 气泡内全部文字可选中复制（含拖动跨行选择）；选中即弹「复制 / 全选」。
+        child: SelectableTextArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Column(

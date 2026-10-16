@@ -52,7 +52,8 @@ class AppNotice {
   /// 驻留时长（从进入动画结束算起）。
   final Duration dwell;
 
-  /// 是否以 [SelectableText] 呈现（长文案 / 需复制的报错详情），
+  /// 是否以可选中文本呈现（长文案 / 需复制的报错详情；两条通知渠道都用统一
+  /// 选中容器 `SelectableTextArea`：选中即弹「复制 / 全选」），
   /// 并为该条常显「关闭」按钮（选择手势与点击消失冲突，故不依赖点击消失）。
   final bool copyable;
 }

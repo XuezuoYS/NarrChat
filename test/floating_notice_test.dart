@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/services/app_notice_center.dart';
 import 'package:narrchat/widgets/floating_notice_host.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
 import 'package:narrchat/widgets/notice_visuals.dart';
 
 import 'helpers/notice_harness.dart';
@@ -174,13 +175,13 @@ void main() {
     center.show('数据同步失败：无法连接服务器', kind: NoticeKind.error, copyable: true);
     await settleNoticeEnter(tester);
 
-    expect(find.byType(SelectableText), findsOneWidget);
+    expect(find.byType(SelectableTextArea), findsOneWidget);
     expect(find.byTooltip('关闭'), findsOneWidget);
 
     await tester.tap(find.byTooltip('关闭'));
     expect(center.isExiting, isTrue);
     await settleNoticeExit(tester);
-    expect(find.byType(SelectableText), findsNothing);
+    expect(find.byType(SelectableTextArea), findsNothing);
   });
 
   testWidgets('dwell 覆盖：短驻留提示按传入时长消失', (tester) async {

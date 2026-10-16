@@ -1,9 +1,12 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/utils/formats.dart';
 import 'package:narrchat/widgets/token_usage_bubble.dart';
 import 'package:narrchat/widgets/token_usage_pill.dart';
+
+import 'helpers/selection_harness.dart';
 
 /// Token 栏（模型名 + 输入 / 输出 Token 胶囊）与点击后弹出的计费明细气泡：
 /// 明细行的装配、无数据行的斜体「（无）」、点击外部关闭、文字可选中复制。
@@ -202,6 +205,31 @@ void main() {
       // 六行明细（标签 + 值）全部落在同一个可选区里（可跨行拖动选择后复制）。
       final selectableTexts = find.descendant(of: area, matching: find.byType(Text));
       expect(tester.widgetList<Text>(selectableTexts), hasLength(12));
+    });
+
+    testWidgets('气泡内拖拽选中文字后自动弹出「复制 / 全选」工具条', (tester) async {
+      final copied = mockClipboard(tester);
+      await _openBubble(tester, _richRound);
+
+      // 从「模型名」行首拖到行尾：鼠标拖拽选中 → 松手即弹工具条，不必再右键。
+      final rect = tester.getRect(find.text('模型名'));
+      final gesture = await tester.startGesture(
+        Offset(rect.left + 1, rect.center.dy),
+        kind: PointerDeviceKind.mouse,
+      );
+      addTearDown(gesture.removePointer);
+      await tester.pump();
+      await gesture.moveTo(Offset(rect.right - 1, rect.center.dy));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(find.text('复制'), findsOneWidget);
+      await tester.tap(find.text('复制'));
+      await tester.pumpAndSettle();
+
+      expect(copied, hasLength(1));
+      expect(copied.single.trim(), '模型名');
     });
 
     testWidgets('Token 栏外显：无数据显示（无），有数据显示原值', (tester) async {

@@ -143,4 +143,35 @@ void main() {
     expect(copied, hasLength(1));
     expect(copied.single, contains('轮的用户'));
   });
+
+  testWidgets('对话页：鼠标拖拽跨气泡选中后自动弹出工具条，点「复制」即可复制跨气泡文本',
+      (tester) async {
+    final copied = mockClipboard(tester);
+    await pumpTwoRounds(tester);
+
+    final start = textOffsetToPosition(tester, '第 1 轮的用户输入', 2);
+    final end = textOffsetToPosition(tester, '第 1 轮的剧情正文。', 10);
+    final gesture = await tester.startGesture(
+      start,
+      kind: PointerDeviceKind.mouse,
+    );
+    addTearDown(gesture.removePointer);
+    await tester.pump();
+    await gesture.moveTo(end);
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // 选中即弹：不需要再右键 / 长按（气泡业务菜单里的项是「复制正文」，
+    // 这里出现的「复制」只可能来自选中工具条）。
+    expect(find.text('复制'), findsOneWidget);
+    expect(find.text('全选'), findsOneWidget);
+
+    await tester.tap(find.text('复制'));
+    await tester.pumpAndSettle();
+
+    expect(copied, hasLength(1));
+    expect(copied.single, contains('用户输入'));
+    expect(copied.single, contains('剧情正文'), reason: '菜单复制的是跨气泡的完整选区');
+  });
 }

@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../widgets/app_empty_hint.dart';
 import '../widgets/data_pagination.dart';
 import '../widgets/island_bar.dart';
+import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 
 /// 「数据库结构」页：只读查看当前用户库的表结构、索引与内容（按页）。
@@ -399,12 +400,14 @@ class _CellDetailDialog extends StatelessWidget {
                   border: Border.all(color: colors.divider),
                 ),
                 child: SingleChildScrollView(
-                  child: SelectableText(
-                    value,
-                    style: TextStyle(
-                      fontSize: 13,
-                      height: 1.5,
-                      color: colors.textPrimary,
+                  child: SelectableTextArea(
+                    child: Text(
+                      value,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.5,
+                        color: colors.textPrimary,
+                      ),
                     ),
                   ),
                 ),
