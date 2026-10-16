@@ -237,6 +237,42 @@ void main() {
       expect(await store.acquireLock(deviceId: 'dev-1'), isTrue,
           reason: '过期锁可抢占');
     });
+
+    test('有效且属于本机的锁 → 同设备新任务覆盖旧锁（续期）并获取成功', () async {
+      // 上次同步崩溃 / 释放失败残留本机锁：同设备再次同步不应被拒之门外。
+      final body = jsonEncode({
+        'deviceId': 'dev-1',
+        'expiresAt': DateTime.now().millisecondsSinceEpoch + 60000,
+      });
+      String? lockBody;
+      final client = MockClient((request) async {
+        if (request.method == 'GET') return http.Response(body, 200);
+        if (request.method == 'PUT') {
+          lockBody = utf8.decode(request.bodyBytes);
+          return http.Response('', 201);
+        }
+        return http.Response('', 404);
+      });
+      final store = WebDavSyncStore(
+        dav: WebDavService(
+          baseUrl: 'https://dav.example.com/dav/',
+          username: 'u',
+          password: 'p',
+          client: client,
+        ),
+        folder: 'narrchat',
+      );
+
+      expect(await store.acquireLock(deviceId: 'dev-1'), isTrue,
+          reason: '同设备锁直接覆盖，无需等待 TTL');
+      // 覆盖写入的仍是本机锁（续期后的 expiresAt 大于当前时刻）。
+      final written = jsonDecode(lockBody!) as Map<String, dynamic>;
+      expect(written['deviceId'], 'dev-1');
+      expect(
+        (written['expiresAt'] as num).toInt(),
+        greaterThan(DateTime.now().millisecondsSinceEpoch),
+      );
+    });
   });
 
   group('云端同步配置（sync_config.json）', () {

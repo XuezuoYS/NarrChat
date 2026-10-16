@@ -57,6 +57,8 @@ abstract class SyncRemoteStore {
   /// 尝试获取云端互斥锁（软锁，TTL 超时后可被抢占）。
   ///
   /// 保证"读 manifest → 写快照 → 写 manifest"临界区同时只有一个设备在跑；
+  /// **同一设备的新任务直接覆盖自己的旧锁**（视为上次任务已终结，避免上次
+  /// 崩溃 / 释放失败残留的锁把本机拒之门外——"自己挤自己"）；
   /// 默认实现为无锁（内存替身 / 不支持锁的服务器降级走写前校验）。
   /// 返回 true = 已获得锁，可进入临界区。
   Future<bool> acquireLock({String deviceId = '', int ttlSeconds = 300}) async =>
@@ -150,6 +152,8 @@ class WebDavSyncStore extends SyncRemoteStore {
   /// 云端互斥锁（软锁）实现：`sync.lock` 文件，内容 `{deviceId, expiresAt}`。
   ///
   /// - 锁不存在或已过期 → 抢占并返回 true（TTL 保护崩溃持有者）；
+  /// - 锁有效但属于**本机** → 同设备新任务自动覆盖旧锁（续期）并返回 true：
+  ///   上次任务崩溃 / 被杀 / 释放失败会残留本机锁，不覆盖就得白等 TTL；
   /// - 锁有效且属于其它设备 → 返回 false；
   /// - 服务器不支持读/删（权限受限）→ 返回 false，调用方降级为「写前校验」。
   @override
@@ -160,7 +164,11 @@ class WebDavSyncStore extends SyncRemoteStore {
     try {
       final existing = await _readLock();
       final now = DateTime.now().millisecondsSinceEpoch;
-      if (existing != null && existing.expiresAt > now) return false;
+      if (existing != null &&
+          existing.expiresAt > now &&
+          existing.deviceId != deviceId) {
+        return false;
+      }
       final payload = utf8.encode(jsonEncode({
         'deviceId': deviceId,
         'expiresAt': now + ttlSeconds * 1000,
