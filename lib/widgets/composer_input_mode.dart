@@ -33,6 +33,11 @@ typedef ComposerIntentGuard = String? Function(RoundProvider roundProvider);
 /// 退出；正文区仍是同一个主输入框——Markdown 高亮、图片条、粘贴 / 拖拽 /
 /// 快捷键全部复用——按发送键才执行本次用途，而不是发出新一轮。
 ///
+/// 生命周期：**按发送键 = 用途已消费**——气泡上屏的同一帧收起灰条、清空输入框
+/// 与待发送附件，不等生成收尾（与普通发送同一口径，见
+/// `_ChatScreenState._submitInputMode`）；只有「没法发」（未选书 / 用途失效）
+/// 时才保留灰条与编辑内容。
+///
 /// **新增一个用途（如后续的「按要求修改」）只需三步**：
 /// 1. 构造本对象：给出灰条文案 [label] 与意图工厂 [buildIntent]
 ///    （用途自身已失效的场景可另给 [guard]）；

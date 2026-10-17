@@ -115,6 +115,60 @@ void main() {
     expect(fieldText(tester), '');
   });
 
+  testWidgets('提交灰条用途：气泡上屏的同一帧就清空输入并收起灰条（与普通发送同一口径）', (tester) async {
+    // 流式替身：请求挂在流上不结束，才能断言「生成进行中」这一刻的界面状态。
+    final ai = FakeStreamingAiService();
+    final rp = await pumpChatScreen(
+      tester,
+      ai: ai,
+      seedRounds: 2,
+      seedBodyRepeats: 1,
+    );
+
+    await tapEditAndReAsk(tester, '第 1 轮的用户输入');
+    await tester.enterText(composerField(), '改后的输入');
+    await tester.pump();
+
+    await tester.tap(sendButton());
+    await tester.pump();
+
+    // 此刻生成还在进行（气泡已上屏）：输入框与灰条就该是空的——旧行为要等生成
+    // 收尾才清，生成期间输入框一直挂着已提交的内容（与普通发送口径不一致）。
+    expect(rp.isSending, isTrue, reason: '前提：生成尚未收尾');
+    expect(modeBar(), findsNothing);
+    expect(fieldText(tester), '');
+
+    ai.complete();
+    await waitSendDone(tester, rp);
+
+    // 早清空只是界面口径：提交内容照样落到第 1 轮。
+    expect(rp.rounds.last.roundIndex, 1);
+    expect(rp.rounds.last.userInput, '改后的输入');
+  });
+
+  testWidgets('提交灰条用途后请求失败且失败条目也存不下：编辑内容还回输入框并提示', (tester) async {
+    // 清空发生在发请求之前，因此这条兜底必须把内容还回来，否则用户填的东西
+    // 会凭空消失（与普通发送的兜底同一口径）。
+    final ai = ToggleAiService()..fail = true;
+    final bookDao = FakeBookDao(books: [book])..failSetFailedAttempt = true;
+    final rp = await pumpChatScreen(
+      tester,
+      ai: ai,
+      bookDao: bookDao,
+      seedRounds: 1,
+      seedBodyRepeats: 1,
+    );
+
+    await tapEditAndReAsk(tester, '第 1 轮的用户输入');
+    await tester.enterText(composerField(), '改后的输入');
+    await tester.pump();
+    await tester.tap(sendButton());
+    await waitSendDone(tester, rp);
+
+    expect(fieldText(tester), '改后的输入');
+    expect(find.textContaining('请求失败：'), findsOneWidget);
+  });
+
   testWidgets('灰条右侧删除键：退出用途并清空输入与待发送图片', (tester) async {
     final dao = await seedRoundWithImages(['img/aaa.png']);
     await pumpChatScreen(tester, roundDao: dao);

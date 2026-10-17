@@ -103,6 +103,13 @@ class FakeBookDao extends BookDao {
   final Map<String, DateTime> times;
   FailedAttempt failed = const FailedAttempt();
 
+  /// 置 true 时 [setFailedAttempt] 抛错（模拟「失败条目落库也失败」）。
+  ///
+  /// 这是 UI「恢复输入并提示」兜底路径的唯一入口：请求失败但失败条目存不下时，
+  /// 界面才需要把用户输入还回输入框（见 `_ChatScreenState._send` /
+  /// `_submitInputMode`）。
+  bool failSetFailedAttempt = false;
+
   /// 每次 insertBook 分配的 uuid（可预置队列；耗尽则按序号自动生成）。
   final List<String> uuidQueue = [];
   int _insertSeq = 0;
@@ -157,6 +164,7 @@ class FakeBookDao extends BookDao {
 
   @override
   Future<void> setFailedAttempt(String bookUuid, FailedAttempt attempt) async {
+    if (failSetFailedAttempt) throw StateError('模拟失败条目落库失败');
     failed = attempt;
   }
 }

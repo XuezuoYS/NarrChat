@@ -1370,19 +1370,31 @@ class _ChatScreenState extends State<ChatScreen>
     _inputFocus.requestFocus();
   }
 
-  /// 退出当前「临时用途」（灰条右侧删除键）：灰条消失，输入框与待发送附件
-  /// 一并清空，回到普通发送。
-  void _exitInputMode() {
-    if (_inputMode == null) return;
+  /// 收起灰条，并把输入框与待发送附件清回空草稿。
+  ///
+  /// 三处收尾共用，形态因此不会漂移：用户按删除键退出（[_exitInputMode]）、
+  /// 用途已失效、用途已提交上屏（[_submitInputMode]）。灰条一旦失去意义就立刻
+  /// 消失，输入框口径与普通发送一致（[_send]）。
+  void _clearInputMode() {
     setState(() {
       _inputMode = null;
       _pendingImages.clear();
     });
     _inputController.clear();
+  }
+
+  /// 退出当前「临时用途」（灰条右侧删除键）：灰条消失，输入框与待发送附件
+  /// 一并清空，回到普通发送。
+  void _exitInputMode() {
+    if (_inputMode == null) return;
+    _clearInputMode();
     _inputFocus.requestFocus();
   }
 
   /// 提交当前「临时用途」：意图交 [RoundProvider.sendIntent] 实发。
+  ///
+  /// **提交即消费**：气泡上屏的同一帧收起灰条、清空输入框与待发送附件，不等生成
+  /// 收尾（与普通发送同一口径，见 [_send]）。
   ///
   /// 未被消费（如尚未选书）时灰条与编辑内容保留；用途已失效（目标轮次 / 失败条目
   /// 已被删除）则收起灰条并提示——与「预览请求体」同一判定，
@@ -1407,23 +1419,28 @@ class _ChatScreenState extends State<ChatScreen>
     if (invalid != null) {
       context.notices.warning(invalid);
       if (!mounted) return;
-      setState(() {
-        _inputMode = null;
-        _pendingImages.clear();
-      });
-      _inputController.clear();
+      _clearInputMode();
       return;
     }
-    // 重新生成开始即把本次应携带的图片送入「生成中」用户气泡。
+    // 重新生成开始即把本次应携带的图片送入「生成中」用户气泡；用途至此已被消费：
+    // **气泡上屏的同一帧**就收起灰条、清空输入与待发送附件——与普通发送同一口径
+    //（[_send] 也在发请求前清空）。生成期间输入框一律为空，预览按钮的停用前提
+    //（见 `_buildChatArea`）据此成立；顺带避免「生成期间用户新写的草稿」被收尾误清。
     _startGeneration(images: _bubbleImagesFor(intent, roundProvider));
-    await roundProvider.sendIntent(intent: intent, book: book);
+    _clearInputMode();
+
+    final ok = await roundProvider.sendIntent(intent: intent, book: book);
+    if (!ok && mounted && roundProvider.error != null) {
+      // 与普通发送同一兜底（仅「失败条目落库也失败」时会走到）：把编辑内容还回
+      // 输入框并提示，别让用户填的东西凭空消失。灰条不恢复——重写路径此时已删掉
+      // 目标轮次，要重来请走失败条目的「修改并重新提问」。
+      _inputController.text = text;
+      context.notices.error(
+        '请求失败：${roundProvider.error ?? '未知错误'}',
+        dwell: const Duration(seconds: 4),
+      );
+    }
     _endGeneration();
-    if (!mounted) return;
-    setState(() {
-      _inputMode = null;
-      _pendingImages.clear();
-    });
-    _inputController.clear();
   }
 
   /// 意图当前是否可提交 / 可预览；返回提示文案（null = 可以）。

@@ -346,6 +346,35 @@ void main() {
     );
   });
 
+  testWidgets('发送：气泡上屏的同一帧就清空输入框（生成中不挂着已提交内容）', (tester) async {
+    // 灰条「临时用途」的提交按同一口径实现（见
+    // `chat_composer_input_mode_test.dart`）：两个入口共用一句清空时机，
+    // 这条钉住普通发送这一侧的基准行为。
+    final ai = FakeStreamingAiService();
+    final roundProvider = await pumpChatScreen(
+      tester,
+      bookDao: FakeBookDao(books: [book]),
+      ai: ai,
+      seedRounds: 1,
+    );
+
+    await tester.enterText(composerField(), '继续剧情');
+    await tester.pump(); // 让发送按钮随输入文本重建（空输入时按钮为禁用态）。
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump();
+
+    // 此刻生成还在进行（气泡已上屏）：输入框就该是空的。
+    expect(roundProvider.isSending, isTrue, reason: '前提：生成尚未收尾');
+    expect(
+      tester.widget<TextField>(composerField()).controller!.text,
+      isEmpty,
+    );
+
+    ai.complete();
+    await waitSendDone(tester, roundProvider);
+    expect(roundProvider.rounds.last.userInput, '继续剧情');
+  });
+
   testWidgets('生成结束红点：生成中不显示，结束离开底部显示，回到底部消失', (tester) async {
     final ai = FakeStreamingAiService();
     final roundProvider = await pumpChatScreen(
