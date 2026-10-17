@@ -551,15 +551,18 @@ void main() {
       ['high', 'low'],
     );
 
-    // 编辑为 mixed 写法：中文逗号 + 空格 + 重复项 ⇒ 保序去重写回该模型。
+    // 编辑为 mixed 写法：中文逗号 + 空格 + 重复项 ⇒ 解析为三个档位写回该模型。
     await tester.enterText(field, 'low，high max, low');
     await tester.pump();
     expect(
       form.platforms.last.modelById('gw-b')!.reasoningEffortOptions,
       ['low', 'high', 'max'],
     );
-    // 写回后受控文本恢复为规范化的逗号分隔形态（光标置末）。
-    expect(tester.widget<TextField>(field).controller!.text, 'low,high,max');
+    // 输入框文本保持用户原样，只有中文逗号被即时换成英文逗号（不回写规范化文本）。
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      'low,high max, low',
+    );
     // 该模型的下拉随之变为规范化后的三项（重新展开菜单确认）。
     expect(
       await _openReasoningEffortMenu(
@@ -568,6 +571,46 @@ void main() {
         expected: ['low', 'high', 'max'],
       ),
       ['low', 'high', 'max'],
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('推理强度可选值：中文逗号即时转英文逗号，刚敲的分隔符不会被吞', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 2600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final form = _formWithCustomPlatform();
+    addTearDown(form.dispose);
+
+    await tester.pumpWidget(_buildApp(form));
+    await tester.pump();
+    await _expandCustomModel(tester, 'gw-b');
+    final field = _optionsField();
+
+    // 中文逗号即时转英文逗号：输入框里不残留全角逗号，模型解析出两项。
+    await tester.enterText(field, 'low，high');
+    await tester.pump();
+    expect(tester.widget<TextField>(field).controller!.text, 'low,high');
+    expect(
+      form.platforms.last.modelById('gw-b')!.reasoningEffortOptions,
+      ['low', 'high'],
+    );
+
+    // 末尾刚敲下的逗号必须留在输入框里（旧实现会在下一帧回写文本把它吞掉）。
+    await tester.enterText(field, 'low,high,');
+    await tester.pump();
+    expect(tester.widget<TextField>(field).controller!.text, 'low,high,');
+    expect(
+      form.platforms.last.modelById('gw-b')!.reasoningEffortOptions,
+      ['low', 'high'],
+    );
+
+    // 空格分隔同样原样保留，并解析为两个独立档位。
+    await tester.enterText(field, 'minimal low');
+    await tester.pump();
+    expect(tester.widget<TextField>(field).controller!.text, 'minimal low');
+    expect(
+      form.platforms.last.modelById('gw-b')!.reasoningEffortOptions,
+      ['minimal', 'low'],
     );
     expect(tester.takeException(), isNull);
   });

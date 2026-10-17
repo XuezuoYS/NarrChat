@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../config/ai_platforms.dart';
@@ -718,6 +717,16 @@ class _ModelExpandableItem extends StatelessWidget {
 Key reasoningEffortDropdownKey(String platformId, String modelId) =>
     ValueKey('model-reasoning-effort-dropdown-$platformId-$modelId');
 
+/// 「可选强度值」输入框的格式化：把中文逗号 `，` 即时替换成英文逗号 `,`。
+///
+/// 只做单字符替换（两者都是 1 个 UTF-16 单元），文本长度不变，光标位置可原样
+/// 沿用；空格等其它分隔符与文本内容保持用户输入原样，不在输入过程中回写。
+final TextInputFormatter _commaToHalfWidth =
+    TextInputFormatter.withFunction((_, next) {
+  if (!next.text.contains('，')) return next;
+  return next.copyWith(text: next.text.replaceAll('，', ','));
+});
+
 /// 一个可调配功能：展示标签 + 从模型读取 / 写回该能力开关。
 class _Capability {
   final String label;
@@ -805,20 +814,14 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     return [current, ...options];
   }
 
-  /// 「可选强度值」输入：解析后写回模型，并在规范结果与输入原文不一致时
-  /// 把输入框文本同步为规范形态（丢空项 / 去重 / 统一逗号分隔）。
+  /// 「可选强度值」输入：按分隔符解析后写回模型。
+  ///
+  /// **不在输入过程中回写文本**：回写会把用户刚敲下的逗号 / 空格吞掉，
+  /// 导致分隔符根本打不出来（表现为「无法输入」）。中文逗号由输入格式化即时
+  /// 转成英文逗号（[_commaToHalfWidth]），文本其余部分保持用户原样。
   void _onOptionsChanged(String raw) {
     final options = AiModel.parseReasoningEffortOptions(raw);
     _update((m) => m.copyWith(reasoningEffortOptions: options));
-    if (raw == options.join(',')) return;
-    // 在 onChanged 内直接改控制器文本会重入，故排到下一帧。
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _optionsCtrl.text == options.join(',')) return;
-      _optionsCtrl.text = options.join(',');
-      _optionsCtrl.selection = TextSelection.collapsed(
-        offset: _optionsCtrl.text.length,
-      );
-    });
   }
 
   /// 可调配功能清单（Chat 页对话框内可选的能力开关；顺序即栏内排列顺序）。
@@ -1052,6 +1055,8 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
                 controller: _optionsCtrl,
                 onTapOutside: unfocusOnTapOutside,
                 onChanged: _onOptionsChanged,
+                // 中文逗号即时转英文逗号，避免用户误用全角分隔符。
+                inputFormatters: [_commaToHalfWidth],
                 decoration: const InputDecoration(
                   labelText: '可选强度值（逗号分隔，留空用默认）',
                   hintText: 'low, high, max',
