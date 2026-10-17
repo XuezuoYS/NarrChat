@@ -234,6 +234,42 @@ class SettingsFormState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 导入「获取可用模型」勾选的模型：**同名整体覆盖**（导入值来自接口，
+  /// 接口未提供的字段回落默认值，见 `DiscoveredModel.toAiModel`），
+  /// 新名追加到列表末尾。
+  ///
+  /// 返回（新增数, 覆盖数），供 UI 汇总提示；两者都为 0 时工作副本不变。
+  ({int added, int overwritten}) importModels(
+    String platformId,
+    List<AiModel> models,
+  ) {
+    final index = _working.indexWhere((p) => p.id == platformId);
+    if (index < 0) return (added: 0, overwritten: 0);
+    final platform = _working[index];
+    final newModels = [...platform.models];
+    var added = 0;
+    var overwritten = 0;
+    for (final model in models) {
+      final id = model.id.trim();
+      if (id.isEmpty) continue;
+      final at = newModels.indexWhere((m) => m.id == id);
+      if (at >= 0) {
+        newModels[at] = model;
+        overwritten++;
+      } else {
+        newModels.add(model);
+        added++;
+      }
+    }
+    if (added == 0 && overwritten == 0) return (added: 0, overwritten: 0);
+    _working = [..._working];
+    _working[index] = platform.copyWith(models: newModels);
+    // 覆盖后模型编辑器的文本控制器仍持旧值，需按 key 重建（见 [_resetRevision]）。
+    _resetRevision++;
+    notifyListeners();
+    return (added: added, overwritten: overwritten);
+  }
+
   // ---------------------------------------------------------------------------
   // 统一保存
   // ---------------------------------------------------------------------------

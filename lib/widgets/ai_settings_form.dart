@@ -4,8 +4,10 @@ import 'package:flutter/services.dart';
 import '../config/ai_platforms.dart';
 import '../models/ai_platform.dart';
 import '../models/api_type.dart';
+import '../services/model_discovery_service.dart';
 import '../utils/focus_utils.dart';
 import 'app_menu.dart';
+import 'app_notice_overlay.dart';
 import 'settings_form_state.dart';
 
 /// 「API 设置」设置面板。
@@ -39,7 +41,14 @@ import 'settings_form_state.dart';
 class AiSettingsForm extends StatefulWidget {
   final SettingsFormState form;
 
-  const AiSettingsForm({super.key, required this.form});
+  /// 「获取可用模型」服务（测试注入替身；缺省用真实 HTTP 实现）。
+  final ModelDiscoveryService? discoveryService;
+
+  const AiSettingsForm({
+    super.key,
+    required this.form,
+    this.discoveryService,
+  });
 
   @override
   State<AiSettingsForm> createState() => _AiSettingsFormState();
@@ -218,6 +227,7 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
                   key: ValueKey('platform-${platforms[i].id}'),
                   form: _form,
                   platform: platforms[i],
+                  discoveryService: widget.discoveryService,
                   // 默认展开第一个平台（通常为内置预置），便于直接看到其设置。
                   initiallyExpanded: i == 0,
                 ),
@@ -323,12 +333,14 @@ class _PlatformExpandableItem extends StatelessWidget {
   final SettingsFormState form;
   final AiPlatform platform;
   final bool initiallyExpanded;
+  final ModelDiscoveryService? discoveryService;
 
   const _PlatformExpandableItem({
     super.key,
     required this.form,
     required this.platform,
     this.initiallyExpanded = false,
+    this.discoveryService,
   });
 
   /// 是否为软件内置预置平台（按预置注册表判定，不看配置里的任何标记）。
@@ -336,6 +348,11 @@ class _PlatformExpandableItem extends StatelessWidget {
 
   /// 是否是最后一个平台（删除入口禁用，保证至少保留一个平台）。
   bool get _canRemove => form.platforms.length > 1;
+
+  /// 是否展示「获取可用模型」：仅自定义平台，且接入协议支持查询模型列表
+  /// （内置预置平台的模型列表由软件维护，不提供该入口）。
+  bool get _canFetchModels =>
+      !_isPreset && platform.apiType.supportsModelListing;
 
   /// 平台卡片右上角的状态标注。
   String get _badge {
@@ -396,10 +413,24 @@ class _PlatformExpandableItem extends StatelessWidget {
                 model: m,
               ),
           const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: () => _openAddModel(context),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('添加模型'),
+          // 自定义平台且协议支持查询模型列表时，「获取可用模型」与「添加模型」并列；
+          // 窄窗口下自动换行（不挤压成溢出）。
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => _openAddModel(context),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('添加模型'),
+              ),
+              if (_canFetchModels)
+                _FetchModelsButton(
+                  form: form,
+                  platform: platform,
+                  discoveryService: discoveryService,
+                ),
+            ],
           ),
           if (canReset) ...[
             const SizedBox(height: 4),
@@ -1312,5 +1343,287 @@ class _AddModelDialogState extends State<_AddModelDialog> {
         ),
       ],
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 「获取可用模型」：读取平台接口的模型列表，多选后导入
+// ---------------------------------------------------------------------------
+
+/// 「获取可用模型」按钮：请求 `GET {baseUrl}/models`，成功后弹出多选导入框。
+///
+/// - 失败：悬浮通知完整给出失败码（HTTP 状态码 / 网络错误）与响应体，可复制；
+/// - 成功：弹出 [_ImportModelsDialog]，勾选的模型写回工作副本（同名整体覆盖）。
+class _FetchModelsButton extends StatefulWidget {
+  final SettingsFormState form;
+  final AiPlatform platform;
+  final ModelDiscoveryService? discoveryService;
+
+  const _FetchModelsButton({
+    required this.form,
+    required this.platform,
+    this.discoveryService,
+  });
+
+  @override
+  State<_FetchModelsButton> createState() => _FetchModelsButtonState();
+}
+
+class _FetchModelsButtonState extends State<_FetchModelsButton> {
+  bool _busy = false;
+
+  late final ModelDiscoveryService _service =
+      widget.discoveryService ?? ModelDiscoveryService();
+
+  Future<void> _fetch() async {
+    final notices = context.notices;
+    // Base URL 跟随工作副本（输入框 onChanged 已同步）；API Key 只存在于控制器。
+    final baseUrl = widget.platform.baseUrl.trim();
+    if (baseUrl.isEmpty) {
+      notices.warning('请先填写接口地址（Base URL）');
+      return;
+    }
+    final apiKey = widget.form.apiKeyCtrlFor(widget.platform.id).text.trim();
+    setState(() => _busy = true);
+    final List<DiscoveredModel> candidates;
+    try {
+      candidates = await _service.fetchModels(
+        baseUrl: baseUrl,
+        apiType: widget.platform.apiType,
+        apiKey: apiKey,
+      );
+    } on ModelDiscoveryException catch (e) {
+      notices.error(e.describe(), copyable: true);
+      return;
+    } finally {
+      // 请求结束即恢复按钮（导入对话框打开期间不再转圈）。
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+    final imported = await showDialog<List<AiModel>>(
+      context: context,
+      builder: (_) => _ImportModelsDialog(
+        candidates: candidates,
+        existingIds: widget.platform.models.map((m) => m.id).toSet(),
+      ),
+    );
+    if (imported == null || imported.isEmpty) return;
+    final counts = widget.form.importModels(widget.platform.id, imported);
+    notices.success(_summary(counts.added, counts.overwritten));
+  }
+
+  static String _summary(int added, int overwritten) {
+    final parts = <String>[
+      if (added > 0) '新增 $added 个',
+      if (overwritten > 0) '覆盖 $overwritten 个同名模型',
+    ];
+    return '已导入模型：${parts.join('，')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: _busy ? null : _fetch,
+      icon: _busy
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.cloud_download_outlined, size: 18),
+      label: Text(_busy ? '正在获取…' : '获取可用模型'),
+    );
+  }
+}
+
+/// 「获取可用模型」的多选导入对话框。
+///
+/// - 默认只勾选**新模型**（同名模型不勾，避免误覆盖；需要刷新时手动勾选或全选）；
+/// - 顶部提供「全选 / 全不选」；
+/// - 同名模型带「将覆盖」标记，导入时按整体替换处理
+///   （见 [SettingsFormState.importModels]）。
+class _ImportModelsDialog extends StatefulWidget {
+  final List<DiscoveredModel> candidates;
+  final Set<String> existingIds;
+
+  const _ImportModelsDialog({
+    required this.candidates,
+    required this.existingIds,
+  });
+
+  @override
+  State<_ImportModelsDialog> createState() => _ImportModelsDialogState();
+}
+
+class _ImportModelsDialogState extends State<_ImportModelsDialog> {
+  late final Set<String> _picked = {
+    for (final candidate in widget.candidates)
+      if (!widget.existingIds.contains(candidate.id)) candidate.id,
+  };
+
+  void _toggle(String id, bool picked) {
+    setState(() {
+      if (picked) {
+        _picked.add(id);
+      } else {
+        _picked.remove(id);
+      }
+    });
+  }
+
+  void _pickAll() {
+    setState(() {
+      _picked
+        ..clear()
+        ..addAll(widget.candidates.map((candidate) => candidate.id));
+    });
+  }
+
+  void _pickNone() => setState(_picked.clear);
+
+  void _submit() {
+    final models = <AiModel>[
+      for (final candidate in widget.candidates)
+        if (_picked.contains(candidate.id)) candidate.toAiModel(),
+    ];
+    Navigator.of(context).pop(models);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final allPicked = _picked.length == widget.candidates.length;
+    return AlertDialog(
+      title: const Text('获取可用模型'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '共 ${widget.candidates.length} 个模型，已选 ${_picked.length} 个；'
+                    '同名模型导入后将整体覆盖现有配置。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: allPicked ? null : _pickAll,
+                  child: const Text('全选'),
+                ),
+                TextButton(
+                  onPressed: _picked.isEmpty ? null : _pickNone,
+                  child: const Text('全不选'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final candidate in widget.candidates)
+                    _ImportCandidateTile(
+                      model: candidate,
+                      picked: _picked.contains(candidate.id),
+                      overwrite: widget.existingIds.contains(candidate.id),
+                      onChanged: (value) => _toggle(candidate.id, value),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _picked.isEmpty ? null : _submit,
+          child: Text('导入 ${_picked.length} 个'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 导入对话框里的一行候选模型：勾选框 + 模型名 + 能力摘要 + 「将覆盖」标记。
+class _ImportCandidateTile extends StatelessWidget {
+  final DiscoveredModel model;
+  final bool picked;
+  final bool overwrite;
+  final ValueChanged<bool> onChanged;
+
+  const _ImportCandidateTile({
+    required this.model,
+    required this.picked,
+    required this.overwrite,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final details = _details();
+    return CheckboxListTile(
+      value: picked,
+      onChanged: (value) => onChanged(value ?? false),
+      dense: true,
+      controlAffinity: ListTileControlAffinity.leading,
+      contentPadding: EdgeInsets.zero,
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              model.id,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (overwrite)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.error.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '将覆盖',
+                style: TextStyle(fontSize: 10, color: scheme.error),
+              ),
+            ),
+        ],
+      ),
+      subtitle: details == null
+          ? null
+          : Text(
+              details,
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+            ),
+    );
+  }
+
+  /// 一行能力摘要：展示名 + 思考 / 识图 / 强度档位 / 最大输出
+  /// （接口真的提供了才显示）。
+  String? _details() {
+    final options = model.reasoningEffortOptions;
+    final parts = <String>[
+      if (model.name.isNotEmpty && model.name != model.id) model.name,
+      if (model.supportsThinking != null)
+        model.supportsThinking! ? '支持思考' : '不支持思考',
+      if (model.supportsVision != null)
+        model.supportsVision! ? '支持识图' : '不支持识图',
+      if (options != null && options.isNotEmpty) '强度 ${options.join(' / ')}',
+      if (model.maxTokens != null) '最大输出 ${model.maxTokens}',
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
   }
 }

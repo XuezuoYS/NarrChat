@@ -1,22 +1,36 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/api_type.dart';
+import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/app_notice_center.dart';
+import 'package:narrchat/services/model_discovery_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/ai_settings_form.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
 
-Widget _buildApp(SettingsFormState form) {
+import 'helpers/notice_harness.dart';
+
+Widget _buildApp(
+  SettingsFormState form, {
+  AppNoticeCenter? center,
+  ModelDiscoveryService? discoveryService,
+}) {
   return MaterialApp(
     theme: NarrChatTheme.light,
+    builder: floatingNoticeBuilder(center: center),
     home: Scaffold(
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: AiSettingsForm(form: form),
+        child: AiSettingsForm(form: form, discoveryService: discoveryService),
       ),
     ),
   );
@@ -763,5 +777,250 @@ void main() {
       'low,high,max',
     );
     expect(tester.takeException(), isNull);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 获取可用模型（GET {baseUrl}/models → 多选导入）
+  // ---------------------------------------------------------------------------
+  group('获取可用模型', () {
+    /// 构造 UTF-8 JSON 响应。
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response.bytes(
+          utf8.encode(jsonEncode(body)),
+          status,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+
+    testWidgets('入口：仅自定义平台显示，且并列在「添加模型」右侧', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 2600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final form = _formWithCustomPlatform();
+      addTearDown(form.dispose);
+
+      await tester.pumpWidget(_buildApp(form));
+      await tester.pumpAndSettle();
+
+      // 首个平台（内置预置）默认展开：只有「添加模型」，没有获取入口。
+      expect(find.text('添加模型'), findsOneWidget);
+      expect(find.text('获取可用模型'), findsNothing);
+
+      await tester.tap(find.text('自定义网关'));
+      await tester.pumpAndSettle();
+
+      // 自定义平台：两个按钮并列，获取入口在「添加模型」右侧。
+      expect(find.text('添加模型'), findsNWidgets(2));
+      expect(find.text('获取可用模型'), findsOneWidget);
+      final addButtonX = tester.getTopLeft(find.text('添加模型').last).dx;
+      final fetchButtonX = tester.getTopLeft(find.text('获取可用模型')).dx;
+      expect(fetchButtonX, greaterThan(addButtonX));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('成功：默认只勾新模型，可全选/全不选，同名整体覆盖', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 2600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final form = _formWithCustomPlatform();
+      // gw-a 先改成用户手调过的值，用来证明导入是「整体覆盖」。
+      form.updateModel(
+        _customPlatformId,
+        'gw-a',
+        const AiModel(id: 'gw-a', shortLabel: 'A 简写', temperature: 0.7),
+      );
+      addTearDown(form.dispose);
+      final center = AppNoticeCenter();
+      addTearDown(center.dispose);
+      final service = ModelDiscoveryService(
+        client: MockClient(
+          (_) async => jsonResponse({
+            'data': [
+              {'id': 'gw-a', 'supports_thinking': false},
+              {
+                'id': 'brand-new',
+                'name': 'Brand New',
+                'max_output_tokens': 4096,
+                'supports_vision': true,
+              },
+            ],
+          }),
+        ),
+      );
+
+      await tester.pumpWidget(
+        _buildApp(form, center: center, discoveryService: service),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('自定义网关'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('获取可用模型'));
+      await tester.pumpAndSettle();
+
+      // 多选对话框：按钮 + 标题各一处「获取可用模型」，两行候选。
+      expect(find.text('获取可用模型'), findsNWidgets(2));
+      expect(find.byType(CheckboxListTile), findsNWidgets(2));
+      expect(find.text('将覆盖'), findsOneWidget);
+      // 默认只勾「新模型」：冲突的 gw-a 不勾，避免误覆盖。
+      expect(
+        tester
+            .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+            .map((tile) => tile.value),
+        [false, true],
+      );
+      expect(find.text('导入 1 个'), findsOneWidget);
+
+      // 全选 → 全不选（未勾选不可导入）→ 再全选。
+      await tester.tap(find.text('全选'));
+      await tester.pump();
+      expect(find.text('导入 2 个'), findsOneWidget);
+      await tester.tap(find.text('全不选'));
+      await tester.pump();
+      expect(find.text('导入 0 个'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.ancestor(
+                of: find.text('导入 0 个'),
+                matching: find.byType(FilledButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('全选'));
+      await tester.pump();
+      await tester.tap(find.text('导入 2 个'));
+      await tester.pumpAndSettle();
+
+      final platform = form.platforms.firstWhere(
+        (p) => p.id == _customPlatformId,
+      );
+      // 同名整体覆盖：手调的简写标识 / 温度回到导入默认值。
+      final gwA = platform.modelById('gw-a')!;
+      expect(gwA.shortLabel, isEmpty);
+      expect(gwA.temperature, 1.0);
+      expect(gwA.supportsThinking, isFalse);
+      // 新模型追加，并按接口导入能力字段。
+      final brandNew = platform.modelById('brand-new')!;
+      expect(brandNew.maxTokens, 4096);
+      expect(brandNew.supportsVision, isTrue);
+      expect(platform.models.map((m) => m.id), ['gw-a', 'gw-b', 'brand-new']);
+
+      // 成功通知汇总新增 / 覆盖数。
+      expect(center.current?.message, contains('新增 1 个'));
+      expect(center.current?.message, contains('覆盖 1 个同名模型'));
+      await flushNotices(tester);
+    });
+
+    testWidgets('失败：悬浮通知包含失败码与响应体，且不弹导入框', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 2600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final form = _formWithCustomPlatform();
+      addTearDown(form.dispose);
+      final center = AppNoticeCenter();
+      addTearDown(center.dispose);
+      final service = ModelDiscoveryService(
+        client: MockClient(
+          (_) async => http.Response.bytes(
+            utf8.encode('{"error":{"message":"bad key"}}'),
+            401,
+            headers: {'content-type': 'application/json'},
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(
+        _buildApp(form, center: center, discoveryService: service),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('自定义网关'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('获取可用模型'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(CheckboxListTile), findsNothing);
+      final notice = center.current;
+      expect(notice, isNotNull);
+      expect(notice!.kind, NoticeKind.error);
+      expect(notice.copyable, isTrue);
+      expect(notice.message, contains('HTTP 401'));
+      expect(notice.message, contains('bad key'));
+      await flushNotices(tester);
+    });
+
+    testWidgets('未填 Base URL：提示先填写地址，不发请求', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 2600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final form = _formWithCustomPlatform();
+      form.setPlatformBaseUrl(_customPlatformId, '');
+      addTearDown(form.dispose);
+      final center = AppNoticeCenter();
+      addTearDown(center.dispose);
+      var called = false;
+      final service = ModelDiscoveryService(
+        client: MockClient((_) async {
+          called = true;
+          return jsonResponse({'data': []});
+        }),
+      );
+
+      await tester.pumpWidget(
+        _buildApp(form, center: center, discoveryService: service),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('自定义网关'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('获取可用模型'));
+      await tester.pumpAndSettle();
+
+      expect(called, isFalse);
+      expect(center.current?.kind, NoticeKind.warning);
+      expect(center.current?.message, contains('Base URL'));
+      await flushNotices(tester);
+    });
+
+    test('importModels：同名整体覆盖、新名追加，并触发模型编辑器重建', () {
+      final form = _formWithCustomPlatform();
+      addTearDown(form.dispose);
+      form.updateModel(
+        _customPlatformId,
+        'gw-a',
+        const AiModel(id: 'gw-a', shortLabel: 'A', temperature: 0.7),
+      );
+      final revisionBefore = form.resetRevision;
+
+      final counts = form.importModels(_customPlatformId, [
+        const AiModel(id: 'gw-a', supportsThinking: false),
+        const AiModel(id: 'gw-new'),
+      ]);
+
+      expect(counts, (added: 1, overwritten: 1));
+      final platform = form.platforms.firstWhere(
+        (p) => p.id == _customPlatformId,
+      );
+      final gwA = platform.modelById('gw-a')!;
+      expect(gwA.shortLabel, isEmpty);
+      expect(gwA.temperature, 1.0);
+      expect(gwA.supportsThinking, isFalse);
+      expect(platform.models.map((m) => m.id), ['gw-a', 'gw-b', 'gw-new']);
+      expect(form.resetRevision, revisionBefore + 1);
+    });
+
+    test('importModels：无改动时不通知也不重建；未知平台忽略', () {
+      final form = _formWithCustomPlatform();
+      addTearDown(form.dispose);
+      final revisionBefore = form.resetRevision;
+      var notified = 0;
+      form.addListener(() => notified++);
+
+      expect(
+        form.importModels(_customPlatformId, const []),
+        (added: 0, overwritten: 0),
+      );
+      expect(
+        form.importModels('missing-platform', [const AiModel(id: 'x')]),
+        (added: 0, overwritten: 0),
+      );
+      expect(notified, 0);
+      expect(form.resetRevision, revisionBefore);
+    });
   });
 }

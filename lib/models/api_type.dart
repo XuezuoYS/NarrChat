@@ -67,6 +67,12 @@ class ApiType {
   final bool supportsThinking;
   final bool supportsSearch;
 
+  /// 能否通过基础接口查询模型列表（`GET {baseUrl}/models`）。
+  ///
+  /// OpenAI 系协议都提供该查询；不支持的协议在设置页不显示「获取可用模型」
+  /// 入口（只能手动添加模型）。
+  final bool supportsModelListing;
+
   // ---- 请求体动态组合规则 ----
   final RequestParamRules requestRules;
 
@@ -81,6 +87,7 @@ class ApiType {
     required this.supportsStreaming,
     required this.supportsThinking,
     required this.supportsSearch,
+    this.supportsModelListing = false,
     required this.requestRules,
     this.temperatureNote,
     this.reasoningEffortNote,
@@ -107,6 +114,7 @@ class ApiType {
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
+    supportsModelListing: true,
     requestRules: RequestParamRules([
       ParamRule(ParamCondition.always, {
         'model': '{{model}}',
@@ -158,6 +166,7 @@ class ApiType {
     supportsStreaming: true,
     supportsThinking: true,
     supportsSearch: true,
+    supportsModelListing: true,
     requestRules: RequestParamRules([
       ParamRule(ParamCondition.always, {
         'model': '{{model}}',
