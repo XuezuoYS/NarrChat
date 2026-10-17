@@ -709,14 +709,27 @@ class _ModelExpandableItem extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // 单个模型的设置编辑器（每个模型各自展开，独立编辑自己的参数）
 //
-// 可编辑项：简写标识、能力开关（流式 / 思考 / 搜索 / 识图）、温度、
-// 推理强度及其可选值列表（`reasoningEffortOptions`，**仅自定义平台**可编辑，
+// 可编辑项：简写标识、可调配功能（「已启用 / 未启用」两栏标签，点击切换）、
+// 温度、推理强度及其可选值列表（`reasoningEffortOptions`，**仅自定义平台**可编辑，
 // 留空用内置默认档位）、最大输出 Tokens。
 // ---------------------------------------------------------------------------
 
 /// 「推理强度」下拉的稳定 key（每个模型编辑器各一个，供测试 / 调试精确定位）。
 Key reasoningEffortDropdownKey(String platformId, String modelId) =>
     ValueKey('model-reasoning-effort-dropdown-$platformId-$modelId');
+
+/// 一个可调配功能：展示标签 + 从模型读取 / 写回该能力开关。
+class _Capability {
+  final String label;
+  final bool Function(AiModel model) isOn;
+  final AiModel Function(AiModel model, bool enabled) setEnabled;
+
+  const _Capability({
+    required this.label,
+    required this.isOn,
+    required this.setEnabled,
+  });
+}
 
 class _ModelSettingsEditor extends StatefulWidget {
   final SettingsFormState form;
@@ -808,14 +821,118 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     });
   }
 
-  /// 可调配功能的开关行（预置模型同样可自由调整，改动后可整平台重置）。
-  Widget _capabilitySwitch(String label, bool value, ValueChanged<bool> onChanged) {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
-      title: Text(label, style: const TextStyle(fontSize: 14)),
-      value: value,
-      onChanged: onChanged,
+  /// 可调配功能清单（Chat 页对话框内可选的能力开关；顺序即栏内排列顺序）。
+  ///
+  /// 只决定「标签长什么样、点一下改哪个开关」，不涉及任何默认值：
+  /// 预置模型同样可自由调整，改动后可整平台重置。
+  static final List<_Capability> _capabilities = [
+    _Capability(
+      label: '流式',
+      isOn: (m) => m.supportsStreaming,
+      setEnabled: (m, on) => m.copyWith(supportsStreaming: on),
+    ),
+    _Capability(
+      label: '思考',
+      isOn: (m) => m.supportsThinking,
+      setEnabled: (m, on) => m.copyWith(supportsThinking: on),
+    ),
+    _Capability(
+      label: '联网搜索',
+      isOn: (m) => m.supportsSearch,
+      setEnabled: (m, on) => m.copyWith(supportsSearch: on),
+    ),
+    _Capability(
+      label: '识图',
+      isOn: (m) => m.supportsVision,
+      setEnabled: (m, on) => m.copyWith(supportsVision: on),
+    ),
+  ];
+
+  /// 一个可调配功能的标签：已启用为主色浅底勾选态，未启用为描边空心态；
+  /// 点击即在「已启用 / 未启用」两栏之间移动。
+  Widget _capabilityChip(AiModel model, _Capability capability) {
+    final enabled = capability.isOn(model);
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: enabled ? '点击禁用' : '点击启用',
+      child: ChoiceChip(
+        selected: enabled,
+        showCheckmark: false,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        avatar: Icon(
+          enabled ? Icons.check : Icons.add,
+          size: 16,
+          color: enabled ? scheme.primary : scheme.outline,
+        ),
+        label: Text(
+          capability.label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: enabled ? FontWeight.w600 : FontWeight.w400,
+            color: enabled ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+        ),
+        selectedColor: scheme.primary.withValues(alpha: 0.12),
+        backgroundColor: Colors.transparent,
+        side: BorderSide(
+          color: enabled
+              ? scheme.primary.withValues(alpha: 0.4)
+              : scheme.outlineVariant,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+        onSelected: (_) => _update((m) => capability.setEnabled(m, !enabled)),
+      ),
+    );
+  }
+
+  /// 可调配功能的一栏（已启用 / 未启用）：左侧栏名，右侧标签自动换行排列。
+  Widget _capabilityRow({
+    required String label,
+    required AiModel model,
+    required bool enabled,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final items = [
+      for (final capability in _capabilities)
+        if (capability.isOn(model) == enabled) capability,
+    ];
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 52,
+          height: 32, // 与标签行高对齐，让栏名视觉居中。
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ),
+        ),
+        Expanded(
+          child: items.isEmpty
+              ? SizedBox(
+                  height: 32,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '（无）',
+                      style: TextStyle(fontSize: 11, color: scheme.outline),
+                    ),
+                  ),
+                )
+              : Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final capability in items)
+                      _capabilityChip(model, capability),
+                  ],
+                ),
+        ),
+      ],
     );
   }
 
@@ -852,27 +969,10 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
             color: Theme.of(context).colorScheme.onSurface,
           ),
         ),
+        const SizedBox(height: 8),
+        _capabilityRow(label: '已启用', model: model, enabled: true),
         const SizedBox(height: 4),
-        _capabilitySwitch(
-          '流式',
-          model.supportsStreaming,
-          (v) => _update((m) => m.copyWith(supportsStreaming: v)),
-        ),
-        _capabilitySwitch(
-          '思考',
-          model.supportsThinking,
-          (v) => _update((m) => m.copyWith(supportsThinking: v)),
-        ),
-        _capabilitySwitch(
-          '联网搜索',
-          model.supportsSearch,
-          (v) => _update((m) => m.copyWith(supportsSearch: v)),
-        ),
-        _capabilitySwitch(
-          '识图',
-          model.supportsVision,
-          (v) => _update((m) => m.copyWith(supportsVision: v)),
-        ),
+        _capabilityRow(label: '未启用', model: model, enabled: false),
         const SizedBox(height: 12),
         Row(
           children: [

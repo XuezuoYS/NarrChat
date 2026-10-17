@@ -102,6 +102,16 @@ Finder _optionsField() => find.byWidgetPredicate(
           w.decoration?.labelText == '可选强度值（逗号分隔，留空用默认）',
     );
 
+/// 某个可调配功能标签（如「联网搜索」）对应的芯片。
+Finder _capabilityChip(String label) =>
+    find.ancestor(of: find.text(label), matching: find.byType(ChoiceChip));
+
+/// 已启用（选中态）的可调配功能标签数量。
+int _enabledCapabilityCount(WidgetTester tester) => tester
+    .widgetList<ChoiceChip>(find.byType(ChoiceChip))
+    .where((chip) => chip.selected)
+    .length;
+
 /// 「推理强度」下拉的按钮（按平台 / 模型唯一的稳定 key 限定，避免命中 API 类型下拉）。
 Finder _scopeFor(String modelId, {String platformId = _customPlatformId}) =>
     find.descendant(
@@ -331,7 +341,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('预置模型：可调配功能可自由编辑（限制已放开）', (tester) async {
+  testWidgets('可调配功能：两栏标签（已启用 / 未启用），点击即在两栏间移动', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
@@ -339,22 +349,45 @@ void main() {
 
     await tester.pumpWidget(_buildApp(form));
     await tester.pump();
-    await _expandFirstModel(tester);
-
-    expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
-    expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsNothing);
-    // 图片设置「jpg→jpeg」开关 + 4 个能力开关，共 5 个，且全部可编辑。
-    expect(find.byType(SwitchListTile), findsNWidgets(5));
-    final switches = tester.widgetList<SwitchListTile>(find.byType(SwitchListTile));
-    expect(switches.every((s) => s.onChanged != null), isTrue);
-
-    // 关闭「联网搜索」：写回工作副本。
-    await tester.tap(find.widgetWithText(SwitchListTile, '联网搜索'));
-    await tester.pump();
-    expect(
-      form.platforms.first.modelById('deepseek-flash')!.supportsSearch,
-      isFalse,
+    // 展开 v4 Pro（预置里 识图 关闭的模型）⇒ 已启用 3 个、未启用 1 个。
+    await tester.tap(
+      find.textContaining('deepseek-v4-pro', findRichText: true).first,
     );
+    await tester.pumpAndSettle();
+
+    // 区域标题与两栏栏名就位；不再有四行长开关（能力开关已改为标签）。
+    expect(find.text('可调配功能（Chat 页对话框内可选）'), findsOneWidget);
+    expect(find.text('已启用'), findsOneWidget);
+    expect(find.text('未启用'), findsOneWidget);
+    expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsNothing);
+    expect(find.byType(SwitchListTile), findsOneWidget, reason: '仅剩图片设置的 jpg 开关');
+
+    // 默认值不变：v4 Pro 预置为 流式 / 思考 / 联网搜索 开、识图关。
+    for (final label in const ['流式', '思考', '联网搜索', '识图']) {
+      expect(_capabilityChip(label), findsOneWidget);
+    }
+    expect(_enabledCapabilityCount(tester), 3);
+    expect(tester.widget<ChoiceChip>(_capabilityChip('识图')).selected, isFalse);
+
+    // 已启用栏点击「联网搜索」⇒ 禁用并移入未启用栏。
+    await tester.tap(_capabilityChip('联网搜索'));
+    await tester.pump();
+    expect(form.platforms.first.modelById('deepseek-v4-pro')!.supportsSearch, isFalse);
+    expect(tester.widget<ChoiceChip>(_capabilityChip('联网搜索')).selected, isFalse);
+    expect(_enabledCapabilityCount(tester), 2);
+
+    // 未启用栏点击「识图」⇒ 启用并移入已启用栏。
+    await tester.tap(_capabilityChip('识图'));
+    await tester.pump();
+    expect(form.platforms.first.modelById('deepseek-v4-pro')!.supportsVision, isTrue);
+    expect(tester.widget<ChoiceChip>(_capabilityChip('识图')).selected, isTrue);
+    expect(_enabledCapabilityCount(tester), 3);
+
+    // 全部启用后，未启用栏显示「（无）」占位。
+    await tester.tap(_capabilityChip('联网搜索'));
+    await tester.pump();
+    expect(find.text('（无）'), findsOneWidget);
+    expect(_enabledCapabilityCount(tester), 4);
     expect(tester.takeException(), isNull);
   });
 
