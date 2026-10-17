@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../config/ai_platforms.dart';
@@ -707,7 +708,16 @@ class _ModelExpandableItem extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 // 单个模型的设置编辑器（每个模型各自展开，独立编辑自己的参数）
+//
+// 可编辑项：简写标识、能力开关（流式 / 思考 / 搜索 / 识图）、温度、
+// 推理强度及其可选值列表（`reasoningEffortOptions`，**仅自定义平台**可编辑，
+// 留空用内置默认档位）、最大输出 Tokens。
 // ---------------------------------------------------------------------------
+
+/// 「推理强度」下拉的稳定 key（每个模型编辑器各一个，供测试 / 调试精确定位）。
+Key reasoningEffortDropdownKey(String platformId, String modelId) =>
+    ValueKey('model-reasoning-effort-dropdown-$platformId-$modelId');
+
 class _ModelSettingsEditor extends StatefulWidget {
   final SettingsFormState form;
   final String platformId;
@@ -729,6 +739,7 @@ class _ModelSettingsEditor extends StatefulWidget {
 class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
   late final TextEditingController _shortLabelCtrl;
   late final TextEditingController _maxTokensCtrl;
+  late final TextEditingController _optionsCtrl;
 
   @override
   void initState() {
@@ -737,12 +748,16 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     _maxTokensCtrl = TextEditingController(
       text: widget.model.maxTokens?.toString() ?? '',
     );
+    _optionsCtrl = TextEditingController(
+      text: widget.model.effectiveReasoningEffortOptions.join(','),
+    );
   }
 
   @override
   void dispose() {
     _shortLabelCtrl.dispose();
     _maxTokensCtrl.dispose();
+    _optionsCtrl.dispose();
     super.dispose();
   }
 
@@ -759,6 +774,38 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     final current = _currentModel();
     if (current == null) return;
     widget.form.updateModel(widget.platformId, widget.model.id, fn(current));
+  }
+
+  /// 是否为软件内置预置平台（按预置注册表判定）。
+  ///
+  /// 内置预置平台不提供「可选强度值」入口：其档位固定为内置默认档位
+  /// （`AppConfig.reasoningEffortOptions`），避免预置模型的规则被改乱。
+  bool get _isPresetPlatform => AiPlatforms.isPresetId(widget.platformId);
+
+  /// 「推理强度」下拉的选项：模型自定义的档位列表；当前值不在列表中时
+  /// **补到首位**——[DropdownButton] 要求 value 必须出现在 items 中，
+  /// 同时也避免静默改写用户手工填写的值。
+  List<String> _reasoningEffortChoices(AiModel model) {
+    final options = model.effectiveReasoningEffortOptions;
+    final current = model.reasoningEffort;
+    if (current.isEmpty || options.contains(current)) return options;
+    return [current, ...options];
+  }
+
+  /// 「可选强度值」输入：解析后写回模型，并在规范结果与输入原文不一致时
+  /// 把输入框文本同步为规范形态（丢空项 / 去重 / 统一逗号分隔）。
+  void _onOptionsChanged(String raw) {
+    final options = AiModel.parseReasoningEffortOptions(raw);
+    _update((m) => m.copyWith(reasoningEffortOptions: options));
+    if (raw == options.join(',')) return;
+    // 在 onChanged 内直接改控制器文本会重入，故排到下一帧。
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _optionsCtrl.text == options.join(',')) return;
+      _optionsCtrl.text = options.join(',');
+      _optionsCtrl.selection = TextSelection.collapsed(
+        offset: _optionsCtrl.text.length,
+      );
+    });
   }
 
   /// 可调配功能的开关行（预置模型同样可自由调整，改动后可整平台重置）。
@@ -863,10 +910,12 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             AppDropdown<String>(
+              // 稳定 key：供测试与调试精确定位该下拉（同页还有 API 类型下拉）。
+              key: reasoningEffortDropdownKey(widget.platformId, model.id),
               label: '推理强度（reasoning_effort）',
               value: model.reasoningEffort,
               items: [
-                for (final e in const ['low', 'high', 'max'])
+                for (final e in _reasoningEffortChoices(model))
                   DropdownMenuItem(value: e, child: Text(e)),
               ],
               onChanged: (v) {
@@ -881,8 +930,45 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
                   style: TextStyle(fontSize: 11, color: outline),
                 ),
               ),
+            if (model.reasoningEffort.isNotEmpty &&
+                !model.effectiveReasoningEffortOptions
+                    .contains(model.reasoningEffort))
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Text(
+                  '当前值「${model.reasoningEffort}」不在可选值列表中（发送时仍按当前值）',
+                  style: TextStyle(fontSize: 11, color: outline),
+                ),
+              ),
           ],
         ),
+        const SizedBox(height: 8),
+        // 「可选强度值」只对自定义平台开放：内置预置平台固定使用内置默认档位。
+        if (!_isPresetPlatform)
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _optionsCtrl,
+                onTapOutside: unfocusOnTapOutside,
+                onChanged: _onOptionsChanged,
+                decoration: const InputDecoration(
+                  labelText: '可选强度值（逗号分隔，留空用默认）',
+                  hintText: 'low, high, max',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 4),
+                child: Text(
+                  '当前生效：${model.effectiveReasoningEffortOptions.join(' / ')}'
+                  '（留空即用内置默认档位，兼容不同服务商的取值规则）',
+                  style: TextStyle(fontSize: 11, color: outline),
+                ),
+              ),
+            ],
+          ),
         const SizedBox(height: 16),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,

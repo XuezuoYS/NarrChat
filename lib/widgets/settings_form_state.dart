@@ -133,21 +133,24 @@ class SettingsFormState extends ChangeNotifier {
   }
 
   /// 新增自定义平台（初始无模型，需在界面添加至少一个；保存前会校验）。
+  ///
+  /// [id] 留空时按时间戳生成；显式指定用于测试等需要固定标识的场景。
   void addPlatform({
     required String name,
     required String baseUrl,
     required String apiTypeId,
+    String? id,
   }) {
-    final id = 'custom_${DateTime.now().microsecondsSinceEpoch}';
+    final platformId = id ?? 'custom_${DateTime.now().microsecondsSinceEpoch}';
     final platform = AiPlatform(
-      id: id,
+      id: platformId,
       displayName: name.trim(),
       apiType: ApiType.byId(apiTypeId),
       baseUrl: baseUrl.trim(),
       models: const [],
     );
     _working = [..._working, platform];
-    _ensurePlatformControllers(id);
+    _ensurePlatformControllers(platformId);
     notifyListeners();
   }
 
@@ -254,6 +257,11 @@ class SettingsFormState extends ChangeNotifier {
       for (final m in p.models) {
         if (m.id.trim().isEmpty) {
           errors.add('API 设置：模型名称不能为空');
+        }
+        if (m.reasoningEffort.trim().isEmpty) {
+          errors.add(
+            'API 设置（${_displayPlatformName(p)}/${m.id}）：推理强度不能为空',
+          );
         }
         if (m.maxTokens != null && m.maxTokens! <= 0) {
           errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：最大输出 Tokens 需为正整数或留空');

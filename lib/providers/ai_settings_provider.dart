@@ -28,7 +28,8 @@ import '../services/local_config_service.dart';
 /// 配置结构（camelCase，均位于 `ai` 命名空间内）：
 /// - `platforms`：平台数组，每个平台含 `id` / `displayName` / `apiTypeId` /
 ///   `baseUrl` / `supportsResponseChaining` / `models`（模型含 `id` /
-///   `shortLabel` / `temperature` / `reasoningEffort` / `maxTokens` 与能力开关）；
+///   `shortLabel` / `temperature` / `reasoningEffort` / `reasoningEffortOptions`
+///   （推理强度可选值，空 / 缺省即用内置默认档位）/ `maxTokens` 与能力开关）；
 /// - `selectedPlatformId` / `selectedModelId`：当前选中的平台与模型；
 /// - `lastThinking` / `lastStreaming` / `lastSearch`：Chat 页每轮选项记忆；
 /// - `maxImageSizeMB` / `convertJpgToJpeg`：图片设置。

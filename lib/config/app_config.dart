@@ -31,7 +31,11 @@ class AppConfig {
     for (final m in AiPlatforms.defaultPlatform.models) m.id,
   ];
 
-  /// 思考强度档位（`reasoning_effort`，官方取值）。
+  /// 内置默认的思考强度档位（`reasoning_effort`，官方取值）。
+  ///
+  /// 每个模型可在「设置 → API 设置」里自定义自己的档位列表
+  /// （`AiModel.reasoningEffortOptions`），未配置时回落到这里，以兼容
+  /// 不同服务商对取值规则的要求。
   static const List<String> reasoningEffortOptions = ['low', 'high', 'max'];
 
   /// 默认思考强度。

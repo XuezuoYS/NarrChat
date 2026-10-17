@@ -1,10 +1,12 @@
+import '../config/app_config.dart';
 import 'api_type.dart';
 
 /// 平台下单个模型的配置。
 ///
 /// 每个模型携带发送给 API 的 [id]、对话框显示用的 [shortLabel]（简写标识，
 /// 为空则回退到 [id]）、以及当前有效参数（[temperature] / [reasoningEffort] /
-/// [maxTokens]）；请求体由所属平台 [AiPlatform.apiType] 的规则构建。
+/// [reasoningEffortOptions] / [maxTokens]）；请求体由所属平台
+/// [AiPlatform.apiType] 的规则构建。
 class AiModel {
   /// 实际发送给 API 的模型名（平台内唯一）。
   final String id;
@@ -17,6 +19,13 @@ class AiModel {
 
   /// 推理强度（`reasoning_effort`，思考模式下生效）。
   final String reasoningEffort;
+
+  /// 「推理强度」下拉的可选值（**空列表 = 未配置**，回落
+  /// [AppConfig.reasoningEffortOptions]）。
+  ///
+  /// 各服务商对 `reasoning_effort` 的取值规则不一（如只认 `low/high`、
+  /// 或用 `medium` / `minimal`），因此由每个模型自行声明，而不是全局写死。
+  final List<String> reasoningEffortOptions;
 
   /// 最大输出 Tokens（null 表示不限制，由服务端决定）。
   final int? maxTokens;
@@ -39,6 +48,7 @@ class AiModel {
     this.shortLabel = '',
     this.temperature = 1.0,
     this.reasoningEffort = 'high',
+    this.reasoningEffortOptions = const [],
     this.maxTokens,
     this.supportsStreaming = true,
     this.supportsThinking = true,
@@ -49,11 +59,32 @@ class AiModel {
   /// 对话框显示名：简写标识非空用简写标识，否则回退模型名（[id]）。
   String get displayLabel => shortLabel.trim().isNotEmpty ? shortLabel.trim() : id;
 
+  /// 实际生效的推理强度可选值：未配置（空列表）时用内置默认档位。
+  ///
+  /// 返回值恒为**独立新列表**（调用方可安全 `insert` 而不污染模型配置）。
+  List<String> get effectiveReasoningEffortOptions =>
+      reasoningEffortOptions.isEmpty
+          ? List.of(AppConfig.reasoningEffortOptions)
+          : List.of(reasoningEffortOptions);
+
+  /// 解析用户输入的推理强度可选值：逗号（含中文逗号）/ 空白混合分隔，
+  /// 去首尾空白、丢空项、**保序去重**。全为空 ⇒ 空列表（即「未配置」）。
+  static List<String> parseReasoningEffortOptions(String raw) {
+    final parsed = <String>[];
+    for (final token in raw.replaceAll('，', ',').split(RegExp(r'[,\s]+'))) {
+      final value = token.trim();
+      if (value.isEmpty || parsed.contains(value)) continue;
+      parsed.add(value);
+    }
+    return parsed;
+  }
+
   AiModel copyWith({
     String? id,
     String? shortLabel,
     double? temperature,
     String? reasoningEffort,
+    List<String>? reasoningEffortOptions,
     int? maxTokens,
     bool? supportsStreaming,
     bool? supportsThinking,
@@ -65,6 +96,8 @@ class AiModel {
       shortLabel: shortLabel ?? this.shortLabel,
       temperature: temperature ?? this.temperature,
       reasoningEffort: reasoningEffort ?? this.reasoningEffort,
+      reasoningEffortOptions:
+          reasoningEffortOptions ?? this.reasoningEffortOptions,
       maxTokens: maxTokens ?? this.maxTokens,
       supportsStreaming: supportsStreaming ?? this.supportsStreaming,
       supportsThinking: supportsThinking ?? this.supportsThinking,
@@ -83,6 +116,10 @@ class AiModel {
       'supportsThinking': supportsThinking,
       'supportsSearch': supportsSearch,
       'supportsVision': supportsVision,
+      // 未配置（空列表）时不落盘：保持内置预置的序列化形态不变，
+      // 旧配置也未携带该键 ⇒ "预置未改动" 判定不受影响。
+      if (reasoningEffortOptions.isNotEmpty)
+        'reasoningEffortOptions': reasoningEffortOptions,
       if (maxTokens != null && maxTokens! > 0) 'maxTokens': maxTokens,
     };
   }
@@ -93,6 +130,10 @@ class AiModel {
       shortLabel: json['shortLabel'] as String? ?? '',
       temperature: (json['temperature'] as num?)?.toDouble() ?? 1.0,
       reasoningEffort: json['reasoningEffort'] as String? ?? 'high',
+      reasoningEffortOptions: (json['reasoningEffortOptions'] as List?)
+              ?.whereType<String>()
+              .toList() ??
+          const [],
       maxTokens: (json['maxTokens'] as num?)?.toInt(),
       supportsStreaming: json['supportsStreaming'] as bool? ?? true,
       supportsThinking: json['supportsThinking'] as bool? ?? true,

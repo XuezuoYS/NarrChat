@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/config/ai_platforms.dart';
+import 'package:narrchat/config/app_config.dart';
 import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/services/ai_request_body_builder.dart';
@@ -108,6 +109,81 @@ void main() {
       expect(changed.supportsThinking, isTrue);
       expect(changed.supportsSearch, isFalse);
       expect(changed.supportsVision, isTrue);
+    });
+
+    test('推理强度可选值：未配置回落内置默认档位，且不落盘该键', () {
+      const model = AiModel(id: 'm1');
+      expect(model.reasoningEffortOptions, isEmpty);
+      expect(
+        model.effectiveReasoningEffortOptions,
+        AppConfig.reasoningEffortOptions,
+      );
+      expect(model.toJson().containsKey('reasoningEffortOptions'), isFalse);
+      // 派生列表是独立副本：调用方改写不污染模型配置。
+      model.effectiveReasoningEffortOptions.add('unexpected');
+      expect(model.effectiveReasoningEffortOptions.length, 3);
+    });
+
+    test('推理强度可选值：解析容忍中英文逗号 / 空白混用，去空去重且保序', () {
+      expect(
+        AiModel.parseReasoningEffortOptions('low，high max, low'),
+        ['low', 'high', 'max'],
+      );
+      expect(
+        AiModel.parseReasoningEffortOptions('  minimal , low,, medium ,high  '),
+        ['minimal', 'low', 'medium', 'high'],
+      );
+      // 不做大小写改写：服务商要求的字面量原样保留。
+      expect(AiModel.parseReasoningEffortOptions('LOW, High'), ['LOW', 'High']);
+      // 全为空 ⇒ 未配置。
+      expect(AiModel.parseReasoningEffortOptions(''), isEmpty);
+      expect(AiModel.parseReasoningEffortOptions(' , ， '), isEmpty);
+    });
+
+    test('推理强度可选值：自定义列表落盘往返；旧配置缺键回落默认', () {
+      const model = AiModel(
+        id: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        reasoningEffortOptions: ['minimal', 'low', 'medium', 'high'],
+      );
+      final json = model.toJson();
+      expect(json['reasoningEffortOptions'], [
+        'minimal',
+        'low',
+        'medium',
+        'high',
+      ]);
+
+      final parsed = AiModel.fromJson(json);
+      expect(parsed.reasoningEffortOptions, model.reasoningEffortOptions);
+      expect(parsed.reasoningEffort, 'medium');
+
+      // 旧配置文件没有该键 ⇒ 空列表（等价于内置默认档位）。
+      final legacy = AiModel.fromJson(json..remove('reasoningEffortOptions'));
+      expect(legacy.reasoningEffortOptions, isEmpty);
+      expect(
+        legacy.effectiveReasoningEffortOptions,
+        AppConfig.reasoningEffortOptions,
+      );
+      // 非法类型不炸：非字符串项被丢弃。
+      expect(
+        AiModel.fromJson({
+          'id': 'm1',
+          'reasoningEffortOptions': ['low', 7, null],
+        }).reasoningEffortOptions,
+        ['low'],
+      );
+    });
+
+    test('copyWith(reasoningEffortOptions: []) 可清空（回到内置默认档位）', () {
+      const model = AiModel(
+        id: 'm1',
+        reasoningEffortOptions: ['low', 'high'],
+      );
+      final cleared = model.copyWith(reasoningEffortOptions: const []);
+      expect(cleared.reasoningEffortOptions, isEmpty);
+      expect(cleared.effectiveReasoningEffortOptions.length, 3);
+      expect(cleared.toJson().containsKey('reasoningEffortOptions'), isFalse);
     });
   });
 
