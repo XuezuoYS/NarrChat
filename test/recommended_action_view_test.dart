@@ -6,13 +6,12 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
 import 'package:narrchat/widgets/recommended_action_view.dart';
 
-/// 「推荐下一步」一次解析（P0-②）：选项行改为**内联 span**，不再每项一个
+/// 「推荐下一步」一次解析：选项行改为**内联 span**，不再每项一个
 /// `MarkdownBody`。
 ///
 /// 为什么值得钉死：每个选项各建一个 `MarkdownBody` = 每条选项各付一次块级解析
-/// + 一整棵 Markdown 子树构建。实测一个 AI 气泡 6 次构树（正文 1 + 选项 5，
-/// `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-②」）。改造后构树次数 = 正文 1 + 非列表文本
-/// 段数，选项为 0。
+/// + 一整棵 Markdown 子树构建。实测一个 AI 气泡 6 次构树（正文 1 + 选项 5）。
+/// 改造后构树次数 = 正文 1 + 非列表文本段数，选项为 0。
 ///
 /// 与既有用例的分工：`chat_bubble_test.dart` 覆盖双击 / 单击 / 选中 / 复制等
 /// 交互（集成层），`recommended_action_parser_test.dart` 覆盖切分规则；本文件
@@ -119,7 +118,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('单个 AI 气泡的 Markdown 构树次数 ≤ 2（P0-② 验收；改造前 6）', (tester) async {
+  testWidgets('单个 AI 气泡的 Markdown 构树次数 ≤ 2（改造前 6）', (tester) async {
     await tester.pumpWidget(
       _wrap(
         const ChatBubble(
@@ -138,7 +137,7 @@ void main() {
     expect(
       bodies.evaluate().length,
       lessThanOrEqualTo(2),
-      reason: 'P0-② 验收：单气泡构树次数 ≤ 2（改造前 6）',
+      reason: '单气泡构树次数 ≤ 2（改造前 6）',
     );
     // 正文与选项都在屏上（避免「少构树 = 少内容」的假通过）。
     expect(find.text('山门巍峨。', findRichText: true), findsOneWidget);

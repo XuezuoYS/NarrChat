@@ -11,7 +11,7 @@ import 'package:flutter/widgets.dart';
 ///   （`visualY = viewportDimension + pixels − offset`，下方内容长高 ⇒ 可视内容的
 ///   offset 变大 ⇒ 视觉上移）。实测：合成宿主里位移**恰好等于**长高的量；
 ///   真实对话页里一次结构插入 85px、持续流式增长 150px+ —— 表现为「读着读着整段
-///   内容自己往上跑」（度量记录见 `.agents/2026-10-11-chat-ui-perf-plan.md`「P0-③」）。
+///   内容自己往上跑」。
 ///
 /// ## 怎么做到
 /// 1. [ReadingAnchorItem] 包住每个条目，只有**列表逻辑末尾**那一条（= 视口下方最近的
@@ -26,7 +26,7 @@ import 'package:flutter/widgets.dart';
 /// 实测增量可达真实增长量的数十倍（7.6k px vs 数百 px）——按它补偿会一次跳飞。
 ///
 /// 已知不覆盖：视口**上方**条目长高（不会推动可视内容，无需补偿）、
-/// 底部留白变化（输入面板长高会推动内容，属 P1「底部留白不再依赖帧末测量」）。
+/// 底部留白变化（输入面板长高会推动内容，待做「底部留白不再依赖帧末测量」）。
 class ReadingAnchor {
   Object? _source;
   double _height = 0;
