@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderAbstractViewport;
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, RenderSliver;
 
 import 'narr_chat_scrollbar.dart';
 
@@ -26,8 +26,9 @@ class TocAnchorRegistry {
 
 /// 快速定位滚动条目。
 ///
-/// [offsetResolver] 在需要时懒解析「该条目对齐到视口顶」的滚动偏移；
-/// 返回 null 表示锚点当前不存在（组件会在布局与当前条目判定中跳过该条目）。
+/// [offsetResolver] 在需要时懒解析该条目的**落点偏移**——标题顶边落在视口主轴
+/// 锚定线（[QuickScrollRail.anchorFraction]）时的滚动偏移；返回 null 表示锚点
+/// 当前不存在（组件会在布局与当前条目判定中跳过该条目）。
 class QuickScrollEntry {
   QuickScrollEntry({
     required this.id,
@@ -45,7 +46,10 @@ class QuickScrollEntry {
   /// 层级（保留字段便于接入方表达结构；当前列表样式统一，不按层级缩进）。
   final int level;
 
-  /// 该条目对齐视口顶时的滚动偏移；锚点不存在时返回 null。
+  /// 该条目的落点偏移（标题顶边落在锚定线）；锚点不存在时返回 null。
+  ///
+  /// 由 [QuickScrollRail.revealOffsetOf] 解析，换算见
+  /// [QuickScrollRail.landingOffsetOf]。
   final double? Function() offsetResolver;
 }
 
@@ -67,6 +71,11 @@ class QuickScrollEntry {
 /// 沿轨道滑动的标题行 + 按位置连续渐变的当前条目强调）。
 ///
 /// 行为约定（对齐 WPS 手机端体验）：
+/// - **落点**：目录条目的「标题顶边」落在视口主轴 [QuickScrollRail.anchorFraction]
+///   处的锚定线上（上方留出前文，且不会被吸顶标题栏遮挡）；文档开头放不下
+///   1/3 时锚定线随滚动向起点上移，滚到最顶部时锚定线就在顶部（第一个标题
+///   落在顶部）；文档末尾放不下 1/3 的条目折叠到 `maxScrollExtent`。换算见
+///   [QuickScrollRail.landingOffsetOf]；
 /// - 滚动内容时淡入显示圆形阴影拇指（自带上下三角箭头图案），空闲
 ///   [QuickScrollRail.idleDelay] 后淡出；桌面端鼠标悬停右缘时保持显示；
 /// - 按住导轨任意位置拖动 → 右缘向左展开「[panelColor] 纯色 → 透明」的水平
@@ -119,6 +128,12 @@ class QuickScrollRail extends StatefulWidget {
   /// 拇指最小高度。
   static const double thumbMinHeight = 64;
 
+  /// 锚定线比例：快速定位的落点让**标题顶边**落在视口主轴的这个位置。
+  ///
+  /// 正常为 1/3；文档开头放不下 1/3 时锚定线随滚动位置向起点上移，滚到最顶部
+  /// 时锚定线就在顶部（第一个标题落在顶部）。完整换算见 [landingOffsetOf]。
+  static const double anchorFraction = 1 / 3;
+
   /// 目录行高（含行间距，保证大字号的视觉舒适）。
   static const double labelRowHeight = 36;
 
@@ -140,7 +155,8 @@ class QuickScrollRail extends StatefulWidget {
   /// 目录浮层展开动画时长（右滑入 + 淡入复合；收起为反向动画）。
   static const Duration overlayAnimDuration = Duration(milliseconds: 180);
 
-  /// 根据锚点 [BuildContext] 求「对齐到视口顶」的滚动偏移；不可用时返回 null。
+  /// 根据锚点 [BuildContext] 求该条目的**落点偏移**（标题顶边落在视口主轴的
+  /// 锚定线 [anchorFraction] 处）；不可用时返回 null。
   ///
   /// 适用于非虚拟化场景（侧栏等全量布局）：锚点挂 [GlobalObjectKey] 后，
   /// 由 `offsetResolver` 闭包调用此方法懒解析，天然跟随内容的展开/收起。
@@ -158,13 +174,87 @@ class QuickScrollRail extends StatefulWidget {
   /// 会触发 `RenderBox was not laid out` 断言，并被包成错误红框覆盖本组件区域。
   /// 典型触发：侧栏「角色状态」模块【编辑】→【取消】（视图模式在当帧整体重新
   /// 挂载，锚点全新）。
+  ///
+  /// 偏移取目标的**真实内容偏移**（顶边在滚动内容中的位置），而不是
+  /// [RenderAbstractViewport.getOffsetToReveal] 的结果：
+  /// - 后者会把目标放到**吸顶标题栏下方**（`precedingScrollExtent` 已按吸顶
+  ///   占位扣过），角色卡片这类「位于吸顶栏之下」的目标会因此少算一个吸顶栏
+  ///   高度，落点比 1/3 低一截；
+  /// - 后者按「露出整个目标」对齐时还会按目标高度缩放，整张展开的角色卡片
+  ///   （比视口还高）会把顶边推出视口。
+  ///
+  /// 返回值可能超过可滚动范围（文档末尾放不下 1/3 的条目），由导轨按
+  /// `maxScrollExtent` 折叠。
   static double? revealOffsetOf(BuildContext? anchorContext) {
     if (anchorContext == null) return null;
     final ro = anchorContext.findRenderObject();
-    // hasSize = 已过布局，size 可用；未布局时其祖先（pivot）同样不可读，故直接跳过。
+    // hasSize = 已过布局，size 可用；未布局时其祖先同样不可读，故直接跳过。
     if (ro is! RenderBox || !ro.attached || !ro.hasSize) return null;
     final vp = RenderAbstractViewport.of(ro);
-    return vp.getOffsetToReveal(ro, 0.0).offset;
+    // 拿不到精确内容偏移（虚拟化 sliver 等）时退回 reveal 偏移：落点会比
+    // 1/3 低一个吸顶栏高度，但至少可用。
+    final topOffset =
+        _contentOffsetOf(ro) ?? vp.getOffsetToReveal(ro, 0.0).offset;
+    // 视口主轴尺寸取不到（非常规视口实现）时退回「标题顶边对齐起始边」。
+    // 本导轨的几何全部按竖向列表计算（拇指、拖动都用 dy），故取高度。
+    final viewportBox = vp is RenderBox ? vp as RenderBox : null;
+    return landingOffsetOf(
+      topOffset,
+      viewportExtent: viewportBox?.size.height ?? 0.0,
+    );
+  }
+
+  /// 目标顶边在滚动内容中的偏移（与当前滚动位置无关，也**不含**吸顶占位折算）。
+  ///
+  /// 取法：沿盒子树向上找到「最近 sliver 的直接 box 子级」，用该 sliver 的
+  /// `precedingScrollExtent`（真实内容偏移，含吸顶栏自身及其前文）加上子级在
+  /// sliver 内的滚动偏移（`childScrollOffset`：单 box 子级为 0，虚拟化子级为
+  /// 该条目的布局偏移）加上目标在子级内的主轴偏移。侧栏的目录锚点都挂在
+  /// `SliverToBoxAdapter` 的 box 里，因此总能取到；非常规渲染结构取不到时返回
+  /// null，由 [revealOffsetOf] 退回 `getOffsetToReveal`。
+  ///
+  /// `localToGlobal` 读的是**布局期**的盒内相对位置：同一次构建里的滚动只会
+  /// 改变视口平移（在该 box 之上），故结果不受拖动时的逐帧滚动位置影响
+  /// （不会抖动）。
+  static double? _contentOffsetOf(RenderBox target) {
+    RenderObject child = target;
+    RenderObject? parent = child.parent;
+    while (parent != null && parent is! RenderSliver) {
+      child = parent;
+      parent = parent.parent;
+    }
+    final RenderObject lastChild = child;
+    if (parent is! RenderSliver || lastChild is! RenderBox) return null;
+    final withinSliver = parent.childScrollOffset(lastChild);
+    if (withinSliver == null) return null;
+    return parent.constraints.precedingScrollExtent +
+        withinSliver +
+        target.localToGlobal(Offset.zero, ancestor: lastChild).dy;
+  }
+
+  /// 「标题顶边在内容中的偏移」→ **落点偏移**（标题顶边落在锚定线
+  /// [anchorFraction] 处）。
+  ///
+  /// [topOffset] 为标题顶边在滚动内容中的位置（由 [revealOffsetOf] 解析，
+  /// 见 [_contentOffsetOf]），[viewportExtent] 为滚动视口主轴尺寸（竖排 = 高）。
+  ///
+  /// 推导：设落点为 `p`，锚定线在屏幕上的位置随滚动靠近文档开头而上移。
+  /// 视口主轴为 `V`、比例上限为 `f` 时，锚定线比例取 `min(f, p / V)`，即
+  /// `line = min(f × V, p)`；标题顶边落在锚定线时 `topOffset = p + line`，解得
+  /// - `topOffset ≤ 2fV` → `p = topOffset / 2`（锚定线还在上移区间里，按条目
+  ///   位置等比上移：越靠近文档开头越贴近顶部）；
+  /// - 否则 → `p = topOffset − fV`（锚定线固定在 1/3 处）。
+  ///
+  /// 于是第一个标题（`topOffset = 0`）→ `p = 0`：滚到最顶部时标题就在顶部。
+  /// 返回值不会小于 0，但可能超过可滚动范围（文档末尾放不下 1/3 的条目），
+  /// 由调用方按 `[minScrollExtent, maxScrollExtent]` 夹取。
+  static double landingOffsetOf(
+    double topOffset, {
+    required double viewportExtent,
+  }) {
+    if (viewportExtent <= 0) return topOffset;
+    final third = viewportExtent * anchorFraction;
+    return topOffset <= 2 * third ? topOffset / 2 : topOffset - third;
   }
 
   @override
@@ -230,7 +320,9 @@ class _QuickScrollRailState extends State<QuickScrollRail>
   ///
   /// WPS 式「目录列表」：全部节点按固定行高排成一张列表，行位置与当前
   /// 强调都**随拖动位置连续过渡**（非离散跳变）：
-  /// - 列表滑动：以「连续条目位」[iCont]（相邻锚点间距内按滚动偏移线性
+  /// - 每个条目的**落点**（标题顶边落在锚定线时的滚动偏移）由
+  ///   [QuickScrollRail.revealOffsetOf] 解析，这里只按可滚动范围夹取；
+  /// - 列表滑动：以「连续条目位」[iCont]（相邻落点间距内按滚动偏移线性
   ///   插值）为基准，行 y = 拇指中心 + (i − iCont) × 行高 → 拖动时整列
   ///   平滑移动；
   /// - 当前强调交叉渐变：每行权重 w = 1 − |i − iCont|（夹取 0..1），
@@ -245,12 +337,12 @@ class _QuickScrollRailState extends State<QuickScrollRail>
     required double pixels,
   }) {
     if (resolved.isEmpty) return const [];
-    // 锚点偏移先钳制到可滚动范围：文档末尾锚点无法「对齐视口顶」滚动
-    // （reveal 偏移可超过 maxExtent），按 maxExtent 折叠后与拇指几何一致。
+    // 落点先钳制到可滚动范围：文档末尾放不下 1/3 的条目落点可超过 maxExtent
+    // （无处可滚），按 maxExtent 折叠后与拇指几何一致。
     double clampO(double o) => math.min(o, maxExtent);
     final offsets = [for (final r in resolved) clampO(r.$2)];
     final n = resolved.length;
-    // 当前条目（离散索引）：最后一个「钳制后对齐偏移 <= 视口偏移」的条目。
+    // 当前条目（离散索引）：最后一个「落点 <= 视口偏移」的条目。
     var currentIdx = 0;
     for (var i = 0; i < n; i++) {
       if (offsets[i] <= pixels + 4) currentIdx = i;

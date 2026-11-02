@@ -411,6 +411,116 @@ void main() {
     );
     await gesture.up();
   });
+  test('落点换算：锚定线正常在视口 1/3，文档开头按条目位置等比上移', () {
+    // 视口 900 → 锚定线 300、上移区间 [0, 600]（2/3 视口）。
+    const cases = <(double, double)>[
+      (0, 0), // 文档第一个标题 → 落在顶部
+      (150, 75), // 上移区间内 → 落点 = 顶边偏移 / 2
+      (600, 300), // 上移区间边界 → 恰好 1/3
+      (900, 600), // 稳定段 → 顶边偏移 − 1/3 视口
+      (2000, 1700),
+    ];
+    for (final (topOffset, expected) in cases) {
+      expect(
+        QuickScrollRail.landingOffsetOf(topOffset, viewportExtent: 900),
+        closeTo(expected, 0.001),
+        reason: 'topOffset=$topOffset',
+      );
+    }
+  });
+
+  test('落点换算：视口尺寸不可用时退回原偏移', () {
+    expect(QuickScrollRail.landingOffsetOf(123, viewportExtent: 0), 123);
+    expect(QuickScrollRail.landingOffsetOf(123, viewportExtent: -1), 123);
+  });
+
+  testWidgets('revealOffsetOf：落点把标题顶边送到锚定线（高目标只取顶边）', (tester) async {
+    final anchors = TocAnchorRegistry();
+    final controller = ScrollController();
+    addTearDown(controller.dispose);
+    // 视口 600 → 锚定线 200、上移区间 [0, 400]。锚点位置：A0=0、A1=120、
+    // A2=2000（自身高 1200，比视口还高）。
+    await pumpAnchorHost(
+      tester,
+      anchors: anchors,
+      controller: controller,
+      itemHeights: const [120, 1880, 1200],
+    );
+
+    final rail = tester.widget<QuickScrollRail>(find.byType(QuickScrollRail));
+    double? landingOf(String id) =>
+        rail.entries.firstWhere((e) => e.id == id).offsetResolver();
+
+    // 顶边偏移 → 落点：A0 在顶部；A1 在 [0, 400] 上移区间（120 / 2）；A2 稳定段
+    // （2000 − 200）。
+    expect(landingOf('a0'), closeTo(0, 0.5));
+    expect(landingOf('a1'), closeTo(60, 0.5));
+    expect(landingOf('a2'), closeTo(1800, 0.5));
+
+    final railTop = tester.getRect(find.byType(QuickScrollRail)).top;
+    // 第一个标题：滚到最顶部时标题顶边就在顶部。
+    controller.jumpTo(landingOf('a0')!);
+    await tester.pump();
+    expect(
+      tester.getRect(find.byKey(anchors.keyFor('a0'))).top - railTop,
+      closeTo(0, 0.5),
+    );
+    // 高目标：只按顶边对齐（1200 > 视口 600 也不会把顶边推出视口）。
+    controller.jumpTo(landingOf('a2')!);
+    await tester.pump();
+    expect(
+      tester.getRect(find.byKey(anchors.keyFor('a2'))).top - railTop,
+      closeTo(200, 0.5),
+    );
+  });
+}
+
+/// 落点用例宿主：固定高度方框 + 路径锚点，条目落点由 [QuickScrollRail.revealOffsetOf]
+/// 解析（与侧栏同一接法；[SingleChildScrollView] 保证锚点全部挂载）。
+Future<void> pumpAnchorHost(
+  WidgetTester tester, {
+  required TocAnchorRegistry anchors,
+  required ScrollController controller,
+  required List<double> itemHeights,
+}) async {
+  tester.view.physicalSize = const Size(600, 600);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: NarrChatTheme.light,
+      home: Scaffold(
+        body: QuickScrollRail(
+          controller: controller,
+          entries: [
+            for (var i = 0; i < itemHeights.length; i++)
+              QuickScrollEntry(
+                id: 'a$i',
+                label: 'A$i',
+                offsetResolver: () => QuickScrollRail.revealOffsetOf(
+                  anchors.contextOf('a$i'),
+                ),
+              ),
+          ],
+          scrollable: SingleChildScrollView(
+            controller: controller,
+            child: Column(
+              children: [
+                for (var i = 0; i < itemHeights.length; i++)
+                  SizedBox(
+                    key: anchors.keyFor('a$i'),
+                    height: itemHeights[i],
+                    child: Text('item $i'),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
 }
 
 double _offsetOf(WidgetTester tester) {

@@ -23,6 +23,8 @@ import 'quick_scroll_rail.dart';
 ///   （`recommended_action` 不在侧边栏编辑，展示于对话区 AI 气泡正文下方。）
 /// - 可折叠子模块：每个大区块（当前时间/世界状态/角色状态/记忆总结）都有吸顶标题栏，
 ///   滚动到下方时标题栏固定在视口顶部；点击标题栏可折叠/展开该区块内容。
+/// - 快速定位：右缘导轨按住拖动即定位，落点让目标块标题栏落在视口 1/3 处
+///   （文档开头放不下 1/3 时锚定线自适应上移到顶部），不被吸顶标题栏遮挡。
 /// - 记忆总结的条目卡片支持长按 / 右键扩展菜单（复制时间 / 复制内容 /
 ///   跳转至对应条目，跳转落点见 [onJumpToRound]）。
 /// - 手动保存：编辑时**不自动写库**；每个子模块通过标题栏【编辑】进入编辑、
@@ -216,6 +218,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
                 // 快速定位滚动导轨（替代本面板的原生滚动条）：滚动时显示
                 // 自绘拇指，按住拖动出现「从左向右的渐变目录浮层」，最低
                 // 目录级别为角色名（角色状态内的 `## 角色名` 卡片）。
+                // 落点让目标块标题栏落在视口 1/3 处（文档开头放不下时锚定线
+                // 自适应上移到顶部），吸顶标题栏不会再压住被定位的标题。
                 // 每个大子模块用 _buildSection 包裹（SliverMainAxisGroup 分组）：
                 // 组内标题栏吸顶，但会被钳制在本组范围，滚动时前一个标题栏
                 // 随组滚出视口、不叠层，一次只有一个标题栏固定在顶部。
@@ -421,7 +425,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
     return entries;
   }
 
-  /// 区块锚点（零高度 Box）的「对齐视口顶」偏移解析。
+  /// 区块锚点（零高度 Box）的落点解析：标题顶边落在视口 1/3 锚定线
+  /// （文档开头放不下 1/3 时锚定线自适应上移到顶部）。
   double? Function() _sectionResolver(String field) => () =>
       QuickScrollRail.revealOffsetOf(_tocAnchors.contextOf('section:$field'));
 
@@ -473,8 +478,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
     final editing = _editing[key] ?? false;
     return SliverMainAxisGroup(
       slivers: [
-        // 快速定位导轨的区块锚点（零高度）：目录条目按此解析「对齐视口顶」
-        // 的滚动偏移；跳转到区块头与自然滚动位置一致（标题栏随后吸顶）。
+        // 快速定位导轨的区块锚点（零高度）：目录条目按此解析落点——标题顶边
+        // 落在视口 1/3 的锚定线（文档开头放不下 1/3 时锚定线自动上移）。
         SliverToBoxAdapter(
           child: SizedBox(
             // 零尺寸锚点（Box 而非 Sliver：revealOffsetOf 需要 RenderBox）。

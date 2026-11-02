@@ -42,8 +42,8 @@ class MarkdownCollapsibleEditor extends StatefulWidget {
   final bool showToolbar;
 
   /// 非空时，为树中每个节点（分组标题/人物卡片）注册路径锚点（见
-  /// [TocAnchorRegistry]），供快速定位滚动组件按同一路径懒解析其滚动偏移；
-  /// 默认 null = 不注册锚点。
+  /// [TocAnchorRegistry]），供快速定位滚动组件按同一路径懒解析其滚动偏移
+  /// （锚点即节点顶边，导轨据此换算落点）；默认 null = 不注册锚点。
   final TocAnchorRegistry? tocAnchors;
 
   /// 保存 / 退出编辑时回调（持久化）。

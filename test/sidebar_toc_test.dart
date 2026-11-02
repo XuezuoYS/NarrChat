@@ -53,7 +53,12 @@ Finder _sectionHeader(String label) => find.ancestor(
 Finder _inOverlay(String text) =>
     find.descendant(of: _overlay(), matching: find.text(text));
 
-Future<void> _pumpSidebar(WidgetTester tester) async {
+Future<void> _pumpSidebar(
+  WidgetTester tester, {
+  /// 角色状态文本；缺省用 [_charState]（2 名角色）。落点类用例传
+  /// [_manyCharState] 把文档拉长，保证落点不被末尾折叠吃掉。
+  String? characterState,
+}) async {
   final dao = FakeRoundDao();
   await dao.insertRound(
     Round(
@@ -63,7 +68,7 @@ Future<void> _pumpSidebar(WidgetTester tester) async {
       aiNarrative: '正文。',
       currentTime: '第一天 午时',
       worldState: '世界状态详情描述。\n\n' * 40,
-      characterState: _charState(),
+      characterState: characterState ?? _charState(),
       memorySummary: '- 第1轮｜第一天｜开局',
       createdAt: DateTime.now(),
     ),
@@ -72,6 +77,17 @@ Future<void> _pumpSidebar(WidgetTester tester) async {
 }
 
 /// 侧栏 CustomScrollView 的控制器（与导轨共用）见 [sidebarScrollController]。
+
+/// 导轨上的目录条目（id 约定见 `SidebarPanel._buildTocEntries`）。
+QuickScrollEntry _railEntry(WidgetTester tester, String id) => tester
+    .widget<QuickScrollRail>(find.byType(QuickScrollRail))
+    .entries
+    .firstWhere((e) => e.id == id);
+
+/// 导轨矩形：导轨与侧栏滚动视图严格重合（底座 `Positioned.fill`），
+/// 故其 `top` / `height` 即滚动视口的顶边与高度。
+Rect _railRect(WidgetTester tester) =>
+    tester.getRect(find.byType(QuickScrollRail));
 
 /// 在导轨上按住一次「拖动态」（可传 [move] 在按住期间移动），执行 [body] 后松开。
 Future<void> _dragSession(
@@ -337,5 +353,78 @@ void main() {
     // 抽屉展开后导轨仍可用（宽度归抽屉右缘）。
     final railRect = tester.getRect(find.byType(QuickScrollRail));
     expect(railRect.right, closeTo(600, 1));
+  });
+
+  // ---------------------------------------------------------------------------
+  // 落点：标题顶边落在视口锚定线（正常 1/3，文档开头自适应上移）
+  // ---------------------------------------------------------------------------
+
+  testWidgets('落点：中部条目（角色状态）标题栏落在视口 1/3 处', (tester) async {
+    await _pumpSidebar(tester, characterState: _manyCharState());
+    final controller = sidebarScrollController(tester);
+    final rail = _railRect(tester);
+    final landing =
+        _railEntry(tester, 'section:character_state').offsetResolver()!;
+    // 前提：文档足够长，落点没有被末尾折叠（maxScrollExtent）吃掉。
+    expect(landing, lessThan(controller.position.maxScrollExtent));
+
+    controller.jumpTo(landing);
+    await tester.pump();
+
+    // 标题栏顶边 = 落点；文字在 42px 标题栏内居中，故再低约 13px。
+    final delta = tester.getRect(find.text('角色状态')).top - rail.top;
+    expect(delta, inInclusiveRange(rail.height / 3, rail.height / 3 + 30));
+  });
+
+  testWidgets('落点：第一个条目（当前时间）落在视口顶部', (tester) async {
+    await _pumpSidebar(tester);
+    final controller = sidebarScrollController(tester);
+    final landing =
+        _railEntry(tester, 'section:current_time').offsetResolver()!;
+    // 文档开头放不下 1/3 → 锚定线就在起点，落点为 0。
+    expect(landing, closeTo(0, 0.5));
+
+    controller.jumpTo(landing);
+    await tester.pump();
+
+    final rail = _railRect(tester);
+    final delta = tester.getRect(find.text('当前时间')).top - rail.top;
+    expect(delta, inInclusiveRange(0, 30));
+  });
+
+  testWidgets('落点：开头放不下 1/3 的条目锚定线上移，标题留在视口上部', (tester) async {
+    await _pumpSidebar(tester);
+    final controller = sidebarScrollController(tester);
+    final rail = _railRect(tester);
+    final landing =
+        _railEntry(tester, 'section:world_state').offsetResolver()!;
+    // 「当前时间」很矮：世界状态的顶边偏移 < 2/3 视口 → 落点 = 顶边偏移 / 2，
+    // 即锚定线从 1/3 处上移（0 < 落点 < 视口 1/3）。
+    expect(landing, greaterThan(0));
+    expect(landing, lessThan(rail.height / 3));
+
+    controller.jumpTo(landing);
+    await tester.pump();
+
+    final delta = tester.getRect(find.text('世界状态')).top - rail.top;
+    expect(delta, inInclusiveRange(landing, landing + 30));
+  });
+
+  testWidgets('落点：角色标题（唐小棠）落在视口 1/3、不被吸顶标题栏遮挡', (tester) async {
+    await _pumpSidebar(tester, characterState: _manyCharState());
+    final controller = sidebarScrollController(tester);
+    final rail = _railRect(tester);
+    final landing = _railEntry(tester, 'char:root0.c0').offsetResolver()!;
+    // 前提：角色卡片位于文档中部，落点可达。
+    expect(landing, lessThan(controller.position.maxScrollExtent));
+
+    controller.jumpTo(landing);
+    await tester.pump();
+
+    // 「角色状态」吸顶标题栏占视口顶 42px；卡片顶边（锚点）= 落点，卡片标题
+    // 文字再低约 10px —— 明确落在吸顶栏下方（旧实现贴视口顶会被压住）。
+    final delta = tester.getRect(find.text('唐小棠')).top - rail.top;
+    expect(delta, greaterThan(42));
+    expect(delta, inInclusiveRange(rail.height / 3, rail.height / 3 + 30));
   });
 }
