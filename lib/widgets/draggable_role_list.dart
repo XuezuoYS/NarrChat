@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/role_category.dart';
 import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
+import 'markdown_editing_controller.dart';
 
 /// 可拖拽排序的角色类别列表。
 ///
@@ -180,13 +181,15 @@ class _RoleCategoryDialog extends StatefulWidget {
 
 class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
   late final TextEditingController _name;
-  late final TextEditingController _format;
+
+  /// 描述格式是多行 Markdown 输入（属性项列表），与其它多行输入框一致带语法高亮。
+  late final MarkdownEditingController _format;
 
   @override
   void initState() {
     super.initState();
     _name = TextEditingController(text: widget.category?.name ?? '');
-    _format = TextEditingController(text: widget.category?.format ?? '');
+    _format = MarkdownEditingController(text: widget.category?.format ?? '');
   }
 
   @override
