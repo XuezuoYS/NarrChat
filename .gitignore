@@ -6,6 +6,8 @@
 *.tmp
 *.bak
 .DS_Store
+.agents/
+.agent/
 .atom/
 .build/
 .buildlog/
