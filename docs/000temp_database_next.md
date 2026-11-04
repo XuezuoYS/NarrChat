@@ -18,19 +18,25 @@
 ```
 user_data/
   narrchat_library.db
+  narrchat_mods.db
   books/
     narrbook_<book_uuid>.db
 
 local_config/
   local_db/
-    narrchat_sync.db
+    sync.db
+    library_cache.db
 ```
 
-其中 narrchat_sync.db 保持本地用于同步。三库共享版本号。
+local_config/local_db/ 下的数据库不会被同步，均由程序自动管理，此文档不会详细描述其内容，其中：
+- sync.db 用于同步功能
+- library_cache.db 用于缓存每本书的UUID、书名、创建时间、类别等内容，便于书籍列表中的查阅，避免每次列表和搜索等操作都每个数据库全加载一遍
+
+本地数据库的数据版本单独管理不随上传数据库变动；需要上传的 user_data/ 下的数据库版本号统一
 
 ### narrchat_library.db
 
-此库用于记录书籍内容和 mods，分表如下：
+此库用于简单记录书籍目录和墓碑，分表如下：
 
 #### meta
 
@@ -43,18 +49,26 @@ local_config/
 
 #### books
 
-书籍表，用于书籍目录、软删墓碑，以及可重建的标题/分类缓存
+书籍表，用于书籍目录、软删墓碑
 
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | `book_uuid` | TEXT | PK | **主键** 跨设备稳定身份；**无第二个自增 id** |
-| `title` | TEXT | NOT NULL | 书名（同步中仅供展示／同名匹配，从不作身份） |
-| `category` | TEXT | DEFAULT `''` | 分类 |
-| `created_at` | DATETIME | NOT NULL | 创建时间戳，更新时若无则设置为当前时间 |
-| `updated_at` | DATETIME | NOT NULL | 更新时间戳，设置更新和轮次更新或其它均列入此 |
-| `deleted_at` | INTEGER | NULL | 软删墓碑（同步删除传播用；硬删走 `BookDao.deleteBook`） |
+| `title` | TEXT | NOT NULL | 书名（非信源） |
+| `deleted_at` | DATETIME | NULL | 软删墓碑（同步删除传播用；硬删走 `BookDao.deleteBook`） |
 
-其中的 `title` `category` `created_at` `updated_at` 为缓存用途，与 narrbook.db 冲突时以 narrbook.db 为准
+### narrchat_mods.db
+
+此库用于保存 mod
+
+#### meta
+
+数据库信息，仅一行
+
+| 列 | 类型 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `master_uuid` | TEXT | PK | 继承于 library |
+| `database_version` | INTEGER | NOT NULL | 数据库版本 |
 
 #### mods
 
@@ -70,8 +84,8 @@ local_config/
 | `system_prompt` | TEXT | DEFAULT `''` | 系统提示词 |
 | `world_book` | TEXT | DEFAULT `''` | 世界书 |
 | `created_at` | DATETIME | NOT NULL | 创建时间戳，更新时若无则设置为当前时间 |
-| `updated_at` | DATETIME | NOT NULL | 更新时间戳，设置更新和轮次更新或其它均列入此 |
-| `deleted_at` | INTEGER | NULL | 软删墓碑 |
+| `updated_at` | DATETIME | NOT NULL | 更新时间戳 |
+| `deleted_at` | DATETIME | NULL | 软删墓碑 |
 
 ### narrbook_<book_uuid>.db
 
@@ -87,9 +101,9 @@ local_config/
 | `database_version` | INTEGER | NOT NULL | 数据库版本 |
 | `book_uuid` | TEXT | PK | 用于校验：跨设备稳定身份；与数据库对应文件名和 library 内的表应保持一致 |
 | `title` | TEXT | NOT NULL | 书名（同步中仅供展示／同名匹配，从不作身份），*以此为准* |
-| `category` | TEXT | DEFAULT `''` | 分类 *以此为准* |
-| `created_at` | DATETIME | NOT NULL | 创建时间戳，更新时若无则设置为当前时间 *以此为准* |
-| `updated_at` | DATETIME | NOT NULL | 更新时间戳，设置更新和轮次更新或其它均列入此 *以此为准* |
+| `category` | TEXT | DEFAULT `''` | 分类 |
+| `created_at` | DATETIME | NOT NULL | 创建时间戳，更新时若无则设置为当前时间 |
+| `updated_at` | DATETIME | NOT NULL | 更新时间戳，设置更新和轮次更新或其它均列入此 |
 | --- | --- | --- | 方便人类阅读的分隔符，以下为书籍设置 |
 | `base_setting` | TEXT | DEFAULT `''` | 基础设定 |
 | `writing_requirements` | TEXT | DEFAULT `''` | 文笔要求 |
@@ -143,8 +157,8 @@ local_config/
 | `round_index` | INTEGER | NOT NULL | 本代所属轮号 |
 | `round_serial_num` | INTEGER | NOT NULL | 本轮第 X 代（可跳步；物理删除后允许复用） |
 | `is_using` | BOOL | NOT NULL | 当前分支的当前轮次内是否启用本代 |
-| `operated_at` | DATETIME | NOT NULL | 这里默认是创建时间，但存在一些用户手动编辑的场景，对于用户手动编辑的场景也用此来记录 |
-| `message_status` | TEXT | DEFAULT '' | info 蓝框 / warning 黄框 / error 红框，留空默认为 info，任何截断均报 error |
+| `operated_at` | DATETIME | NOT NULL | 这里默认是创建时间，但存在极少量的用户手动编辑的场景，因此仅一条类 updated_at |
+| `message_status` | TEXT | DEFAULT '' | info 蓝框 / warning 黄框 / error 红框，留空默认为 info，任何截断均报 error，error 时禁止分离分支、按要求修改和添加新轮 |
 | `message` | TEXT | DEFAULT '' | 信息提示，包括蓝框信息、黄框警告、红框报错均走此通道，空白则不显示提示框 |
 | `model_name` | TEXT | DEFAULT `''` | 本轮实际模型名 |
 | `tokens_in` | INTEGER | NULL | Token 用量-输入部分（包含缓存）；**`NULL` = 无数据**，`0` = 真实 0 |
@@ -168,7 +182,7 @@ local_config/
 
 - 其为一个可查看、可命名、可独立管理和删除的分支，用来给用户写 IF 线，与其它分支共享设定。
 - 每个书都有一个不可删除不可重命名的默认分支
-- 每个分支的头位的 father uuid 应为 NULL，其分支的父级应由 branchs 表记录，分支的 father 被删除后不影响分支本身
+- 每个分支的头位的 father uuid 应为 NULL，其分支的父级应由 branches 表记录，分支的 father 被删除后不影响分支本身
 - UI 上，拉到分支的最上面会看到一个提示，提示内容为此为 x 分支 x 轮 x 代内容（uuid：），点击跳转；若此代已被删除直接提示“已被删除”，若此代不处于 use 状态提示“当前不被使用，当前轮使用代为 x 代，是否跳转”
 - branch 被删除时其子分支不会被删除，被删除时其在 round stack 表的行全部都被删除
 - 当 branch 的父被删除时，向模型拼合 branch 的父快照提供一轮级参考
@@ -195,11 +209,11 @@ local_config/
 
 ## 云同步和本地存储的导入和导出
 
-云同步适配数据库格式，调整为一个同步列表。同步代数每个 book 和 library 数据库分别持有，互不影响，library 跟随最近的一次同步而同步，除了对 mod 的修改（不涉及 book 数据库变更）否则同步优先级为先同步 book 数据库，当队列内的 book 数据库都推送完成，再同步 library 数据库
+云同步适配数据库格式，调整为一个同步列表。同步代数每个 book 、 mods 和 library 数据库分别持有，互不影响，互不干涉，云同步添加数据库同步队列，按先来后到处理
 
 ### 云同步设置页 UI 表现
 
-设置页 UI 调整为每 book 和 library 各一个入口，各自可还原，入口顺序为先 library 再按 book 更新日期决定由新到旧从上到下，最下面是已删除书。
+设置页 UI 调整为每 book 、 mods 和 library 各一个入口，各自可还原，入口顺序为先 library、mods 再按 book 更新日期决定由新到旧从上到下，最下面是已删除书。
 
 当合并/还原时检查 book 与 library 的交集部分，理论上对于交集部分的 uuid 不会冲突，对于其它的冲突部分以 book 的库为准
 
@@ -209,15 +223,19 @@ local_config/
 
 ### 云同步管理删除文件
 
-对于已删除的 book，标识已删除作为设置页列表的最末尾，同步时不主动同步已删除的 book 数据库（其 library 墓碑继续同步），提供按钮物理删除 book，对于未完全删除的 book 可拉取还原，取消墓碑继续并入同步推送。
+对于已删除的 book，标识已删除作为设置页列表的最末尾，同步时不主动同步已删除的 book 数据库（其 library 墓碑继续同步），提供按钮物理删除 book （物理删除也不删除 library 的墓碑，仅删 narrbook 数据库），对于未完全删除的 book 可拉取还原，取消墓碑继续并入同步推送。
 
 ### 云同步合并冲突决策执行
 
 当出现冲突时，单本书仅能选择保留本地还是导入云端，不再区分设置和轮次，默认选择 book meta 表的 update time 更新的那一方，用户可自行调整
 
+### 云同步提示
+
+单独提示 library 和 mods 数据库的同步情况，共同提示“同步了x本书”
+
 ### 本地导出和导入
 
-仅支持导出/导入一个完整的 user_data 组，打包命名为 narrchat.zip，导入时分别对 mod 和 book 走合并流程
+仅支持导出/导入一个完整的 user_data 组（包含图片），打包命名为 narrchat.zip，导入时分别对 mod 和 book 走合并流程
 
 ## 更新兼容
 
