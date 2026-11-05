@@ -198,6 +198,7 @@ void main() {
     final writesAfterFirst = remote.writeCount;
 
     final second = await runner().run(context: context());
+    expect(second.errors, isEmpty, reason: '第二次同步不该有单元级错误');
     expect(second.upToDate, 3);
     expect(second.pushed, 0);
     expect(remote.writeCount, writesAfterFirst);

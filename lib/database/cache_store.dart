@@ -8,6 +8,7 @@ import 'db_schema.dart';
 /// `book_index` 的一行：一本书在列表页需要的全部字段。
 ///
 /// 全部是**副本**：信源在书库，这里只为"不打开 N 个库"。
+/// 设置列也一并缓存——否则列表要拼出完整的 `Book` 就得把每本书各开一次。
 class BookIndexRow {
   const BookIndexRow({
     required this.bookUuid,
@@ -18,6 +19,15 @@ class BookIndexRow {
     this.lastRoundAt,
     this.deletedAt,
     this.dbMtimeMs = 0,
+    this.baseSetting = '',
+    this.writingRequirements = '',
+    this.writingStyle = '',
+    this.globalPrePrompt = '',
+    this.globalPostPrompt = '',
+    this.historyRounds = 1,
+    this.memorySummaryRounds = 0,
+    this.roleHierarchy = '',
+    this.roleHierarchyDetail = '',
   });
 
   final String bookUuid;
@@ -33,6 +43,16 @@ class BookIndexRow {
   /// 书库文件的修改时间（毫秒）：变了就说明缓存行该刷新。
   final int dbMtimeMs;
 
+  final String baseSetting;
+  final String writingRequirements;
+  final String writingStyle;
+  final String globalPrePrompt;
+  final String globalPostPrompt;
+  final int historyRounds;
+  final int memorySummaryRounds;
+  final String roleHierarchy;
+  final String roleHierarchyDetail;
+
   bool get isDeleted => deletedAt != null;
 
   factory BookIndexRow.fromRow(Map<String, Object?> row) {
@@ -45,6 +65,15 @@ class BookIndexRow {
       lastRoundAt: parseTimestamp(row['last_round_at']),
       deletedAt: parseTimestamp(row['deleted_at']),
       dbMtimeMs: (row['db_mtime_ms'] as int?) ?? 0,
+      baseSetting: (row['base_setting'] as String?) ?? '',
+      writingRequirements: (row['writing_requirements'] as String?) ?? '',
+      writingStyle: (row['writing_style'] as String?) ?? '',
+      globalPrePrompt: (row['global_pre_prompt'] as String?) ?? '',
+      globalPostPrompt: (row['global_post_prompt'] as String?) ?? '',
+      historyRounds: (row['history_rounds'] as int?) ?? 1,
+      memorySummaryRounds: (row['memory_summary_rounds'] as int?) ?? 0,
+      roleHierarchy: (row['role_hierarchy'] as String?) ?? '',
+      roleHierarchyDetail: (row['role_hierarchy_detail'] as String?) ?? '',
     );
   }
 
@@ -59,7 +88,56 @@ class BookIndexRow {
       // 墓碑必须是真正的 NULL：列表查询靠 `deleted_at IS NULL` 过滤。
       'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt!),
       'db_mtime_ms': dbMtimeMs,
+      'base_setting': baseSetting,
+      'writing_requirements': writingRequirements,
+      'writing_style': writingStyle,
+      'global_pre_prompt': globalPrePrompt,
+      'global_post_prompt': globalPostPrompt,
+      'history_rounds': historyRounds,
+      'memory_summary_rounds': memorySummaryRounds,
+      'role_hierarchy': roleHierarchy,
+      'role_hierarchy_detail': roleHierarchyDetail,
     };
+  }
+
+  BookIndexRow copyWith({
+    String? title,
+    String? category,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    DateTime? lastRoundAt,
+    DateTime? deletedAt,
+    bool clearDeletedAt = false,
+    int? dbMtimeMs,
+    String? baseSetting,
+    String? writingRequirements,
+    String? writingStyle,
+    String? globalPrePrompt,
+    String? globalPostPrompt,
+    int? historyRounds,
+    int? memorySummaryRounds,
+    String? roleHierarchy,
+    String? roleHierarchyDetail,
+  }) {
+    return BookIndexRow(
+      bookUuid: bookUuid,
+      title: title ?? this.title,
+      category: category ?? this.category,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastRoundAt: lastRoundAt ?? this.lastRoundAt,
+      deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
+      dbMtimeMs: dbMtimeMs ?? this.dbMtimeMs,
+      baseSetting: baseSetting ?? this.baseSetting,
+      writingRequirements: writingRequirements ?? this.writingRequirements,
+      writingStyle: writingStyle ?? this.writingStyle,
+      globalPrePrompt: globalPrePrompt ?? this.globalPrePrompt,
+      globalPostPrompt: globalPostPrompt ?? this.globalPostPrompt,
+      historyRounds: historyRounds ?? this.historyRounds,
+      memorySummaryRounds: memorySummaryRounds ?? this.memorySummaryRounds,
+      roleHierarchy: roleHierarchy ?? this.roleHierarchy,
+      roleHierarchyDetail: roleHierarchyDetail ?? this.roleHierarchyDetail,
+    );
   }
 
   static String _format(DateTime? value) =>

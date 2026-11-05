@@ -283,11 +283,25 @@ class BackupRunner {
   }
 
   Future<String> _digestOf(BackupUnit unit, String path) async {
-    final db = await _openDatabase(path);
+    return _withFileRetry(() async {
+      final db = await _openDatabase(path);
+      try {
+        return await BackupDigest.ofUnit(unit, db);
+      } finally {
+        await db.close();
+      }
+    });
+  }
+
+  /// 短暂的文件锁在 Windows 上很常见（系统索引 / 杀毒 / 刚关闭的连接）。
+  ///
+  /// 只对**读**做一次极短重试：写操作重试有产生半截状态的风险，宁可失败。
+  static Future<T> _withFileRetry<T>(Future<T> Function() action) async {
     try {
-      return await BackupDigest.ofUnit(unit, db);
-    } finally {
-      await db.close();
+      return await action();
+    } catch (_) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      return action();
     }
   }
 
@@ -297,7 +311,7 @@ class BackupRunner {
     BackupContext context,
   ) async {
     final localPath = locator.localPathOf(unit);
-    final bytes = await File(localPath).readAsBytes();
+    final bytes = await _withFileRetry(() => File(localPath).readAsBytes());
     final generation = plan.nextGeneration;
 
     await remote.write(unit.snapshotName(generation), bytes);

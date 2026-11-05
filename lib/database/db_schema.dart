@@ -221,7 +221,16 @@ Future<void> createCacheSchema(Database db) async {
       updated_at   TEXT NOT NULL DEFAULT '',
       last_round_at TEXT NOT NULL DEFAULT '',
       deleted_at   TEXT,
-      db_mtime_ms  INTEGER NOT NULL DEFAULT 0
+      db_mtime_ms  INTEGER NOT NULL DEFAULT 0,
+      base_setting            TEXT NOT NULL DEFAULT '',
+      writing_requirements    TEXT NOT NULL DEFAULT '',
+      writing_style           TEXT NOT NULL DEFAULT '',
+      global_pre_prompt       TEXT NOT NULL DEFAULT '',
+      global_post_prompt      TEXT NOT NULL DEFAULT '',
+      history_rounds          INTEGER NOT NULL DEFAULT 1,
+      memory_summary_rounds   INTEGER NOT NULL DEFAULT 0,
+      role_hierarchy          TEXT NOT NULL DEFAULT '',
+      role_hierarchy_detail   TEXT NOT NULL DEFAULT ''
     )
   ''');
   await db.execute('''

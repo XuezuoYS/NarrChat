@@ -405,6 +405,15 @@ class _RoundStoreImpl implements RoundStore {
     return (rows.first['c'] as int?) ?? 0;
   }
 
+  @override
+  Future<DateTime?> lastRoundAt() async {
+    final rows = await _db.rawQuery(
+      'SELECT MAX(operated_at) AS t FROM round_stack',
+    );
+    final raw = rows.first['t'];
+    return raw is String ? parseTimestamp(raw) : null;
+  }
+
   /// 把同组（分支 + 轮号 + 父代）的其它代 `is_using` 清零。
   static Future<void> _clearUsingInGroup(
     DatabaseExecutor e,
@@ -418,7 +427,9 @@ class _RoundStoreImpl implements RoundStore {
       whereArgs: [
         meta.branchUuid,
         meta.roundIndex,
-        meta.fatherUuid,
+        // 用空串而不是 null：SQL 侧已经 IFNULL 归一化，参数给 null 会被
+        // sqflite 判为"以后会抛异常"的用法。
+        meta.fatherUuid ?? '',
         meta.uuid,
       ],
     );

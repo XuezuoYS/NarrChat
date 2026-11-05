@@ -80,6 +80,11 @@ abstract class RoundStore {
 
   /// 全书代数（调试 / 测试用）。
   Future<int> count();
+
+  /// 最近一代的操作时间（列表"最近对话"排序用）；空书返回 null。
+  ///
+  /// 只读一列聚合，不拉全书正文。
+  Future<DateTime?> lastRoundAt();
 }
 
 /// 分支（`branches`，默认分支不记表）。

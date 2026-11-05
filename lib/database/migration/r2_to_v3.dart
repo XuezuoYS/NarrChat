@@ -473,6 +473,16 @@ class R2ToR3Migrator {
         lastRoundAt: lastRoundAt,
         deletedAt: _dateTime(row['deleted_at']),
         dbMtimeMs: mtime?.millisecondsSinceEpoch ?? 0,
+        // 设置列也进缓存：列表要拼出完整 Book，否则得把每本书各开一次。
+        baseSetting: _str(row['base_setting']),
+        writingRequirements: _str(row['writing_requirements']),
+        writingStyle: _str(row['writing_style']),
+        globalPrePrompt: _str(row['global_pre_prompt']),
+        globalPostPrompt: _str(row['global_post_prompt']),
+        historyRounds: _int(row['history_rounds']) ?? 1,
+        memorySummaryRounds: _int(row['memory_summary_rounds']) ?? 0,
+        roleHierarchy: _str(row['role_hierarchy']),
+        roleHierarchyDetail: _str(row['role_hierarchy_detail']),
       ));
 
       await cache.replaceImageRefs(bookUuid, await _imageRefs(legacy, bookUuid));
