@@ -2,7 +2,7 @@
 
 在 v3.0 版本时，数据库按此文档进行破坏性更新，在升级至 v3.0 版本后的数据结构无法被之前的版本应用。
 
-此文档在确认落地后删除，除非用户确认，否则 Agent 不应编辑此文档
+此文档在确认落地后删除，除非用户确认，否则 Agent 不应编辑此文档；此文档不是施工详细计划，仅作为下一代数据库的总体设计文档
 
 下一代更新目标：
 - 信源唯一、避免大双写
@@ -30,7 +30,7 @@ local_config/
 
 local_config/local_db/ 下的数据库不会被同步，均由程序自动管理，此文档不会详细描述其内容，其中：
 - sync.db 用于同步功能
-- library_cache.db 用于缓存每本书的UUID、书名、创建时间、类别等内容，便于书籍列表中的查阅，避免每次列表和搜索等操作都每个数据库全加载一遍
+- library_cache.db 用于缓存每本书的UUID、书名、创建时间、类别，以及图片哈希列表**等**内容，便于书籍列表中的查阅以及其它本地高频跨书操作的缓存，避免每次列表和搜索等操作都每个数据库全加载一遍
 
 本地数据库的数据版本单独管理不随上传数据库变动；需要上传的 user_data/ 下的数据库版本号统一
 
@@ -45,7 +45,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | `master_uuid` | TEXT | PK | 全局uuid（父） |
-| `database_version` | INTEGER | NOT NULL | 数据库版本 |
+| `database_version` | INTEGER | NOT NULL | 数据库版本，派生值，仅调试用 |
 
 #### books
 
@@ -68,7 +68,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | `master_uuid` | TEXT | PK | 继承于 library |
-| `database_version` | INTEGER | NOT NULL | 数据库版本 |
+| `database_version` | INTEGER | NOT NULL | 数据库版本，派生值，仅调试用 |
 
 #### mods
 
@@ -98,7 +98,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | `master_uuid` | TEXT | NOT NULL | 继承于 library |
-| `database_version` | INTEGER | NOT NULL | 数据库版本 |
+| `database_version` | INTEGER | NOT NULL | 数据库版本，派生值，仅调试用 |
 | `book_uuid` | TEXT | PK | 用于校验：跨设备稳定身份；与数据库对应文件名和 library 内的表应保持一致 |
 | `title` | TEXT | NOT NULL | 书名（同步中仅供展示／同名匹配，从不作身份），*以此为准* |
 | `category` | TEXT | DEFAULT `''` | 分类 |
@@ -115,14 +115,14 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 | `role_hierarchy` | TEXT | DEFAULT `''` | 角色层级 |
 | `role_hierarchy_detail` | TEXT | DEFAULT `''` | 角色层级详细描述格式 |
 
-#### world_book
+#### world_book_entries
 
 此书所用到的世界书，原单一库的 `world_book_entries` 表的拆分
 
 | 列 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | `uuid` | TEXT | PK | 世界书条目的 uuid |
-| `keys` | TEXT | NOT NULL | 用于触发的关键词 |
+| `keyword` | TEXT | NOT NULL | 用于触发的关键词 |
 | `content` | TEXT | DEFAULT `''` | 世界书注入提示词的内容 |
 | `is_using` | BOOL | DEFAULT false | bool 值，用于储存是否启用 |
 | `created_at` | DATETIME | NOT NULL | 创建时间戳 |
@@ -139,7 +139,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 
 仅“已启用的” mod 会进入此表，对于不在此书启用的 mod 和已被删除（无论是内置还是用户设置的）均直接在此表内删除，找不到对应的 uuid 的视为不启用，在后续同步时清理条目。
 
-`mod_uuid` 对于预置 mod，预置 mod 采用以下格式：`preset::<id>` 的格式，自动识别
+`mod_uuid` 对于预置 mod，预置 mod 采用以下格式：`preset::<id>` 的格式作为其 uuid，自动识别
 
 #### round_stack
 
@@ -198,6 +198,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 | `father_branch` | TEXT | DEFAULT `''` | 父分支的 UUID，NULL 或 '' 视为其父分支为默认分支 |
 | `branch_name` | TEXT | NOT NULL | 分支的名称，用户自行命名 |
 | `father_row_shot` | TEXT | DEFAULT `''` | 父行的快照，包含父行的内容部分，使用 json 存储 |
+| `branch_working` | BOOL | DEFAULT false | 此分支是否激活中，全 false 视为默认分支激活 |
 | `created_at` | DATETIME | NOT NULL | 创建时间戳 |
 | `updated_at` | DATETIME | NOT NULL | 更新时间戳 |
 
@@ -209,7 +210,7 @@ local_config/local_db/ 下的数据库不会被同步，均由程序自动管理
 
 ## 云同步和本地存储的导入和导出
 
-云同步适配数据库格式，调整为一个同步列表。同步代数每个 book 、 mods 和 library 数据库分别持有，互不影响，互不干涉，云同步添加数据库同步队列，按先来后到处理
+云同步更改描述为“云备份”，适配数据库格式，调整为一个同步列表。同步代数每个 book 、 mods 和 library 数据库分别持有，互不影响，互不干涉，云同步添加数据库同步队列，按先来后到处理
 
 ### 云同步设置页 UI 表现
 
