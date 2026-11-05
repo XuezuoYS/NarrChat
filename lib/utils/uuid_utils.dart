@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 
 /// 由书籍 uuid 推导 Android 通知槽 id（FNV-1a 32 位哈希，取低 31 位保证非负）。
 ///
@@ -28,6 +31,21 @@ class UuidUtils {
   static String generateUuidV4() {
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version = 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant = 10xx
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+  }
+
+  /// 由种子推导**稳定** uuid（v5 形状：SHA-256 摘要前 16 字节）。
+  ///
+  /// 用途：给没有跨设备身份的老数据补 uuid（例如 R2 世界书的自增 `id`）。
+  /// 同一 `(书 uuid, 表名, 旧 id)` 无论迁移多少次、在哪台设备上迁移，
+  /// 得到的都是同一个值 —— 否则两台设备各自升级后，同一批条目会变成两套身份。
+  static String deterministicUuidV5(String seed) {
+    final digest = sha256.convert(utf8.encode(seed)).bytes;
+    final bytes = List<int>.from(digest.take(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x50; // version = 5
     bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant = 10xx
     final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'

@@ -40,23 +40,43 @@ class DatabaseHelper {
     return openDatabase(
       dbPath,
       version: _dbVersion,
-      onConfigure: (db) async {
-        await db.execute('PRAGMA foreign_keys = ON');
-      },
-      onCreate: (db, version) async {
-        await _createBooksTable(db);
-        await _createRoundsTable(db);
-        await _createRoundStackTable(db);
-        await _createWorldBookTable(db);
-        await _createModsTable(db);
-        await _createBookModsTable(db);
-        await _createBookIndexes(db);
-        // 同步元数据表自 v20 起仅存本地同步库（[LocalSyncDb]）；此处建的是
-        // 同 schema 空表壳（回退兼容），DDL 唯一来源在 LocalSyncDb.createSyncTables。
-        await LocalSyncDb.createSyncTables(db);
-      },
+      onConfigure: _configure,
+      onCreate: _createAllTables,
       onUpgrade: migrate,
     );
+  }
+
+  /// 以**指定路径**打开 R2 用户库（R3 迁移专用）。
+  ///
+  /// 与单例连接完全独立、不写入 [debugDatabasePathOverride]，调用方负责关闭。
+  /// 迁移链与 DDL 与生产完全同一套：按 sqflite 判定自动补齐到 v21。
+  static Future<Database> openAt(String path) async {
+    ensureDesktopSqfliteFactory();
+    return openDatabase(
+      path,
+      version: _dbVersion,
+      onConfigure: _configure,
+      onCreate: _createAllTables,
+      onUpgrade: migrate,
+    );
+  }
+
+  static Future<void> _configure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
+
+  /// 新装库的全部 DDL（单例与迁移入口共用，避免两处漂移）。
+  static Future<void> _createAllTables(Database db, int version) async {
+    await _createBooksTable(db);
+    await _createRoundsTable(db);
+    await _createRoundStackTable(db);
+    await _createWorldBookTable(db);
+    await _createModsTable(db);
+    await _createBookModsTable(db);
+    await _createBookIndexes(db);
+    // 同步元数据表自 v20 起仅存本地同步库（[LocalSyncDb]）；此处建的是
+    // 同 schema 空表壳（回退兼容），DDL 唯一来源在 LocalSyncDb.createSyncTables。
+    await LocalSyncDb.createSyncTables(db);
   }
 
   /// 当前数据库 schema 版本（迁移测试断言目标版本、调试页展示代码期望版本）。

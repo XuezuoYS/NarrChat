@@ -296,6 +296,23 @@ class _RoundStoreImpl implements RoundStore {
   }
 
   @override
+  Future<void> importAll(List<RoundGeneration> rows) async {
+    if (rows.isEmpty) return;
+    await _db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final row in rows) {
+        batch.insert(
+          'round_stack',
+          row.toRow(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+      await BookDb.touch(txn);
+    });
+  }
+
+  @override
   Future<void> updateContent(
     String uuid,
     Map<String, Object?> content,
@@ -350,7 +367,11 @@ class _RoundStoreImpl implements RoundStore {
         isUsing: isUsing,
         operatedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
       );
-      await _clearUsingInGroup(txn, meta);
+      // 设为选中时才需要"同组其它代清 0"；取消选中只动它自己，
+      // 否则会把整组清成"没有一个选中"。
+      if (isUsing) {
+        await _clearUsingInGroup(txn, meta);
+      }
       await txn.update(
         'round_stack',
         {'is_using': isUsing ? 1 : 0},
@@ -541,6 +562,23 @@ class _WorldBookStoreImpl implements WorldBookStore {
         where: 'uuid = ?',
         whereArgs: [uuid],
       );
+      await BookDb.touch(txn);
+    });
+  }
+
+  @override
+  Future<void> replaceAll(List<WorldBookRow> rows) async {
+    await _db.transaction((txn) async {
+      await txn.delete('world_book_entries');
+      final batch = txn.batch();
+      for (final row in rows) {
+        batch.insert(
+          'world_book_entries',
+          row.toRow(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
       await BookDb.touch(txn);
     });
   }

@@ -60,6 +60,12 @@ abstract class RoundStore {
   /// 插入一代。`is_using = true` 时会先把同组其它代置 0。
   Future<void> insert(RoundGeneration generation);
 
+  /// 整批写入（迁移 / 导入专用）。
+  ///
+  /// 只在一个事务里插行 + 刷新一次 `updated_at`，**不做逐条组内归一化**——
+  /// 调用方负责保证「同组至多一个 `is_using`」。逐条插入几千轮会慢到不可接受。
+  Future<void> importAll(List<RoundGeneration> rows);
+
   /// 写正文列（白名单校验，禁止误改身份 / 轮号 / 组内序号）。
   Future<void> updateContent(String uuid, Map<String, Object?> content);
 
@@ -98,6 +104,9 @@ abstract class WorldBookStore {
   Future<void> upsert(WorldBookRow row);
 
   Future<void> delete(String uuid);
+
+  /// 整批替换（迁移 / 导入 / 同步还原专用，单事务）。
+  Future<void> replaceAll(List<WorldBookRow> rows);
 }
 
 /// 书内启用的 Mod 与顺序。
