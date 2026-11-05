@@ -295,13 +295,17 @@ class BackupRunner {
 
   /// 短暂的文件锁在 Windows 上很常见（系统索引 / 杀毒 / 刚关闭的连接）。
   ///
-  /// 只对**读**做一次极短重试：写操作重试有产生半截状态的风险，宁可失败。
+  /// 只对**读**做极少次重试（3 次、退避 30/120ms）：写操作重试有产生半截
+  /// 状态的风险，宁可失败。重试只是为了吃掉"另一条连接刚关、系统还没放锁"。
   static Future<T> _withFileRetry<T>(Future<T> Function() action) async {
-    try {
-      return await action();
-    } catch (_) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      return action();
+    const delays = [Duration(milliseconds: 30), Duration(milliseconds: 120)];
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await action();
+      } catch (_) {
+        if (attempt >= delays.length) rethrow;
+        await Future<void>.delayed(delays[attempt]);
+      }
     }
   }
 

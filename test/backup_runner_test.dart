@@ -194,12 +194,17 @@ void main() {
 
   test('内容没变再来一次：全部 upToDate，不重复上传', () async {
     await seed();
-    await runner().run(context: context());
+    final first = await runner().run(context: context());
+    expect(first.errors, isEmpty, reason: '首轮备份不能有单元级错误');
+    expect(first.pushed, 3);
     final writesAfterFirst = remote.writeCount;
 
     final second = await runner().run(context: context());
-    expect(second.errors, isEmpty, reason: '第二次同步不该有单元级错误');
-    expect(second.upToDate, 3);
+    final detail = second.plans
+        .map((plan) => '${plan.unit.unitKey}=${plan.action.name}')
+        .join(',');
+    expect(second.errors, isEmpty, reason: '第二次同步不该有单元级错误：$detail');
+    expect(second.upToDate, 3, reason: '各单元现状：$detail');
     expect(second.pushed, 0);
     expect(remote.writeCount, writesAfterFirst);
   });
