@@ -1,9 +1,35 @@
 import 'dart:convert';
 
+import 'round_generation.dart';
+
 /// 轮次模型，对应数据库 `rounds` 表，通过 [bookUuid] 关联书籍。
 class Round {
   /// 本轮自增主键（子表保留 int id，仅本地行标识，不参与同步身份）。
   final int? id;
+
+  /// R3 身份：这一"代"的 uuid（跨设备稳定）。
+  ///
+  /// 与 [id] 的区别：R2 的 `id` 是投影行号，重建就会变；R3 没有投影表，
+  /// 界面上的"一轮"就是活动链上的某一代，身份就是它。
+  final String uuid;
+
+  /// 上一轮当时活动代的 uuid；`null` = 链首。
+  final String? fatherUuid;
+
+  /// 所属分支；`''` = 默认分支。
+  final String branchUuid;
+
+  /// 组内序号（第几代，可跳步）。
+  final int roundSerialNum;
+
+  /// 组内是否当前选中。
+  final bool isUsing;
+
+  /// 提示级别原始值（`''` 按 info 处理）。
+  final String messageStatus;
+
+  /// 提示文本；空 = 不显示提示框。
+  final String message;
 
   /// 所属书籍 uuid（`rounds.book_uuid`，FK → `books.uuid`）。
   final String bookUuid;
@@ -47,6 +73,13 @@ class Round {
 
   const Round({
     this.id,
+    this.uuid = '',
+    this.fatherUuid,
+    this.branchUuid = '',
+    this.roundSerialNum = 1,
+    this.isUsing = true,
+    this.messageStatus = '',
+    this.message = '',
     required this.bookUuid,
     required this.roundIndex,
     this.userInput = '',
@@ -65,6 +98,79 @@ class Round {
     this.aiImages = const [],
     this.useStackUuid = '',
   });
+
+  /// 是否为失败代（`message_status = 'error'`）：不可续写、不可分叉。
+  bool get isError => RoundMessageStatus.isError(messageStatus);
+
+  /// 归一化后的提示级别（空串按 info）。
+  String get effectiveMessageStatus => RoundMessageStatus.normalize(messageStatus);
+
+  /// 是否带提示框。
+  bool get hasMessage => message.trim().isNotEmpty;
+
+  /// 由 R3 的"代"构造界面用的轮次。
+  factory Round.fromGeneration(
+    RoundGeneration generation, {
+    String bookUuid = '',
+  }) {
+    return Round(
+      uuid: generation.uuid,
+      fatherUuid: generation.fatherUuid,
+      branchUuid: generation.branchUuid,
+      roundSerialNum: generation.roundSerialNum,
+      isUsing: generation.isUsing,
+      messageStatus: generation.meta.messageStatus == ''
+          ? RoundMessageStatus.info
+          : generation.meta.messageStatus,
+      message: generation.meta.message,
+      bookUuid: bookUuid,
+      roundIndex: generation.roundIndex,
+      userInput: generation.userInput,
+      aiNarrative: generation.aiNarrative,
+      worldState: generation.worldState,
+      characterState: generation.characterState,
+      memorySummary: generation.memorySummary,
+      currentTime: generation.currentTime,
+      recommendedAction: generation.recommendedAction,
+      tokensIn: generation.tokensIn,
+      tokensOut: generation.tokensOut,
+      cachedTokensIn: generation.tokensCachedIn,
+      modelName: generation.modelName,
+      createdAt: generation.operatedAt,
+      userImages: generation.userImages,
+      aiImages: generation.aiImages,
+    );
+  }
+
+  /// 回写成 R3 的"代"（分叉快照 / 迁移用）。
+  RoundGeneration toGeneration() {
+    return RoundGeneration(
+      meta: RoundMeta(
+        uuid: uuid,
+        fatherUuid: fatherUuid,
+        branchUuid: branchUuid,
+        roundIndex: roundIndex,
+        roundSerialNum: roundSerialNum,
+        isUsing: isUsing,
+        operatedAt: createdAt ?? DateTime.now().toUtc(),
+        messageStatus: messageStatus,
+        message: message,
+      ),
+      modelName: modelName,
+      tokensIn: tokensIn,
+      tokensCachedIn: cachedTokensIn,
+      tokensOut: tokensOut,
+      userInput: userInput,
+      aiNarrative: aiNarrative,
+      worldState: worldState,
+      characterState: characterState,
+      memorySummary: memorySummary,
+      currentTime: currentTime,
+      recommendedAction: recommendedAction,
+      userImages: userImages,
+      aiImages: aiImages,
+    );
+  }
 
   factory Round.fromMap(Map<String, Object?> map) {
     return Round(
@@ -156,6 +262,13 @@ class Round {
 
   Round copyWith({
     int? id,
+    String? uuid,
+    String? fatherUuid,
+    String? branchUuid,
+    int? roundSerialNum,
+    bool? isUsing,
+    String? messageStatus,
+    String? message,
     String? bookUuid,
     int? roundIndex,
     String? userInput,
@@ -176,6 +289,13 @@ class Round {
   }) {
     return Round(
       id: id ?? this.id,
+      uuid: uuid ?? this.uuid,
+      fatherUuid: fatherUuid ?? this.fatherUuid,
+      branchUuid: branchUuid ?? this.branchUuid,
+      roundSerialNum: roundSerialNum ?? this.roundSerialNum,
+      isUsing: isUsing ?? this.isUsing,
+      messageStatus: messageStatus ?? this.messageStatus,
+      message: message ?? this.message,
       bookUuid: bookUuid ?? this.bookUuid,
       roundIndex: roundIndex ?? this.roundIndex,
       userInput: userInput ?? this.userInput,
