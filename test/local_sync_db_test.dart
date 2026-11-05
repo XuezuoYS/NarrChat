@@ -184,6 +184,68 @@ void main() {
     expect(await dao.getAllModBases(), isEmpty);
   });
 
+  test('SyncStateDao：大指纹分片读往返（单行超 Android CursorWindow 也不崩）', () async {
+    final dao = SyncStateDao();
+    // 约 150,000 个字符（默认分片 64 K）→ 跨 3 个分片；CJK / emoji / ASCII 混排。
+    final big = _bigSyncText();
+    await dao.putBookBase(
+      SyncBookBase(
+        uuid: 'u-big',
+        title: '厚书',
+        settingsFp: big,
+        roundsFp: big,
+        worldbookFp: '世界' * 100,
+        bookmodsFp: '书-Mod',
+        settingsUpdatedAt: 1,
+        roundsUpdatedAt: 2,
+      ),
+    );
+    // 与大行并存的小行：确认分片读不串位、不漏行。
+    await dao.putBookBase(
+      const SyncBookBase(uuid: 'u-small', title: '小书', roundsFp: 'R1'),
+    );
+
+    final bases = await dao.getAllBookBases();
+    expect(bases.keys, unorderedEquals(['u-big', 'u-small']));
+    final bigBase = bases['u-big']!;
+    expect(bigBase.roundsFp.length, big.length);
+    expect(bigBase.roundsFp, big);
+    expect(bigBase.settingsFp, big);
+    expect(bigBase.worldbookFp, '世界' * 100);
+    expect(bigBase.bookmodsFp, '书-Mod');
+    expect(bigBase.settingsUpdatedAt, 1);
+    expect(bigBase.roundsUpdatedAt, 2);
+    expect(bases['u-small']!.roundsFp, 'R1');
+    expect(bases['u-small']!.settingsFp, '');
+  });
+
+  test('SyncStateDao：超大过渡期子部件列（info_fp）分片读后仍参与 settings_fp 回退', () async {
+    final big = _bigSyncText(15000);
+    final db = await LocalSyncDb.instance.database;
+    // 绕过 putBookBase（它会把子部件列清空），模拟历史遗留行。
+    await db.insert('sync_book_base', {
+      'uuid': 'u-legacy',
+      'title': '旧书',
+      'settings_fp': '',
+      'info_fp': big,
+    });
+
+    final bases = await SyncStateDao().getAllBookBases();
+    expect(bases['u-legacy']!.settingsFp, big);
+  });
+
+  test('SyncStateDao：Mod 大 fingerprint 分片读往返', () async {
+    final big = _bigSyncText(15000);
+    await SyncStateDao().putModBase(
+      SyncModBase(uuid: 'm-big', name: '大 Mod', fingerprint: big, updatedAt: 5),
+    );
+
+    final mods = await SyncStateDao().getAllModBases();
+    expect(mods['m-big']!.fingerprint, big);
+    expect(mods['m-big']!.name, '大 Mod');
+    expect(mods['m-big']!.updatedAt, 5);
+  });
+
   test('新装用户库：同步表为同 schema 空表壳（与本地库 DDL 逐字一致）', () async {
     DatabaseHelper.debugDatabasePathOverride =
         newTempDbPath('user_db_fresh_', 'narrchat.db');
@@ -218,3 +280,10 @@ void main() {
     }
   });
 }
+
+/// 生成跨多个默认分片（`kLargeTextChunkChars` = 64 K 字符）的大文本。
+///
+/// 每段 5 个字符 / 6 个 UTF-16 单元（CJK + emoji + 引号 + ASCII），覆盖
+/// UTF-8 1~4 字节与代理对；默认 30,000 段 = 150,000 字符（3 个分片）。
+String _bigSyncText([int repeats = 30000]) =>
+    List<String>.filled(repeats, '深🐳a「潮」').join();

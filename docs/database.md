@@ -312,6 +312,13 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
 - **自动同步触发**：生成、删除轮次、删除代、**关闭某轮提示**、**清除失败条目**触发；
   **采纳与切换不触发**（采纳的调用方本身就是触发节点；切换只改投影锚点与「看哪一代」，
   内容权威未变，靠下一次节点带走）。白名单见 `docs/sync_auto_triggers.md`。
+- **Android 大字段读取（CursorWindow）**：Android 上的 sqflite 走系统 `CursorWindow`，
+  **单行**超过窗口（约 1~2 MB）会抛 `Row too big to fit into CursorWindow`；桌面 FFI
+  没有这个限制，于是会出现"电脑同步正常、手机同步报错"。共基的 `rounds_fp` 是一本书
+  全部轮次的完整文本（长书可达 2 MB 以上），所以 `sync_book_base` / `sync_mod_base`
+  **禁止整表 `SELECT *`**，统一走 `lib/database/sqflite_large_text.dart` 的
+  `readRowsWithLargeText()`：先取 `length()`，再按 64 K 字符用 `substr()` 分片拼回
+  （单片最多 256 KB）；分片读放在一个事务里，保证各片来自同一份快照。
 
 **存储代价与容量（既定事实，不随版本变动）**：
 
@@ -351,7 +358,8 @@ v16 把 uuid 升为 PK 后（重建表）它们已消失——新装库与迁移
 | 测试文件 | 覆盖 |
 | --- | --- |
 | `test/database_migration_test.dart` | 逐版本迁移分支、**迁移产物 ≡ 新装库 DDL**、幂等重跑、**降级回退后重升**、数据零改写、外键顺序陷阱、v20 同步元数据迁库（空表壳 + 幂等）、**v20→v21 提示两列**（列尾 / 老行零改写 / 重跑幂等 / 规格 ≡ 新装库） |
-| `test/local_sync_db_test.dart` | 本地同步库三表 schema（uuid 主键 / 单行约束 / 子部件列）、`SyncStateDao` CRUD 往返、`putBookBase` 清子部件列、新装用户库空表壳与本地库 DDL 逐字一致 |
+| `test/local_sync_db_test.dart` | 本地同步库三表 schema（uuid 主键 / 单行约束 / 子部件列）、`SyncStateDao` CRUD 往返、`putBookBase` 清子部件列、**大指纹分片读往返（`rounds_fp` 超 CursorWindow 上限的回归）**、新装用户库空表壳与本地库 DDL 逐字一致 |
+| `test/sqflite_large_text_test.dart` | 大 TEXT 列分片读：CJK / emoji 跨分片逐字符还原、`NULL` 与空串保真、多列不串位、行序不变、空表、事务内调用、`chunkChars` 校验 |
 | `test/round_stack_dao_test.dart` | 分组读写、序号分配 / 复用、use 落库、物理删除、整体替换排序、根口径（`NULL` ≡ 空串）、索引命中（`EXPLAIN QUERY PLAN`）、删书无孤儿、删软墓碑清 stack |
 | `test/round_stack_model_test.dart` | 版本树模型 ↔ 库列互转（时间戳 ms ↔ ISO、空父亲归一化、`use` 状态）、`Round.useStackUuid` 往返 |
 | `test/round_stack_service_test.dart` | 归一化、活动链、投影重建、生成 / 原地改 / 切换 / 删除 / 孤儿清理、断裂轮号上溯与跳空洞、**代级提示读写与失败占位代隔离**（不进活动链 / 代次 / 回落 / 采纳缺口 / 版本标签） |

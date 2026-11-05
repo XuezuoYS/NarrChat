@@ -1,6 +1,7 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'local_sync_db.dart';
+import 'sqflite_large_text.dart';
 
 /// `sync_state` 单行记录：本设备同步状态与崩溃恢复标记。
 class SyncStateRecord {
@@ -104,6 +105,12 @@ class SyncModBase {
 abstract class SyncStateStore {
   Future<SyncStateRecord> getState();
   Future<void> saveState(SyncStateRecord s);
+
+  /// 读全部书的共基。
+  ///
+  /// 实现必须能读出**超过 Android CursorWindow 单行上限**的指纹列
+  /// （`rounds_fp` 是一本书全部轮次的完整文本，长书可达数 MB）——
+  /// 禁止整表 `SELECT *`，见 [SyncStateDao.getAllBookBases]。
   Future<Map<String, SyncBookBase>> getAllBookBases();
   Future<void> putBookBase(SyncBookBase b);
   /// 按 uuid（= `sync_book_base` 主键）删除共基行。
@@ -116,8 +123,48 @@ abstract class SyncStateStore {
 
 /// 云同步状态 / 共基数据访问对象（仅读写本地同步元数据库 [LocalSyncDb]，
 /// 不触碰用户库业务表）。
+///
+/// **大字段读法**：Android 上的 sqflite 走系统 `CursorWindow`，单行超出窗口
+/// （约 1~2 MB）会抛 `Row too big to fit into CursorWindow`；桌面 FFI 无此限制。
+/// 共基的指纹列（尤其 `rounds_fp`）可能远大于该上限，因此整表读一律走
+/// [readRowsWithLargeText] 分片拼回，**不要**改回 `db.query('sync_book_base')`
+/// （= `SELECT *`）。分片读放在一个事务里，保证各片来自同一份快照。
 class SyncStateDao implements SyncStateStore {
   final LocalSyncDb _helper = LocalSyncDb.instance;
+
+  // ---------------------------------------------------------------------------
+  // 共基列清单（必须覆盖建表 DDL 的全部列，等价原 `SELECT *`）
+  // ---------------------------------------------------------------------------
+
+  /// `sync_book_base` 的轻量列：一次查询读出，不含任何可能上 MB 的指纹列。
+  static const List<String> _bookBasePlainColumns = [
+    'uuid',
+    'title',
+    'settings_updated_at',
+    'rounds_updated_at',
+    'worldbook_updated_at',
+    'bookmods_updated_at',
+  ];
+
+  /// `sync_book_base` 的大字段列：必须分片读（`rounds_fp`/`settings_fp`/
+  /// `worldbook_fp` 都可能很大；`*_fp` 过渡期子部件列一并纳入，零成本且更稳）。
+  static const List<String> _bookBaseLargeTextColumns = [
+    'settings_fp',
+    'info_fp',
+    'roles_fp',
+    'base_setting_fp',
+    'prompts_fp',
+    'failed_fp',
+    'rounds_fp',
+    'worldbook_fp',
+    'bookmods_fp',
+  ];
+
+  /// `sync_mod_base` 的轻量列。
+  static const List<String> _modBasePlainColumns = ['uuid', 'name', 'updated_at'];
+
+  /// `sync_mod_base` 的大字段列（Mod 的世界书 / 提示词可能很长）。
+  static const List<String> _modBaseLargeTextColumns = ['fingerprint'];
 
   // ---------------------------------------------------------------------------
   // sync_state
@@ -162,7 +209,15 @@ class SyncStateDao implements SyncStateStore {
   @override
   Future<Map<String, SyncBookBase>> getAllBookBases() async {
     final db = await _helper.database;
-    final rows = await db.query('sync_book_base');
+    final rows = await db.transaction(
+      (txn) => readRowsWithLargeText(
+        txn,
+        table: 'sync_book_base',
+        keyColumn: 'uuid',
+        plainColumns: _bookBasePlainColumns,
+        largeTextColumns: _bookBaseLargeTextColumns,
+      ),
+    );
     return {
       for (final r in rows) (r['uuid'] as String? ?? ''): SyncBookBase.fromRow(r),
     };
@@ -207,7 +262,15 @@ class SyncStateDao implements SyncStateStore {
   @override
   Future<Map<String, SyncModBase>> getAllModBases() async {
     final db = await _helper.database;
-    final rows = await db.query('sync_mod_base');
+    final rows = await db.transaction(
+      (txn) => readRowsWithLargeText(
+        txn,
+        table: 'sync_mod_base',
+        keyColumn: 'uuid',
+        plainColumns: _modBasePlainColumns,
+        largeTextColumns: _modBaseLargeTextColumns,
+      ),
+    );
     return {
       for (final r in rows) (r['uuid'] as String? ?? ''): SyncModBase.fromRow(r),
     };
