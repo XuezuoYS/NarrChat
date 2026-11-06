@@ -26,7 +26,7 @@ class ChatRail extends StatefulWidget {
     required this.locator,
     this.handle,
     this.isTouchPlatform,
-    this.motion = const ChatRailMotion(maxVelocity: 2.6),
+    this.motion = const ChatRailMotion(maxVelocity: 6.5),
   });
 
   /// 定位门面（跳转 / 速度 / 最大轮号 / 可见比例）。所有数字都向它要。
@@ -87,7 +87,13 @@ class ChatRail extends StatefulWidget {
   /// 面板划出 / 收起的时长、松手回中的时长、拖动中胶囊的淡入淡出。
   static const Duration expandDuration = Duration(milliseconds: 200);
   static const Duration collapseDuration = Duration(milliseconds: 160);
-  static const Duration snapBackDuration = Duration(milliseconds: 420);
+
+  /// 松手回中：大约 0.9 秒，过阻尼指数衰减（不越过中央、末尾越贴越慢）。
+  static const Duration snapBackDuration = Duration(milliseconds: 900);
+
+  /// 回中曲线的时间常数个数：越大越"黏"（末尾贴得更慢）。
+  static const double snapBackDamping = 4;
+
   static const Duration capsuleInDuration = Duration(milliseconds: 140);
   static const Duration capsuleOutDuration = Duration(milliseconds: 220);
 
@@ -212,9 +218,22 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
 
   void _onSnapTick() {
     if (!mounted) return;
-    // 缓出：一开始回得快、越靠近中央越慢，观感比线性"弹"温和。
-    final t = Curves.easeOutCubic.transform(_snapController.value);
-    setState(() => _knobOffset = (t - 1) * _snapFrom);
+    setState(() => _knobOffset = _snapBackOffset(_snapController.value));
+  }
+
+  /// 回中轨迹：**过阻尼**指数衰减。
+  ///
+  /// `offset(t) = from × (e^{-k·t} − e^{-k}) / (1 − e^{-k})`：
+  /// - t=0 时正好是松手时的位移（**不会瞬间跳到相反一侧**）；
+  /// - 全程不越过中央（不振荡、不回弹过头）；
+  /// - 末尾很长一段都在慢慢贴合中央（阻尼大 = 黏）。
+  double _snapBackOffset(double t) {
+    if (t <= 0) return _snapFrom;
+    if (t >= 1) return 0;
+    const k = ChatRail.snapBackDamping;
+    final tail = math.exp(-k);
+    final remaining = (math.exp(-k * t) - tail) / (1 - tail);
+    return _snapFrom * remaining;
   }
 
   /// 回中动画的起点位移。

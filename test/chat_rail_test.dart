@@ -276,14 +276,49 @@ void main() {
       expect(tester.getRect(knob).center.dy, closeTo(start.dy + 90, 0.5));
 
       await gesture.up();
-      await tester.pumpAndSettle();
+      await tester.pump();
+      // 回中第一帧：仍在**同侧**（不是瞬间跳到相反方向）。
+      final firstFrame = tester.getRect(knob).center.dy - start.dy;
+      expect(firstFrame, greaterThan(0), reason: '回中起点必须是松手时的位移，不能反向');
 
+      await tester.pump(const Duration(milliseconds: 120));
+      final midway = tester.getRect(knob).center.dy - start.dy;
+      expect(midway, greaterThanOrEqualTo(0), reason: '回中过程中不得越过中央');
+      expect(midway, lessThan(firstFrame), reason: '阻尼回中：在慢慢往中央收');
+
+      await tester.pumpAndSettle();
       expect(
         tester.getRect(knob).center.dy,
         closeTo(start.dy, 0.5),
         reason: '松手回中',
       );
       expect(locator.stopCalls, greaterThan(0));
+    });
+
+    testWidgets('往上拖松手：全程不越过中央', (tester) async {
+      await _pumpRail(tester);
+      final knob = find.byKey(ChatRail.knobKey);
+      final start = tester.getCenter(knob);
+
+      final gesture = await tester.startGesture(start);
+      await gesture.moveBy(const Offset(0, -40));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, -40));
+      await tester.pump();
+      await gesture.up();
+
+      // 逐帧采样：位移一次都不能是正的（正 = 跑到下面去了），
+      // 也不能反向（越回越远）。
+      var previous = double.negativeInfinity;
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 25));
+        final offset = tester.getRect(knob).center.dy - start.dy;
+        expect(offset, lessThanOrEqualTo(0.5), reason: '第 $i 帧不该越过中央');
+        expect(offset, greaterThanOrEqualTo(previous - 0.5),
+            reason: '第 $i 帧不该反向（越回越远）');
+        previous = offset;
+      }
+      expect(tester.getRect(knob).center.dy, closeTo(start.dy, 1));
     });
 
     testWidgets('拖动超出行程被夹住（不会跑到屏幕外）', (tester) async {

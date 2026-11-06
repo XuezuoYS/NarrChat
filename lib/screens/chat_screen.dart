@@ -317,8 +317,9 @@ class _ChatScreenState extends State<ChatScreen>
     viewport: ScrollViewport(_scrollController),
     geometry: _chatGeometry,
     window: this,
-    // 滑块推到行程尽头时是最快档（轨道默认 motion 的上限也是同一量级）。
-    maxVelocity: 3.0,
+    // 滑块推到行程尽头时是最快档（轨道默认 motion 的上限 = 6.5 视口/秒，
+    // 这里留一点余量做安全夹取）。
+    maxVelocity: 7.5,
     postFrame: (callback) => WidgetsBinding.instance.addPostFrameCallback(
       (_) => callback(),
     ),
