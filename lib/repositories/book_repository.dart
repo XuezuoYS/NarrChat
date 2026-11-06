@@ -34,14 +34,26 @@ abstract class BookRepository {
   /// 保存设置（书名是信源，会一并回写目录与缓存副本）。
   Future<void> saveBook(Book book);
 
-  /// 打墓碑（云备份删除传播用），并关闭该书连接。
-  Future<void> softDeleteBook(String bookUuid);
+  /// 用户删除一本书：打墓碑（目录行保留），并清掉本机数据。
+  ///
+  /// 「仅保留 library 墓碑」：书库文件 / 缓存行 / 高度 / 图片引用 / 连接都在
+  /// 这里清干净；云端备份由同步层按墓碑清理（见 `CloudSyncProvider` /
+  /// `BackupRunner`）。
+  Future<void> deleteBook(String bookUuid);
 
-  /// 清除墓碑（还原）。
-  Future<void> restoreBook(String bookUuid);
+  /// 清掉一本书的本机数据（书库文件 / 缓存行 / 高度 / 图片引用），**不动墓碑**。
+  ///
+  /// 可重复调用；返回是否真的清到了东西。同步时按墓碑兜底清理走这里。
+  Future<bool> purgeBookData(String bookUuid);
 
-  /// 物理删除：目录行 + 缓存行 + 书库文件。
+  /// 清掉所有墓碑书的本机残留（旧版本只打墓碑、没删文件）。返回清理本数。
+  Future<int> purgeTombstonedBooks();
+
+  /// 物理删除：目录行（连墓碑一起清掉）+ 缓存 + 书库文件。
   Future<void> purgeBook(String bookUuid);
+
+  /// 云端快照还原后恢复书的身份（清墓碑 + 用书库重建索引）。
+  Future<void> reviveBook(String bookUuid);
 }
 
 /// SQLite 版 [BookRepository]。
@@ -62,10 +74,26 @@ class BookRepositorySqlite implements BookRepository {
   @override
   Future<List<Book>> listBooks({bool includeDeleted = false}) async {
     final rows = await _indexRows();
-    final visible = includeDeleted
-        ? rows
-        : rows.where((row) => !row.isDeleted);
-    return visible.map(_bookFromIndex).toList(growable: false);
+    final books = [
+      for (final row in rows)
+        if (includeDeleted || !row.isDeleted) _bookFromIndex(row),
+    ];
+    if (!includeDeleted) return books;
+
+    // 墓碑只存在于目录库：缓存行删掉后，列表仍要能「看见」墓碑（云备份书名
+    // 兜底 / 调试 / 测试），这里按目录行合成，不往缓存里落任何东西。
+    final known = {for (final row in rows) row.bookUuid};
+    try {
+      final directoryRows = await library.books(includeDeleted: true);
+      return [
+        ...books,
+        for (final row in directoryRows)
+          if (row.isDeleted && !known.contains(row.bookUuid))
+            Book(uuid: row.bookUuid, title: row.title),
+      ];
+    } catch (_) {
+      return books;
+    }
   }
 
   @override
@@ -73,35 +101,60 @@ class BookRepositorySqlite implements BookRepository {
     final rows = await _indexRows();
     return {
       for (final row in rows)
-        if (row.lastRoundAt != null) row.bookUuid: row.lastRoundAt!,
+        if (!row.isDeleted && row.lastRoundAt != null)
+          row.bookUuid: row.lastRoundAt!,
     };
   }
 
-  /// 读缓存副本；发现「目录里有、缓存里没有」时先自愈再读。
+  /// 读缓存副本；**以目录库为准**剔除墓碑，并自愈缺失的活书索引。
   ///
-  /// 成本：正常情况（无差异）只多一次 `library.books()` 查询，**不开任何书库**；
-  /// 只有真缺行时才逐本打开补索引。
+  /// 为什么墓碑要在这一层过滤：同步拉下来的墓碑 / 删除中途崩掉时，缓存里
+  /// 可能还留着一行「活的」——不滤掉的话删掉的书会重新出现在列表里。
   ///
-  /// 自愈本身失败（缓存库损坏等）不能让列表变空——退回缓存里已有的副本。
+  /// 成本：目录只查一次；正常情况（无差异）不开任何书库。
   Future<List<BookIndexRow>> _indexRows() async {
-    var rows = await cache.allIndex(includeDeleted: true);
+    var directory = const <LibraryBookRow>[];
     try {
-      if (await _healIndexIfNeeded(rows)) {
-        rows = await cache.allIndex(includeDeleted: true);
+      directory = await library.books(includeDeleted: true);
+    } catch (_) {
+      // 目录读不出来时退回缓存副本（至少别把整页打空）。
+    }
+    final tombstoned = {
+      for (final row in directory)
+        if (row.isDeleted) row.bookUuid,
+    };
+    var rows = [
+      for (final row in await cache.allIndex(includeDeleted: true))
+        if (!tombstoned.contains(row.bookUuid)) row,
+    ];
+    try {
+      if (await _healIndexIfNeeded(rows, directory)) {
+        rows = [
+          for (final row in await cache.allIndex(includeDeleted: true))
+            if (!tombstoned.contains(row.bookUuid)) row,
+        ];
       }
     } catch (_) {
-      // 自愈是"锦上添花"，失败时宁可少几本书，也不能把整页打空。
+      // 自愈是「锦上添花」，失败时宁可少几本书，也不能把整页打空。
     }
     return rows;
   }
 
-  /// 目录里有、缓存里缺的书逐本重建索引行；返回是否发生过重建。
-  Future<bool> _healIndexIfNeeded(List<BookIndexRow> cached) async {
-    final directoryRows = await library.books(includeDeleted: true);
-    if (directoryRows.isEmpty) return false;
+  /// 目录里活着、缓存里缺的书逐本重建索引行；返回是否发生过重建。
+  ///
+  /// 墓碑不重建索引、不打开书库：删除后本机不再为它保留任何副本。
+  Future<bool> _healIndexIfNeeded(
+    List<BookIndexRow> cached,
+    List<LibraryBookRow> directory,
+  ) async {
+    final live = [
+      for (final row in directory)
+        if (!row.isDeleted) row,
+    ];
+    if (live.isEmpty) return false;
     final known = {for (final row in cached) row.bookUuid};
     final missing = [
-      for (final row in directoryRows)
+      for (final row in live)
         if (!known.contains(row.bookUuid)) row,
     ];
     if (missing.isEmpty) return false;
@@ -247,35 +300,78 @@ class BookRepositorySqlite implements BookRepository {
   }
 
   @override
-  Future<void> softDeleteBook(String bookUuid) async {
+  Future<void> deleteBook(String bookUuid) async {
     if (bookUuid.isEmpty) return;
-    final now = DateTime.now().toUtc();
-    await library.setDeletedAt(bookUuid, now);
-    final existing = await cache.indexOf(bookUuid);
-    if (existing != null) {
-      await cache.putIndex(existing.copyWith(deletedAt: now));
+    final row = await library.book(bookUuid);
+    if (row == null) {
+      // 目录里没有这行（脏数据 / 已被物理删除）：只清本机残留，不造墓碑。
+      await _clearBookData(bookUuid);
+      return;
     }
-    await books.close(bookUuid);
+    // 先写墓碑再清数据：中途失败也能靠「墓碑 + 启动/同步兜底」续上。
+    // 已墓碑的书不重复写时间——墓碑只取「是否删除」这个布尔，但没必要制造脏写。
+    if (!row.isDeleted) {
+      await library.setDeletedAt(bookUuid, DateTime.now().toUtc());
+    }
+    await _clearBookData(bookUuid);
   }
 
   @override
-  Future<void> restoreBook(String bookUuid) async {
-    if (bookUuid.isEmpty) return;
-    await library.setDeletedAt(bookUuid, null);
-    final existing = await cache.indexOf(bookUuid);
-    if (existing != null) {
-      await cache.putIndex(existing.copyWith(clearDeletedAt: true));
+  Future<bool> purgeBookData(String bookUuid) async {
+    if (bookUuid.isEmpty) return false;
+    final hasFile = await books.exists(bookUuid);
+    final hasIndex = await cache.indexOf(bookUuid) != null;
+    if (!hasFile && !hasIndex) return false;
+    await _clearBookData(bookUuid);
+    return true;
+  }
+
+  @override
+  Future<int> purgeTombstonedBooks() async {
+    final rows = await library.books(includeDeleted: true);
+    var purged = 0;
+    for (final row in rows) {
+      if (!row.isDeleted) continue;
+      if (await purgeBookData(row.bookUuid)) purged++;
     }
+    return purged;
   }
 
   @override
   Future<void> purgeBook(String bookUuid) async {
     if (bookUuid.isEmpty) return;
+    await _clearBookData(bookUuid);
     await library.removeBook(bookUuid);
-    await cache.removeIndex(bookUuid);
-    // 高度缓存跟着书走：不清的话 uuid 被复用（导入同名书）会拿到旧高度。
-    await cache.clearHeights(bookUuid);
+  }
+
+  @override
+  Future<void> reviveBook(String bookUuid) async {
+    if (bookUuid.isEmpty) return;
+    final db = await books.tryOpen(bookUuid);
+    if (db == null) {
+      throw StateError('书库文件不存在：${AppPaths.bookDbFileName(bookUuid)}');
+    }
+    final meta = await db.meta.read();
+    final row = await library.book(bookUuid);
+    if (row == null) {
+      // 目录里连墓碑都没有（旧 library 快照）：显式还原就补回身份。
+      await library.putBook(
+        LibraryBookRow(bookUuid: bookUuid, title: meta.title),
+      );
+    } else if (row.isDeleted) {
+      await library.setDeletedAt(bookUuid, null);
+    }
+    await _writeIndex(meta, db);
+  }
+
+  /// 清掉一本书的全部本机数据；可重复调用，不碰目录墓碑。
+  ///
+  /// 高度缓存必须跟着书走：不清的话 uuid 被复用（导入同名书）会拿到旧高度。
+  Future<void> _clearBookData(String bookUuid) async {
     await books.deleteFile(bookUuid);
+    await cache.removeIndex(bookUuid);
+    await cache.clearHeights(bookUuid);
+    await cache.clearImageRefs(bookUuid);
   }
 
   /// 用信源校正缓存副本（打开书时顺手做，缓存不会长期漂移）。

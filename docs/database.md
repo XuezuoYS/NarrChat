@@ -111,6 +111,22 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 - **冲突只给整本书一个选择**（替换本地 / 保留本地 / 保留云端），不再逐部件合并；
 - 不迁移旧版本云端快照，也不做"检测到旧数据"的提示。
 
+## 删除一本书
+
+删除是**永久删除**，只留墓碑：
+
+1. `library.books` 写 `deleted_at`（目录行保留，供其它设备传播删除）；
+2. 本机清掉：`books/narrbook_<uuid>.db`（含 sqlite 旁挂文件）、
+   `library_cache` 的索引 / 高度 / 图片引用、`sync.db` 的 `book:<uuid>` 单元；
+3. 云端清掉：`narrbook_<uuid>_shot-g*.db` 与 `manifest_narrbook_<uuid>.json`。
+   自动同步开着时交给数据面（先推 library 墓碑，再按墓碑清）；否则删除时立即
+   尽力清一次，失败由下一次同步兜底；
+4. 墓碑随 library 同步到其它设备；其它设备拉到后同样清本机与云端残留；
+5. 旧版本只打墓碑、没删文件的，启动时按墓碑扫一遍本机残留。
+
+图片**不做引用回收**：书删了也不删图片 blob（可能被其它书 / 历史代引用），
+与图片平面的既有规则一致。
+
 ## 读 R2 迁移
 
 `lib/database/migration/r2_to_v3.dart` 负责一次性迁移：
@@ -132,5 +148,6 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 | `lib/database/book_db.dart` | 单本书库，**唯一写入口**（`updated_at`、`is_using` 归一化、提示截断都在这里收口） |
 | `lib/database/book_db_pool.dart` | 书库连接池 |
 | `lib/repositories/*.dart` | 上层门面：书 / 轮次 / 世界书 / Mod |
+| `lib/services/cloud_backup/backup_book_purge.dart` | 删书时清云端：该书的全部快照 + 清单（只认墓碑驱动） |
 | `lib/services/app_stores.dart` | 组装根：解析路径 → 迁移 → 开库 |
 | `lib/services/app_repositories.dart` | 应用级仓库集合，provider 从这里拿数据入口 |

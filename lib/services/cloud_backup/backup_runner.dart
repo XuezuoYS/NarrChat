@@ -4,6 +4,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../../database/sqflite_desktop.dart';
 import '../../database/sync_store.dart';
+import 'backup_book_purge.dart';
 import 'backup_digest.dart';
 import 'backup_image_plane.dart';
 import 'backup_manifest.dart';
@@ -25,6 +26,8 @@ typedef BackupConflictResolver = Future<BackupConflictChoice> Function(
 class BackupContext {
   const BackupContext({
     required this.bookUuids,
+    this.deletedBookUuids,
+    this.purgeLocalBook,
     this.updatedAtOf,
     this.imagesOf,
     this.beforeReplace,
@@ -33,6 +36,14 @@ class BackupContext {
 
   /// 当前**未删除**的书 uuid（删掉的书不推数据库，只靠 library 墓碑传播）。
   final Future<List<String>> Function() bookUuids;
+
+  /// 当前 library 里所有墓碑书的 uuid。
+  ///
+  /// 数据面每轮按它清理：本机残留 + 云端该书快照/清单 + 本机同步单元记录。
+  final Future<List<String>> Function()? deletedBookUuids;
+
+  /// 清掉某本书的本机数据（书库 / 缓存行 / 高度 / 图片引用），**不动墓碑**。
+  final Future<void> Function(String bookUuid)? purgeLocalBook;
 
   /// 单元的内容时间（书 = `book_meta.updated_at`），冲突默认裁决用。
   final Future<DateTime?> Function(BackupUnit unit)? updatedAtOf;
@@ -73,6 +84,7 @@ class BackupReport {
     this.pulled = 0,
     this.upToDate = 0,
     this.skipped = 0,
+    this.purged = 0,
     this.unresolved = const [],
     this.errors = const {},
     this.fatalError,
@@ -85,6 +97,9 @@ class BackupReport {
   final int pulled;
   final int upToDate;
   final int skipped;
+
+  /// 本轮在云端真正删掉了文件的已删除书籍数。
+  final int purged;
 
   /// 需要用户裁决但没给 resolver（或用户选了跳过）的单元。
   final List<BackupPlan> unresolved;
@@ -152,90 +167,145 @@ class BackupRunner {
     BackupImagePlane? images,
   }) async {
     await remote.ensureReady();
-    final names = await remote.list();
-    final targets = units ?? await _discoverUnits(context);
-    final plans = <BackupPlan>[];
-    final unresolved = <BackupPlan>[];
-    final errors = <String, String>{};
-    var pushed = 0;
-    var pulled = 0;
-    var upToDate = 0;
-    var skipped = 0;
-    String? fatalError;
+    var names = await remote.list();
+    final state = _RunState();
 
-    for (var i = 0; i < targets.length; i++) {
-      if (_cancelled) break;
-      final unit = targets[i];
-      _emit('digest', i, targets.length, unit: unit, message: '检查 ${unit.unitKey}');
-      try {
-        final plan = await _planFor(unit, names, context);
-        plans.add(plan);
-        switch (plan.action) {
-          case BackupAction.upToDate:
-            upToDate++;
-          case BackupAction.skipped:
-            skipped++;
-          case BackupAction.push:
-            _emit('push', i, targets.length, unit: unit, message: '备份 ${unit.unitKey}');
-            await _push(unit, plan, context);
-            pushed++;
-          case BackupAction.pull:
-            _emit('pull', i, targets.length, unit: unit, message: '还原 ${unit.unitKey}');
-            await _pull(unit, plan, context);
-            pulled++;
-          case BackupAction.conflict:
-            final choice = await resolver?.call(plan) ?? BackupConflictChoice.skip;
-            if (_cancelled) break;
-            if (choice == BackupConflictChoice.local) {
-              _emit('push', i, targets.length, unit: unit, message: '备份 ${unit.unitKey}');
-              await _push(unit, plan, context);
-              pushed++;
-            } else if (choice == BackupConflictChoice.remote) {
-              _emit('pull', i, targets.length, unit: unit, message: '还原 ${unit.unitKey}');
-              await _pull(unit, plan, context);
-              pulled++;
-            } else {
-              unresolved.add(plan);
-            }
+    // 1) 先处理结构性单元：library 的墓碑必须先落地，后面的书单元清单才可靠。
+    final structural = units ?? const [BackupUnit.library, BackupUnit.mods];
+    final aborted = await _runUnits(
+      targets: structural,
+      state: state,
+      names: names,
+      context: context,
+      resolver: resolver,
+    );
+
+    // 2) 按墓碑清理已删除的书（本机 + 云端），再做书单元的发现与推拉。
+    //
+    // 顺序很关键：拉下来的 library 若带着新墓碑，必须在发现书单元**之前**
+    // 清掉，否则会把刚删掉的书原地推回云端。
+    if (!aborted && units == null && !_cancelled) {
+      final deleted = await context.deletedBookUuids?.call() ?? const <String>[];
+      if (deleted.isNotEmpty) {
+        // 刷新一次列表：吃掉别处刚推上来的文件，避免只删到旧名单。
+        names = await remote.list();
+        for (var i = 0; i < deleted.length; i++) {
+          if (_cancelled) break;
+          final bookUuid = deleted[i];
+          _emit('purge', i, deleted.length, message: '清理已删除的书');
+          final unitKey = BackupUnit.book(bookUuid).unitKey;
+          // 本机清不掉（文件被锁）不能连累云端：两边分别尝试、分别记错。
+          var localError = '';
+          try {
+            await context.purgeLocalBook?.call(bookUuid);
+          } catch (error) {
+            localError = error.toString();
+          }
+          try {
+            final removed = await purgeRemoteBook(
+              remote: remote,
+              bookUuid: bookUuid,
+              remoteNames: names,
+              store: store,
+            );
+            if (removed > 0) state.purged++;
+          } catch (error) {
+            state.errors[unitKey] = error.toString();
+          }
+          if (localError.isNotEmpty) {
+            state.errors.putIfAbsent(unitKey, () => localError);
+          }
         }
-      } on BackupManifestException catch (error) {
-        // 清单存在但读不懂：立刻停止，绝不把它当空清单重新 bootstrap。
-        fatalError = error.message;
-        break;
-      } catch (error) {
-        errors[unit.unitKey] = error.toString();
+      }
+      if (!_cancelled) {
+        final books = [
+          for (final uuid in await context.bookUuids()) BackupUnit.book(uuid),
+        ];
+        await _runUnits(
+          targets: books,
+          state: state,
+          names: names,
+          context: context,
+          resolver: resolver,
+        );
       }
     }
 
     BackupImageReport? imageReport;
-    if (images != null && !_cancelled && fatalError == null) {
-      _emit('images', targets.length, targets.length, message: '同步图片');
+    if (images != null && !_cancelled && state.fatalError == null) {
+      _emit('images', structural.length, structural.length, message: '同步图片');
       imageReport = await images.sync(isCancelled: isCancelled);
     }
 
-    _emit('done', targets.length, targets.length, message: '完成');
+    _emit('done', structural.length, structural.length, message: '完成');
 
     return BackupReport(
-      plans: plans,
-      pushed: pushed,
-      pulled: pulled,
-      upToDate: upToDate,
-      skipped: skipped,
-      unresolved: unresolved,
-      errors: errors,
-      fatalError: fatalError,
+      plans: state.plans,
+      pushed: state.pushed,
+      pulled: state.pulled,
+      upToDate: state.upToDate,
+      skipped: state.skipped,
+      purged: state.purged,
+      unresolved: state.unresolved,
+      errors: state.errors,
+      fatalError: state.fatalError,
       cancelled: _cancelled,
       images: imageReport,
     );
   }
 
-  Future<List<BackupUnit>> _discoverUnits(BackupContext context) async {
-    final uuids = await context.bookUuids();
-    return [
-      BackupUnit.library,
-      BackupUnit.mods,
-      ...uuids.map(BackupUnit.book),
-    ];
+  /// 依次处理一批单元；返回是否因结构性错误（清单损坏）中止整轮。
+  Future<bool> _runUnits({
+    required List<BackupUnit> targets,
+    required _RunState state,
+    required Set<String> names,
+    required BackupContext context,
+    required BackupConflictResolver? resolver,
+  }) async {
+    for (var i = 0; i < targets.length; i++) {
+      if (_cancelled) return false;
+      final unit = targets[i];
+      _emit('digest', i, targets.length, unit: unit, message: '检查 ${unit.unitKey}');
+      try {
+        final plan = await _planFor(unit, names, context);
+        state.plans.add(plan);
+        switch (plan.action) {
+          case BackupAction.upToDate:
+            state.upToDate++;
+          case BackupAction.skipped:
+            state.skipped++;
+          case BackupAction.push:
+            _emit('push', i, targets.length, unit: unit, message: '备份 ${unit.unitKey}');
+            await _push(unit, plan, context);
+            state.pushed++;
+          case BackupAction.pull:
+            _emit('pull', i, targets.length, unit: unit, message: '还原 ${unit.unitKey}');
+            await _pull(unit, plan, context);
+            state.pulled++;
+          case BackupAction.conflict:
+            final choice = await resolver?.call(plan) ?? BackupConflictChoice.skip;
+            if (_cancelled) return false;
+            if (choice == BackupConflictChoice.local) {
+              _emit('push', i, targets.length, unit: unit, message: '备份 ${unit.unitKey}');
+              await _push(unit, plan, context);
+              state.pushed++;
+            } else if (choice == BackupConflictChoice.remote) {
+              _emit('pull', i, targets.length, unit: unit, message: '还原 ${unit.unitKey}');
+              await _pull(unit, plan, context);
+              state.pulled++;
+            } else {
+              state.unresolved.add(plan);
+            }
+        }
+      } on BackupManifestException catch (error) {
+        // 清单存在但读不懂：立刻停止，绝不把它当空清单重新 bootstrap。
+        state.fatalError = error.message;
+        return true;
+      } catch (error) {
+        state.errors[unit.unitKey] = error.toString();
+      }
+    }
+    return false;
   }
 
   Future<BackupPlan> _planFor(
@@ -417,4 +487,19 @@ class BackupRunner {
       message: message,
     ));
   }
+}
+
+/// 一轮同步的累计结果（分两批处理单元时共用一套计数器）。
+class _RunState {
+  final List<BackupPlan> plans = [];
+  final List<BackupPlan> unresolved = [];
+  final Map<String, String> errors = {};
+
+  int pushed = 0;
+  int pulled = 0;
+  int upToDate = 0;
+  int skipped = 0;
+  int purged = 0;
+
+  String? fatalError;
 }

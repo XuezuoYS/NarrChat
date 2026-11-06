@@ -347,4 +347,116 @@ void main() {
     final loaded = await stack.repos.books.loadBook(bookUuid);
     expect(loaded?.title, '云端书');
   });
+
+  test('删除书籍后同步：云端书单元清掉、library 墓碑保留', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
+    await provider.sync();
+    expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'));
+
+    final phases = <SyncPhase>{};
+    void listener() {
+      final progress = provider.dataProgress;
+      if (progress != null) phases.add(progress.phase);
+    }
+
+    await stack.repos.books.deleteBook(bookUuid);
+    provider.addListener(listener);
+    final ok = await provider.sync();
+    provider.removeListener(listener);
+
+    expect(ok, isTrue);
+    expect(provider.dataError, isNull);
+    expect(phases, contains(SyncPhase.purgeBooks));
+    expect(
+      remote.files.keys.any((name) => name.contains(bookUuid)),
+      isFalse,
+      reason: '云端不能再留这本书的任何快照 / 清单',
+    );
+    expect(await stack.stores.books.exists(bookUuid), isFalse);
+    expect((await stack.stores.library.book(bookUuid))!.isDeleted, isTrue);
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+    expect(
+      remote.files.keys,
+      contains('narrchat_library_shot-g2.db'),
+      reason: '墓碑随 library 新代推到云端',
+    );
+  });
+
+  test('拉到另一台设备的墓碑：本机书库与云端残留一起清掉', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await provider.sync();
+    expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'));
+
+    // 另一台设备把同一本书删掉，并推上带墓碑的 library 第 2 代。
+    final other = await TestStack.create(prefix: 'sync_e2e_tomb_');
+    addTearDown(other.dispose);
+    await other.seedBook(uuid: bookUuid, title: '本地书');
+    await other.repos.books.deleteBook(bookUuid);
+    final libraryBytes = await File(other.paths.libraryDbPath).readAsBytes();
+    remote.put(BackupUnit.library.snapshotName(2), libraryBytes);
+    remote.put(
+      BackupUnit.library.manifestName,
+      BackupManifest.build(
+        unit: BackupUnit.library,
+        generation: 2,
+        digest: await digestOfLibrary(other.paths.libraryDbPath),
+        deviceId: 'other-device',
+      ).encode(),
+    );
+    // 云端还留着一代旧快照（另一台设备之前推的）。
+    remote.put('narrbook_${bookUuid}_shot-g2.db', const [1, 2, 3]);
+
+    final ok = await provider.sync();
+
+    expect(ok, isTrue);
+    expect(provider.dataError, isNull);
+    expect(await stack.stores.books.exists(bookUuid), isFalse);
+    expect((await stack.stores.library.book(bookUuid))!.isDeleted, isTrue);
+    expect(
+      remote.files.keys.any((name) => name.contains(bookUuid)),
+      isFalse,
+      reason: '本机拉到墓碑后要顺手清掉云端残留',
+    );
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+  });
+
+  test('purgeDeletedBookBackup：立即清云端书单元，不动 library / mods', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
+    await provider.sync();
+    expect(remote.files.keys, contains('manifest_narrbook_b1.json'));
+
+    final error = await provider.purgeDeletedBookBackup(bookUuid);
+
+    expect(error, isNull);
+    expect(remote.files.keys.any((name) => name.contains(bookUuid)), isFalse);
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+    expect(remote.files.keys, contains('narrchat_library_shot-g1.db'));
+    expect(remote.files.keys, contains('manifest_narrchat_library.json'));
+  });
+
+  test('还原书快照：清墓碑并让书重新回到列表', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '旧名');
+    // 另一台设备有同 uuid 的书，作为云端快照来源。
+    final other = await TestStack.create(prefix: 'sync_e2e_restore_');
+    addTearDown(other.dispose);
+    await other.seedBook(uuid: bookUuid, title: '云端名');
+    remote.put(
+      'narrbook_${bookUuid}_shot-g1.db',
+      await File('${other.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
+    );
+
+    await stack.repos.books.deleteBook(bookUuid);
+    expect(await stack.repos.books.listBooks(), isEmpty);
+
+    final error =
+        await provider.restoreSnapshot('narrbook_${bookUuid}_shot-g1.db');
+
+    expect(error, isNull);
+    expect((await stack.stores.library.book(bookUuid))!.isDeleted, isFalse);
+    expect(await stack.stores.books.exists(bookUuid), isTrue);
+    final books = await stack.repos.books.listBooks();
+    expect(books.single.uuid, bookUuid);
+    expect(books.single.title, '云端名');
+  });
 }

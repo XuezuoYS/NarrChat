@@ -112,21 +112,30 @@ class BookProvider extends ChangeNotifier {
     }
   }
 
-  /// 删除书籍（软删：打下跌碑并隐藏，行暂留用于云同步删除传播）。
+  /// 删除书籍：写墓碑并清掉本机数据；云端由同步层按墓碑清理。
+  ///
+  /// 「仅保留 library 墓碑」：书库文件 / 缓存行 / 图片引用都会删掉；
+  /// 云端书单元由 [CloudSyncProvider.handleBookDeleted] 立即或随后清理。
   Future<bool> deleteBook(Book book) async {
     try {
-      await _repo.softDeleteBook(book.uuid);
+      await _repo.deleteBook(book.uuid);
       if (_currentBook?.uuid == book.uuid) {
         _currentBook = null;
       }
       await loadBooks();
       notifyListeners();
-      return true;
     } catch (e) {
       _error = e.toString();
       notifyListeners();
       return false;
     }
+    // 云端清理是后续动作：本地已经删成功，云端失败不能反过来算删除失败。
+    try {
+      _cloudSyncProvider?.handleBookDeleted(book.uuid);
+    } catch (_) {
+      // 墓碑还在，下次同步兜底。
+    }
+    return true;
   }
 
   /// 切换当前书籍。

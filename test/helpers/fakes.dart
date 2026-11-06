@@ -937,11 +937,19 @@ class FakeCloudSyncProvider extends CloudSyncProvider {
   /// 最近一次触发是否静默。
   bool? lastSilent;
 
+  /// `handleBookDeleted` 收到的书 uuid（删除传播用例）。
+  final List<String> deletedBooks = [];
+
   @override
   void triggerSync({SyncKind kind = SyncKind.both, bool silent = false}) {
     triggers++;
     lastKind = kind;
     lastSilent = silent;
+  }
+
+  @override
+  void handleBookDeleted(String bookUuid) {
+    deletedBooks.add(bookUuid);
   }
 }
 

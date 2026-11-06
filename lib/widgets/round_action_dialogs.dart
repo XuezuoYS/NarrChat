@@ -118,7 +118,10 @@ Future<bool> showDeleteBookConfirmDialog(BuildContext context, String title) asy
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('删除书籍'),
-      content: Text('确定删除书籍「$title」吗？该书籍的全部轮次将一并删除，且无法恢复。'),
+      content: Text(
+        '确定删除书籍「$title」吗？该书籍的全部内容、本机数据与云端备份将被删除，'
+        '仅保留目录墓碑；离线时会在下次同步补删，且无法恢复。',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(false),

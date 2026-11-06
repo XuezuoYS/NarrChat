@@ -48,6 +48,7 @@ enum SyncPhase {
   pushImages, // 上传缺失图片
   pullImages, // 下载缺失图片
   deleteImages, // 删除被墓碑标记的图片（云端 + 本机）
+  purgeBooks, // 清理已删除书籍的云端备份（数据面）
 }
 
 /// 同步进度事件（驱动前台 HUD）。

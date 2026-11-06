@@ -76,11 +76,22 @@ class BookDbPool {
   }
 
   /// 书被物理删除后，把残留文件也清掉（连接先关）。
+  ///
+  /// 顺带清理 sqlite 的旁挂文件：正常不用 WAL，但崩溃 / 中途事务可能留下
+  /// `-journal` / `-wal` / `-shm`，不删的话「彻底删除」会漏。
   Future<void> deleteFile(String bookUuid) async {
     await close(bookUuid);
-    final file = File(p.join(booksDir, AppPaths.bookDbFileName(bookUuid)));
-    if (await file.exists()) {
-      await file.delete();
+    final String base;
+    try {
+      base = p.join(booksDir, AppPaths.bookDbFileName(bookUuid));
+    } on ArgumentError {
+      return;
+    }
+    for (final suffix in const ['', '-journal', '-wal', '-shm']) {
+      final file = File('$base$suffix');
+      if (await file.exists()) {
+        await file.delete();
+      }
     }
   }
 

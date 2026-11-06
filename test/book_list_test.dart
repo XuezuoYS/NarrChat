@@ -147,7 +147,7 @@ void main() {
     expect(find.text('删除'), findsOneWidget);
   });
 
-  testWidgets('删除书籍走软删：确认后从列表移除', (tester) async {
+  testWidgets('删除书籍：确认后从列表移除（本机数据一并清掉）', (tester) async {
     await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
     expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
 
@@ -156,13 +156,14 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
 
-    // 确认对话框出现。
+    // 确认对话框出现，并明确说明云端备份也会被清掉。
     expect(find.text('删除书籍'), findsOneWidget);
+    expect(find.textContaining('云端备份'), findsOneWidget);
     // 确认删除。
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
     await settle(tester);
 
-    // 软删后列表移除该书，显示空态。
+    // 删除后列表移除该书，显示空态。
     expect(find.widgetWithText(ListTile, '测试书'), findsNothing);
     expect(find.text('还没有书籍'), findsOneWidget);
   });

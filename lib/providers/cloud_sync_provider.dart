@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/app_notice.dart';
 import '../services/app_repositories.dart';
+import '../services/cloud_backup/backup_book_purge.dart';
 import '../services/cloud_backup/backup_catalog.dart';
 import '../services/cloud_backup/backup_image_plane.dart';
 import '../services/cloud_backup/backup_planner.dart';
@@ -154,6 +155,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   bool get isConfigured =>
       _webdavUrl.trim().isNotEmpty && _webdavUsername.trim().isNotEmpty;
+
+  /// 自动同步是否真的会跑（与 [triggerSync] 的门控同一套条件）。
+  ///
+  /// 删除书籍时用它决定：自动同步会跑就交给数据面按墓碑清（library 先推），
+  /// 不会跑才立即尽力清云端书单元。
+  bool get autoSyncEnabled =>
+      isConfigured && _syncMode == SyncMode.auto && _autoUpload;
 
   // --- 状态 -------------------------------------------------------------------
 
@@ -318,6 +326,12 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
             for (final book in await stores.library.books())
               book.bookUuid,
           ],
+          // 已删除的书不推数据库；runner 在书单元之前按墓碑清掉本机与云端残留。
+          deletedBookUuids: () async => [
+            for (final row in await stores.library.books(includeDeleted: true))
+              if (row.isDeleted) row.bookUuid,
+          ],
+          purgeLocalBook: (bookUuid) => _repos.books.purgeBookData(bookUuid),
           updatedAtOf: (unit) async {
             if (!unit.isBook) return null;
             try {
@@ -444,6 +458,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         'push' => SyncPhase.pushSnapshot,
         'pull' => SyncPhase.pullSnapshot,
         'images' => SyncPhase.pushImages,
+        'purge' => SyncPhase.purgeBooks,
         'done' => SyncPhase.idle,
         _ => SyncPhase.merge,
       };
@@ -712,11 +727,11 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 云端各本书的书名（列表展示用）。
   ///
-  /// 读本地缓存索引：一次查询拿到全部书名，不用为每本云书开书库。
-  /// 读不出来（未初始化 / 缓存损坏）就当没有书名，展示时用 uuid 前 8 位兜底。
+  /// 直接读**目录库**（含墓碑）：墓碑书的书名也还在，且不需要打开书库；
+  /// 读不出来（未初始化 / 目录损坏）就当没有书名，展示时用 uuid 前 8 位兜底。
   Future<Map<String, String>> _bookTitles() async {
     try {
-      final rows = await _repos.stores.cache.allIndex(includeDeleted: true);
+      final rows = await _repos.stores.library.books(includeDeleted: true);
       return {
         for (final row in rows)
           if (row.title.trim().isNotEmpty) row.bookUuid: row.title,
@@ -764,6 +779,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       await tmp.writeAsBytes(bytes, flush: true);
       if (await target.exists()) await target.delete();
       await tmp.rename(target.path);
+      await _afterUnitReplaced(unit);
 
       await onDataRestored?.call();
       showSyncResult('已还原 ${label ?? unit.unitKey}', NoticeKind.success);
@@ -793,6 +809,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         await tmp.writeAsBytes(bytes, flush: true);
         if (await target.exists()) await target.delete();
         await tmp.rename(target.path);
+        await _afterUnitReplaced(plan.unit);
         await onDataRestored?.call();
       } else {
         // 保留本地：直接推一代上去（修剪份数同样以云端配置为准）。
@@ -824,7 +841,72 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  // --- 删除传播 ---------------------------------------------------------------
+
+  /// 一本书被删除后的云端动作。
+  ///
+  /// - 自动同步真的会跑：交给数据面（library 先推，runner 再按墓碑清该书单元），
+  ///   顺序保证不会把刚删掉的书原地推回去；
+  /// - 否则：立即尽力清一次云端书单元，失败静默——墓碑还在，下次同步兜底。
+  void handleBookDeleted(String bookUuid) {
+    if (bookUuid.isEmpty) return;
+    // 这本书都删了，留着它的冲突裁决没有意义。
+    final before = _unresolvedConflicts.length;
+    _unresolvedConflicts = [
+      for (final plan in _unresolvedConflicts)
+        if (plan.unit != BackupUnit.book(bookUuid)) plan,
+    ];
+    if (_unresolvedConflicts.length != before) notifyListeners();
+    if (!isConfigured) return;
+    if (autoSyncEnabled) {
+      triggerSync(kind: SyncKind.data);
+      return;
+    }
+    unawaited(purgeDeletedBookBackup(bookUuid).then((error) {
+      if (error != null) debugPrint('清理云端书备份失败（下次同步重试）：$error');
+    }));
+  }
+
+  /// 立即清掉某本已删除书籍的云端备份（尽力而为，不改变同步状态）。
+  ///
+  /// 返回错误文本（成功为 null）。后台调用只记日志即可：墓碑还在，
+  /// 下一次数据面同步会重试。
+  Future<String?> purgeDeletedBookBackup(String bookUuid) async {
+    if (bookUuid.isEmpty || !isConfigured) return null;
+    final remote = _newRemote();
+    try {
+      await remote.ensureReady();
+      await purgeRemoteBook(
+        remote: remote,
+        bookUuid: bookUuid,
+        remoteNames: await remote.list(),
+        store: _repos.stores.sync,
+      );
+      return null;
+    } catch (error) {
+      return error.toString();
+    } finally {
+      remote.close();
+    }
+  }
+
   // --- 内部工具 ---------------------------------------------------------------
+
+  /// 整份替换本地库之后的一致性处理。
+  ///
+  /// - 书库快照：还原出一份文件后把书的身份恢复成「活的」（清墓碑 / 补目录行）；
+  ///   否则删掉过的书还原回来也永远不显示；
+  /// - library 快照：按新目录里的墓碑清掉本机残留。
+  Future<void> _afterUnitReplaced(BackupUnit unit) async {
+    switch (unit.kind) {
+      case BackupUnitKind.book:
+        await _repos.books.reviveBook(unit.refUuid);
+      case BackupUnitKind.library:
+        await _repos.books.purgeTombstonedBooks();
+      case BackupUnitKind.mods:
+        break;
+    }
+  }
 
   WebDavService _createDav() =>
       _davFactory?.call() ??

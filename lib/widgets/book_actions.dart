@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/book.dart';
 import '../providers/book_provider.dart';
+import '../providers/round_provider.dart';
 import 'app_notice_overlay.dart';
 import 'round_action_dialogs.dart';
 
@@ -12,6 +13,8 @@ import 'round_action_dialogs.dart';
 Future<void> deleteBookWithConfirm(BuildContext context, Book book) async {
   final ok = await showDeleteBookConfirmDialog(context, book.title);
   if (!ok || !context.mounted) return;
+  // 先中断这本书正在跑的生成：否则晚到的提交可能把刚删掉的书库写回来。
+  context.read<RoundProvider?>()?.cancelGeneration(bookUuid: book.uuid);
   final provider = context.read<BookProvider>();
   final result = await provider.deleteBook(book);
   if (!result && context.mounted) {

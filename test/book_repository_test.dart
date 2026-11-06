@@ -116,21 +116,88 @@ void main() {
     expect(fresh.baseSetting, '新设定');
   });
 
-  test('墓碑：软删后列表隐藏、文件还在；还原后回来', () async {
+  test('删除：墓碑留在目录，书库文件 / 连接 / 缓存行 / 高度 / 图片引用全清掉', () async {
     final uuid = await repository.createBook(sample());
+    final db = await pool.open(uuid);
+    await cache.putHeights(
+      uuid,
+      {'r1': 42},
+      widthBucket: 0,
+      typeScaleBucket: 0,
+    );
+    await cache.replaceImageRefs(uuid, [
+      ImageRefRow(imagePath: 'img/a.png', bookUuid: uuid, refCount: 1),
+    ]);
 
-    await repository.softDeleteBook(uuid);
+    await repository.deleteBook(uuid);
+
     expect(await repository.listBooks(), isEmpty);
-    expect((await repository.listBooks(includeDeleted: true)).single.uuid, uuid);
-    expect(await pool.exists(uuid), isTrue);
-    expect((await library.book(uuid))!.isDeleted, isTrue);
-    expect((await cache.indexOf(uuid))!.isDeleted, isTrue);
-    expect(pool.isOpen(uuid), isFalse, reason: '软删要关掉连接');
+    final tombstone = (await repository.listBooks(includeDeleted: true)).single;
+    expect(tombstone.uuid, uuid);
+    expect(tombstone.title, '新书', reason: '墓碑书名从目录库合成');
 
-    await repository.restoreBook(uuid);
-    expect((await repository.listBooks()).single.uuid, uuid);
+    expect((await library.book(uuid))!.isDeleted, isTrue);
+    expect(await pool.exists(uuid), isFalse);
+    expect(pool.isOpen(uuid), isFalse, reason: '删除要关掉连接');
+    expect(await cache.indexOf(uuid), isNull, reason: '缓存行也要删');
+    expect(await cache.imageRefsOf(uuid), isEmpty);
+    expect(
+      await cache.heightsOf(uuid, widthBucket: 0, typeScaleBucket: 0),
+      isEmpty,
+    );
+    expect(db.bookUuid, uuid, reason: '删除前连接确实开着');
+  });
+
+  test('删除不存在的书：不抛异常，也不凭空写墓碑', () async {
+    await repository.deleteBook('ghost');
+    expect(await library.book('ghost'), isNull);
+    await repository.deleteBook('');
+  });
+
+  test('重复删除幂等：墓碑时间不被刷新', () async {
+    final uuid = await repository.createBook(sample());
+    await repository.deleteBook(uuid);
+    final first = (await library.book(uuid))!.deletedAt!;
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await repository.deleteBook(uuid);
+
+    expect((await library.book(uuid))!.deletedAt, first);
+    expect(await pool.exists(uuid), isFalse);
+  });
+
+  test('purgeTombstonedBooks：清历史墓碑残留，墓碑保留、活书不动', () async {
+    final live = await repository.createBook(sample(title: '活书'));
+    final legacy = await repository.createBook(sample(title: '旧墓碑书'));
+    // 模拟旧版本：只打墓碑，书库文件与缓存都还在。
+    await library.setDeletedAt(legacy, DateTime.utc(2025, 1, 1));
+    expect(await pool.exists(legacy), isTrue);
+
+    final purged = await repository.purgeTombstonedBooks();
+
+    expect(purged, 1);
+    expect(await pool.exists(legacy), isFalse);
+    expect(await cache.indexOf(legacy), isNull);
+    expect((await library.book(legacy))!.isDeleted, isTrue);
+    expect(await pool.exists(live), isTrue);
+    expect((await repository.listBooks()).single.uuid, live);
+  });
+
+  test('reviveBook：云端快照还原后清墓碑并重建索引', () async {
+    final uuid = await repository.createBook(sample());
+    final path = p.join(pool.booksDir, 'narrbook_$uuid.db');
+    final bytes = await File(path).readAsBytes();
+
+    await repository.deleteBook(uuid);
+    expect(await pool.exists(uuid), isFalse);
+    // 模拟还原：把快照字节写回书库路径。
+    await File(path).writeAsBytes(bytes, flush: true);
+
+    await repository.reviveBook(uuid);
+
     expect((await library.book(uuid))!.isDeleted, isFalse);
-    expect((await cache.indexOf(uuid))!.isDeleted, isFalse);
+    expect((await repository.listBooks()).single.uuid, uuid);
+    expect((await cache.indexOf(uuid))!.title, '新书');
   });
 
   test('物理删除：目录行 / 缓存行 / 库文件全部消失', () async {

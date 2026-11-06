@@ -108,13 +108,13 @@ void main() {
     expect(times[uuid], DateTime.utc(2026, 3, 4));
   });
 
-  test('缓存行被误删时 listBooks 自愈，且不会把墓碑书复活', () async {
+  test('缓存行被误删时 listBooks 自愈，墓碑书不会再被复活', () async {
     final stores = await AppStores.openAt(makePaths('heal'));
     addTearDown(stores.dispose);
     final repo = repoOf(stores);
     final kept = await repo.createBook(const Book(title: '留下的'));
     final removed = await repo.createBook(const Book(title: '删掉的'));
-    await repo.softDeleteBook(removed);
+    await repo.deleteBook(removed);
 
     // 模拟缓存库被删 / 换机：清空副本
     await stores.cache.replaceAllIndex(const []);
@@ -129,7 +129,12 @@ void main() {
     expect(
       all.firstWhere((book) => book.uuid == removed).title,
       '删掉的',
-      reason: '墓碑书的索引也从书库重建',
+      reason: '墓碑书名从目录库合成',
+    );
+    expect(
+      await stores.books.exists(removed),
+      isFalse,
+      reason: '墓碑不重建书库文件',
     );
   });
 

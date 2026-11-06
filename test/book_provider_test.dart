@@ -75,6 +75,24 @@ void main() {
     expect(provider.currentBook?.uuid, 'b2', reason: '无选中时默认选第一本');
   });
 
+  test('删除会清本机数据、保留墓碑，并通知云同步清理', () async {
+    final cloud = FakeCloudSyncProvider();
+    final cloudProvider = BookProvider(
+      repository: stack.repos.books,
+      cloudSyncProvider: cloud,
+    );
+    final uuid = await stack.seedBook(uuid: 'b1', title: '书A');
+    await cloudProvider.loadBooks();
+
+    await cloudProvider.deleteBook(cloudProvider.books.single);
+
+    expect(cloud.deletedBooks, [uuid], reason: '云端清理交给 CloudSyncProvider');
+    expect(await stack.stores.books.exists(uuid), isFalse);
+    expect(await stack.stores.cache.indexOf(uuid), isNull);
+    expect((await stack.stores.library.book(uuid))!.isDeleted, isTrue);
+    expect(cloudProvider.books, isEmpty);
+  });
+
   test('最近对话时间来自缓存副本，用于列表时间排序', () async {
     await stack.seedBook(uuid: 'b1', title: '书A');
     await stack.seedBook(uuid: 'b2', title: '书B');

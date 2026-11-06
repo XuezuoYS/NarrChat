@@ -156,6 +156,45 @@ void main() {
     return digest;
   }
 
+  Future<String> libraryDigestOf(String path) async {
+    final db = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+    );
+    try {
+      return await BackupDigest.ofLibrary(BackupUnit.library, db);
+    } finally {
+      await db.close();
+    }
+  }
+
+  /// 读当前库里的活书 uuid（runner 拉完 library 后才会调用）。
+  Future<List<String>> liveBookUuids() async {
+    final library = LibraryDb(
+      pathOverride: p.join(userData.path, 'narrchat_library.db'),
+    );
+    try {
+      return [for (final row in await library.books()) row.bookUuid];
+    } finally {
+      await library.close();
+    }
+  }
+
+  /// 读当前库里的墓碑 uuid（runner 拉完 library 后才会调用）。
+  Future<List<String>> tombstoneUuids() async {
+    final library = LibraryDb(
+      pathOverride: p.join(userData.path, 'narrchat_library.db'),
+    );
+    try {
+      return [
+        for (final row in await library.books(includeDeleted: true))
+          if (row.isDeleted) row.bookUuid,
+      ];
+    } finally {
+      await library.close();
+    }
+  }
+
   test('首次备份：三个单元各推第 1 代，并写下清单与本机代数', () async {
     await seed();
     final report = await runner().run(context: context());
@@ -408,6 +447,152 @@ void main() {
     expect(phases.first, 'digest');
     expect(phases, contains('push'));
     expect(phases.last, 'done');
+  });
+
+  group('按墓碑清理已删除的书', () {
+    /// 在目录里补一行 b2 并打墓碑（模拟旧版本遗留 / 另一台设备删掉）。
+    Future<void> addTombstonedBook(String uuid) async {
+      final library = LibraryDb(
+        pathOverride: p.join(userData.path, 'narrchat_library.db'),
+      );
+      await library.putBook(LibraryBookRow(bookUuid: uuid, title: '删掉的'));
+      await library.setDeletedAt(uuid, DateTime.utc(2026, 1, 1));
+      await library.close();
+    }
+
+    test('墓碑书：云端书单元 / sync_unit / 本机残留都清掉，活书照常推送', () async {
+      await seed();
+      await addTombstonedBook('b2');
+      final legacyFile = await BookDb.create(
+        meta: bookMeta('b2'),
+        pathOverride: bookPath('b2'),
+      );
+      await legacyFile.close();
+      remote.put('narrbook_b2_shot-g1.db', const [1, 2, 3]);
+      remote.put('manifest_narrbook_b2.json', const [4, 5, 6]);
+      await store.putUnit(const SyncUnitRow(
+        unitKey: 'book:b2',
+        kind: 'book',
+        refUuid: 'b2',
+        generation: 1,
+      ));
+
+      final purgedLocal = <String>[];
+      final report = await runner().run(
+        context: BackupContext(
+          bookUuids: () async => ['b1'],
+          deletedBookUuids: () async => ['b2'],
+          purgeLocalBook: (uuid) async {
+            purgedLocal.add(uuid);
+            await File(bookPath(uuid)).delete();
+          },
+          updatedAtOf: (unit) async =>
+              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
+        ),
+      );
+
+      expect(report.errors, isEmpty);
+      expect(report.purged, 1);
+      expect(purgedLocal, ['b2']);
+      expect(File(bookPath('b2')).existsSync(), isFalse);
+      expect(remote.files.containsKey('narrbook_b2_shot-g1.db'), isFalse);
+      expect(remote.files.containsKey('manifest_narrbook_b2.json'), isFalse);
+      expect(await store.unit('book:b2'), isNull);
+      expect(
+        remote.files.keys,
+        contains('narrbook_b1_shot-g1.db'),
+        reason: '活书照常推送',
+      );
+    });
+
+    test('拉到的 library 带墓碑：先清理再发现书单元，不会把删掉的书推回云端', () async {
+      await seed();
+      final localLibrary = LibraryDb(
+        pathOverride: p.join(userData.path, 'narrchat_library.db'),
+      );
+      await localLibrary.putBook(
+        const LibraryBookRow(bookUuid: 'b2', title: '本地书'),
+      );
+      await localLibrary.close();
+      final localBook = await BookDb.create(
+        meta: bookMeta('b2', title: '本地书'),
+        pathOverride: bookPath('b2'),
+      );
+      await localBook.close();
+
+      // 先同步一轮，建立本机共基（云端拿到第 1 代）。
+      await runner().run(context: context(books: const ['b1', 'b2']));
+
+      // 另一台设备的 library 第 2 代：b2 已是墓碑。
+      final cloudLibDir = newTempDir('backup_cloud_lib_');
+      final cloudLibPath = p.join(cloudLibDir, 'narrchat_library.db');
+      final cloudLib = LibraryDb(
+        pathOverride: cloudLibPath,
+        masterUuidOverride: 'm',
+      );
+      await cloudLib.putBook(const LibraryBookRow(bookUuid: 'b1', title: '书'));
+      await cloudLib.putBook(
+        const LibraryBookRow(bookUuid: 'b2', title: '本地书'),
+      );
+      await cloudLib.setDeletedAt('b2', DateTime.utc(2026, 1, 1));
+      await cloudLib.close();
+      remote.put(
+        BackupUnit.library.snapshotName(2),
+        await File(cloudLibPath).readAsBytes(),
+      );
+      remote.put(
+        BackupUnit.library.manifestName,
+        BackupManifest.build(
+          unit: BackupUnit.library,
+          generation: 2,
+          digest: await libraryDigestOf(cloudLibPath),
+          deviceId: 'dev-2',
+        ).encode(),
+      );
+      // 云端还留着 b2 的旧快照（另一台设备先推过）。
+      remote.put('narrbook_b2_shot-g2.db', const [9, 9]);
+
+      final report = await runner().run(
+        context: BackupContext(
+          bookUuids: liveBookUuids,
+          deletedBookUuids: tombstoneUuids,
+          purgeLocalBook: (uuid) => File(bookPath(uuid)).delete(),
+          updatedAtOf: (unit) async =>
+              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
+        ),
+      );
+
+      expect(report.errors, isEmpty);
+      expect(report.pulled, 1, reason: 'library 被拉下来了');
+      expect(File(bookPath('b2')).existsSync(), isFalse,
+          reason: '墓碑书的本地文件要清掉');
+      expect(
+        remote.files.keys.any((n) => n.startsWith('narrbook_b2_shot-g')),
+        isFalse,
+        reason: '删掉的书不能再被推上去',
+      );
+      expect(remote.files.containsKey('manifest_narrbook_b2.json'), isFalse);
+    });
+
+    test('单本清理失败只记单元错误，其它书照常处理', () async {
+      await seed();
+      await addTombstonedBook('b2');
+      final report = await runner().run(
+        context: BackupContext(
+          bookUuids: () async => ['b1'],
+          deletedBookUuids: () async => ['b2'],
+          purgeLocalBook: (uuid) async {
+            throw StateError('文件被占用：$uuid');
+          },
+          updatedAtOf: (unit) async =>
+              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
+        ),
+      );
+
+      expect(report.errors.keys, contains('book:b2'));
+      expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'),
+          reason: '其它单元不受影响');
+    });
   });
 
   group('图片平面', () {

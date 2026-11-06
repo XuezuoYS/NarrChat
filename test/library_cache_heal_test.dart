@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/database/cache_store.dart';
 import 'package:path/path.dart' as p;
 
 import 'helpers/fakes.dart';
@@ -65,10 +66,15 @@ void main() {
     );
   });
 
-  test('墓碑书也能从目录重建，且不会被复活', () async {
+  test('墓碑书只从目录出现：不重建缓存行，也不再打开书库', () async {
     final kept = await stack.seedBook(title: '留下的');
     final removed = await stack.seedBook(title: '删掉的');
-    await stack.repos.books.softDeleteBook(removed);
+    await stack.repos.books.deleteBook(removed);
+    expect(
+      await stack.stores.books.exists(removed),
+      isFalse,
+      reason: '删除要清掉书库文件',
+    );
 
     await stack.stores.cache.replaceAllIndex(const []);
     expect(
@@ -80,6 +86,28 @@ void main() {
     expect(
       all.firstWhere((book) => book.uuid == removed).title,
       '删掉的',
+      reason: '墓碑书名从目录库合成',
+    );
+    expect(
+      await stack.stores.cache.indexOf(removed),
+      isNull,
+      reason: '墓碑不重建缓存，也不打开书库',
+    );
+  });
+
+  test('缓存里残留的墓碑书行不会让它复活（目录优先）', () async {
+    final removed = await stack.seedBook(title: '删掉的');
+    await stack.repos.books.deleteBook(removed);
+
+    // 模拟删除中途崩掉：缓存里又出现一行「活的」。
+    await stack.stores.cache.putIndex(
+      BookIndexRow(bookUuid: removed, title: '删掉的'),
+    );
+
+    expect(await stack.repos.books.listBooks(), isEmpty);
+    expect(
+      (await stack.repos.books.listBooks(includeDeleted: true)).single.uuid,
+      removed,
     );
   });
 

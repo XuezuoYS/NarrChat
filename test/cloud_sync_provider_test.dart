@@ -419,4 +419,31 @@ void main() {
       expect(dwells['一般警告'], const Duration(seconds: 5));
     });
   });
+
+  group('删除传播分支', () {
+    test('autoSyncEnabled：已配置 + 自动档 + 自动上传同时满足才为 true', () {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      expect(provider.autoSyncEnabled, isFalse, reason: '未配置');
+
+      provider
+        ..debugSetConfigured()
+        ..debugSetSyncMode(SyncMode.manual)
+        ..debugSetAutoUpload(true);
+      expect(provider.autoSyncEnabled, isFalse, reason: '手动档不自动跑');
+
+      provider
+        ..debugSetSyncMode(SyncMode.auto)
+        ..debugSetAutoUpload(false);
+      expect(provider.autoSyncEnabled, isFalse, reason: '自动上传开关关着');
+
+      provider.debugSetAutoUpload(true);
+      expect(provider.autoSyncEnabled, isTrue);
+    });
+
+    test('未配置时 handleBookDeleted 什么都不做（不抛、不联网）', () {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      provider.handleBookDeleted('b1');
+      expect(provider.dataSyncState, SyncState.idle);
+    });
+  });
 }

@@ -196,6 +196,9 @@ abstract class CacheStore {
   /// 整体替换一本书的图片引用。
   Future<void> replaceImageRefs(String bookUuid, List<ImageRefRow> refs);
 
+  /// 清掉一本书的全部图片引用（删书时调用）。
+  Future<void> clearImageRefs(String bookUuid);
+
   /// 某一档（列宽档 + 字号档）下这本书各条目的实测高度。
   ///
   /// 返回 `item_key → height`。档位见 `ChatHeightBucket`：跨档不复用，
@@ -337,6 +340,16 @@ class CacheDb implements CacheStore {
         );
       }
     });
+  }
+
+  @override
+  Future<void> clearImageRefs(String bookUuid) async {
+    final db = await _database;
+    await db.delete(
+      'image_refs',
+      where: 'book_uuid = ?',
+      whereArgs: [bookUuid],
+    );
   }
 
   @override

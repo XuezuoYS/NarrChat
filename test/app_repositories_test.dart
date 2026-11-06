@@ -5,6 +5,7 @@ import 'package:narrchat/database/migration/migration_paths.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/world_book_entry.dart';
+import 'package:narrchat/repositories/book_repository.dart';
 import 'package:narrchat/services/app_repositories.dart';
 import 'package:narrchat/services/app_stores.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -58,6 +59,27 @@ void main() {
 
     await AppRepositories.reset();
     expect(AppRepositories.isInitialized, isFalse);
+  });
+
+  test('initialize 会清掉历史墓碑书的本机残留（墓碑保留）', () async {
+    final paths = makePaths();
+    final stores = await AppStores.openAt(paths);
+    final repo = BookRepositorySqlite(
+      library: stores.library,
+      cache: stores.cache,
+      books: stores.books,
+    );
+    final uuid = await repo.createBook(const Book(title: '删掉的'));
+    // 模拟旧版本：只写墓碑，书库文件与缓存都还在。
+    await stores.library.setDeletedAt(uuid, DateTime.utc(2025, 1, 1));
+    expect(await stores.books.exists(uuid), isTrue);
+
+    await AppRepositories.initialize(stores: stores);
+
+    expect(await stores.books.exists(uuid), isFalse);
+    expect((await stores.library.book(uuid))!.isDeleted, isTrue);
+    expect(await stores.cache.indexOf(uuid), isNull);
+    await AppRepositories.reset();
   });
 
   group('世界书仓储', () {
