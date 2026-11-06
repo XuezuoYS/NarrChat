@@ -91,7 +91,11 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
     final index = _geometry.indexOfRound(roundIndex);
     if (index == null) return; // 该轮不在当前窗口里：调用方先扩窗（见窗口层）
     stopVelocity();
-    viewport.jumpTo(_clampOffset(_geometry.offsetOf(index)));
+    // 落点口径：让目标轮的**首条目顶边**贴住视口顶。
+    // `offsetOf(i)` 是「条目底边距底部的距离」，所以还要补这一条自己的高度；
+    // 只用 offsetOf 会把目标条目的底边滚到视口顶 —— 看起来就是"跳过了半屏"。
+    final offset = _geometry.offsetOf(index) + _geometry.heightOf(index);
+    viewport.jumpTo(_clampOffset(offset));
     notifyListeners();
   }
 

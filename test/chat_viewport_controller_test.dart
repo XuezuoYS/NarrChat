@@ -106,7 +106,12 @@ void main() {
     test('jumpToRound 落到该轮起点，且轮号自洽', () async {
       await controller.jumpToRound(1);
       expect(controller.currentRoundIndex, 1);
-      expect(viewport.pixels, geometry.offsetOf(geometry.indexOfRound(1)!));
+      final index = geometry.indexOfRound(1)!;
+      expect(
+        viewport.pixels,
+        geometry.offsetOf(index) + geometry.heightOf(index),
+        reason: '落点是目标条目顶边贴视口顶，不是底边',
+      );
     });
 
     test('jumpToRound 未知轮号不动', () async {

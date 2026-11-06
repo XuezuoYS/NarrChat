@@ -35,15 +35,27 @@ class ScrollViewport implements ChatViewport {
       controller.hasClients ? controller.position : null;
 
   @override
-  double get pixels => _position?.pixels ?? 0;
+  double get pixels {
+    final position = _position;
+    // 尚未完成首次布局时 `pixels` 也是不可读的（与 viewportDimension 同理）。
+    if (position == null || !position.hasViewportDimension) return 0;
+    return position.pixels;
+  }
 
   @override
-  double get viewportDimension => _position?.viewportDimension ?? 0;
+  double get viewportDimension {
+    final position = _position;
+    // `ScrollPosition.viewportDimension` 在首帧布局前读会抛 null check：
+    // 轨道可能在列表完成布局之前就被构建（拖拽 / 侧栏联动触发的重建），
+    // 这里按「尚无高度」处理，等下一帧布局完成自然拿到真值。
+    if (position == null || !position.hasViewportDimension) return 0;
+    return position.viewportDimension;
+  }
 
   @override
   double get maxOffset {
     final position = _position;
-    if (position == null) return 0;
+    if (position == null || !position.hasContentDimensions) return 0;
     // reverse 列表的 atTop/atBottom 与正向相反，这里只认「距最新的像素距离」，
     // 上限恒为 maxScrollExtent - minScrollExtent。
     final extent =
