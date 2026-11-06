@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/debug_database_service.dart';
+import '../services/debug_file_service.dart';
 import '../services/update_check_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/release_info.dart';
@@ -8,34 +9,42 @@ import '../widgets/app_notice_overlay.dart';
 import '../widgets/island_bar.dart';
 import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/update_available_dialog.dart';
-import 'database_inspect_screen.dart';
+import 'debug_files_screen.dart';
 
 /// 「调试」页面：隐藏的调试选项菜单（由设置→关于页连点版本号进入）。
 ///
-/// 目前提供三个入口：查看当前数据库版本；查看当前数据库结构、内容和表；
+/// 目前提供三个入口：只读浏览全部数据文件；查看各数据库版本；
 /// 触发「发现新版本」提示框（调试用，即使版本相同或更旧也触发）。
 /// 后续调试功能可在此追加选项。
 class DebugScreen extends StatelessWidget {
-  /// [databaseService] 供测试注入；缺省使用真实 sqlite 实现。
-  const DebugScreen({super.key, this.databaseService, this.updateService});
+  /// [databaseService] / [fileService] 供测试注入；缺省使用真实实现。
+  const DebugScreen({
+    super.key,
+    this.databaseService,
+    this.fileService,
+    this.updateService,
+  });
 
   final DebugDatabaseService? databaseService;
+
+  final DebugFileService? fileService;
 
   /// 更新检查服务（供测试注入替身；缺省使用真实 GitHub 实现）。
   final UpdateCheckService? updateService;
 
   /// 打开调试页。
   static Future<void> open(BuildContext context) {
-    return Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const DebugScreen()));
+    return Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const DebugScreen()));
   }
 
-  void _openDatabaseInspect(BuildContext context) {
+  /// 打开只读文件浏览：从应用数据根目录开始，按类型匹配阅读器。
+  void _openDataFiles(BuildContext context) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => DatabaseInspectScreen(
-          service: databaseService ?? SqliteDebugDatabaseService(),
+      MaterialPageRoute<void>(
+        builder: (_) => DebugFilesScreen(
+          fileService: fileService ?? LocalDebugFileService(),
+          databaseService: databaseService ?? SqliteDebugDatabaseService(),
         ),
       ),
     );
@@ -127,15 +136,15 @@ class DebugScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           _DebugOptionCard(
-            icon: Icons.info_outline,
-            label: '查看各数据库版本',
-            onTap: () => _showDatabaseVersion(context),
+            icon: Icons.folder_open_outlined,
+            label: '查看全部数据文件（只读）',
+            onTap: () => _openDataFiles(context),
           ),
           const SizedBox(height: 12),
           _DebugOptionCard(
-            icon: Icons.storage_outlined,
-            label: '查看数据库结构、内容和表（可切换库）',
-            onTap: () => _openDatabaseInspect(context),
+            icon: Icons.info_outline,
+            label: '查看各数据库版本',
+            onTap: () => _showDatabaseVersion(context),
           ),
           const SizedBox(height: 12),
           _DebugOptionCard(
@@ -189,7 +198,11 @@ class _DebugOptionCard extends StatelessWidget {
                     style: TextStyle(fontSize: 14, color: colors.textPrimary),
                   ),
                 ),
-                Icon(Icons.chevron_right, size: 18, color: colors.textSecondary),
+                Icon(
+                  Icons.chevron_right,
+                  size: 18,
+                  color: colors.textSecondary,
+                ),
               ],
             ),
           ),

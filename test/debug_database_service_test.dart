@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/db_schema.dart';
 import 'package:narrchat/services/debug_database_service.dart';
+import 'package:path/path.dart' as p;
 
 import 'helpers/fakes.dart';
 
@@ -30,7 +31,10 @@ void main() {
     final databases = await service.listDatabases();
     final ids = databases.map((d) => d.id).toList();
 
-    expect(ids, containsAll(['library', 'mods', 'cache', 'sync', 'book:$bookUuid']));
+    expect(
+      ids,
+      containsAll(['library', 'mods', 'cache', 'sync', 'book:$bookUuid']),
+    );
 
     final library = databases.firstWhere((d) => d.id == 'library');
     expect(library.exists, isTrue);
@@ -61,7 +65,7 @@ void main() {
     await stack.seedBook();
     await stack.seedBook();
 
-    final tables = await service.listTables('library');
+    final tables = await service.listTables(stack.paths.libraryDbPath);
     final names = tables.map((t) => t.name).toList();
 
     expect(names, containsAll(['meta', 'books']));
@@ -74,7 +78,7 @@ void main() {
     final bookUuid = await stack.seedBook();
     await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
 
-    final names = (await service.listTables('book:$bookUuid'))
+    final names = (await service.listTables(stack.paths.bookDbPath(bookUuid)))
         .map((t) => t.name)
         .toList();
     expect(
@@ -98,10 +102,16 @@ void main() {
       aiNarrative: '正文',
     );
 
-    final page = await service.loadTable('book:$bookUuid', 'round_stack');
+    final page = await service.loadTable(
+      stack.paths.bookDbPath(bookUuid),
+      'round_stack',
+    );
     final columns = page.columns.map((c) => c.name).toList();
 
-    expect(columns, containsAll(['uuid', 'father_uuid', 'user_input', 'ai_narrative']));
+    expect(
+      columns,
+      containsAll(['uuid', 'father_uuid', 'user_input', 'ai_narrative']),
+    );
     expect(
       page.columns.firstWhere((c) => c.name == 'uuid').isPrimaryKey,
       isTrue,
@@ -122,11 +132,20 @@ void main() {
       await stack.seedBook(title: '书$i');
     }
 
-    final first = await service.loadTable('library', 'books', pageSize: 2);
+    final first = await service.loadTable(
+      stack.paths.libraryDbPath,
+      'books',
+      pageSize: 2,
+    );
     expect(first.rows.length, 2);
     expect(first.totalCount, 5);
 
-    final second = await service.loadTable('library', 'books', page: 1, pageSize: 2);
+    final second = await service.loadTable(
+      stack.paths.libraryDbPath,
+      'books',
+      page: 1,
+      pageSize: 2,
+    );
     expect(second.rows.length, 2);
     expect(second.page, 1);
     expect(
@@ -134,23 +153,37 @@ void main() {
       isNot(equals(first.rows.map((r) => r['book_uuid']))),
     );
 
-    final beyond = await service.loadTable('library', 'books', page: 9, pageSize: 2);
+    final beyond = await service.loadTable(
+      stack.paths.libraryDbPath,
+      'books',
+      page: 9,
+      pageSize: 2,
+    );
     expect(beyond.rows, isEmpty);
     expect(beyond.totalCount, 5);
   });
 
   test('索引信息：目录库的墓碑索引能被读出来', () async {
     await stack.seedBook();
-    final page = await service.loadTable('library', 'books');
+    final page = await service.loadTable(stack.paths.libraryDbPath, 'books');
     expect(page.indexes.map((i) => i.name), contains('ix_books_deleted'));
   });
 
+  test('readBookTitles：读 book_meta 书名，坏文件返回 null', () async {
+    final bookUuid = await stack.seedBook(title: '书A');
+    final goodPath = stack.paths.bookDbPath(bookUuid);
+    final badPath = p.join(stack.paths.booksDir, 'narrbook_bad.db');
+    await File(badPath).writeAsString('这不是一个 sqlite 库');
+
+    final titles = await service.readBookTitles([goodPath, badPath]);
+
+    expect(titles[goodPath], '书A');
+    expect(titles[badPath], isNull);
+  });
+
   test('库文件不存在时明确报错，而不是返回空结构', () async {
-    final missing = Directory('${stack.rootDir.path}/nope');
-    expect(missing.existsSync(), isFalse);
-    await expectLater(
-      service.listTables('book:not-exist'),
-      throwsA(anything),
-    );
+    final missing = p.join(stack.paths.booksDir, 'narrbook_not-exist.db');
+    expect(File(missing).existsSync(), isFalse);
+    await expectLater(service.listTables(missing), throwsA(anything));
   });
 }

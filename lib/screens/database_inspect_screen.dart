@@ -7,68 +7,47 @@ import '../theme/app_theme.dart';
 import '../widgets/app_empty_hint.dart';
 import '../widgets/data_pagination.dart';
 import '../widgets/island_bar.dart';
+import '../widgets/load_error_hint.dart';
 import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 
-/// 「数据库结构」页：只读查看当前用户库的表结构、索引与内容（按页）。
+/// 「数据库结构」页：只读查看**一个** sqlite 库文件的表结构、索引与内容。
 ///
-/// 顶部列出全部数据表及总行数；展开某张表显示其列结构（列名/类型/是否主键/
-/// 是否非空/默认值）、索引，以及内容（每页最多 20 行，超出经分页条翻页）。
+/// 由调试页的「查看全部数据文件」进入；库的选择由文件浏览页负责，本页不再
+/// 提供切库入口。顶部列出全部数据表及总行数；展开某张表显示其列结构（列名/
+/// 类型/是否主键/是否非空/默认值）、索引，以及内容（每页最多 20 行）。
 class DatabaseInspectScreen extends StatefulWidget {
-  const DatabaseInspectScreen({super.key, required this.service});
+  const DatabaseInspectScreen({
+    super.key,
+    required this.service,
+    required this.dbPath,
+    required this.title,
+  });
 
   final DebugDatabaseService service;
+
+  /// 要查看的库文件绝对路径。
+  final String dbPath;
+
+  /// 顶栏标题（通常是文件名）。
+  final String title;
 
   @override
   State<DatabaseInspectScreen> createState() => _DatabaseInspectScreenState();
 }
 
 class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
-  List<DebugDbInfo> _databases = const [];
-  String? _selectedId;
-  Future<List<DebugTableSummary>>? _tablesFuture;
-  bool _loadingDatabases = true;
-  String? _loadError;
+  late Future<List<DebugTableSummary>> _tablesFuture;
 
   @override
   void initState() {
     super.initState();
-    _loadDatabases();
+    _tablesFuture = widget.service.listTables(widget.dbPath);
   }
 
-  Future<void> _loadDatabases() async {
-    setState(() => _loadingDatabases = true);
-    try {
-      final all = await widget.service.listDatabases();
-      // 只列真实存在的库：文件没了还让人点进去只会看到一个空表页。
-      final existing = all.where((db) => db.exists).toList(growable: false);
-      if (!mounted) return;
-      setState(() {
-        _databases = existing;
-        _loadingDatabases = false;
-        _loadError = null;
-        if (existing.isEmpty) {
-          _selectedId = null;
-          _tablesFuture = null;
-        } else if (!existing.any((db) => db.id == _selectedId)) {
-          _selectedId = existing.first.id;
-          _tablesFuture = widget.service.listTables(_selectedId!);
-        }
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loadingDatabases = false;
-        _loadError = '$error';
-      });
-    }
-  }
-
-  void _select(String dbId) {
-    if (dbId == _selectedId) return;
+  void _reload() {
     setState(() {
-      _selectedId = dbId;
-      _tablesFuture = widget.service.listTables(dbId);
+      _tablesFuture = widget.service.listTables(widget.dbPath);
     });
   }
 
@@ -77,43 +56,17 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
     final colors = context.narrColors;
     return IslandAwareScaffold(
       backgroundColor: colors.background,
-      appBarBuilder: (context, extraRow) => NarrChatAppBar(
-        extraRowHeight: extraRow,
-        title: '数据库结构',
-      ),
+      appBarBuilder: (context, extraRow) =>
+          NarrChatAppBar(extraRowHeight: extraRow, title: widget.title),
       body: _buildBody(context),
     );
   }
 
   Widget _buildBody(BuildContext context) {
-    if (_loadingDatabases) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_loadError != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: AppEmptyHint(
-            icon: Icons.error_outline,
-            text: '数据库加载失败：$_loadError',
-          ),
-        ),
-      );
-    }
-    if (_databases.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: AppEmptyHint(icon: Icons.storage_outlined, text: '还没有任何库文件'),
-        ),
-      );
-    }
-
-    final selectedId = _selectedId;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _buildDbSelector(context),
+        _PathHeader(path: widget.dbPath),
         const Divider(height: 1),
         Expanded(
           child: FutureBuilder<List<DebugTableSummary>>(
@@ -123,14 +76,9 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
                 return const Center(child: CircularProgressIndicator());
               }
               if (snapshot.hasError) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: AppEmptyHint(
-                      icon: Icons.error_outline,
-                      text: '数据库加载失败：${snapshot.error}',
-                    ),
-                  ),
+                return LoadErrorHint(
+                  message: '数据库读取失败：${snapshot.error}',
+                  onRetry: _reload,
                 );
               }
               final tables = snapshot.data ?? const <DebugTableSummary>[];
@@ -151,7 +99,7 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
                   for (final summary in tables)
                     _TableTile(
                       service: widget.service,
-                      dbId: selectedId!,
+                      dbPath: widget.dbPath,
                       summary: summary,
                     ),
                 ],
@@ -162,33 +110,24 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
       ],
     );
   }
+}
 
-  /// 库选择条：多库视角的入口，横向可滚动。
-  Widget _buildDbSelector(BuildContext context) {
+/// 顶部路径行：小字显示当前查看的库文件，方便直接定位。
+class _PathHeader extends StatelessWidget {
+  const _PathHeader({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
     final colors = context.narrColors;
-    return SizedBox(
-      height: 56,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        children: [
-          for (final db in _databases)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(db.label),
-                selected: db.id == _selectedId,
-                tooltip: db.path,
-                labelStyle: TextStyle(
-                  fontSize: 12,
-                  color: db.id == _selectedId
-                      ? colors.textPrimary
-                      : colors.textSecondary,
-                ),
-                onSelected: (_) => _select(db.id),
-              ),
-            ),
-        ],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      child: Text(
+        path,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 11, color: colors.textSecondary),
       ),
     );
   }
@@ -198,14 +137,14 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
 class _TableTile extends StatefulWidget {
   const _TableTile({
     required this.service,
-    required this.dbId,
+    required this.dbPath,
     required this.summary,
   });
 
   final DebugDatabaseService service;
 
-  /// 当前查看的库 id。
-  final String dbId;
+  /// 当前查看的库文件路径。
+  final String dbPath;
 
   final DebugTableSummary summary;
 
@@ -222,6 +161,8 @@ class _TableTileState extends State<_TableTile> {
   DebugTablePage? _page;
   bool _loading = false;
   bool _loaded = false;
+  int _lastRequestedPage = 0;
+  String? _error;
 
   @override
   void dispose() {
@@ -230,10 +171,14 @@ class _TableTileState extends State<_TableTile> {
   }
 
   Future<void> _load(int page) async {
-    setState(() => _loading = true);
+    _lastRequestedPage = page;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final result = await widget.service.loadTable(
-        widget.dbId,
+        widget.dbPath,
         widget.summary.name,
         page: page,
         pageSize: _pageSize,
@@ -243,8 +188,12 @@ class _TableTileState extends State<_TableTile> {
         _page = result;
         _loading = false;
       });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _loading = false;
+      });
     }
   }
 
@@ -269,6 +218,25 @@ class _TableTileState extends State<_TableTile> {
 
   Widget _buildContent(BuildContext context) {
     final colors = context.narrColors;
+    if (_error != null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '读取失败：$_error',
+                style: TextStyle(fontSize: 12, color: colors.textSecondary),
+              ),
+            ),
+            TextButton(
+              onPressed: () => _load(_lastRequestedPage),
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
     if (_page == null) {
       return _loading
           ? const Padding(
@@ -390,7 +358,9 @@ class _TableTileState extends State<_TableTile> {
                 for (final c in table.columns)
                   DataColumn(
                     label: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: _maxCellWidth),
+                      constraints: const BoxConstraints(
+                        maxWidth: _maxCellWidth,
+                      ),
                       child: Text(
                         c.name,
                         maxLines: 1,
@@ -404,9 +374,7 @@ class _TableTileState extends State<_TableTile> {
                   DataRow(
                     cells: [
                       for (final c in table.columns)
-                        DataCell(
-                          _tableCell(context, c.name, row[c.name]),
-                        ),
+                        DataCell(_tableCell(context, c.name, row[c.name])),
                     ],
                   ),
               ],

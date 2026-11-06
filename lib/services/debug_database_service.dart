@@ -100,27 +100,35 @@ class DebugDbInfo {
 
 /// 调试数据库访问抽象（可注入替身，避免测试触碰真实库）。
 ///
-/// R3 没有"当前那个库"了：先 [listDatabases] 拿到库清单，再按 [dbId] 查表。
+/// R3 没有"当前那个库"了：文件浏览页把库文件路径传进来，这里按路径只读打开。
 abstract class DebugDatabaseService {
-  /// 全部可查看的库文件（含不存在的项，便于暴露"文件丢了"）。
+  /// 全部已知库文件及其版本（含不存在的项，便于暴露"文件丢了"）。
+  ///
+  /// 只给「查看各数据库版本」对话框用；文件浏览页不依赖这份固定清单。
   Future<List<DebugDbInfo>> listDatabases();
 
-  /// 列出某个库里全部业务表（排除 `sqlite_*` 系统表）及各自总行数。
-  Future<List<DebugTableSummary>> listTables(String dbId);
+  /// 列出某个库文件里全部业务表（排除 `sqlite_*` 系统表）及各自总行数。
+  Future<List<DebugTableSummary>> listTables(String dbPath);
 
   /// 读取某库某表的第 [page] 页（每页 [pageSize] 行）结构与内容。
   Future<DebugTablePage> loadTable(
-    String dbId,
+    String dbPath,
     String tableName, {
     int page = 0,
     int pageSize = 20,
   });
+
+  /// 批量读取书籍库的 `book_meta.title`，供文件列表显示书名。
+  ///
+  /// 返回值以传入的库路径为键；读不到（不是书库 / 表不存在 / 库损坏 / 被占用）
+  /// 时值为 `null`，不抛整体失败。
+  Future<Map<String, String?>> readBookTitles(List<String> dbPaths);
 }
 
 /// 真实实现：按路径只读打开选中的库，不经过任何 DAO。
 class SqliteDebugDatabaseService implements DebugDatabaseService {
   SqliteDebugDatabaseService({AppStores? stores})
-      : _stores = stores ?? AppRepositories.instance.stores;
+    : _stores = stores ?? AppRepositories.instance.stores;
 
   final AppStores _stores;
 
@@ -157,7 +165,11 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
 
     entries.add((id: 'cache', label: '本地缓存库', path: _paths.cacheDbPath));
     entries.add((id: 'sync', label: '本地备份状态库', path: _paths.syncDbPath));
-    entries.add((id: 'legacy-backup', label: '旧版备份（R2）', path: _paths.backupPath));
+    entries.add((
+      id: 'legacy-backup',
+      label: '旧版备份（R2）',
+      path: _paths.backupPath,
+    ));
 
     final result = <DebugDbInfo>[];
     for (final entry in entries) {
@@ -165,22 +177,24 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
       final exists = await file.exists();
       final size = exists ? (await file.stat()).size : 0;
       final version = exists ? await _readUserVersion(entry.path) : 0;
-      result.add(DebugDbInfo(
-        id: entry.id,
-        label: entry.label,
-        path: entry.path,
-        expectedVersion: userDataDbVersion,
-        actualVersion: version,
-        sizeBytes: size,
-        exists: exists,
-      ));
+      result.add(
+        DebugDbInfo(
+          id: entry.id,
+          label: entry.label,
+          path: entry.path,
+          expectedVersion: userDataDbVersion,
+          actualVersion: version,
+          sizeBytes: size,
+          exists: exists,
+        ),
+      );
     }
     return result;
   }
 
   @override
-  Future<List<DebugTableSummary>> listTables(String dbId) async {
-    final db = await _open(dbId);
+  Future<List<DebugTableSummary>> listTables(String dbPath) async {
+    final db = await _open(dbPath);
     try {
       final rows = await db.rawQuery(
         "SELECT name FROM sqlite_master "
@@ -202,12 +216,12 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
 
   @override
   Future<DebugTablePage> loadTable(
-    String dbId,
+    String dbPath,
     String tableName, {
     int page = 0,
     int pageSize = 20,
   }) async {
-    final db = await _open(dbId);
+    final db = await _open(dbPath);
     try {
       final columns = _readColumns(
         await db.rawQuery('PRAGMA table_info("$tableName")'),
@@ -231,24 +245,41 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
     }
   }
 
-  /// 按库 id 解析路径并只读打开；库里没有这个文件时明确报错。
-  Future<Database> _open(String dbId) async {
-    final info = await _infoOf(dbId);
-    if (!info.exists) {
-      throw StateError('库文件不存在：${info.path}');
+  @override
+  Future<Map<String, String?>> readBookTitles(List<String> dbPaths) async {
+    final result = <String, String?>{};
+    for (final dbPath in dbPaths) {
+      String? title;
+      try {
+        final db = await _open(dbPath);
+        try {
+          final rows = await db.rawQuery('SELECT title FROM book_meta LIMIT 1');
+          final value = rows.isEmpty ? null : rows.first['title'];
+          if (value is String && value.trim().isNotEmpty) {
+            title = value.trim();
+          }
+        } finally {
+          await db.close();
+        }
+      } catch (_) {
+        // 不是书库 / 表不存在 / 文件损坏 / 被占用：按「书名未知」处理。
+        title = null;
+      }
+      result[dbPath] = title;
     }
-    return databaseFactory.openDatabase(
-      info.path,
-      options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
-    );
+    return result;
   }
 
-  Future<DebugDbInfo> _infoOf(String dbId) async {
-    final all = await listDatabases();
-    for (final info in all) {
-      if (info.id == dbId) return info;
+  /// 按库文件路径只读打开；文件不存在时明确报错。
+  Future<Database> _open(String dbPath) async {
+    final file = File(dbPath);
+    if (!await file.exists()) {
+      throw StateError('库文件不存在：$dbPath');
     }
-    throw StateError('未知的库：$dbId');
+    return databaseFactory.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+    );
   }
 
   Future<int> _readUserVersion(String path) async {
@@ -263,17 +294,20 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
     }
   }
 
-  static int _asInt(Object? value) => value is int ? value : int.parse('$value');
+  static int _asInt(Object? value) =>
+      value is int ? value : int.parse('$value');
 
   static List<DebugColumn> _readColumns(List<Map<String, Object?>> rows) {
     return rows
-        .map((r) => DebugColumn(
-              name: r['name'] as String,
-              type: (r['type'] as String?) ?? '',
-              notNull: _asInt(r['notnull']) != 0,
-              isPrimaryKey: _asInt(r['pk']) != 0,
-              defaultValue: r['dflt_value'],
-            ))
+        .map(
+          (r) => DebugColumn(
+            name: r['name'] as String,
+            type: (r['type'] as String?) ?? '',
+            notNull: _asInt(r['notnull']) != 0,
+            isPrimaryKey: _asInt(r['pk']) != 0,
+            defaultValue: r['dflt_value'],
+          ),
+        )
         .toList();
   }
 
@@ -288,7 +322,11 @@ class SqliteDebugDatabaseService implements DebugDatabaseService {
           .whereType<String>()
           .toList();
       result.add(
-        DebugIndex(name: name, unique: _asInt(idx['unique']) != 0, columns: cols),
+        DebugIndex(
+          name: name,
+          unique: _asInt(idx['unique']) != 0,
+          columns: cols,
+        ),
       );
     }
     return result;

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/screens/debug_files_screen.dart';
 import 'package:narrchat/screens/debug_screen.dart';
 import 'package:narrchat/services/debug_database_service.dart';
+import 'package:narrchat/services/debug_file_service.dart';
 import 'package:narrchat/services/update_check_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 
@@ -33,6 +35,7 @@ Future<void> _pumpDebugScreen(
   WidgetTester tester,
   FakeUpdateCheckService service, {
   DebugDatabaseService? dbService,
+  DebugFileService? fileService,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -41,6 +44,7 @@ Future<void> _pumpDebugScreen(
       home: DebugScreen(
         updateService: service,
         databaseService: dbService ?? FakeDebugDatabaseService(),
+        fileService: fileService ?? FakeDebugFileService(),
       ),
     ),
   );
@@ -63,8 +67,7 @@ Future<void> _tapVersionItem(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('强制触发：以 forceShow 发起检查并弹出「发现新版本」对话框',
-      (tester) async {
+  testWidgets('强制触发：以 forceShow 发起检查并弹出「发现新版本」对话框', (tester) async {
     final service = FakeUpdateCheckService([UpdateAvailable(_release)]);
     await _pumpDebugScreen(tester, service);
 
@@ -80,8 +83,7 @@ void main() {
   });
 
   testWidgets('检查失败：悬浮通知提示原因，不弹对话框', (tester) async {
-    final service =
-        FakeUpdateCheckService([const CheckFailed('网络请求失败：boom')]);
+    final service = FakeUpdateCheckService([const CheckFailed('网络请求失败：boom')]);
     await _pumpDebugScreen(tester, service);
 
     await _tapProbeItem(tester);
@@ -161,10 +163,30 @@ void main() {
     await _tapVersionItem(tester);
 
     expect(find.text('数据库版本'), findsNothing);
-    expect(
-      find.text('读取数据库版本失败：Bad state: 数据库已被占用'),
-      findsOneWidget,
-    );
+    expect(find.text('读取数据库版本失败：Bad state: 数据库已被占用'), findsOneWidget);
     await flushNotices(tester);
+  });
+
+  testWidgets('查看全部数据文件：进入只读文件浏览页并列出根目录', (tester) async {
+    final service = FakeUpdateCheckService([const NoRelease()]);
+    final fileService = FakeDebugFileService(
+      directories: {
+        '': [
+          debugFileEntry('user_data', isDirectory: true),
+          debugFileEntry('local_config', isDirectory: true),
+        ],
+      },
+    );
+    await _pumpDebugScreen(tester, service, fileService: fileService);
+
+    await tester.tap(find.text('查看全部数据文件（只读）'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(DebugFilesScreen), findsOneWidget);
+    expect(fileService.listedPaths, ['']);
+    expect(find.text('user_data'), findsOneWidget);
+    expect(find.text('local_config'), findsOneWidget);
+    // 旧的数据库结构入口已被替换，不应当还能看到。
+    expect(find.text('查看数据库结构、内容和表（可切换库）'), findsNothing);
   });
 }

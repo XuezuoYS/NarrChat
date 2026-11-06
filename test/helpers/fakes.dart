@@ -23,6 +23,7 @@ import 'package:narrchat/services/app_repositories.dart';
 import 'package:narrchat/services/app_stores.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
+import 'package:narrchat/services/debug_file_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/storage_service.dart';
@@ -130,16 +131,18 @@ class TestStack {
     int historyRounds = 1,
     int memorySummaryRounds = 0,
   }) {
-    return repos.books.createBook(Book(
-      uuid: uuid ?? '',
-      title: title,
-      category: category,
-      baseSetting: baseSetting,
-      globalPrePrompt: globalPrePrompt,
-      globalPostPrompt: globalPostPrompt,
-      historyRounds: historyRounds,
-      memorySummaryRounds: memorySummaryRounds,
-    ));
+    return repos.books.createBook(
+      Book(
+        uuid: uuid ?? '',
+        title: title,
+        category: category,
+        baseSetting: baseSetting,
+        globalPrePrompt: globalPrePrompt,
+        globalPostPrompt: globalPostPrompt,
+        historyRounds: historyRounds,
+        memorySummaryRounds: memorySummaryRounds,
+      ),
+    );
   }
 
   /// 直接改某本书的"最近对话时间"（首页时间排序用例用）。
@@ -197,11 +200,13 @@ class TestStack {
     List<String> aiImages = const [],
   }) async {
     final chain = await repos.rounds.loadChain(bookUuid);
-    final resolvedFather = fatherUuid ?? _fatherOf(chain, roundIndex, branchUuid);
+    final resolvedFather =
+        fatherUuid ?? _fatherOf(chain, roundIndex, branchUuid);
 
     var maxSerial = 0;
     for (final meta in chain.allMeta) {
-      final sameGroup = meta.branchUuid == branchUuid &&
+      final sameGroup =
+          meta.branchUuid == branchUuid &&
           meta.roundIndex == roundIndex &&
           (meta.fatherUuid ?? '') == (resolvedFather ?? '');
       if (sameGroup && meta.roundSerialNum > maxSerial) {
@@ -245,12 +250,14 @@ class TestStack {
   }) async {
     final seeded = <RoundGeneration>[];
     for (var i = 1; i <= count; i++) {
-      seeded.add(await seedRound(
-        bookUuid,
-        roundIndex: i,
-        userInput: '第 $i 轮的用户输入',
-        aiNarrative: '第 $i 轮的剧情正文。' * bodyRepeats,
-      ));
+      seeded.add(
+        await seedRound(
+          bookUuid,
+          roundIndex: i,
+          userInput: '第 $i 轮的用户输入',
+          aiNarrative: '第 $i 轮的剧情正文。' * bodyRepeats,
+        ),
+      );
     }
     return seeded;
   }
@@ -282,13 +289,15 @@ class TestStack {
     String postPrompt = '',
     String systemPrompt = '',
   }) {
-    return repos.mod.createMod(Mod(
-      name: name,
-      description: description,
-      prePrompt: prePrompt,
-      postPrompt: postPrompt,
-      systemPrompt: systemPrompt,
-    ));
+    return repos.mod.createMod(
+      Mod(
+        name: name,
+        description: description,
+        prePrompt: prePrompt,
+        postPrompt: postPrompt,
+        systemPrompt: systemPrompt,
+      ),
+    );
   }
 }
 
@@ -325,9 +334,9 @@ class FakeImageRevivalService implements ImageRevivalService {
 class ChatCompatibleSettings extends AiSettingsProvider {
   @override
   AiPlatform get selectedPlatform => AiPlatforms.defaultPlatform.copyWith(
-        apiType: ApiType.openAiCompatible,
-        baseUrl: 'https://api.deepseek.com',
-      );
+    apiType: ApiType.openAiCompatible,
+    baseUrl: 'https://api.deepseek.com',
+  );
 }
 
 /// 开启 Agent 模式的实验性设置替身（构造注入档位，不触碰真实配置文件）。
@@ -339,7 +348,7 @@ class ChatCompatibleSettings extends AiSettingsProvider {
 /// 「Agent × Responses 线路」两条路径。
 class AgentModeSettings extends ExperimentalSettingsProvider {
   AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv2})
-      : super(initialLevel: level);
+    : super(initialLevel: level);
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，
@@ -377,7 +386,8 @@ class FakeStreamingAiService extends AiService {
     }
     _onChunk?.call(const AiStreamChunk(done: true));
     return const AiCallResult(
-      content: '## 剧情演绎\n流式生成的最终正文\n'
+      content:
+          '## 剧情演绎\n流式生成的最终正文\n'
           '## 推荐行动\n\n'
           '## 当前时间\n第一天 午时\n'
           '## 世界状态\n\n'
@@ -411,11 +421,7 @@ class RecordingAiService extends AiService {
     bodies.add(requestBody);
     final err = failWith;
     if (err != null) throw err;
-    return AiCallResult(
-      content: content,
-      promptTokens: 1,
-      completionTokens: 1,
-    );
+    return AiCallResult(content: content, promptTokens: 1, completionTokens: 1);
   }
 
   @override
@@ -450,7 +456,8 @@ class RecordingAiService extends AiService {
 }
 
 /// [RecordingAiService] 的默认正文（六区块齐全，`AiResponseParser` 可解析落库）。
-const String kRecordingFullContent = '## 剧情演绎\n测试正文\n'
+const String kRecordingFullContent =
+    '## 剧情演绎\n测试正文\n'
     '## 推荐行动\n\n'
     '## 当前时间\n第一天 午时\n'
     '## 世界状态\n\n'
@@ -474,7 +481,8 @@ class ToggleAiService extends AiService {
     onRequestBody?.call('{"model":"test","messages":[]}');
     if (fail) throw const AiException('模拟失败');
     return const AiCallResult(
-      content: '## 剧情演绎\n成功正文\n'
+      content:
+          '## 剧情演绎\n成功正文\n'
           '## 推荐行动\n\n'
           '## 当前时间\n第一天 午时\n'
           '## 世界状态\n\n'
@@ -692,7 +700,9 @@ class FakeStorageService implements StorageService {
   }
 
   @override
-  Future<StorageImportResult> importArchive({required String archivePath}) async {
+  Future<StorageImportResult> importArchive({
+    required String archivePath,
+  }) async {
     importedArchive = archivePath;
     return importResult;
   }
@@ -721,32 +731,42 @@ class FakeImageDeletionService implements ImageDeletionService {
   }
 }
 
-/// 内存版 [DebugDatabaseService]（R3：多库选择器 + 按库列表 / 读表）。
+/// 内存版 [DebugDatabaseService]（R3：文件浏览 + 按文件路径列表 / 读表）。
 ///
-/// 按 [pageBuilder] 生成每页数据，记录最近一次调用的库、表与页参数，
-/// 供「数据库结构」页测试校验切换库与翻页。
+/// 按 [pageBuilder] 生成每页数据，记录最近一次调用的库路径、表与页参数，
+/// 供「数据库结构」页与文件浏览页测试校验路由和翻页。
 class FakeDebugDatabaseService implements DebugDatabaseService {
   FakeDebugDatabaseService({
     this.databases = const [],
     this.tables = const [],
     this.pageBuilder,
-  });
+    Map<String, String?>? bookTitles,
+  }) : bookTitles = bookTitles ?? {};
 
   /// listDatabases 的返回值（含"文件不存在"的项）。
   List<DebugDbInfo> databases;
 
   final List<DebugTableSummary> tables;
 
-  /// 按 `(dbId, name, page, pageSize)` 生成一页数据；为 null 时返回空页。
-  final DebugTablePage Function(String dbId, String name, int page, int pageSize)?
-      pageBuilder;
+  /// 按 `(dbPath, name, page, pageSize)` 生成一页数据；为 null 时返回空页。
+  final DebugTablePage Function(
+    String dbPath,
+    String name,
+    int page,
+    int pageSize,
+  )?
+  pageBuilder;
+
+  /// readBookTitles 的返回值（键为库文件绝对路径）。
+  final Map<String, String?> bookTitles;
 
   int listDatabasesCount = 0;
   int loadCount = 0;
-  String? lastDbId;
+  String? lastDbPath;
   String? lastName;
   int? lastPage;
   int? lastPageSize;
+  final List<String> titlePaths = [];
 
   @override
   Future<List<DebugDbInfo>> listDatabases() async {
@@ -755,25 +775,25 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
   }
 
   @override
-  Future<List<DebugTableSummary>> listTables(String dbId) async {
-    lastDbId = dbId;
+  Future<List<DebugTableSummary>> listTables(String dbPath) async {
+    lastDbPath = dbPath;
     return tables;
   }
 
   @override
   Future<DebugTablePage> loadTable(
-    String dbId,
+    String dbPath,
     String tableName, {
     int page = 0,
     int pageSize = 20,
   }) async {
     loadCount++;
-    lastDbId = dbId;
+    lastDbPath = dbPath;
     lastName = tableName;
     lastPage = page;
     lastPageSize = pageSize;
     final builder = pageBuilder;
-    if (builder != null) return builder(dbId, tableName, page, pageSize);
+    if (builder != null) return builder(dbPath, tableName, page, pageSize);
     return DebugTablePage(
       name: tableName,
       columns: const [],
@@ -784,6 +804,78 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
       pageSize: pageSize,
     );
   }
+
+  @override
+  Future<Map<String, String?>> readBookTitles(List<String> dbPaths) async {
+    titlePaths.addAll(dbPaths);
+    return {for (final path in dbPaths) path: bookTitles[path]};
+  }
+}
+
+/// 构造一个测试用文件条目（名称从相对路径末段取）。
+DebugFileEntry debugFileEntry(
+  String relativePath, {
+  DebugFileKind kind = DebugFileKind.text,
+  int sizeBytes = 0,
+  DateTime? modified,
+  bool isDirectory = false,
+}) {
+  return DebugFileEntry(
+    name: relativePath.split('/').last,
+    relativePath: relativePath,
+    isDirectory: isDirectory,
+    sizeBytes: sizeBytes,
+    modified: modified,
+    kind: isDirectory ? DebugFileKind.directory : kind,
+  );
+}
+
+/// 内存版 [DebugFileService]：按目录路径返回预置条目，记录列目录调用。
+class FakeDebugFileService implements DebugFileService {
+  FakeDebugFileService({
+    this.rootPath = '/root',
+    Map<String, List<DebugFileEntry>>? directories,
+    Map<String, String>? texts,
+    Map<String, Object>? errors,
+  }) : directories = directories ?? {},
+       texts = texts ?? {},
+       errors = errors ?? {};
+
+  @override
+  final String rootPath;
+
+  /// 相对目录路径 → 条目列表。
+  final Map<String, List<DebugFileEntry>> directories;
+
+  /// 相对文件路径 → 文本内容。
+  final Map<String, String> texts;
+
+  /// 相对路径 → 抛出的异常（可随时增删，用于重试用例）。
+  final Map<String, Object> errors;
+
+  final List<String> listedPaths = [];
+
+  @override
+  Future<List<DebugFileEntry>> listDirectory(String relativePath) async {
+    listedPaths.add(relativePath);
+    final error = errors[relativePath];
+    if (error != null) throw error;
+    return List.of(directories[relativePath] ?? const []);
+  }
+
+  @override
+  Future<String> readTextFile(String relativePath) async {
+    final error = errors[relativePath];
+    if (error != null) throw error;
+    final content = texts[relativePath];
+    if (content != null) return content;
+    throw DebugFileException('文件不存在：$relativePath');
+  }
+
+  @override
+  String absolutePathOf(String relativePath) {
+    return relativePath.isEmpty ? rootPath : '$rootPath/$relativePath';
+  }
 }
 
 /// 更新检查服务替身：不发网络请求，按预置结果序列回放，并记录调用参数。
@@ -792,8 +884,8 @@ class FakeDebugDatabaseService implements DebugDatabaseService {
 /// 更新提示框」（`debug_screen_test`）两类用例共用。
 class FakeUpdateCheckService extends UpdateCheckService {
   FakeUpdateCheckService([List<UpdateCheckResult> results = const []])
-      : _results = List.of(results),
-        super(client: MockClient((_) async => http.Response('', 404)));
+    : _results = List.of(results),
+      super(client: MockClient((_) async => http.Response('', 404)));
 
   final List<UpdateCheckResult> _results;
 
@@ -855,7 +947,8 @@ class FakeCloudSyncProvider extends CloudSyncProvider {
 
 /// [CloudSyncProvider] 替身：覆写「保留历史版本」云端读写，
 /// 切断真实 WebDAV（供弹窗 / 面板 widget 测试复用）。
-class StubCloudSyncProvider extends CloudSyncProvider {  StubCloudSyncProvider({
+class StubCloudSyncProvider extends CloudSyncProvider {
+  StubCloudSyncProvider({
     this.cloudKeepVersions = SyncConfig.defaultKeepVersions,
     this.refreshError,
     this.saveError,
@@ -894,4 +987,3 @@ class StubCloudSyncProvider extends CloudSyncProvider {  StubCloudSyncProvider({
     return null;
   }
 }
-
