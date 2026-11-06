@@ -65,6 +65,16 @@ void main() {
     );
   }
 
+  /// 用户气泡外框（带底色 + 圆角的那一圈）的矩形。
+  Rect userBubbleRect(WidgetTester tester) => tester.getRect(
+        find
+            .ancestor(
+              of: find.byType(UserBubbleBody),
+              matching: find.byType(DecoratedBox),
+            )
+            .first,
+      );
+
   /// 单一 pump 入口：以用户 / AI 气泡渲染 [text]（渲染模式判定用例复用）。
   ///
   /// 第二帧等待「收起判定」回报：是否超长只在布局阶段才知道，展开箭头因此
@@ -297,6 +307,8 @@ void main() {
         tester.getRect(find.byIcon(Icons.keyboard_arrow_down_rounded));
     expect(body.width, closeTo(296, 0.6));
     expect(text.width, closeTo(296, 0.6), reason: '正文满宽，不给控件让位');
+    expect(userBubbleRect(tester).width, closeTo(324, 0.6),
+        reason: '长正文量出来超过上限 → 气泡达窄屏上限');
     // 箭头在正文**下方**的尾行右端：两者不重叠，也不吃正文宽度。
     // （纵向位置按可见区 [body] 判：未裁切的 MarkdownPreview 比可见区高。）
     expect(arrow.top, greaterThanOrEqualTo(body.bottom));
@@ -320,6 +332,60 @@ void main() {
     expect(up.top,
         greaterThanOrEqualTo(
             tester.getRect(find.byType(CollapsibleContent)).bottom));
+  });
+
+  testWidgets('短消息用户气泡：宽度跟正文走，不再撑满可用宽', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: const ChatBubble(isUser: true, text: '短消息'),
+      ),
+    );
+    await tester.pump();
+
+    final bubble = userBubbleRect(tester);
+    final textViewport = tester.getRect(find.byType(PlainTextPreview));
+    // 气泡 = 正文最长行 + 左右内边距。
+    expect(bubble.width,
+        closeTo(textViewport.width + kUserBubbleHorizontalPadding * 2, 0.6));
+    // 远小于窄屏上限 324：短消息不再被撑成整行。
+    expect(bubble.width, lessThan(324 - 40));
+    // 仍然靠右：右缘贴内容列右缘，左边留出大片空白。
+    final column = tester.getRect(find.byType(ChatBubble));
+    expect(bubble.right, closeTo(column.right, 0.6));
+    expect(bubble.left, greaterThan(column.left + 100));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('宽屏短消息用户气泡：同样按正文收窄（不撑满 680 阅读列）',
+      (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 800,
+        bubble: const ChatBubble(isUser: true, text: '好'),
+      ),
+    );
+    await tester.pump();
+
+    final bubble = userBubbleRect(tester);
+    expect(bubble.width, lessThan(200), reason: '一个字的气泡只占自己的宽度');
+    expect(bubble.right, closeTo(tester.getRect(find.byType(ChatBubble)).right, 0.6),
+        reason: '宽屏同样靠右');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('短 Markdown 用户气泡：同样按内容收窄', (tester) async {
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: const ChatBubble(isUser: true, text: '- 一项'),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(MarkdownBody), findsOneWidget, reason: '命中了列表语法');
+    expect(userBubbleRect(tester).width, lessThan(324 - 40));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('用户气泡：无 md 特征的多行手打文本按纯文本渲染（换行生效）',

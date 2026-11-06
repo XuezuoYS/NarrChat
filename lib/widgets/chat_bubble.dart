@@ -37,13 +37,18 @@ double chatBubbleMaxWidth(double available) =>
 /// 既表达「靠右」又不至于让正文列过窄。
 const double kUserBubbleNarrowRatio = 0.9;
 
+/// 用户气泡左右内边距（气泡宽度 = 正文自然宽度 + 2 × 本值）。
+const double kUserBubbleHorizontalPadding = 14;
+
 /// 聊天气泡。
 ///
 /// 布局约定：用户气泡靠右，AI 气泡靠左。
 /// - 窄屏（可用宽度 < [kResponsiveBreakpoint]）：AI 头像移至正文上方并左对齐，
 ///   右侧以「第 n 轮」小字标注（标题色、小于正文），正文左右对齐填满内容列；
-///   用户气泡额外留出左侧空白（占内容列 `1 - [kUserBubbleNarrowRatio]`）。
-/// - 宽屏：AI 头像内嵌正文左上，正文按内容收窄、受阅读列宽上限约束。
+///   用户气泡**宽度跟正文走**（上限为内容列的 [kUserBubbleNarrowRatio]），
+///   短消息不再被撑满一行，左侧多出来的空白正表达「靠右」。
+/// - 宽屏：AI 头像内嵌正文左上，正文按内容收窄、受阅读列宽上限约束；
+///   用户气泡同样按正文自然宽度收窄，上限为 [kChatBubbleMaxWidth]。
 /// - 用户气泡正文超过 [kUserBubbleMaxCollapsedLines] 行时默认收起，气泡下方
 ///   出现展开箭头（见 [UserBubbleBody]）；AI 气泡不折叠。
 /// - [roundIndex]：AI 气泡窄屏头部的「第 n 轮」标注；为空时不显示。
@@ -99,7 +104,8 @@ class ChatBubble extends StatelessWidget {
         final Widget bubble;
         if (isUser) {
           // 用户消息：右对齐；窄屏下正文上限为内容列的 [kUserBubbleNarrowRatio]，
-          // 左侧留出较宽的空白以表达「靠右」。
+          // 左侧留出较宽的空白以表达「靠右」；宽度本身跟正文自然宽度走
+          //（收窄逻辑在 [_buildContent] 的 IntrinsicWidth 处）。
           bubble = Align(
             alignment: Alignment.centerRight,
             child: ConstrainedBox(
@@ -238,15 +244,23 @@ class ChatBubble extends StatelessWidget {
         // AI 侧始终走 Markdown；用户侧仅在文本具有 Markdown 结构特征（空行分段、
         // 行首块级标记、成对内联标记）时走 Markdown，否则按纯文本渲染，保证
         // 手打的换行不被软换行规则折叠成空格（判定在 [MarkdownPreview] 内）。
+        // 用户气泡**宽度跟正文走**：[IntrinsicWidth] 先量出正文的自然宽度（不超过
+        // 外层给的气泡上限），再把气泡收紧到该宽度——短消息不再被撑满一整行；
+        // 长正文量出来的宽度超过上限，会被外层约束夹住、照常换行（与从前一致）。
         if (isUser)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: context.narrColors.userBubble,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              child: UserBubbleBody(text: text),
+          IntrinsicWidth(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: context.narrColors.userBubble,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: kUserBubbleHorizontalPadding,
+                  vertical: 9,
+                ),
+                child: UserBubbleBody(text: text),
+              ),
             ),
           )
         else
