@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/repositories/round_repository.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/widgets/image_preview.dart';
 
@@ -85,6 +87,21 @@ class _StreamFailThenOkAiService extends AiService {
       promptTokens: 1,
       completionTokens: 1,
     );
+  }
+}
+
+/// 请求组装阶段必失败的仓储替身：`loadUpstreamContext` 是 `_planSend` 的第一步，
+/// 在它上面抛异常即可模拟「还没算出目标轮号就失败」。
+class _FailingUpstreamRounds extends RoundRepository {
+  _FailingUpstreamRounds({required super.books});
+
+  @override
+  Future<UpstreamContext> loadUpstreamContext({
+    required String bookUuid,
+    required RoundChain chain,
+    required int limit,
+  }) async {
+    throw StateError('模拟组装失败');
   }
 }
 
@@ -329,6 +346,42 @@ void main() {
       // 失败气泡展示图片缩略条 + 用户输入文本。
       expect(find.byType(ImagePreviewStrip), findsOneWidget);
       expect(find.text('带图失败'), findsOneWidget);
+    });
+  });
+
+  group('失败落点', () {
+    test('刷新中间轮：组装阶段失败的错误代落在被刷新轮，不是链尾 +1', () async {
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
+      await stack.seedRounds('b1', count: 3, bodyRepeats: 1);
+
+      final provider = RoundProvider(
+        rounds: _FailingUpstreamRounds(books: stack.stores.books),
+        books: stack.repos.books,
+        aiService: ToggleAiService(),
+        retryDelay: Duration.zero,
+      );
+      await provider.loadRounds('b1');
+
+      await provider.refreshRound(
+        provider.rounds[1],
+        book: const Book(uuid: 'b1', title: '测试书'),
+      );
+
+      expect(
+        provider.rounds.map((r) => r.roundIndex).toList(),
+        [1, 2],
+        reason: '错误代取代第 2 轮旧代，后续第 3 轮随旧代离开活动链',
+      );
+      final failed = provider.rounds.last;
+      expect(failed.roundIndex, 2, reason: '修复前会落到第 4 轮（链尾 +1）');
+      expect(failed.isError, isTrue);
+      expect(failed.message, contains('模拟组装失败'));
+      expect(failed.userInput, '第 2 轮的用户输入', reason: '保留被刷新轮的输入');
+      expect(provider.error, isNull, reason: '错误代落库成功不暴露 error');
+      expect(provider.pendingRoundIndex, isNull, reason: '生成结束后落点清空');
+      expect(provider.isSending, isFalse);
     });
   });
 }

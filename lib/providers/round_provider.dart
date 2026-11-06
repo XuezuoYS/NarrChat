@@ -108,6 +108,17 @@ class _BookGenState {
 
   /// 生成期间展示的用户输入（结束 / 中断后清除）。
   String pendingUserInput = '';
+
+  /// 本次生成应落在的轮号（null = 当前没有生成）。
+  ///
+  /// 与 [pendingUserInput] 同时置位 / 清空：
+  /// - 普通新一轮 = 链尾 +1（见 `RoundProvider.nextRoundIndex`）；
+  /// - 「刷新本轮 / 修改并重新提问 / 按意见修改」= **被重写的那一轮**。
+  ///
+  /// 界面据此把生成中气泡画在真正的位置：R2 时代刷新会先删该轮起的投影行，
+  /// 「链尾 +1」恰好等于目标轮号；R3 改成同轮新增一代后若继续沿用链尾 +1，
+  /// 刷新第 N 轮会先在末尾冒充「第 N+1 轮正在生成」，完成 / 停止后才跳回第 N 轮。
+  int? pendingRoundIndex;
 }
 
 /// 轮次状态管理：加载、发送（组装 Prompt + 调用 AI + 解析入库）、删除、刷新、保存快照。
@@ -352,6 +363,13 @@ class RoundProvider extends ChangeNotifier {
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _curGen?.pendingUserInput ?? '';
 
+  /// 生成中气泡应落在的轮号（null = 当前没有生成）。
+  ///
+  /// 普通新一轮 = 链尾 +1；「刷新本轮 / 修改并重新提问 / 按意见修改」=
+  /// **被重写的轮号**。界面把待定气泡画在这一轮的位置，并在生成期间暂时隐藏
+  /// 该轮旧代与后续轮次（见 `ChatScreen._rebuildGeometry`）。
+  int? get pendingRoundIndex => _curGen?.pendingRoundIndex;
+
   /// 当前正在生成中的书籍 uuid（供跨书进程提示栏展示，点击可跳转对应书籍）。
   List<String> get activeGenerationBookUuids =>
       [for (final g in _gens.values) if (g.isSending) g.bookUuid];
@@ -398,10 +416,13 @@ class RoundProvider extends ChangeNotifier {
   String? get error => _error;
   Round? get latestRound => _rounds.isEmpty ? null : _rounds.last;
 
-  /// 当前书籍下一轮的轮号（新轮 `roundIndex`；也是错误代「本该产生的那一轮」）。
+  /// 当前书籍下一轮的轮号（新轮 `roundIndex`；新建轮失败时的错误代落点）。
   ///
   /// 链非空 = 链尾 +1；**空分支**（刚分叉还没写过轮次）= 分叉点轮号 +1。
   /// 后者必须问仓储，否则在 IF 线上会从第 1 轮开始写，把轮号撞回主线。
+  ///
+  /// ⚠️ 它只描述「新建轮」；刷新 / 修改轮的落点是**被重写的那一轮**，
+  /// 见 [pendingRoundIndex]（两者混用曾把生成中气泡错画成「第 N+1 轮」）。
   int get nextRoundIndex => _chain.nextRoundIndex;
 
   /// 中断指定书（默认当前查看书）的生成（流式会中止 HTTP 连接；非流式丢弃结果）。
@@ -857,8 +878,9 @@ class RoundProvider extends ChangeNotifier {
   /// 意图 → 本次请求计划（**纯组装**：不读写生成状态、不落库、不发网络）。
   ///
   /// 「先删轮再发」的用途（[RoundSendKind.reaskRound] / [RoundSendKind.rewriteByOpinion]）
-  /// 在这里用**虚拟投影**表达截断语义，从而不必真的删库就能算出实发请求体：
-  /// 执行阶段再按 [_SendPlan.trimFromRoundIndex] 真删（见 [sendIntent]）。
+  /// 在这里用**虚拟投影**表达截断语义，从而不必真的删库就能算出实发请求体；
+  /// R3 的实发阶段**不删旧代**：新代直接插进同组并设为选中（见 [sendIntent]）。
+  /// 界面侧的「生成期间按目标轮截断」只是展示投影，不写库。
   ///
   /// 每个用途的投影都先拼上父上文前缀（父分支到分叉点为止的上文）：空分支 /
   /// 分支上的任何一轮都不能只拿本分支的历史，否则新分支会像从零开始。
@@ -1353,8 +1375,9 @@ class RoundProvider extends ChangeNotifier {
     // 的令牌，一旦与当前不一致即丢弃 / 中止，杜绝跨轮注入与双流式并存。
     gen.token++;
     final genToken = gen.token;
-    // 失败占位的落点轮号：正常 = 投影尾号 +1；重写 = **被重写的那一轮**。
-    // 由请求计划确定后赋值；`catch` 子句里取不到 try 块内的局部变量，故提前声明。
+    // 失败占位的落点轮号：重写 = **被重写的那一轮**；新建轮 = 投影尾号 +1。
+    // 先用「意图算出的待定落点」兜底（组装阶段就失败时也能落在正确轮号），
+    // 请求计划算出后以计划口径覆盖；`catch` 子句取不到 try 块内的局部变量，故提前声明。
     int? failureRoundIndex;
     // 记录本次请求开始前是否已有其它生成任务（用于「首个任务开始」通知服务）。
     final wasActive = _hasActiveGeneration();
@@ -1365,6 +1388,9 @@ class RoundProvider extends ChangeNotifier {
     // 修改轮沿用被重写轮的原输入（意见不落库）。
     final retained = _retainedOf(intent);
     gen.pendingUserInput = retained.input;
+    // 生成中气泡的落点：从意图立刻算出（界面在首次通知后就开始读它）。
+    // 新建轮 = 下一轮；刷新 / 修改轮 = 被重写的轮号——不能再一律用链尾 +1。
+    gen.pendingRoundIndex = intent.targetRoundIndex ?? nextRoundIndex;
     // 重置 Agent 过程时间线、重试状态、状态钳制警告与 RAW 时间线。
     gen.agentEvents.clear();
     gen.contentBoundaryIndex = -1;
@@ -1382,6 +1408,8 @@ class RoundProvider extends ChangeNotifier {
       final plan = await _planSend(intent: intent, book: b);
       final req = plan.req;
       failureRoundIndex = req.targetRoundIndex;
+      // 组装期间链可能被并发重载（云同步 / 换书）：以计划口径为准。
+      gen.pendingRoundIndex = req.targetRoundIndex;
       // R3 没有投影表：旧代本来就留在库里，重写/重新生成**不需要**先删任何东西。
       // 新的一代插进同组并设为选中，后续轮次因父代改变自然从活动链上隐去。
       // 非流式 + 多轮（AGENT / 联网搜索）：启用「展示回放」——一次性响应
@@ -1559,7 +1587,9 @@ class RoundProvider extends ChangeNotifier {
       gen.failedRawExchanges = List.of(gen.rawExchanges);
       final ok = await _appendFailureRound(
         bookUuid: b.uuid,
-        roundIndex: failureRoundIndex ?? nextRoundIndex,
+        // 组装阶段就中断时 failureRoundIndex 仍为空：用待定落点兜底，
+        // 保证错误代落在被刷新 / 修改的那一轮，而不是链尾 +1。
+        roundIndex: failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
         userInput: retained.input,
         userImages: retained.images,
         message: '已中断',
@@ -1579,7 +1609,8 @@ class RoundProvider extends ChangeNotifier {
       ].where((line) => line.trim().isNotEmpty).join('\n');
       final saved = await _appendFailureRound(
         bookUuid: b.uuid,
-        roundIndex: failureRoundIndex ?? nextRoundIndex,
+        // 同中断路径：组装阶段失败也要落在目标轮（见上）。
+        roundIndex: failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
         userInput: retained.input,
         userImages: retained.images,
         message: failureMessage,
@@ -1592,6 +1623,7 @@ class RoundProvider extends ChangeNotifier {
       gen.isSending = false;
       gen.cancelRequested = false;
       gen.pendingUserInput = '';
+      gen.pendingRoundIndex = null;
       gen.retryStatus = null;
       gen.rawExchanges.clear();
       // 全部生成任务结束：通知服务停止 Android 后台保活前台服务。

@@ -136,7 +136,11 @@ typedef _ChatShellSignals = ({
   bool showTimeline,
   /// 生成中尚未落库的用户输入。
   String pendingInput,
+  /// 链尾 +1（新建轮的落点；只在没有生成时作为兜底）。
   int nextRoundIndex,
+  /// 生成中气泡的落点轮号（null = 没有生成）：普通新一轮 = 链尾 +1，
+  /// 刷新 / 修改轮 = **被重写的轮号**（见 `RoundProvider.pendingRoundIndex`）。
+  int? pendingRoundIndex,
   /// 常驻警告版本号（列表项高度缓存失效依据）。
   int warningsVersion,
   /// 版本树 / 投影变更计数（代次控件显隐会改变条目高度，同为缓存失效依据）。
@@ -361,6 +365,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// 已见过的「生成中气泡」状态（待定气泡进几何，出现与消失都要重建）。
   bool _lastShowPending = false;
   bool _lastShowPendingUser = false;
+
+  /// 已见过的生成落点轮号（刷新 / 修改轮会把它从「链尾 +1」改成目标轮号，
+  /// 落点变化同样要重建几何，否则待定气泡还挂在旧位置）。
+  int? _lastPendingRoundIndex;
   /// 宽屏右侧栏拖拽中的实时宽度（null = 未拖拽）。
   ///
   /// 拖动期间只对本页 setState（不触发全局 UI 设置通知），
@@ -883,26 +891,43 @@ class _ChatScreenState extends State<ChatScreen>
   /// **几何覆盖全书**（整条活动链 + 分支头 + 待定气泡 + 占位条目），窗口只决定
   /// 「哪些条目真的渲染」。这样进度 / 拇指 / 跳转落点说的都是全书，而不是
   /// "这一窗的进度"；窗口变化不再需要重建几何，只换渲染行。
+  ///
+  /// [chatRounds] 传的是**未截断**的活动链：生成期间这里会按落点轮号把它截成
+  /// 「目标轮之前」的投影（见下方 `visibleRounds`）。
   void _rebuildGeometry(List<Round> chatRounds) {
-    final total = chatRounds.isEmpty ? 0 : chatRounds.last.roundIndex;
+    final provider = context.read<RoundProvider>();
+    final showPending = provider.isSending || provider.showTimeline;
+    // 生成中气泡的落点：普通新一轮 = 链尾 +1；刷新 / 修改轮 = 被重写的轮号。
+    // `nextRoundIndex` 只作兜底（isSending 但落点尚未写入的极短窗口，正常不会出现）。
+    final pendingRoundIndex =
+        provider.pendingRoundIndex ?? provider.nextRoundIndex;
+    // 生成期间视图先按「本次生成之前」投影：刷新 / 修改轮会取代目标轮及其后续轮
+    //（完成后活动链本来就会截到目标轮）。待定气泡因此画在目标轮的位置，不会出现
+    // 「第 N+1 轮正在生成」或旧代与新代同号并列的双气泡；普通新一轮的落点 =
+    // 链尾 +1，截断天然是空操作。
+    final visibleRounds = showPending
+        ? [
+            for (final round in chatRounds)
+              if (round.roundIndex < pendingRoundIndex) round,
+          ]
+        : chatRounds;
+    final total = visibleRounds.isEmpty ? 0 : visibleRounds.last.roundIndex;
     if (total <= 0) {
       _chatWindow.initialize(totalRounds: 0);
     } else if (!_chatWindow.isInitialized) {
       _chatWindow.initialize(
         totalRounds: total,
-        heightOfWindow: (window) => _estimatedWindowHeight(window, chatRounds),
+        heightOfWindow: (window) =>
+            _estimatedWindowHeight(window, visibleRounds),
         viewportDimension: _viewportDimension,
       );
     } else {
       _chatWindow.setTotalRounds(total);
     }
 
-    final provider = context.read<RoundProvider>();
-    _chatRoundsByUuid = {for (final round in chatRounds) round.uuid: round};
+    _chatRoundsByUuid = {for (final round in visibleRounds) round.uuid: round};
     final branch = provider.currentBranch;
     _chatHasBranchHeader = branch != null && branch.branchUuid.isNotEmpty;
-    final nextRoundIndex = provider.nextRoundIndex;
-    final showPending = provider.isSending || provider.showTimeline;
     final showPendingUser =
         showPending && provider.pendingUserInput.isNotEmpty;
     // 待定气泡直接进几何：否则它们的高度没有账，跳转/进度的坐标会整体偏
@@ -910,14 +935,14 @@ class _ChatScreenState extends State<ChatScreen>
     final pendingUserItem = showPendingUser
         ? ChatItem(
             roundUuid: _kPendingRoundUuid,
-            roundIndex: nextRoundIndex,
+            roundIndex: pendingRoundIndex,
             kind: ChatItemKind.user,
           )
         : null;
     final pendingAiItem = showPending
         ? ChatItem(
             roundUuid: _kPendingRoundUuid,
-            roundIndex: nextRoundIndex,
+            roundIndex: pendingRoundIndex,
             kind: ChatItemKind.ai,
           )
         : null;
@@ -925,10 +950,10 @@ class _ChatScreenState extends State<ChatScreen>
     _chatItems = [
       // 顶部收尾留白（24dp）作为**一等条目**进几何：放在 `ListView.padding` 里的话
       // 它会被算进列表内容高度，跳到第 1 轮时永远差这一截（实测 24px 偏移）。
-      if (chatRounds.isNotEmpty)
+      if (visibleRounds.isNotEmpty)
         ChatItem(
           roundUuid: _kTopSpacerUuid,
-          roundIndex: chatRounds.first.roundIndex,
+          roundIndex: visibleRounds.first.roundIndex,
           kind: ChatItemKind.trailingSpacer,
           fixedHeight: _kTrailingSpacerHeight,
         ),
@@ -939,7 +964,7 @@ class _ChatScreenState extends State<ChatScreen>
           kind: ChatItemKind.branchHeader,
           branchUuid: branch.branchUuid,
         ),
-      for (final round in chatRounds) ...[
+      for (final round in visibleRounds) ...[
         ChatItem(
           roundUuid: round.uuid,
           roundIndex: round.roundIndex,
@@ -1540,10 +1565,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 「刷新本轮」——气泡底部按钮 / 气泡右键菜单 / 失败条目都走这一处：
   /// 二次确认（[showRefreshRoundConfirmDialog]，文案统一、不喊「丢失后续内容」）→
-  /// 删除该轮起的投影行并以该轮输入重新生成一版（旧代保留，代次控件可切回）。
+  /// 以该轮输入在**同轮号**新增一代（旧代留在版本树，代次控件可切回）。
   ///
-  /// [round] 只作载体：轮号 / 输入 / 图片是它真正被读的三项（失败条目场景见
-  /// [_handleRefreshFailure]）。
+  /// 生成期间视图按目标轮截断（见 [_rebuildGeometry]），待定气泡画在第 N 轮原本的
+  /// 位置；不会再先冒出「第 N+1 轮正在生成」、停止后才并回第 N 轮。
+  ///
+  /// [round] 只作载体：轮号 / 输入 / 图片是它真正被读的三项（失败条目也把它当载体）。
   Future<void> _handleRefreshRound(Round round) async {
     final ok = await showRefreshRoundConfirmDialog(context, round.roundIndex);
     if (!ok || !mounted) return;
@@ -2535,6 +2562,7 @@ class _ChatScreenState extends State<ChatScreen>
         showTimeline: p.showTimeline,
         pendingInput: p.pendingUserInput,
         nextRoundIndex: p.nextRoundIndex,
+        pendingRoundIndex: p.pendingRoundIndex,
         warningsVersion: p.roundWarningsVersion,
         versionsRevision: p.versionsRevision,
       ),
@@ -2578,8 +2606,10 @@ class _ChatScreenState extends State<ChatScreen>
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
     final pendingInput = shell.pendingInput;
     final showPendingUser = showPending && pendingInput.isNotEmpty;
+    // 落点轮号变化（例如失败条目刷新时由「链尾 +1」校准为被刷新轮）同样要重建。
     final pendingChanged = showPending != _lastShowPending ||
-        showPendingUser != _lastShowPendingUser;
+        showPendingUser != _lastShowPendingUser ||
+        shell.pendingRoundIndex != _lastPendingRoundIndex;
     if (chainChanged ||
         !identical(rounds, _lastRoundsSource) ||
         rounds.length != _lastRoundsCount ||
@@ -2597,6 +2627,7 @@ class _ChatScreenState extends State<ChatScreen>
       _lastBranchUuid = roundProvider.workingBranchUuid;
       _lastShowPending = showPending;
       _lastShowPendingUser = showPendingUser;
+      _lastPendingRoundIndex = shell.pendingRoundIndex;
       _lastChatLayoutWidth = chatWidth;
       // 条目顺序 / 实测缓存都变了：几何模型跟着重建。
       _rebuildGeometry(chatRounds);
@@ -2681,7 +2712,9 @@ class _ChatScreenState extends State<ChatScreen>
               // （见 [_StreamingSlot]）。
               item = _StreamingSlot(
                 showTimeline: shell.showTimeline,
-                roundIndex: shell.nextRoundIndex,
+                // 与几何里的待定条目同源：刷新 / 修改轮 = 被重写的轮号，
+                // 普通新一轮 = 链尾 +1（`nextRoundIndex` 只作兜底）。
+                roundIndex: shell.pendingRoundIndex ?? shell.nextRoundIndex,
               );
             } else {
               // 生成中的用户气泡（未落库，紧跟历史消息之后）。
