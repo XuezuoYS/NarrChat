@@ -69,6 +69,8 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 
 - 默认分支不落表（`branch_uuid = ''`），永远排第一；
 - fork 只建分支行，不复制轮次；子分支首轮 `round_index = 父代 roundIndex + 1`；
+- 给模型拼上文时按 `branches.father_row` 跨分支上溯（**分叉点父代本身也算上文**），
+  受 `history_rounds` 截断；父代已删时用 `father_row_shot` 兜底一轮；
 - 删除分支保留子分支，父信息靠 `father_snapshot` 兜底；
 - 建/改名/删分支都刷新 `updated_at` 并触发云同步（见下）。
 

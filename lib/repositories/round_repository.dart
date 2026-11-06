@@ -133,6 +133,27 @@ class PromptContext {
   final bool truncated;
 }
 
+/// 当前分支之前的跨分支上文（请求拼装用）。
+///
+/// 与 [PromptContext] 的区别：**不含当前分支自己的轮次**、不做 error 过滤与最终
+/// 截断——Provider 把这段前缀拼进本轮投影后，统一走既有的历史窗口逻辑。
+class UpstreamContext {
+  const UpstreamContext({
+    this.rounds = const [],
+    this.fallbackRound,
+    this.truncated = false,
+  });
+
+  /// 父分支上的上溯代（旧 → 新），不含当前分支。
+  final List<Round> rounds;
+
+  /// 直接父代已被删除时，用 `father_row_shot` 解码出的一轮兜底。
+  final Round? fallbackRound;
+
+  /// 上溯是否因数据缺口中断。
+  final bool truncated;
+}
+
 /// 轮次与分支的读写门面（R3）。
 ///
 /// 这里只做"读写 + 规则调用"，不做 UI 状态：`RoundProvider` 持有它。
@@ -378,6 +399,54 @@ class RoundRepository {
     return PromptContext(
       rounds: ordered,
       fallback: walk.fallback,
+      truncated: walk.truncated,
+    );
+  }
+
+  /// 取当前分支之前的跨分支上文前缀（供请求拼装，不写库）。
+  ///
+  /// - 默认分支 / 空书 → 空前缀；
+  /// - 只取最近 [limit] 条（至少 1 条），避免为一次发送读取整条祖先链；
+  /// - 父代已删时 [UpstreamContext.fallbackRound] 给出一轮快照兜底；
+  /// - [UpstreamContext.rounds] 为旧 → 新；fallback 更旧，调用方应把它排在前面。
+  Future<UpstreamContext> loadUpstreamContext({
+    required String bookUuid,
+    required RoundChain chain,
+    required int limit,
+  }) async {
+    if (chain.allMeta.isEmpty || chain.workingBranch.isEmpty) {
+      return const UpstreamContext();
+    }
+    final walk = RoundTree.buildContext(
+      all: chain.allMeta,
+      branches: chain.branches,
+      branchUuid: chain.workingBranch,
+      chain: chain.chainMeta,
+    );
+    final take = limit < 1 ? 1 : limit;
+    final metas = walk.upstream.length <= take
+        ? walk.upstream
+        : walk.upstream.sublist(walk.upstream.length - take);
+    final rounds = <Round>[];
+    if (metas.isNotEmpty) {
+      final db = await books.open(bookUuid);
+      final generations =
+          await db.rounds.generations(metas.map((meta) => meta.uuid));
+      final byUuid = {
+        for (final generation in generations) generation.uuid: generation,
+      };
+      for (final meta in metas) {
+        final generation = byUuid[meta.uuid];
+        if (generation == null) continue;
+        rounds.add(Round.fromGeneration(generation, bookUuid: bookUuid));
+      }
+    }
+    final fallback = walk.fallback;
+    return UpstreamContext(
+      rounds: rounds,
+      fallbackRound: fallback == null
+          ? null
+          : Round.fromGeneration(fallback, bookUuid: bookUuid),
       truncated: walk.truncated,
     );
   }

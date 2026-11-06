@@ -859,16 +859,25 @@ class RoundProvider extends ChangeNotifier {
   /// 「先删轮再发」的用途（[RoundSendKind.reaskRound] / [RoundSendKind.rewriteByOpinion]）
   /// 在这里用**虚拟投影**表达截断语义，从而不必真的删库就能算出实发请求体：
   /// 执行阶段再按 [_SendPlan.trimFromRoundIndex] 真删（见 [sendIntent]）。
+  ///
+  /// 每个用途的投影都先拼上父上文前缀（父分支到分叉点为止的上文）：空分支 /
+  /// 分支上的任何一轮都不能只拿本分支的历史，否则新分支会像从零开始。
   Future<_SendPlan> _planSend({
     required RoundSendIntent intent,
     required Book book,
   }) async {
+    final prefix = await _upstreamPrefixOf(book.historyRounds);
+    List<Round> withPrefix(List<Round> branchRounds) =>
+        [...prefix, ...branchRounds];
+
     switch (intent.kind) {
       case RoundSendKind.newRound:
         return _SendPlan(
           req: await _assembleRoundRequest(
             book: book,
-            projection: _rounds,
+            projection: withPrefix(_rounds),
+            // 空分支没有链尾：轮号必须问仓储（父代轮号 +1），否则会从第 1 轮重开。
+            targetRoundIndexOverride: nextRoundIndex,
             userInput: intent.userInput,
             userImages: intent.images,
           ),
@@ -880,31 +889,49 @@ class RoundProvider extends ChangeNotifier {
           req: await _assembleRoundRequest(
             book: book,
             // 与「重新生成」等价：历史只取目标轮之前的那些轮。
-            projection: _projectionBefore(index),
+            projection: withPrefix(_projectionBefore(index)),
             userInput: intent.userInput,
             userImages: intent.images,
           ),
         );
       case RoundSendKind.rewriteByOpinion:
         final target = _targetRoundOf(intent)!;
+        final projection = withPrefix(_projectionBefore(target.roundIndex));
         return _SendPlan(
           req: await _assembleRoundRequest(
             book: book,
             // **截断后的**投影：历史 n 轮必须是被重写轮之前最近 n 轮（与实发
             // 先删该轮起投影行的结果一致）；被重写轮自身由 `rewrite` 追加。
-            projection: _projectionBefore(target.roundIndex),
+            projection: projection,
             userInput: target.userInput,
             userImages: target.userImages,
-            // 基座 = 严格早于被重写轮的最近一轮（须在删投影行之前取）。
+            // 基座 = 严格早于被重写轮的最近一轮（须在删投影行之前取）；
+            // 重写分支首轮时，这个「上一轮」来自父上文（分叉点父代）。
             rewrite: RoundRewrite(
               target: target,
-              base: _roundBefore(target.roundIndex),
+              base: projection.lastOrNull,
               opinion: intent.opinion,
               images: intent.images,
             ),
           ),
         );
     }
+  }
+
+  /// 本次请求要拼进投影的父上文（旧 → 新，含父代已删时的一轮快照）。
+  ///
+  /// 只取最近 `max(historyRounds, 1)` 条父轮次：既够 `_takeRecent` 的窗口，
+  /// 也避免为一次发送把几千轮祖先正文全读出来；快照比存活父轮次都旧，放最前。
+  Future<List<Round>> _upstreamPrefixOf(int historyRounds) async {
+    final upstream = await _roundsRepo.loadUpstreamContext(
+      bookUuid: _bookUuid,
+      chain: _chain,
+      limit: historyRounds < 1 ? 1 : historyRounds,
+    );
+    return [
+      if (upstream.fallbackRound != null) upstream.fallbackRound!,
+      ...upstream.rounds,
+    ];
   }
 
   /// 计划 → 预演结果：直发 = 单帧；联网 / Agent = 对应执行器给出的帧骨架。
@@ -957,8 +984,12 @@ class RoundProvider extends ChangeNotifier {
   /// 供 [sendIntent] 与「预览请求体」共用：不读写任何生成状态、不落库、不发网络。
   ///
   /// [projection] 是本次请求生效的**轮次投影**（按 `roundIndex` 升序）：普通发送
-  /// = 当前投影；「先删轮再发」的用途 = 截断后的虚拟投影。所有依赖轮次的部分
-  /// （末轮基座、历史 n 轮、图片）都只读它，不再直接读 `_rounds`。
+  /// = 「父上文前缀 + 当前分支链」；「先删轮再发」的用途 = 再按目标轮号截断后的
+  /// 虚拟投影。所有依赖轮次的部分（末轮基座、历史 n 轮、图片）都只读它。
+  ///
+  /// [targetRoundIndexOverride] 覆盖「投影尾号 +1」的推导：空分支没有链尾，
+  /// 新建轮必须由调用方传 `nextRoundIndex`（父代轮号 +1）；重新提问 / 修改轮
+  /// 不传，保持各自原有口径。
   ///
   /// [rewrite] 非 null 时按**修改轮**组装（见 [RoundRewrite]）：
   /// - 生成基座 [PromptRequest.lastRound] = 被重写轮的上一轮（工具 / 状态快照停在那里）；
@@ -969,14 +1000,16 @@ class RoundProvider extends ChangeNotifier {
     required List<Round> projection,
     required String userInput,
     List<String>? userImages,
+    int? targetRoundIndexOverride,
     RoundRewrite? rewrite,
   }) async {
     final settings = _aiSettingsProvider;
-    // 生成基座轮：新建轮 = 投影末轮；修改轮 = 被重写轮的上一轮（严格更早的最近一轮）。
+    // 生成基座轮：新建轮 = 投影末轮（含父上文）；修改轮 = 被重写轮的上一轮。
     final lastRound =
         rewrite == null ? projection.lastOrNull : rewrite.base;
-    final targetRoundIndex =
-        rewrite?.target.roundIndex ?? (lastRound?.roundIndex ?? 0) + 1;
+    final targetRoundIndex = rewrite?.target.roundIndex ??
+        targetRoundIndexOverride ??
+        (lastRound?.roundIndex ?? 0) + 1;
     // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 基座轮落库的记忆总结 +
     // 本书档位），随后下发给提示词 / Agent 执行器，并用于生成后判定。
     final memoryMergePlan = planMemoryMerge(
@@ -2675,16 +2708,6 @@ class RoundProvider extends ChangeNotifier {
       ),
       book: b,
     );
-  }
-
-  /// 严格早于 [roundIndex] 的最近一轮（轮号可断裂；含第零轮 = 初始状态）。
-  Round? _roundBefore(int roundIndex) {
-    Round? found;
-    for (final r in _rounds) {
-      if (r.roundIndex >= roundIndex) break;
-      found = r;
-    }
-    return found;
   }
 
   /// 原地修改某一代（不新增代）：写正文列并刷新 `updated_at`。

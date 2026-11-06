@@ -292,6 +292,97 @@ void main() {
     expect(context.truncated, isFalse);
   });
 
+  test('提示词上文：刚分叉的空分支也要拿父分支到分叉点的轮次', () async {
+    await seedChain();
+    await repository.forkBranch(
+      bookUuid: 'b1',
+      generationUuid: 'g2',
+      branchName: '如果',
+    );
+
+    final chain = await repository.loadChain('b1');
+    expect(chain.rounds, isEmpty, reason: '分支内还没生成过');
+    final context = await repository.buildPromptContext(
+      bookUuid: 'b1',
+      chain: chain,
+      historyRounds: 10,
+    );
+    expect(
+      context.rounds.map((r) => r.uuid),
+      ['g1', 'g2'],
+      reason: '首轮生成前必须拿到分叉点及以前的父上文',
+    );
+    expect(context.fallback, isNull);
+    expect(context.truncated, isFalse);
+  });
+
+  test('父上文前缀：默认分支为空，空分支取分叉点及以前并受 limit 截断', () async {
+    await seedChain();
+    final defaultChain = await repository.loadChain('b1');
+    final emptyDefault = await repository.loadUpstreamContext(
+      bookUuid: 'b1',
+      chain: defaultChain,
+      limit: 10,
+    );
+    expect(emptyDefault.rounds, isEmpty);
+    expect(emptyDefault.fallbackRound, isNull);
+
+    await repository.forkBranch(
+      bookUuid: 'b1',
+      generationUuid: 'g2',
+      branchName: '如果',
+    );
+    final branchChain = await repository.loadChain('b1');
+    final all = await repository.loadUpstreamContext(
+      bookUuid: 'b1',
+      chain: branchChain,
+      limit: 10,
+    );
+    expect(all.rounds.map((r) => r.uuid), ['g1', 'g2']);
+    expect(all.fallbackRound, isNull);
+
+    final recent = await repository.loadUpstreamContext(
+      bookUuid: 'b1',
+      chain: branchChain,
+      limit: 1,
+    );
+    expect(
+      recent.rounds.map((r) => r.uuid),
+      ['g2'],
+      reason: '只取最近 limit 条父轮次',
+    );
+  });
+
+  test('父上文前缀：父代已删时用快照轮兜底，分支仍为空', () async {
+    await seedChain();
+    final branch = await repository.forkBranch(
+      bookUuid: 'b1',
+      generationUuid: 'g2',
+      branchName: '如果',
+    );
+    // 回主线删掉分叉点及之后，再切回空分支。
+    await repository.switchBranch(
+      bookUuid: 'b1',
+      branchUuid: Branch.defaultBranchUuid,
+    );
+    await repository.deleteRoundAndFollowing(bookUuid: 'b1', roundIndex: 2);
+    await repository.switchBranch(
+      bookUuid: 'b1',
+      branchUuid: branch.branchUuid,
+    );
+
+    final chain = await repository.loadChain('b1');
+    final upstream = await repository.loadUpstreamContext(
+      bookUuid: 'b1',
+      chain: chain,
+      limit: 10,
+    );
+    expect(upstream.rounds, isEmpty);
+    expect(upstream.fallbackRound, isNotNull);
+    expect(upstream.fallbackRound!.uuid, 'g2');
+    expect(upstream.fallbackRound!.userInput, '问-g2');
+  });
+
   test('提示词上文：父代已删时用快照兜底一轮', () async {
     await seedChain();
     final branch = await repository.forkBranch(

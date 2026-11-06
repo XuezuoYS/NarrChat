@@ -146,9 +146,11 @@ class RoundTree {
 
   /// 跨分支上溯：当前分支的链 + 分支头之前的上文（只给模型拼合用）。
   ///
-  /// 走法：沿 `father_uuid` 往上；到链首时按 `branches.father_row` 跳到父分支
-  /// 的那一代继续往上。父代已被删除时，用该分支的 `father_row_shot` 兜底**一轮**
-  /// 并停止（刻意的降级：上文可能不完整）。
+  /// 走法：从当前链首出发沿 `father_uuid` 往上；到链首时按 `branches.father_row`
+  /// 跳到父分支的那一代继续往上。**空分支**（刚分叉、还没写过轮次）没有链首，
+  /// 直接从分叉点父代起步，并把这一代算进 [ContextWalk.upstream]——否则新分支
+  /// 首轮生成会拿到空上文，整条分支像从零开始。父代已被删除时，用该分支的
+  /// `father_row_shot` 兜底**一轮**并停止（刻意的降级：上文可能不完整）。
   static ContextWalk buildContext({
     required List<RoundMeta> all,
     required List<Branch> branches,
@@ -156,10 +158,6 @@ class RoundTree {
     List<RoundMeta>? chain,
   }) {
     final activeChain = chain ?? planChain(all, branchUuid);
-    if (activeChain.isEmpty) {
-      return const ContextWalk(chain: []);
-    }
-
     final byUuid = <String, RoundMeta>{for (final row in all) row.uuid: row};
     final byBranch = <String, Branch>{
       for (final branch in branches) branch.branchUuid: branch,
@@ -167,10 +165,35 @@ class RoundTree {
 
     final upstream = <RoundMeta>[];
     final visited = <String>{for (final row in activeChain) row.uuid};
-    var current = activeChain.first;
-    var currentBranch = current.branchUuid;
     RoundGeneration? fallback;
     var truncated = false;
+
+    // 上溯起点：常规 = 链首；空分支 = 分支表记录的分叉点父代。
+    final RoundMeta start;
+    if (activeChain.isNotEmpty) {
+      start = activeChain.first;
+    } else {
+      final branch = byBranch[branchUuid];
+      if (branch == null || branch.fatherRow.isEmpty) {
+        return ContextWalk(chain: activeChain);
+      }
+      final fork = byUuid[branch.fatherRow];
+      if (fork == null) {
+        fallback = BranchFatherSnapshot.decode(branch.fatherRowShot);
+        if (fallback == null) truncated = true;
+        return ContextWalk(
+          chain: activeChain,
+          fallback: fallback,
+          truncated: truncated,
+        );
+      }
+      // 分叉点这一代本身就是「链首之前的上文」：先记入 upstream，再继续往上。
+      visited.add(fork.uuid);
+      upstream.add(fork);
+      start = fork;
+    }
+    var current = start;
+    var currentBranch = start.branchUuid;
 
     for (var step = 0; step < _maxWalk; step++) {
       final father = current.fatherUuid;

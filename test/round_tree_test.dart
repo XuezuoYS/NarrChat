@@ -213,6 +213,137 @@ void main() {
       expect(walk.fullOldestFirst.map((e) => e.uuid), ['m1', 'b1', 'c1']);
     });
 
+    test('空分支：从分叉点父代开始上溯，不丢父上文', () {
+      final all = [
+        meta('m1', index: 1, using: true),
+        meta('m2', father: 'm1', index: 2, using: true),
+        meta('m3', father: 'm2', index: 3, using: true),
+      ];
+      final branches = [
+        Branch(
+          branchUuid: 'br1',
+          fatherRow: 'm2',
+          fatherRowIndex: 2,
+          branchName: '如果',
+          createdAt: epoch,
+          updatedAt: epoch,
+        ),
+      ];
+
+      final walk = RoundTree.buildContext(
+        all: all,
+        branches: branches,
+        branchUuid: 'br1',
+      );
+
+      expect(walk.chain, isEmpty, reason: '分支还没写过轮次');
+      expect(
+        walk.upstream.map((e) => e.uuid),
+        ['m1', 'm2'],
+        reason: '分叉点父代本身也要算进上文，不能被跳过',
+      );
+      expect(walk.fullOldestFirst.map((e) => e.uuid), ['m1', 'm2']);
+      expect(walk.fallback, isNull);
+      expect(walk.truncated, isFalse);
+      expect(walk.isEmpty, isFalse);
+    });
+
+    test('空分支多级：从分叉点跨分支一路回到根', () {
+      final all = [
+        meta('m1', index: 1, using: true),
+        meta('b1', branch: 'b', index: 2, using: true),
+      ];
+      final branches = [
+        Branch(
+          branchUuid: 'b',
+          fatherRow: 'm1',
+          fatherRowIndex: 1,
+          branchName: 'B',
+          createdAt: epoch,
+          updatedAt: epoch,
+        ),
+        Branch(
+          branchUuid: 'c',
+          fatherRow: 'b1',
+          fatherRowIndex: 2,
+          branchName: 'C',
+          createdAt: epoch,
+          updatedAt: epoch,
+        ),
+      ];
+
+      final walk = RoundTree.buildContext(
+        all: all,
+        branches: branches,
+        branchUuid: 'c',
+      );
+
+      expect(walk.chain, isEmpty);
+      expect(
+        walk.fullOldestFirst.map((e) => e.uuid),
+        ['m1', 'b1'],
+        reason: '分叉点 b1 本身 + 经 branches.father_row 跨到 m1',
+      );
+    });
+
+    test('空分支父代已删：用快照兜底一轮', () {
+      final snapshot = BranchFatherSnapshot.encode(
+        generation(
+          meta('gone', index: 3, using: true),
+          narrative: '父代正文',
+        ),
+      );
+      final branches = [
+        Branch(
+          branchUuid: 'br1',
+          fatherRow: 'gone',
+          fatherRowIndex: 3,
+          branchName: '如果',
+          fatherRowShot: snapshot,
+          createdAt: epoch,
+          updatedAt: epoch,
+        ),
+      ];
+
+      final walk = RoundTree.buildContext(
+        all: const [],
+        branches: branches,
+        branchUuid: 'br1',
+      );
+
+      expect(walk.chain, isEmpty);
+      expect(walk.upstream, isEmpty);
+      expect(walk.fallback, isNotNull);
+      expect(walk.fallback!.uuid, 'gone');
+      expect(walk.fallback!.roundIndex, 3);
+      expect(walk.fallback!.aiNarrative, '父代正文');
+      expect(walk.truncated, isFalse);
+    });
+
+    test('空分支父代已删且没有快照：标记上文不完整', () {
+      final branches = [
+        Branch(
+          branchUuid: 'br1',
+          fatherRow: 'gone',
+          fatherRowIndex: 3,
+          branchName: '如果',
+          createdAt: epoch,
+          updatedAt: epoch,
+        ),
+      ];
+
+      final walk = RoundTree.buildContext(
+        all: const [],
+        branches: branches,
+        branchUuid: 'br1',
+      );
+
+      expect(walk.chain, isEmpty);
+      expect(walk.upstream, isEmpty);
+      expect(walk.fallback, isNull);
+      expect(walk.truncated, isTrue);
+    });
+
     test('父代被删：用快照兜底一轮并停止', () {
       final all = [
         meta('b1', branch: 'br1', index: 4, using: true),
@@ -262,7 +393,7 @@ void main() {
       expect(walk.truncated, isTrue);
     });
 
-    test('空分支没有上下文', () {
+    test('不存在的分支 / 没有 fork 记录的分支没有上下文', () {
       final walk = RoundTree.buildContext(
         all: [meta('m1', using: true)],
         branches: const [],
