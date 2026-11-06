@@ -10,7 +10,8 @@ import 'chat_viewport.dart';
 ///
 /// 分开定义的原因：轨道是纯 UI，不该知道几何模型、窗口、滚动位置这些东西；
 /// 它只要「现在第几轮 / 进度多少 / 跳到哪里 / 往上滚多快」。
-abstract class ChatLocator {
+/// 继承 [Listenable]：轨道要跟着进度刷新拇指，但不关心是谁在动。
+abstract class ChatLocator implements Listenable {
   /// 视口顶部所在的轮号；几何为空时返回 null。
   int? get currentRoundIndex;
 
