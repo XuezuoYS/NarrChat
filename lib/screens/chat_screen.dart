@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show File, Platform;
 import 'dart:math' as math;
 
@@ -16,11 +17,13 @@ import 'package:provider/provider.dart';
 
 import '../chat/branch_panel.dart';
 import '../chat/chat_geometry.dart';
+import '../chat/chat_height_bucket.dart';
 import '../chat/chat_item.dart';
 import '../chat/chat_locator.dart';
 import '../chat/chat_rail.dart';
 import '../chat/chat_viewport.dart';
 import '../chat/chat_window.dart';
+import '../database/cache_store.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
@@ -37,6 +40,7 @@ import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/ui_settings_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../services/app_repositories.dart';
 import '../services/clipboard_paste_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_import_service.dart';
@@ -292,6 +296,20 @@ class _ChatScreenState extends State<ChatScreen>
   /// （那个值随懒加载与范围估算漂移，是「滚动条跳舞」的根因）。
   final ChatGeometry _chatGeometry = ChatGeometry();
 
+  /// 持久化的实测高度（按列宽档 + 字号档隔离，见 [ChatHeightBucket]）。
+  Map<ChatItemKey, double> _persistedHeights = const {};
+
+  /// 当前生效的档位（变了就重新读一遍缓存）。
+  int _heightWidthBucket = -1;
+  int _heightTypeScaleBucket = -1;
+
+  /// 待落库的高度（防抖：滚动 / 生成过程中不每帧写库）。
+  final Map<String, double> _pendingHeights = {};
+  Timer? _heightFlushTimer;
+
+  /// 高度缓存对应的书（dispose 时不能再读 context）。
+  String _bookUuidForHeights = '';
+
   /// 几何模型的条目顺序：与消息列的逻辑下标一一对应（只含真实气泡，
   /// 生成中的待定气泡不在其中）。
   List<ChatItem> _chatItems = const [];
@@ -530,6 +548,8 @@ class _ChatScreenState extends State<ChatScreen>
 
   @override
   void dispose() {
+    _heightFlushTimer?.cancel();
+    unawaited(_flushHeights());
     _tickProvider?.removeListener(_onRoundTick);
     // 路由被*弹出*时不会先收到 isCurrent=false（与「被覆盖」不同），因此这里补一次
     // 清空；必须帧后执行：dispose 期间整棵树锁定，直接通知会触发
@@ -870,6 +890,76 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 列表项自上报回调（[_FloorMeasuredItem] 帧末调用）：记录实测高度。
   /// 高度与坐标系无关，跨帧长期有效（偏移不缓存，见 [_liveChatItems]）。
+  /// 高度缓存的存储（未初始化 / 测试里没有仓储时返回 null）。
+  CacheStore? get _cacheStore =>
+      AppRepositories.instanceOrNull?.stores.cache;
+
+  /// 高度落库防抖：滚动/生成期间每帧都测，但不能每帧写库。
+  void _scheduleHeightFlush() {
+    _heightFlushTimer?.cancel();
+    _heightFlushTimer = Timer(const Duration(milliseconds: 800), _flushHeights);
+  }
+
+  /// 把攒下的实测高度批量写进缓存（书已切换 / 未初始化则丢弃）。
+  Future<void> _flushHeights() async {
+    final store = _cacheStore;
+    final bookUuid = _bookUuidForHeights;
+    if (store == null || bookUuid.isEmpty || _pendingHeights.isEmpty) return;
+    final pending = Map<String, double>.from(_pendingHeights);
+    _pendingHeights.clear();
+    try {
+      await store.putHeights(
+        bookUuid,
+        pending,
+        widthBucket: _heightWidthBucket,
+        typeScaleBucket: _heightTypeScaleBucket,
+      );
+    } catch (_) {
+      // 缓存写失败不影响对话，下次测量还会再攒。
+    }
+  }
+
+  /// 列宽档 / 字号档变了就重新读缓存（跨档复用高度会整体错位）。
+  void _syncHeightBuckets(double chatWidth, String bookUuid) {
+    _bookUuidForHeights = bookUuid;
+    final scale = MediaQuery.textScalerOf(context).scale(1);
+    final widthBucket = ChatHeightBucket.widthOf(chatWidth);
+    final typeScaleBucket = ChatHeightBucket.typeScaleOf(scale);
+    if (widthBucket == _heightWidthBucket &&
+        typeScaleBucket == _heightTypeScaleBucket) {
+      return;
+    }
+    _heightWidthBucket = widthBucket;
+    _heightTypeScaleBucket = typeScaleBucket;
+    _persistedHeights = const {};
+    unawaited(_loadPersistedHeights(bookUuid));
+  }
+
+  /// 读当前档位的持久化高度，读回来重建一次几何（首屏就用真高）。
+  Future<void> _loadPersistedHeights(String bookUuid) async {
+    final store = _cacheStore;
+    if (store == null || bookUuid.isEmpty) return;
+    try {
+      final raw = await store.heightsOf(
+        bookUuid,
+        widthBucket: _heightWidthBucket,
+        typeScaleBucket: _heightTypeScaleBucket,
+      );
+      if (!mounted) return;
+      final parsed = <ChatItemKey, double>{};
+      raw.forEach((key, height) {
+        final parsedKey = ChatItemKey.parse(key);
+        if (parsedKey != null) parsed[parsedKey] = height;
+      });
+      setState(() {
+        _persistedHeights = parsed;
+        _rebuildGeometry(_chatRoundsNow());
+      });
+    } catch (_) {
+      // 读失败就当没有缓存（按估算值走）。
+    }
+  }
+
   void _onItemMeasured(int itemIndex, double height) {
     _itemHeights[itemIndex] = height;
     // 同时喂给几何模型：轨道读它算进度 / 拇指 / 跳转落点。
@@ -878,13 +968,17 @@ class _ChatScreenState extends State<ChatScreen>
     final head = _chatHeadCount;
     final bubbleIndex = itemIndex - head;
     if (bubbleIndex >= 0 && bubbleIndex < _chatBubbleCount) {
-      _chatGeometry.updateHeight(_chatItems[head + bubbleIndex].key, height);
+      final key = _chatItems[head + bubbleIndex].key;
+      _chatGeometry.updateHeight(key, height);
+      // 攒起来防抖落库（C4：下次打开这本书直接用真高，不再先按估算跳一下）。
+      _pendingHeights[key.toString()] = height;
+      _scheduleHeightFlush();
     }
   }
 
   /// 滚动到某轮起点：几何的 `offsetOf` 给的是**底边**距底部的距离，
   /// 加自身高度再减去视口高度，才是「顶边贴视口顶」的落点。
-  void _jumpToRoundTop(int roundIndex) {
+  void _jumpToRoundTop(int roundIndex, [int attempt = 0]) {
     if (!_scrollController.hasClients) return;
     final index = _chatGeometry.indexOfRound(roundIndex);
     if (index == null) return;
@@ -895,6 +989,21 @@ class _ChatScreenState extends State<ChatScreen>
         (topEdge - _viewportDimension).clamp(0.0, maxOffset).toDouble();
     _userScrolledAway = true;
     _chatLocator.viewport.jumpTo(target);
+    // 未构建过的条目只有估算高度：落点后它被建出来、实测回填几何，
+    // 再按新几何校一次（最多 3 帧），进 1px 就停。
+    if (attempt >= 3) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final again = _chatGeometry.indexOfRound(roundIndex);
+      if (again == null) return;
+      final corrected = (_chatGeometry.offsetOf(again) +
+              _chatGeometry.heightOf(again) -
+              _viewportDimension)
+          .clamp(0.0, _chatLocator.viewport.maxOffset)
+          .toDouble();
+      if ((corrected - _chatLocator.viewport.pixels).abs() < 1) return;
+      _jumpToRoundTop(roundIndex, attempt + 1);
+    });
   }
 
   /// 轨道要跳的轮不在窗口里：先重建窗口覆盖它，下一帧再精确落点。
@@ -1001,7 +1110,7 @@ class _ChatScreenState extends State<ChatScreen>
     _chatGeometry.rebuild(
       _chatItems,
       // 重建只换条目集合，实测高度必须带过去（否则每帧打回估算值）。
-      cache: _chatGeometry.dumpMeasuredHeights(),
+      cache: {..._persistedHeights, ..._chatGeometry.dumpMeasuredHeights()},
     );
     for (var i = 0; i < _chatItems.length; i++) {
       final measured = _itemHeights[i];
@@ -1152,7 +1261,9 @@ class _ChatScreenState extends State<ChatScreen>
     }
     _closeDrawer();
     _userScrolledAway = true;
-    // 逻辑序里顶部占位在最前，气泡起点要整体后移一位。
+    // 仍走分帧逼近：目标轮的实高往往还没测过，几何只有估算值，
+    // 直接按几何落点会落在"远不够远"的位置、目标进不了视口也就永远测不到
+    // （实测 3 条长轮用例全红）。等 C4 做完高度持久化再切几何落点。
     _jumpToItem(_chatHeadCount + 2 * position);
   }
 
@@ -2647,6 +2758,8 @@ class _ChatScreenState extends State<ChatScreen>
       // 条目顺序 / 实测缓存都变了：几何模型跟着重建。
       _rebuildGeometry(chatRounds);
     }
+    // 高度缓存按「书 + 列宽档 + 字号档」隔离，档变了要重读。
+    _syncHeightBuckets(chatWidth, bookProvider.currentBook?.uuid ?? '');
     // 窗口内的轮次（列表只渲染这些）。
     final windowRounds = _windowRounds(chatRounds);
     final isSending = shell.isSending;

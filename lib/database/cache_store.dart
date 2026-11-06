@@ -196,6 +196,27 @@ abstract class CacheStore {
   /// 整体替换一本书的图片引用。
   Future<void> replaceImageRefs(String bookUuid, List<ImageRefRow> refs);
 
+  /// 某一档（列宽档 + 字号档）下这本书各条目的实测高度。
+  ///
+  /// 返回 `item_key → height`。档位见 `ChatHeightBucket`：跨档不复用，
+  /// 否则改窗口宽度 / 换字号后高度全错。
+  Future<Map<String, double>> heightsOf(
+    String bookUuid, {
+    required int widthBucket,
+    required int typeScaleBucket,
+  });
+
+  /// 批量写入某一档的实测高度（同 key 覆盖旧值）。
+  Future<void> putHeights(
+    String bookUuid,
+    Map<String, double> heights, {
+    required int widthBucket,
+    required int typeScaleBucket,
+  });
+
+  /// 清掉这本书**所有档**的高度缓存（删书时调用）。
+  Future<void> clearHeights(String bookUuid);
+
   Future<void> close();
 }
 
@@ -316,6 +337,65 @@ class CacheDb implements CacheStore {
         );
       }
     });
+  }
+
+  @override
+  Future<Map<String, double>> heightsOf(
+    String bookUuid, {
+    required int widthBucket,
+    required int typeScaleBucket,
+  }) async {
+    final db = await _database;
+    final rows = await db.query(
+      'chat_heights',
+      columns: const ['item_key', 'height'],
+      where: 'book_uuid = ? AND width_bucket = ? AND type_scale_bucket = ?',
+      whereArgs: [bookUuid, widthBucket, typeScaleBucket],
+    );
+    return {
+      for (final row in rows)
+        row['item_key']! as String: (row['height']! as num).toDouble(),
+    };
+  }
+
+  @override
+  Future<void> putHeights(
+    String bookUuid,
+    Map<String, double> heights, {
+    required int widthBucket,
+    required int typeScaleBucket,
+  }) async {
+    if (heights.isEmpty) return;
+    final db = await _database;
+    final now = nowTimestamp();
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      heights.forEach((key, height) {
+        batch.insert(
+          'chat_heights',
+          {
+            'book_uuid': bookUuid,
+            'item_key': key,
+            'width_bucket': widthBucket,
+            'type_scale_bucket': typeScaleBucket,
+            'height': height,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      });
+      await batch.commit(noResult: true);
+    });
+  }
+
+  @override
+  Future<void> clearHeights(String bookUuid) async {
+    final db = await _database;
+    await db.delete(
+      'chat_heights',
+      where: 'book_uuid = ?',
+      whereArgs: [bookUuid],
+    );
   }
 
   @override

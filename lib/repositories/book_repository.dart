@@ -273,6 +273,8 @@ class BookRepositorySqlite implements BookRepository {
     if (bookUuid.isEmpty) return;
     await library.removeBook(bookUuid);
     await cache.removeIndex(bookUuid);
+    // 高度缓存跟着书走：不清的话 uuid 被复用（导入同名书）会拿到旧高度。
+    await cache.clearHeights(bookUuid);
     await books.deleteFile(bookUuid);
   }
 

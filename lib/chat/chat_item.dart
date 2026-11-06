@@ -50,6 +50,19 @@ class ChatItemKey {
 
   @override
   String toString() => '$roundUuid:${kind.name}';
+
+  /// [toString] 的逆：持久化高度缓存里的 `item_key` 就是 `toString()`。
+  static ChatItemKey? parse(String raw) {
+    final at = raw.lastIndexOf(':');
+    if (at <= 0 || at == raw.length - 1) return null;
+    final kindName = raw.substring(at + 1);
+    for (final kind in ChatItemKind.values) {
+      if (kind.name == kindName) {
+        return ChatItemKey(raw.substring(0, at), kind);
+      }
+    }
+    return null;
+  }
 }
 
 /// 阅读区的一个条目（用户 / AI / 失败 / 分支头）。
