@@ -1031,7 +1031,7 @@ void main() {
     }
   });
 
-  test('AGENT 状态未落地 → 警告常驻该轮（仅内存），删除该轮一并清除、可手动关闭', () async {
+  test('AGENT 状态未落地 → 警告常驻该轮（随代落库），删除该轮一并清除', () async {
     var calls = 0;
     final ai = AiService(
       client: MockClient((request) async {
@@ -1058,18 +1058,18 @@ void main() {
     expect(provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
     expect(provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
     expect(provider.roundWarningsFor(1), isNot(contains('当前时间')));
-    // 仅内存：轮次记录本身与 Chat 完全同构（不带任何警告字段）。
+    // 提示不是内容：正文照常落库，警告单独挂在这一代上。
     expect(round.aiNarrative, contains('正文。'));
 
     // 删除该轮（含「重生成此轮 / 修改提问」的前置删除）→ 警告一并消失。
     await provider.deleteRound(round, deleteFollowing: true);
     expect(provider.roundWarningsFor(1), isEmpty);
 
-    // 重新生成同一轮 → 警告重新挂上；手动关闭后不再出现。
+    // 重新生成同一轮 → 警告重新挂上；没有关闭入口，重新加载后仍在。
     expect(await provider.sendRound(userInput: '开始', book: book), isTrue);
     expect(provider.roundWarningsFor(1), isNotEmpty);
-    await provider.dismissRoundWarnings(1);
-    expect(provider.roundWarningsFor(1), isEmpty);
+    await provider.loadRounds('b1');
+    expect(provider.roundWarningsFor(1), isNotEmpty, reason: '提示随代落库，不是本地副本');
   });
 
   test('AGENT 空正文轮：不写库、失败条目保留输入 + 提示说明状态作废', () async {

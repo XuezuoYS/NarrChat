@@ -276,20 +276,6 @@ class RoundRepository {
     await db.rounds.updateContent(generationUuid, fields);
   }
 
-  /// 写提示（关闭红条 / 写警告）。
-  Future<void> updateMessage({
-    required String bookUuid,
-    required String generationUuid,
-    required String status,
-    required String message,
-  }) async {
-    final db = await books.open(bookUuid);
-    await db.rounds.updateMeta(generationUuid, {
-      'message_status': message.trim().isEmpty ? '' : status,
-      'message': message,
-    });
-  }
-
   /// 从某一代分叉：建分支记录 + 设为当前分支（分支内此时还没有轮次）。
   Future<Branch> forkBranch({
     required String bookUuid,

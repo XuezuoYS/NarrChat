@@ -444,7 +444,7 @@ void main() {
     final imported = (await book.rounds.generation('g2'))!;
     expect(imported.meta.message.length, BookDb.maxMessageLength);
 
-    // ③ 改元信息路径（关闭提示 / 生成后写警告走这条）
+    // ③ 改元信息路径（`updateMeta`：写提示等元信息列，同样收口）
     await book.rounds.updateMeta('g1', {
       'message_status': 'warning',
       'message': long,

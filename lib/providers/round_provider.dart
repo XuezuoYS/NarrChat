@@ -315,34 +315,6 @@ class RoundProvider extends ChangeNotifier {
   /// 提示的变更计数（对话列表据此重算条目高度）。
   int get roundWarningsVersion => _curGen?.messagesVersion ?? 0;
 
-  /// 手动关闭某轮的提示：清空该代在库内的 `message` / `message_status`。
-  ///
-  /// 提示是跨设备共享的数据（随轮次部件同步），因此**必须触发一次同步**——
-  /// 否则对端下一次推送会把整棵版本树（含这条提示）原样带回来。
-  Future<void> dismissRoundWarnings(int roundIndex) async {
-    if (_bookUuid.isEmpty) return;
-    Round? target;
-    for (final round in _rounds) {
-      if (round.roundIndex == roundIndex) {
-        target = round;
-        break;
-      }
-    }
-    if (target == null || !target.hasMessage) return;
-    try {
-      await _roundsRepo.updateMessage(
-        bookUuid: _bookUuid,
-        generationUuid: target.uuid,
-        status: '',
-        message: '',
-      );
-      await loadRounds(_bookUuid);
-    } catch (e) {
-      debugPrint('[round] 提示清除失败（已忽略）：$e');
-    }
-    _cloudSyncProvider?.triggerSync();
-  }
-
   /// 提示变更计数（R3 里提示随代读回，加载即刷新）。
   void _bumpMessages(String bookUuid) {
     _gen(bookUuid).messagesVersion++;

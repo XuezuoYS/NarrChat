@@ -2778,9 +2778,6 @@ class _ChatScreenState extends State<ChatScreen>
                         _AgentWarningsBox(
                           warnings: warnings,
                           status: _noticeKindOf(message?.status),
-                          onDismiss: () => roundProvider.dismissRoundWarnings(
-                            round.roundIndex,
-                          ),
                         ),
                         const SizedBox(height: 8),
                       ],
@@ -4448,8 +4445,11 @@ class _ToolEventBoxState extends State<_ToolEventBox> {
 /// `warning`（黄，缺省）/ `error`（红）/ `info`（中性，预留给将来）。
 ///
 /// 两种用法同一形态——
-/// - 生成中：流式气泡顶部实时提示本轮已跳过的状态修改（[onDismiss] 为空）；
-/// - 结束后：挂在对应轮次上的**常驻**提示（随代入库、随代云同步，可手动关闭）。
+/// - 生成中：流式气泡顶部实时提示本轮已跳过的状态修改；
+/// - 结束后：挂在对应轮次上的**常驻**提示（随代入库、随代云同步）。
+///
+/// **没有关闭入口**：提示是「代」的一部分，只在重生成 / 切换 / 删除该轮时
+/// 随代一起变化，不能由用户单独抹掉。
 class _AgentWarningsBox extends StatelessWidget {
   /// 缺省标题：说明这些提示的含义（状态修改未通过校验）。
   static const String defaultTitle = '部分状态修改未通过校验，已跳过（不影响剧情正文）';
@@ -4459,13 +4459,9 @@ class _AgentWarningsBox extends StatelessWidget {
   /// 提示级别（`null` = 与 `info` 同款的中性视觉）。
   final NoticeKind? status;
 
-  /// 非空则右上角显示关闭按钮（常驻提示用）。
-  final VoidCallback? onDismiss;
-
   const _AgentWarningsBox({
     required this.warnings,
     this.status,
-    this.onDismiss,
   });
 
   @override
@@ -4483,33 +4479,13 @@ class _AgentWarningsBox extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  defaultTitle,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w600,
-                    color: accent,
-                  ),
-                ),
-              ),
-              if (onDismiss != null)
-                IconButton(
-                  key: const ValueKey('dismiss_round_warning'),
-                  icon: const Icon(Icons.close, size: 15),
-                  color: accent,
-                  tooltip: '关闭提示',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 22,
-                    minHeight: 22,
-                  ),
-                  onPressed: onDismiss,
-                ),
-            ],
+          Text(
+            defaultTitle,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: accent,
+            ),
           ),
           for (final w in warnings)
             Padding(

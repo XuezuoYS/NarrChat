@@ -513,7 +513,7 @@ void main() {
     await waitSendDone(tester, provider);
   });
 
-  testWidgets('轮次常驻黄框：结束后警告仍挂在正文轮上，可手动关闭', (tester) async {
+  testWidgets('轮次常驻黄框：结束后警告仍挂在正文轮上，没有关闭入口', (tester) async {
     // 1 正文帧 + 4 状态帧（状态帧全部只回文本 → 空手帧不再止损，
     // 直到帧数上限后缺项转常驻警告）。
     final gates = [
@@ -569,9 +569,9 @@ void main() {
     expect(find.textContaining('记忆总结本轮未更新'), findsOneWidget);
     expect(provider.roundWarningsFor(idx), isNot(contains('当前时间')));
 
-    await tester.tap(find.byKey(const ValueKey('dismiss_round_warning')));
+    // 提示常驻：没有关闭按钮，重新布局后它仍在。
+    expect(find.byKey(const ValueKey('dismiss_round_warning')), findsNothing);
     await tester.pump();
-    expect(provider.roundWarningsFor(idx), isEmpty);
-    expect(find.textContaining('世界状态本轮未更新'), findsNothing);
+    expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
   });
 }

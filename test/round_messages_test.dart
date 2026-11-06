@@ -18,11 +18,11 @@ import 'helpers/fakes.dart';
 ///
 /// 覆盖：
 /// - 生成警告随代落库（`message_status='warning'`）；
-/// - 提示以库为唯一来源（重启仍在）、可手动关闭且关闭要推送；
+/// - 提示以库为唯一来源（重启仍在），**没有关闭入口**（常驻，只能随代变化）；
 /// - 失败/中断 = 链上一条真轮次（`message_status='error'`），保留用户输入；
 /// - 错误代不能衍生下一轮，恢复方式是「重新生成」；
 /// - 提示随代而行（切版本 / 删轮次）；
-/// - 对话页两种渲染：warning 黄框可关、error 红条。
+/// - 对话页两种渲染：warning 黄框、error 红条。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -105,34 +105,22 @@ void main() {
     expect(round.isError, isFalse, reason: '警告不是失败');
   });
 
-  test('「重启」后提示仍在（库是唯一来源，无本地副本）', () async {
-    await runWarnedRound();
+  test('「重启」后提示仍在（库是唯一来源，没有可以抹掉它的入口）', () async {
+    final env = await runWarnedRound();
+    expect(env.cloud.triggers, 1, reason: '生成结束只触发一次同步');
 
     // 冷启动：同一套库 + 新 Provider 重新加载即可看到提示。
     final restarted = build();
     await restarted.provider.loadRounds('b1');
 
     expect(restarted.provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
-  });
 
-  test('手动关闭 → 该代 message 清空，并触发一次自动同步', () async {
-    final env = await runWarnedRound();
-    expect(env.cloud.triggers, 1, reason: '生成结束已触发一次');
-
-    // 必须 await：关闭是一次真实写库，忘了 await 会靠微任务侥幸通过。
-    await env.provider.dismissRoundWarnings(1);
-
-    expect(env.provider.roundWarningsFor(1), isEmpty);
+    // 提示就挂在库里那一代上（不是本地副本），没有关闭动作能把它清掉。
     final chain = await stack.repos.rounds.loadChain('b1');
     final round = chain.rounds.singleWhere((r) => r.roundIndex == 1);
-    expect(round.message, isEmpty);
-    expect(round.hasMessage, isFalse, reason: 'message 为空即无提示框');
-    expect(env.cloud.triggers, 2, reason: '关闭提示是轮次内容的真实变化，必须推送');
-
-    // 关闭后重启不复活（库里已经没有了）。
-    final restarted = build();
-    await restarted.provider.loadRounds('b1');
-    expect(restarted.provider.roundWarningsFor(1), isEmpty);
+    expect(round.message, contains('世界状态本轮未更新'));
+    expect(round.messageStatus, 'warning');
+    expect(env.cloud.triggers, 1, reason: '提示没有关闭动作，不会再产生额外同步');
   });
 
   test('失败：落一条链上的 error 轮，保留用户输入；清除后消失并推送', () async {
@@ -253,7 +241,7 @@ void main() {
     expect(env.provider.roundMessageFor(1), isNull);
   });
 
-  testWidgets('库内提示在对话页展示（warning 黄框），可手动关闭', (tester) async {
+  testWidgets('库内提示在对话页展示（warning 黄框），没有关闭入口', (tester) async {
     // 复用 setUp 里的 stack：testWidgets 的测试体跑在 fake-async 区域，
     // 这里再 `TestStack.create()` 会卡在真实文件 I/O 上（现象：10 分钟超时）。
     final provider = await pumpChatScreen(
@@ -276,12 +264,11 @@ void main() {
     await settle(tester);
 
     expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
-
-    await tester.tap(find.byKey(const ValueKey('dismiss_round_warning')));
+    // 提示常驻：旧版的「关闭提示」按钮已取消，重绘后它仍在。
+    expect(find.byKey(const ValueKey('dismiss_round_warning')), findsNothing);
     await settle(tester);
-
-    expect(provider.roundWarningsFor(1), isEmpty);
-    expect(find.textContaining('世界状态本轮未更新'), findsNothing);
+    expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
+    expect(provider.roundWarningsFor(1), isNotEmpty);
   });
 
   testWidgets('错误代在对话页渲染红条（文案取库内 message，用户输入保留）',
