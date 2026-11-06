@@ -147,7 +147,7 @@ void main() {
     expect(find.text('删除'), findsOneWidget);
   });
 
-  testWidgets('删除书籍：确认后从列表移除（本机数据一并清掉）', (tester) async {
+  testWidgets('删除书籍：输入书名最后确认后才从列表移除', (tester) async {
     await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
     expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
 
@@ -156,16 +156,63 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
 
-    // 确认对话框出现，并明确说明云端备份也会被清掉。
+    // 第二次确认：说明影响范围与不可恢复。
     expect(find.text('删除书籍'), findsOneWidget);
     expect(find.textContaining('云端备份'), findsOneWidget);
-    // 确认删除。
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    // 第三次确认：必须逐字输入书名；未匹配时删除按钮禁用。
+    expect(find.text('最后确认'), findsOneWidget);
+    expect(find.textContaining('不可恢复'), findsOneWidget);
+    final confirm = find.widgetWithText(FilledButton, '永久删除');
+    expect(
+      tester.widget<FilledButton>(confirm).onPressed,
+      isNull,
+      reason: '没输入书名时不能删除',
+    );
+
+    final input = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(input, '测试书（错）');
+    await tester.pump();
+    expect(
+      tester.widget<FilledButton>(confirm).onPressed,
+      isNull,
+      reason: '书名不一致不能删除',
+    );
+
+    // 一键填入：内容与当前书名一致，删除按钮解锁。
+    await tester.tap(find.text('一键填入'));
+    await tester.pump();
+    expect(tester.widget<TextField>(input).controller!.text, '测试书');
+    expect(tester.widget<FilledButton>(confirm).onPressed, isNotNull);
+
+    await tester.tap(confirm);
     await settle(tester);
 
     // 删除后列表移除该书，显示空态。
     expect(find.widgetWithText(ListTile, '测试书'), findsNothing);
     expect(find.text('还没有书籍'), findsOneWidget);
+  });
+
+  testWidgets('最后确认取消：书籍保留', (tester) async {
+    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('最后确认'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
   });
 
   testWidgets('无书籍时显示欢迎空态与新建按钮', (tester) async {
