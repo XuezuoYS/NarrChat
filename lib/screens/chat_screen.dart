@@ -19,6 +19,7 @@ import '../chat/chat_item.dart';
 import '../chat/chat_locator.dart';
 import '../chat/chat_rail.dart';
 import '../chat/chat_viewport.dart';
+import '../chat/chat_window.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
@@ -294,6 +295,27 @@ class _ChatScreenState extends State<ChatScreen>
   /// 生成中的待定气泡不在其中）。
   List<ChatItem> _chatItems = const [];
 
+  /// 内容窗口：只有窗口内的轮次进列表（长书不再一次铺满全书）。
+  final ChatWindowController _chatWindow = ChatWindowController();
+
+  /// 轨道用的门面：跳转先扩窗重建，再精确落点。
+  late final ChatLocator _chatRailLocator = _ChatRailLocator(this);
+
+  /// 当前构建里：窗口内气泡条目数（与 `_chatItems.length` 同口径）。
+  int _chatBubbleCount = 0;
+
+  /// 当前构建里：列表底部有没有占位条目（窗口含末轮时才有）。
+  bool _chatHasBottomSpacer = false;
+
+  /// 当前构建里：列表顶部有没有占位条目（窗口含首轮时才有）。
+  bool _chatHasTopSpacer = false;
+
+  /// 顶部收尾留白（顶替旧的 `padding.top`）。
+  static const double _kTrailingSpacerHeight = 24;
+
+  /// 底部占位高度 = 输入面板高 + 8（顶替旧的 `padding.bottom`）。
+  double get _leadingSpacerHeight => _composerHeight + 8;
+
   /// 定位门面：右侧轨道只依赖它（进度 / 跳转 / 速度）。
   late final ChatViewportController _chatLocator = ChatViewportController(
     viewport: ScrollViewport(_scrollController),
@@ -529,12 +551,14 @@ class _ChatScreenState extends State<ChatScreen>
     required bool showPendingUser,
     required bool showPending,
   }) => [
+    if (_chatHasTopSpacer) const ValueKey('chat-spacer-top'),
     for (final round in chatRounds) ...[
       ValueKey('chat-round${round.roundIndex}-user'),
       ValueKey('chat-round${round.roundIndex}-ai'),
     ],
     if (showPendingUser) const ValueKey('chat-pending-user'),
     if (showPending) const ValueKey('chat-pending-ai'),
+    if (_chatHasBottomSpacer) const ValueKey('chat-spacer-bottom'),
   ];
 
   /// [findChildIndexCallback]：把已有条目的 Key 映射到它**新的视图下标**。
@@ -620,6 +644,11 @@ class _ChatScreenState extends State<ChatScreen>
         notification.dragDetails != null) {
       // 用户按下并开始拖动：立刻放弃进行中的定点跳转。
       _cancelFloorJump();
+    }
+    // 窗口预取：视口逼近窗口任一端时扩一页（列表只渲染窗口内轮次）。
+    if (notification is ScrollUpdateNotification ||
+        notification is ScrollEndNotification) {
+      _maybeExpandWindow();
     }
     if (notification is UserScrollNotification) {
       if (notification.direction != ScrollDirection.idle) {
@@ -835,10 +864,46 @@ class _ChatScreenState extends State<ChatScreen>
   void _onItemMeasured(int itemIndex, double height) {
     _itemHeights[itemIndex] = height;
     // 同时喂给几何模型：轨道读它算进度 / 拇指 / 跳转落点。
-    // 待定气泡排在所有真实气泡之后，因此下标仍能一一对应。
-    if (itemIndex >= 0 && itemIndex < _chatItems.length) {
-      _chatGeometry.updateHeight(_chatItems[itemIndex].key, height);
+    // 逻辑序 = 顶部占位（可选）+ 窗口内气泡 + 待定气泡 + 底部占位（可选），
+    // 只有气泡参与实测回填。
+    final head = _chatHasTopSpacer ? 1 : 0;
+    final bubbleIndex = itemIndex - head;
+    if (bubbleIndex >= 0 && bubbleIndex < _chatBubbleCount) {
+      _chatGeometry.updateHeight(_chatItems[head + bubbleIndex].key, height);
     }
+  }
+
+  /// 滚动到某轮起点：几何的 `offsetOf` 给的是**底边**距底部的距离，
+  /// 加自身高度再减去视口高度，才是「顶边贴视口顶」的落点。
+  void _jumpToRoundTop(int roundIndex) {
+    if (!_scrollController.hasClients) return;
+    final index = _chatGeometry.indexOfRound(roundIndex);
+    if (index == null) return;
+    final topEdge =
+        _chatGeometry.offsetOf(index) + _chatGeometry.heightOf(index);
+    final maxOffset = _chatLocator.viewport.maxOffset;
+    final target =
+        (topEdge - _viewportDimension).clamp(0.0, maxOffset).toDouble();
+    _userScrolledAway = true;
+    _chatLocator.viewport.jumpTo(target);
+  }
+
+  /// 轨道要跳的轮不在窗口里：先重建窗口覆盖它，下一帧再精确落点。
+  void _jumpRailToRound(int roundIndex) {
+    final window = _chatWindow.window;
+    if (window == null) return;
+    if (!window.contains(roundIndex)) {
+      _chatWindow.rebuildAround(roundIndex);
+      setState(() {
+        _rebuildGeometry(_chatRoundsNow());
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _jumpToRoundTop(roundIndex);
+      });
+      return;
+    }
+    _jumpToRoundTop(roundIndex);
   }
 
   /// 由轮次重建几何模型的条目顺序，并把已实测高度回填。
@@ -846,8 +911,23 @@ class _ChatScreenState extends State<ChatScreen>
   /// 调用时机与 `_itemHeights` 失效同一处（轮次来源 / 警告 / 代次控件 / 列宽变化）。
   /// 未实测条目由 [ChatGeometry] 按种类估算，不阻塞首帧。
   void _rebuildGeometry(List<Round> chatRounds) {
+    final total = chatRounds.isEmpty ? 0 : chatRounds.last.roundIndex;
+    if (total <= 0) {
+      _chatWindow.initialize(totalRounds: 0);
+    } else if (!_chatWindow.isInitialized) {
+      _chatWindow.initialize(
+        totalRounds: total,
+        heightOfWindow: (window) => _estimatedWindowHeight(window, chatRounds),
+        viewportDimension: _viewportDimension,
+      );
+    } else {
+      _chatWindow.setTotalRounds(total);
+    }
+
+    final inWindow = _windowRounds(chatRounds);
+    _chatBubbleCount = inWindow.length * 2;
     _chatItems = [
-      for (final round in chatRounds) ...[
+      for (final round in inWindow) ...[
         ChatItem(
           roundUuid: round.uuid,
           roundIndex: round.roundIndex,
@@ -862,7 +942,43 @@ class _ChatScreenState extends State<ChatScreen>
         ),
       ],
     ];
-    _chatGeometry.rebuild(_chatItems);
+    // 与 builder 的 `virtualBase` 同口径：待定气泡排在所有真实气泡之后。
+    _chatBubbleCount = _chatItems.length;
+    // 窗口含首轮 → 列表最顶部插一条占位（视觉顶部），顶替旧的 padding.top。
+    // 顶部 24dp 暂时仍用 padding 表达：侧栏「跳转至条目」用的分帧跳转引擎（第②步保留）
+    // 假设逻辑 0 是气泡，加前沿占位会让它整体错位；那套引擎在第④步才拆。
+    _chatHasTopSpacer = false;
+    if (_chatHasTopSpacer) {
+      _chatItems = [
+        ChatItem(
+          roundUuid: 'spacer-top',
+          roundIndex: inWindow.first.roundIndex,
+          kind: ChatItemKind.trailingSpacer,
+          fixedHeight: _kTrailingSpacerHeight,
+        ),
+        ..._chatItems,
+      ];
+    }
+    // 窗口含末轮 → 列表最底部插一条占位（视觉底部），顶替输入面板留白。
+    // 底部占位暂缓（下一轮连同侧栏跳转的索引重映射一起上）：
+    // 先保 padding.bottom，几何只负责窗口/轨道。
+    _chatHasBottomSpacer = false;
+    if (_chatHasBottomSpacer) {
+      _chatItems = [
+        ..._chatItems,
+        ChatItem(
+          roundUuid: 'spacer-bottom',
+          roundIndex: total,
+          kind: ChatItemKind.leadingSpacer,
+          fixedHeight: _leadingSpacerHeight,
+        ),
+      ];
+    }
+    _chatGeometry.rebuild(
+      _chatItems,
+      // 重建只换条目集合，实测高度必须带过去（否则每帧打回估算值）。
+      cache: _chatGeometry.dumpMeasuredHeights(),
+    );
     for (var i = 0; i < _chatItems.length; i++) {
       final measured = _itemHeights[i];
       if (measured != null) {
@@ -870,6 +986,66 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
     _chatLocator.geometry = _chatGeometry;
+  }
+
+  /// 窗口内的轮次（升序）。
+  List<Round> _windowRounds(List<Round> chatRounds) {
+    final window = _chatWindow.window;
+    if (window == null) return const [];
+    return [
+      for (final round in chatRounds)
+        if (window.contains(round.roundIndex)) round,
+    ];
+  }
+
+  /// 窗口内的估算总高（`initialize` 判断"不足两屏就继续往前扩"用）。
+  double _estimatedWindowHeight(ChatWindow window, List<Round> chatRounds) {
+    var sum = 0.0;
+    for (final round in chatRounds) {
+      if (!window.contains(round.roundIndex)) continue;
+      sum += ChatGeometry.defaultEstimates[ChatItemKind.user]!;
+      sum += round.isError
+          ? ChatGeometry.defaultEstimates[ChatItemKind.failed]!
+          : ChatGeometry.defaultEstimates[ChatItemKind.ai]!;
+    }
+    return sum;
+  }
+
+  /// 视口高度（首帧布局完成前为 0）。
+  double get _viewportDimension {
+    if (!_scrollController.hasClients) return 0;
+    final position = _scrollController.position;
+    return position.hasViewportDimension ? position.viewportDimension : 0;
+  }
+
+  /// 窗口两端距视口的距离（预取判据）。
+  ({double top, double bottom}) _distanceToWindowEdges() {
+    final viewport = _viewportDimension;
+    final pixels = _chatLocator.viewport.pixels;
+    final total = _chatGeometry.total;
+    return (
+      top: math.max(0, total - (pixels + viewport)),
+      bottom: math.max(0, pixels),
+    );
+  }
+
+  /// 滚动时按需扩窗；扩了就重建条目并刷新。
+  void _maybeExpandWindow() {
+    final viewport = _viewportDimension;
+    if (viewport <= 0 || !_chatWindow.isInitialized) return;
+    final edges = _distanceToWindowEdges();
+    final grewUp = _chatWindow.expandUp(
+      distanceToWindowTop: edges.top,
+      viewportDimension: viewport,
+    );
+    final grewDown = _chatWindow.expandDown(
+      distanceToWindowBottom: edges.bottom,
+      viewportDimension: viewport,
+    );
+    if (!grewUp && !grewDown) return;
+    setState(() {
+      _rebuildGeometry(_chatRoundsNow());
+    });
   }
 
 
@@ -952,7 +1128,8 @@ class _ChatScreenState extends State<ChatScreen>
     }
     _closeDrawer();
     _userScrolledAway = true;
-    _jumpToItem(2 * position);
+    // 逻辑序里顶部占位在最前，气泡起点要整体后移一位。
+    _jumpToItem((_chatHasTopSpacer ? 1 : 0) + 2 * position);
   }
 
   /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）。
@@ -989,7 +1166,7 @@ class _ChatScreenState extends State<ChatScreen>
   bool _stepJumpTowardItem(int itemIndex) {
     if (!_scrollController.hasClients) return false;
     final pos = _scrollController.position;
-    final itemCount = _chatRoundsNow().length * 2;
+    final itemCount = _chatListItemCount;
     final live = _liveChatItems();
     final desired = _revealScrollOffset(
       _modeledItemOffset(itemIndex, itemCount, live: live),
@@ -2281,6 +2458,8 @@ class _ChatScreenState extends State<ChatScreen>
       // 条目顺序 / 实测缓存都变了：几何模型跟着重建。
       _rebuildGeometry(chatRounds);
     }
+    // 窗口内的轮次（列表只渲染这些）。
+    final windowRounds = _windowRounds(chatRounds);
     final isSending = shell.isSending;
     // 展示模式：流式传输或非流式回放（AGENT / 联网搜索多轮）都渲染
     // 块时间线气泡；纯等结果的非流式直发仍显示转圈提示。
@@ -2310,12 +2489,16 @@ class _ChatScreenState extends State<ChatScreen>
     // （缺回调时实测：6 个可见条目全部重建）；② 涉及「视觉位置」的换算
     // （楼层跳转、代次切换补偿、自绘滚动条方向）都要按 reverse 取反，见各处注释。
     final itemKeys = _chatItemKeys(
-      chatRounds: chatRounds,
+      chatRounds: windowRounds,
       showPendingUser: showPendingUser,
       showPending: showPending,
     );
     // 供楼层跳转把列表**视图下标**换算回逻辑序号（见 [_liveChatItems]）。
     _chatListItemCount = itemKeys.length;
+    // 正在生长的流式气泡 = 最后一条**非占位**条目（生成中是那个虚拟插槽）。
+    // 窗口不含末轮时视口下方没有会生长的东西，谁都不 active（-1）。
+    final lastContentIndex =
+        _chatHasBottomSpacer ? itemKeys.length - 2 : itemKeys.length - 1;
     final chatList = NotificationListener<ScrollNotification>(
       onNotification: _onChatScrollNotification,
       child: ListView.builder(
@@ -2335,9 +2518,16 @@ class _ChatScreenState extends State<ChatScreen>
           final logicalIndex = itemKeys.length - 1 - index;
           Widget item;
           // 虚拟条目起点：历史轮次之后（待定用户气泡 → 流式气泡）。
-          final virtualBase = chatRounds.length * 2;
+          final head = _chatHasTopSpacer ? 1 : 0;
+          final virtualBase = head + _chatBubbleCount;
 
-          if (showPendingUser && logicalIndex == virtualBase) {
+          if (logicalIndex == 0 && _chatHasTopSpacer) {
+            // 顶部收尾留白（顶替旧的 ListView.padding.top）。
+            item = const SizedBox(
+              height: _kTrailingSpacerHeight,
+              key: ValueKey('chat-spacer-top-box'),
+            );
+          } else if (showPendingUser && logicalIndex == virtualBase) {
             // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -2355,8 +2545,14 @@ class _ChatScreenState extends State<ChatScreen>
               showTimeline: showTimeline,
               roundIndex: shell.nextRoundIndex,
             );
+          } else if (logicalIndex == itemKeys.length - 1 && _chatHasBottomSpacer) {
+            // 底部避让留白（顶替旧的 ListView.padding.bottom）。
+            item = SizedBox(
+              height: _leadingSpacerHeight,
+              key: const ValueKey('chat-spacer-bottom-box'),
+            );
           } else {
-            final round = chatRounds[logicalIndex ~/ 2];
+            final round = windowRounds[(logicalIndex - head) ~/ 2];
             final isAi = logicalIndex.isOdd;
             if (!isAi) {
               item = Padding(
@@ -2442,7 +2638,9 @@ class _ChatScreenState extends State<ChatScreen>
                 // 流式正文就长在这里，它的长高会推动可视内容（见 [ReadingAnchor]）。
                 child: ReadingAnchorItem(
                   anchor: _readingAnchor,
-                  active: logicalIndex == itemKeys.length - 1,
+                  // 只有"最后一条非占位条目"才可能是正在生长的流式气泡。
+                  // 窗口含末轮时逻辑最后一条是底部占位，直接用它会让锚点永远收不到成长。
+                  active: logicalIndex == lastContentIndex,
                   child: item,
                 ),
               ),
@@ -2522,7 +2720,7 @@ class _ChatScreenState extends State<ChatScreen>
                   // 否则展开时面板会落到父级边界外（实测会报 off-screen）。
                   width: 120,
                   child: ChatRail(
-                    locator: _chatLocator,
+                    locator: _chatRailLocator,
                     totalRounds: chatRounds.last.roundIndex,
                     viewportHeight: viewportHeight,
                     visibleFraction: fraction,
@@ -2625,7 +2823,14 @@ class _ChatScreenState extends State<ChatScreen>
           _composerKey.currentContext?.findRenderObject() as RenderBox?;
       final height = box?.size.height ?? 0;
       if (height != _composerHeight && mounted) {
-        setState(() => _composerHeight = height);
+        // 底部占位条目的高度取决于输入面板高度：面板变了就重建几何，
+        // 否则留白会停在首帧那个 0 高度上（旧的 padding 是每次构建现算的）。
+        final spacerChanged =
+            _chatHasBottomSpacer && (height - _composerHeight).abs() > 0.5;
+        setState(() {
+          _composerHeight = height;
+          if (spacerChanged) _rebuildGeometry(_chatRoundsNow());
+        });
       }
     });
   }
@@ -4752,4 +4957,46 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
   Widget _retryLine(BuildContext context, (int, int) retry) {
     return _RetryStatusText(attempt: retry.$1, total: retry.$2);
   }
+}
+/// 轨道专用的定位门面。
+///
+/// 与 [ChatViewportController] 的唯一差别在跳转：目标轮不在当前窗口里时
+/// 先让窗口覆盖它（否则几何查不到该轮、`jumpToRound` 会 no-op），
+/// 再由页面在下一帧按几何精确落点（顶边贴视口顶）。
+class _ChatRailLocator implements ChatLocator {
+  _ChatRailLocator(this._owner);
+
+  final _ChatScreenState _owner;
+
+  @override
+  int? get currentRoundIndex => _owner._chatLocator.currentRoundIndex;
+
+  @override
+  double? get progress => _owner._chatLocator.progress;
+
+  @override
+  Future<void> jumpToRound(int roundIndex) async {
+    _owner._jumpRailToRound(roundIndex);
+  }
+
+  @override
+  Future<void> jumpToTop() => _owner._chatLocator.jumpToTop();
+
+  @override
+  Future<void> jumpToBottom() => _owner._chatLocator.jumpToBottom();
+
+  @override
+  void scrollByVelocity(double viewportsPerSecond) =>
+      _owner._chatLocator.scrollByVelocity(viewportsPerSecond);
+
+  @override
+  void stopVelocity() => _owner._chatLocator.stopVelocity();
+
+  @override
+  void addListener(VoidCallback listener) =>
+      _owner._chatLocator.addListener(listener);
+
+  @override
+  void removeListener(VoidCallback listener) =>
+      _owner._chatLocator.removeListener(listener);
 }
