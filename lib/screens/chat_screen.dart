@@ -46,7 +46,7 @@ import '../widgets/brand_logo.dart';
 import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/composer_input_mode.dart';
-import '../widgets/failed_attempt_bubble.dart';
+
 import '../widgets/floor_jump_bar.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/island_bar.dart';
@@ -155,9 +155,6 @@ typedef _ChatShellSignals = ({
   bool showTimeline,
   /// 生成中尚未落库的用户输入。
   String pendingInput,
-  /// 是否存在失败条目（未完成的生成尝试）。
-  bool hasFailure,
-  /// 下一轮轮号（失败条目「本该产生的那一轮」）。
   int nextRoundIndex,
   /// 常驻警告版本号（列表项高度缓存失效依据）。
   int warningsVersion,
@@ -517,7 +514,6 @@ class _ChatScreenState extends State<ChatScreen>
   /// 轮号在版本切换、删除相邻轮次时都不变 → 元素与 State 得以保留。
   List<Key> _chatItemKeys({
     required List<Round> chatRounds,
-    required bool showFailure,
     required bool showPendingUser,
     required bool showPending,
   }) => [
@@ -525,7 +521,6 @@ class _ChatScreenState extends State<ChatScreen>
       ValueKey('chat-round${round.roundIndex}-user'),
       ValueKey('chat-round${round.roundIndex}-ai'),
     ],
-    if (showFailure) const ValueKey('chat-failure'),
     if (showPendingUser) const ValueKey('chat-pending-user'),
     if (showPending) const ValueKey('chat-pending-ai'),
   ];
@@ -1515,30 +1510,15 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 目标轮次是否仍在会话中（含被删除 / 被替换）：失效时给出统一提示。
+  ///
+  /// 身份是代 uuid：R3 起 `Round.id` 是遗留字段（恒为 null），拿它比较会让守卫
+  /// 永远判定「该轮次已不存在」，把「修改并重新提问」「按意见修改」的提交静默拦掉。
   ComposerIntentGuard _roundAliveGuard(Round round) => (roundProvider) =>
-      round.id != null && roundProvider.rounds.any((r) => r.id == round.id)
+      round.uuid.isNotEmpty &&
+              roundProvider.rounds.any((r) => r.uuid == round.uuid)
           ? null
           : '该轮次已不存在，已退出修改';
 
-  /// 失败条目「修改并重新提问」：把失败时的输入（识图模型含图片）载入输入框、
-  /// 灰条亮起；按发送键后以修改后的输入重新生成（sendIntent 先清空失败条目）。
-  void _startEditAndRetryFailure() {
-    final roundProvider = context.read<RoundProvider>();
-    final input = roundProvider.failedUserInput;
-    if (input.isEmpty) return;
-    final ai = context.read<AiSettingsProvider>();
-    _enterInputMode(
-      ComposerInputMode(
-        // 失败条目「本该产生」的那一轮。
-        label: '修改并重新提问（第 ${roundProvider.nextRoundIndex} 轮）',
-        buildIntent: ({required text, required images}) =>
-            RoundSendIntent.newRound(userInput: text, images: images),
-        guard: (rp) => rp.hasFailureEntry ? null : '失败条目已不存在，已退出修改',
-      ),
-      text: input,
-      images: ai.supportsVision ? roundProvider.failedUserImages : const [],
-    );
-  }
 
   /// 打开平台文件选择器导入图片（仅识图模型可用）。
   ///
@@ -1718,25 +1698,6 @@ class _ChatScreenState extends State<ChatScreen>
     _endGeneration();
   }
 
-  /// 失败条目的「刷新本轮」：与正常刷新**同一条路径**，差别只是输入 / 图片取自
-  /// 失败条目、轮号取「本该产生的那一轮」（[RoundProvider.nextRoundIndex]）。
-  ///
-  /// 失败条目携带图片（识图模型）时，「生成中」气泡随之带图；不触碰待发送附件。
-  Future<void> _handleRefreshFailure() async {
-    final rp = context.read<RoundProvider>();
-    final input = rp.failedUserInput;
-    if (input.isEmpty || rp.isSending) return;
-    final book = context.read<BookProvider>().currentBook;
-    if (book == null) return;
-    await _handleRefreshRound(
-      Round(
-        bookUuid: book.uuid,
-        roundIndex: rp.nextRoundIndex,
-        userInput: input,
-        userImages: rp.failedUserImages,
-      ),
-    );
-  }
 
   /// 切换当前轮的版本（`← / →`）：**直接切换，不弹任何提示**。
   ///
@@ -1834,32 +1795,14 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 失败条目的代次控件：失败态是「临时代」，只提供「← 还原上一代」。
-  Widget? _failureVersionStepper(int pendingRoundIndex) {
-    final rp = context.read<RoundProvider>();
-    final info = rp.versionInfoFor(pendingRoundIndex);
-    if (info == null || info.prevUuid == null) return null;
-    return RoundVersionStepper(
-      key: _stepperKeyFor(pendingRoundIndex),
-      current: null,
-      latest: info.latestSerial,
-      enabled: !rp.isSending,
-      tooltip: '还原上一代（第 ${info.prevSerial ?? info.latestSerial} 代）',
-      onPrev: () => _switchVersion(pendingRoundIndex, forward: false),
-    );
-  }
 
-  /// 清除失败条目。
-  Future<void> _clearFailure() async {
-    await context.read<RoundProvider>().clearFailedAttempt();
-  }
 
   /// 查看指定轮次的 RAW 数据（请求 JSON + AI 返回三块）。
   ///
   /// RAW 是**本机内存**数据（按「代」保存，换书即清理）：能取到就开对话框，
   /// 取不到也**不隐藏入口**，而是明确告知原因（入口消失比没数据更让人困惑）。
   void _showRawDialog(Round round) {
-    final exchanges = context.read<RoundProvider>().rawExchangesFor(round.id!);
+    final exchanges = context.read<RoundProvider>().rawExchangesFor(round.uuid);
     if (exchanges == null) {
       context.notices.info(
         '本轮暂无 RAW 记录：RAW 只保留本次运行捕获的请求 / 返回'
@@ -1870,25 +1813,6 @@ class _ChatScreenState extends State<ChatScreen>
     showRawDataDialog(context, exchanges: exchanges);
   }
 
-  /// 查看失败条目的 RAW 数据（请求 JSON + 失败原因）；无记录时给出说明。
-  void _showFailedRawDialog() {
-    final rp = context.read<RoundProvider>();
-    final exchanges = rp.failedRawExchanges;
-    if (exchanges == null) {
-      context.notices.info(
-        '本次失败暂无 RAW 记录：RAW 只保留本次运行捕获的请求 / 返回'
-        '（重开应用或换书后不再保留）。',
-      );
-      return;
-    }
-    showRawDataDialog(
-      context,
-      exchanges: exchanges,
-      failedError: rp.failedErrorMessage.isEmpty
-          ? null
-          : rp.failedErrorMessage,
-    );
-  }
 
   /// 预览「此刻若发送将实际发出」的请求体（不发送、无副作用）。
   ///
@@ -2014,14 +1938,14 @@ class _ChatScreenState extends State<ChatScreen>
             title: '编辑正文（第 ${round.roundIndex} 轮）',
             initial: round.aiNarrative,
             onSave: (text) =>
-                context.read<RoundProvider>().updateNarrative(round.id!, text),
+                context.read<RoundProvider>().updateNarrative(round.uuid, text),
           );
         case 'editInput':
           _showEditTextDialog(
             title: '编辑输入（第 ${round.roundIndex} 轮）',
             initial: round.userInput,
             onSave: (text) =>
-                context.read<RoundProvider>().updateUserInput(round.id!, text),
+                context.read<RoundProvider>().updateUserInput(round.uuid, text),
           );
         case 'editReask':
           _startEditAndReAsk(round);
@@ -2466,7 +2390,6 @@ class _ChatScreenState extends State<ChatScreen>
         isSending: p.isSending,
         showTimeline: p.showTimeline,
         pendingInput: p.pendingUserInput,
-        hasFailure: p.hasFailureEntry,
         nextRoundIndex: p.nextRoundIndex,
         warningsVersion: p.roundWarningsVersion,
         versionsRevision: p.versionsRevision,
@@ -2506,8 +2429,6 @@ class _ChatScreenState extends State<ChatScreen>
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
     final pendingInput = shell.pendingInput;
     final showPendingUser = showPending && pendingInput.isNotEmpty;
-    // 失败条目：空闲且存在未完成的生成尝试时展示（发送新消息时会先清空）。
-    final showFailure = !showPending && shell.hasFailure;
 
     // 流式输出期间贴底跟随（增量路径由 provider 监听驱动，见 [_onRoundTick]）。
     _autoFollowIfNeeded();
@@ -2530,7 +2451,6 @@ class _ChatScreenState extends State<ChatScreen>
     // （楼层跳转、代次切换补偿、自绘滚动条方向）都要按 reverse 取反，见各处注释。
     final itemKeys = _chatItemKeys(
       chatRounds: chatRounds,
-      showFailure: showFailure,
       showPendingUser: showPendingUser,
       showPending: showPending,
     );
@@ -2554,33 +2474,10 @@ class _ChatScreenState extends State<ChatScreen>
           // reverse：视图下标 0 在视觉底部（最新条目）→ 逻辑序号需翻转。
           final logicalIndex = itemKeys.length - 1 - index;
           Widget item;
-          // 虚拟条目起点：历史轮次之后（失败条目 → 待定用户气泡 → 流式气泡）。
-          final virtualBase = chatRounds.length * 2 + (showFailure ? 1 : 0);
-          // 失败条目：未完成的生成尝试（用户输入 + 红色提示框）。
-          if (showFailure && logicalIndex == chatRounds.length * 2) {
-            final pendingIndex = shell.nextRoundIndex;
-            // 提示文本以失败占位代（`round_stack` 的 `error` 行）为准，缺位时
-            // 回落到 `books.failed_*` 的失败原因（老库 / 老快照兼容）。
-            final failureLines = roundProvider.failureMessageLines;
-            final attempt = failureLines.isEmpty
-                ? roundProvider.failedAttempt
-                : roundProvider.failedAttempt.copyWith(
-                    errorMessage: failureLines.join('\n'),
-                  );
-            item = Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: FailedAttemptBubble(
-                attempt: attempt,
-                // 「刷新本轮」：与正常轮次同一入口（确认框 / Provider 路径都同一处）。
-                onRefresh: _handleRefreshFailure,
-                onEditAndRetry: _startEditAndRetryFailure,
-                onClear: _clearFailure,
-                versionStepper: _failureVersionStepper(pendingIndex),
-                // RAW 入口恒在（无数据时由对话框前的提示说明）。
-                onViewRaw: _showFailedRawDialog,
-              ),
-            );
-          } else if (showPendingUser && logicalIndex == virtualBase) {
+          // 虚拟条目起点：历史轮次之后（待定用户气泡 → 流式气泡）。
+          final virtualBase = chatRounds.length * 2;
+
+          if (showPendingUser && logicalIndex == virtualBase) {
             // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -2620,11 +2517,17 @@ class _ChatScreenState extends State<ChatScreen>
                 padding: const EdgeInsets.only(bottom: 20),
                 child: ChatBubble(
                   isUser: false,
-                  text: round.aiNarrative.isEmpty
-                      ? '（AI 未返回剧情正文）'
-                      : round.aiNarrative,
+                  // 错误代没有正文：只显示红条（提示由 footer 里的警告框呈现），
+                  // 不要用「未返回正文」的占位掩盖真正的失败原因。
+                  text: round.isError
+                      ? ''
+                      : (round.aiNarrative.isEmpty
+                          ? '（AI 未返回剧情正文）'
+                          : round.aiNarrative),
                   images: round.aiImages,
-                  recommendedAction: round.recommendedAction,
+                  recommendedAction: round.isError
+                      ? ''
+                      : round.recommendedAction,
                   onRecommendedActionInsert: _insertRecommendedAction,
                   onRecommendedActionCustomTap: _inputFocus.requestFocus,
                   roundIndex: round.roundIndex,
@@ -2746,7 +2649,7 @@ class _ChatScreenState extends State<ChatScreen>
             child: Container(
               // 与各边栏一致的内容表面背景。
               color: context.narrColors.surface,
-              child: chatRounds.isEmpty && !showPending && !showFailure
+              child: chatRounds.isEmpty && !showPending
                   ? _buildEmptyState(context, bookProvider.currentBook)
                   // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
                   : messagesList,
@@ -3259,15 +3162,15 @@ class _ChatScreenState extends State<ChatScreen>
 
     final viewedRound = sidebarProvider.isHistoryView
         ? (rounds
-                  .where((r) => r.id == sidebarProvider.historyRoundId)
+                  .where((r) => r.uuid == sidebarProvider.historyRoundUuid)
                   .isNotEmpty
-              ? rounds.firstWhere((r) => r.id == sidebarProvider.historyRoundId)
+              ? rounds.firstWhere((r) => r.uuid == sidebarProvider.historyRoundUuid)
               : latest)
         : latest;
     // 当前查看轮次在列表中的下标（-1 = 无轮次或该轮次已不在列表中）。
     final viewedIndex = viewedRound == null
         ? -1
-        : rounds.indexWhere((r) => r.id == viewedRound.id);
+        : rounds.indexWhere((r) => r.uuid == viewedRound.uuid);
 
     return SidebarPanel(
       // 不随轮次更换 key：State（滚动位置 / 折叠状态）跨轮次保留，
@@ -3287,7 +3190,7 @@ class _ChatScreenState extends State<ChatScreen>
       onJumpToRound: _jumpToMemoryEntry,
       onSaveField: (round, field, value) => context
           .read<RoundProvider>()
-          .updateRoundField(round.id!, field, value),
+          .updateRoundField(round.uuid, field, value),
     );
   }
 

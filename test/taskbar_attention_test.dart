@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/chat_route.dart';
-import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/services/notification_service.dart';
 
@@ -17,10 +16,14 @@ import 'helpers/fakes.dart';
 ///
 /// Windows 真实实现（Win32TaskbarAttentionBackend 的 user32 FFI）无法在
 /// 测试中验证，本文件全部注入 [FakeTaskbarAttentionBackend]。
-const bookA = Book(
-  uuid: 'f3a1b7c2-1d2e-4a5b-9c8d-1e2f3a4b5c61',
-  title: '书A',
-);
+///
+/// R3 起书籍来自真库（`TestStack` 的临时目录），不再有假 DAO。
+const String bookAUuid = 'f3a1b7c2-1d2e-4a5b-9c8d-1e2f3a4b5c61';
+
+/// 每条用例一套隔离存储。真库 I/O 放在 setUp 里：`testWidgets` 的假时钟下
+/// 真实异步永远不会推进，库操作必须跑在测试体外。
+late TestStack _stack;
+late BookProvider _bookProvider;
 
 /// 构造一个已初始化、注入假通知 / 假闪烁后端的服务。
 Future<
@@ -31,9 +34,7 @@ Future<
   )
 >
 _makeService() async {
-  final bookDao = FakeBookDao(books: [bookA]);
-  final bookProvider = BookProvider(dao: bookDao);
-  await bookProvider.loadBooks();
+  final bookProvider = _bookProvider;
   final backend = FakeNotificationBackend();
   final attention = FakeTaskbarAttentionBackend();
   final service = GenerationNotificationService(
@@ -52,12 +53,23 @@ Route<void> chatRoute(String bookUuid) => MaterialPageRoute<void>(
 );
 
 void main() {
+  setUp(() async {
+    _stack = await TestStack.create();
+    await _stack.seedBook(uuid: bookAUuid, title: '书A');
+    _bookProvider = BookProvider(repository: _stack.repos.books);
+    await _bookProvider.loadBooks();
+  });
+
+  tearDown(() async {
+    await _stack.dispose();
+  });
+
   testWidgets('后台完成生成：任务栏开始闪烁，系统通知照常', (tester) async {
     final (service, backend, attention) = await _makeService();
     // 模拟最小化 / 切到后台（生命周期进入非 resumed）。
     service.didChangeAppLifecycleState(AppLifecycleState.hidden);
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(attention.startCount, 1);
     expect(attention.stopCount, 0);
@@ -70,7 +82,7 @@ void main() {
     // 窗口可见但无焦点（被其它窗口遮挡 / 切到别的应用）。
     service.didChangeAppLifecycleState(AppLifecycleState.inactive);
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(attention.startCount, 1);
   });
@@ -79,17 +91,17 @@ void main() {
     final (service, _, attention) = await _makeService();
     // 生命周期默认 resumed（窗口可见且聚焦），任务栏无需提醒。
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(attention.startCount, 0);
   });
 
   testWidgets('前台正在查看该书 chat 页完成生成：不闪烁也不弹通知', (tester) async {
     final (service, backend, attention) = await _makeService();
-    service.routeObserver.didPush(chatRoute(bookA.uuid), null);
-    expect(service.topChatBookUuid, bookA.uuid);
+    service.routeObserver.didPush(chatRoute(bookAUuid), null);
+    expect(service.topChatBookUuid, bookAUuid);
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(attention.startCount, 0);
     expect(backend.shown, isEmpty);
@@ -99,7 +111,7 @@ void main() {
     final (service, _, attention) = await _makeService();
     // 后台完成一次 → 开始闪烁。
     service.didChangeAppLifecycleState(AppLifecycleState.paused);
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
     expect(attention.startCount, 1);
 
     // 用户点任务栏 / 打开窗口恢复焦点 → 停止闪烁。

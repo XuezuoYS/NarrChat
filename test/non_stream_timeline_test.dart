@@ -114,7 +114,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。
@@ -230,7 +229,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       searchService: searchService,
@@ -298,7 +296,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。
@@ -338,8 +335,9 @@ void main() {
     await pumpUntil(tester, () => !provider.isSending);
 
     expect(await future, isFalse);
-    expect(provider.failedAttempt.isEmpty, isFalse, reason: '取消应保留失败条目');
-    expect(provider.rounds.where((r) => r.roundIndex == 1), isEmpty);
+    final failed = provider.rounds.where((r) => r.roundIndex == 1).toList();
+    expect(failed, hasLength(1), reason: '取消会落一条 error 代');
+    expect(failed.single.isError, isTrue, reason: '取消应保留失败代（红条）');
     await waitSendDone(tester, provider);
   });
 }

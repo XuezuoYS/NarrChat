@@ -53,6 +53,33 @@ class BookDb implements BookStore {
     'operated_at',
   };
 
+  /// 代级提示长度上限（与 R2 的 `clampMessage` 同口径）。
+  ///
+  /// 为什么要截：`round_stack.message` 是 TEXT，而**整本书库会作为一份快照
+  /// 上云**——一条几万字的提示会把每一代快照都撑大，还会拖慢摘要计算与
+  /// B-tree 写入。提示是给人看的短文本，不是正文，4000 字符绰绰有余。
+  static const int maxMessageLength = 4000;
+
+  /// 把提示截到 [maxMessageLength]，超出部分用省略号收尾。
+  ///
+  /// 空串 / 空白原样返回：`message` 为空就是「没有提示框」，
+  /// 这里绝不能把空串变成省略号。
+  static String clampMessage(String message) {
+    if (message.length <= maxMessageLength) return message;
+    if (maxMessageLength <= 1) return message.substring(0, maxMessageLength);
+    return '${message.substring(0, maxMessageLength - 1)}…';
+  }
+
+  /// 行映射里的 `message` 过一遍截断，其它列原样。
+  ///
+  /// 所有写 `round_stack` 的路径（插代 / 批量导入 / 改元信息）都走这里，
+  /// 避免"某条新加的写路径忘了截断"。
+  static Map<String, Object?> _clampRowMessage(Map<String, Object?> row) {
+    final value = row['message'];
+    if (value is! String || value.length <= maxMessageLength) return row;
+    return {...row, 'message': clampMessage(value)};
+  }
+
   /// 打开一本**已存在**的书库，并校验身份。
   ///
   /// 文件不存在 / 缺 `book_meta` / `book_uuid` 与文件名不符 → 抛
@@ -290,7 +317,7 @@ class _RoundStoreImpl implements RoundStore {
       if (generation.isUsing) {
         await _clearUsingInGroup(txn, generation.meta);
       }
-      await txn.insert('round_stack', generation.toRow());
+      await txn.insert('round_stack', BookDb._clampRowMessage(generation.toRow()));
       await BookDb.touch(txn);
     });
   }
@@ -303,7 +330,7 @@ class _RoundStoreImpl implements RoundStore {
       for (final row in rows) {
         batch.insert(
           'round_stack',
-          row.toRow(),
+          BookDb._clampRowMessage(row.toRow()),
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
@@ -332,7 +359,9 @@ class _RoundStoreImpl implements RoundStore {
 
   @override
   Future<void> updateMeta(String uuid, Map<String, Object?> fields) async {
-    final filtered = _filterColumns(fields, BookDb.metaFields);
+    final filtered = BookDb._clampRowMessage(
+      _filterColumns(fields, BookDb.metaFields),
+    );
     if (filtered.isEmpty) return;
     await _db.transaction((txn) async {
       await txn.update(

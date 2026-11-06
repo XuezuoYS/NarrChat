@@ -140,12 +140,10 @@ void main() {
   ) async {
     final gates = [Completer<AiCallResult>(), Completer<AiCallResult>()];
     final ai = _ScriptResponsesService(gates);
-    final bookDao = FakeBookDao(books: [book]);
     final settings = AiSettingsProvider();
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: bookDao,
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（默认平台协议 = Response 线路）。
@@ -279,7 +277,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。
@@ -389,7 +386,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。
@@ -493,7 +489,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。
@@ -529,7 +524,6 @@ void main() {
     final provider = await pumpChatScreen(
       tester,
       ai: ai,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       aiSettingsProvider: settings,
       // AGENT 模式由实验性开关驱动（与平台协议正交）。

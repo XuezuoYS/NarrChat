@@ -115,7 +115,8 @@ class _SidebarPanelState extends State<SidebarPanel> {
   void didUpdateWidget(covariant SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 轮次切换（父级复用本 State）时重置内容；滚动位置/折叠状态保留。
-    if (oldWidget.round?.id != widget.round?.id) _resetToRound();
+    // 身份用代 uuid：R3 起 `Round.id` 是遗留字段（恒为 null），拿它比较会永远相等。
+    if (oldWidget.round?.uuid != widget.round?.uuid) _resetToRound();
   }
 
   /// 顶部四个子模块编辑器的 GlobalKey（[EditableFieldState]，轮次切换时用于退出编辑）。

@@ -24,12 +24,52 @@ class DatabaseInspectScreen extends StatefulWidget {
 }
 
 class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
-  late final Future<List<DebugTableSummary>> _tablesFuture;
+  List<DebugDbInfo> _databases = const [];
+  String? _selectedId;
+  Future<List<DebugTableSummary>>? _tablesFuture;
+  bool _loadingDatabases = true;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
-    _tablesFuture = widget.service.listTables();
+    _loadDatabases();
+  }
+
+  Future<void> _loadDatabases() async {
+    setState(() => _loadingDatabases = true);
+    try {
+      final all = await widget.service.listDatabases();
+      // 只列真实存在的库：文件没了还让人点进去只会看到一个空表页。
+      final existing = all.where((db) => db.exists).toList(growable: false);
+      if (!mounted) return;
+      setState(() {
+        _databases = existing;
+        _loadingDatabases = false;
+        _loadError = null;
+        if (existing.isEmpty) {
+          _selectedId = null;
+          _tablesFuture = null;
+        } else if (!existing.any((db) => db.id == _selectedId)) {
+          _selectedId = existing.first.id;
+          _tablesFuture = widget.service.listTables(_selectedId!);
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingDatabases = false;
+        _loadError = '$error';
+      });
+    }
+  }
+
+  void _select(String dbId) {
+    if (dbId == _selectedId) return;
+    setState(() {
+      _selectedId = dbId;
+      _tablesFuture = widget.service.listTables(dbId);
+    });
   }
 
   @override
@@ -41,43 +81,114 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
         extraRowHeight: extraRow,
         title: '数据库结构',
       ),
-      body: FutureBuilder<List<DebugTableSummary>>(
-        future: _tablesFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: AppEmptyHint(
-                  icon: Icons.error_outline,
-                  text: '数据库加载失败',
+      body: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    if (_loadingDatabases) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_loadError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: AppEmptyHint(
+            icon: Icons.error_outline,
+            text: '数据库加载失败：$_loadError',
+          ),
+        ),
+      );
+    }
+    if (_databases.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: AppEmptyHint(icon: Icons.storage_outlined, text: '还没有任何库文件'),
+        ),
+      );
+    }
+
+    final selectedId = _selectedId;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildDbSelector(context),
+        const Divider(height: 1),
+        Expanded(
+          child: FutureBuilder<List<DebugTableSummary>>(
+            future: _tablesFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: AppEmptyHint(
+                      icon: Icons.error_outline,
+                      text: '数据库加载失败：${snapshot.error}',
+                    ),
+                  ),
+                );
+              }
+              final tables = snapshot.data ?? const <DebugTableSummary>[];
+              if (tables.isEmpty) {
+                return const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: AppEmptyHint(
+                      icon: Icons.storage_outlined,
+                      text: '暂无数据表',
+                    ),
+                  ),
+                );
+              }
+              return ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  for (final summary in tables)
+                    _TableTile(
+                      service: widget.service,
+                      dbId: selectedId!,
+                      summary: summary,
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 库选择条：多库视角的入口，横向可滚动。
+  Widget _buildDbSelector(BuildContext context) {
+    final colors = context.narrColors;
+    return SizedBox(
+      height: 56,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        children: [
+          for (final db in _databases)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(db.label),
+                selected: db.id == _selectedId,
+                tooltip: db.path,
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  color: db.id == _selectedId
+                      ? colors.textPrimary
+                      : colors.textSecondary,
                 ),
+                onSelected: (_) => _select(db.id),
               ),
-            );
-          }
-          final tables = snapshot.data ?? const <DebugTableSummary>[];
-          if (tables.isEmpty) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: AppEmptyHint(
-                  icon: Icons.storage_outlined,
-                  text: '暂无数据表',
-                ),
-              ),
-            );
-          }
-          return ListView(
-            padding: const EdgeInsets.all(12),
-            children: [
-              for (final summary in tables)
-                _TableTile(service: widget.service, summary: summary),
-            ],
-          );
-        },
+            ),
+        ],
       ),
     );
   }
@@ -85,9 +196,17 @@ class _DatabaseInspectScreenState extends State<DatabaseInspectScreen> {
 
 /// 单张表的可展开卡片：主体为 [ExpansionTile]，展开后按页加载并展示结构/内容。
 class _TableTile extends StatefulWidget {
-  const _TableTile({required this.service, required this.summary});
+  const _TableTile({
+    required this.service,
+    required this.dbId,
+    required this.summary,
+  });
 
   final DebugDatabaseService service;
+
+  /// 当前查看的库 id。
+  final String dbId;
+
   final DebugTableSummary summary;
 
   @override
@@ -114,6 +233,7 @@ class _TableTileState extends State<_TableTile> {
     setState(() => _loading = true);
     try {
       final result = await widget.service.loadTable(
+        widget.dbId,
         widget.summary.name,
         page: page,
         pageSize: _pageSize,

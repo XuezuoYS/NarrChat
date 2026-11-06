@@ -1,22 +1,23 @@
 import 'package:flutter/foundation.dart';
 
-import '../database/mod_dao.dart';
 import '../models/mod.dart';
 import '../models/preset_mods.dart';
 import '../models/round.dart';
-import '../services/world_book_scanner.dart';
 import '../models/world_book_entry.dart';
+import '../repositories/mod_repository.dart';
+import '../services/app_repositories.dart';
+import '../services/world_book_scanner.dart';
 import 'cloud_sync_provider.dart';
 
 /// Mod 状态管理：用户自定义 Mod 的增删改查、书籍启用与顺序配置，
 /// 以及将书籍启用的 Mod 解析为可直接注入提示词的 [ModsBundle]。
 class ModProvider extends ChangeNotifier {
-  ModProvider({ModDao? dao, CloudSyncProvider? cloudSyncProvider})
-      : _dao = dao ?? ModDao(),
+  ModProvider({ModRepository? repository, CloudSyncProvider? cloudSyncProvider})
+      : _repo = repository ?? AppRepositories.instance.mod,
         // ignore: prefer_initializing_formals
         _cloudSyncProvider = cloudSyncProvider;
 
-  final ModDao _dao;
+  final ModRepository _repo;
 
   /// 云同步 Provider：Mod 修改保存后触发全自动同步（null = 未接入，如测试）。
   final CloudSyncProvider? _cloudSyncProvider;
@@ -39,7 +40,7 @@ class ModProvider extends ChangeNotifier {
 
   Future<void> loadUserMods() async {
     try {
-      _userMods = await _dao.getAllMods();
+      _userMods = await _repo.listMods();
     } catch (e) {
       _error = e.toString();
     }
@@ -55,7 +56,7 @@ class ModProvider extends ChangeNotifier {
     List<ModWorldBookEntry> worldBookEntries = const [],
   }) async {
     try {
-      await _dao.insertMod(
+      await _repo.createMod(
         Mod(
           name: name.trim(),
           description: description,
@@ -77,7 +78,7 @@ class ModProvider extends ChangeNotifier {
 
   Future<bool> updateMod(Mod mod) async {
     try {
-      await _dao.updateMod(mod);
+      await _repo.updateMod(mod);
       await loadUserMods();
       _cloudSyncProvider?.triggerSync();
       return true;
@@ -90,7 +91,7 @@ class ModProvider extends ChangeNotifier {
 
   Future<bool> deleteMod(String uuid) async {
     try {
-      await _dao.deleteMod(uuid);
+      await _repo.deleteMod(uuid);
       await loadUserMods();
       _cloudSyncProvider?.triggerSync();
       return true;
@@ -103,10 +104,54 @@ class ModProvider extends ChangeNotifier {
 
   // ---------- 书籍 Mod 关联 ----------
 
-  /// 获取某本书已保存的 Mod 配置（不含未保存的 Mod，由 UI 自行补齐）。
+  /// `UseModRow.modUuid` 的存储引用 → [BookModConfig]。
+  ///
+  /// 预置 Mod 不落 `mods` 表，书库里用 `preset::<key>` 前缀区分（见
+  /// [Mod.presetRefPrefix]）；其余一律当用户 Mod 的 uuid。
+  static BookModConfig? _configOfRef(String ref, String bookUuid, int order) {
+    if (ref.startsWith(Mod.presetRefPrefix)) {
+      final key = ref.substring(Mod.presetRefPrefix.length);
+      if (key.isEmpty) return null;
+      return BookModConfig(
+        bookUuid: bookUuid,
+        presetKey: key,
+        isEnabled: true,
+        sortOrder: order,
+      );
+    }
+    if (ref.isEmpty) return null;
+    return BookModConfig(
+      bookUuid: bookUuid,
+      modUuid: ref,
+      isEnabled: true,
+      sortOrder: order,
+    );
+  }
+
+  /// [BookModConfig] → `UseModRow.modUuid`（null = 该配置没有可用引用，丢弃）。
+  static String? _refOfConfig(BookModConfig config) {
+    final presetKey = config.presetKey;
+    if (presetKey != null && presetKey.isNotEmpty) {
+      return Mod.presetRef(presetKey);
+    }
+    final modUuid = config.modUuid;
+    if (modUuid != null && modUuid.isNotEmpty) return modUuid;
+    return null;
+  }
+
+  /// 获取某本书**已启用**的 Mod 配置（按置入顺序）。
+  ///
+  /// 只回启用项：`use_mods` 里根本不存在"配置了但禁用"的行，未启用项由界面
+  /// 用「全部 Mod 减去已启用」补齐（见 `book_mod_panel.dart`）。
   Future<List<BookModConfig>> getBookModConfigs(String bookUuid) async {
     try {
-      return await _dao.getBookMods(bookUuid);
+      final refs = await _repo.useModUuids(bookUuid);
+      final result = <BookModConfig>[];
+      for (var i = 0; i < refs.length; i++) {
+        final config = _configOfRef(refs[i], bookUuid, i);
+        if (config != null) result.add(config);
+      }
+      return result;
     } catch (e) {
       _error = e.toString();
       notifyListeners();
@@ -114,13 +159,22 @@ class ModProvider extends ChangeNotifier {
     }
   }
 
-  /// 保存某本书的完整 Mod 配置（整体替换）。
+  /// 保存某本书的完整 Mod 配置：只把**已启用**的按顺序落成启用清单。
   Future<bool> saveBookModConfigs(
     String bookUuid,
     List<BookModConfig> configs,
   ) async {
     try {
-      await _dao.replaceBookMods(bookUuid, configs);
+      final enabled = [
+        for (final config in configs)
+          if (config.isEnabled) config,
+      ]..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+      final refs = <String>[];
+      for (final config in enabled) {
+        final ref = _refOfConfig(config);
+        if (ref != null) refs.add(ref);
+      }
+      await _repo.setUseModUuids(bookUuid, refs);
       _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
@@ -141,10 +195,10 @@ class ModProvider extends ChangeNotifier {
     required String userInput,
     required List<Round> historyRounds,
   }) async {
-    final configs = await _dao.getBookMods(bookUuid);
-    if (configs.isEmpty) return ModsBundle.empty;
+    final refs = await _repo.useModUuids(bookUuid);
+    if (refs.isEmpty) return ModsBundle.empty;
 
-    final userMods = await _dao.getAllMods();
+    final userMods = await _repo.listMods();
     final userByUuid = {for (final m in userMods) m.uuid: m};
 
     final pre = <String>[];
@@ -152,11 +206,10 @@ class ModProvider extends ChangeNotifier {
     final system = <String>[];
     final worldEntries = <ModWorldBookEntry>[];
 
-    for (final config in configs) {
-      if (!config.isEnabled) continue;
-      final mod = config.presetKey != null
-          ? PresetMods.byKey(config.presetKey)
-          : userByUuid[config.modUuid];
+    for (final ref in refs) {
+      final mod = ref.startsWith(Mod.presetRefPrefix)
+          ? PresetMods.byKey(ref.substring(Mod.presetRefPrefix.length))
+          : userByUuid[ref];
       if (mod == null) continue;
       if (mod.prePrompt.trim().isNotEmpty) {
         pre.add(mod.prePrompt);

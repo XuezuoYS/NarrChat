@@ -42,7 +42,9 @@ void main() {
       ];
 
   test('Agent 关 + Response 协议（默认平台）：单轮 /responses，无工具与状态机制', () async {
-    final dao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -52,9 +54,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: ai,
       // 不注入实验性设置 → Agent 开关关闭（默认）。
       aiSettingsProvider: AiSettingsProvider(),
@@ -82,7 +83,7 @@ void main() {
     expect(body.containsKey('previous_response_id'), isFalse);
 
     // 6 区块正常解析落库（与 Chat 语义一致）。
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('主角踏门而入'));
     expect(round.recommendedAction, contains('叩见掌门'));
     expect(round.currentTime, '第三天 卯时');
@@ -90,15 +91,16 @@ void main() {
     expect(round.characterState, contains('气血：100'));
     expect(round.memorySummary, contains('第1轮'));
     // RAW 捕获走 responses 通道。
-    expect(provider.rawExchangesFor(round.id!), hasLength(1));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(1));
   });
 
   test('Agent 关 + Response 协议：预览请求体为响应式 JSON（无工具）', () async {
-    final roundDao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final provider = RoundProvider(
-      dao: roundDao,
-      roundStackService: FakeRoundStackService(roundDao: roundDao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: AiService(client: MockClient((_) async => sse(chatBlocksSse()))),
       aiSettingsProvider: AiSettingsProvider(),
       retryDelay: Duration.zero,
@@ -118,7 +120,9 @@ void main() {
   });
 
   test('Agent 关 + Response 协议 + 联网搜索：工具循环走 /responses（顶层 schema）', () async {
-    final dao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -140,9 +144,8 @@ void main() {
     // 注入假搜索工具：不发起真实网络请求。
     final searchTool = _StubSearchTool();
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: ai,
       // 强制开启联网搜索（覆写 getter，不触碰本地配置文件）。
       aiSettingsProvider: _SearchEnabledResponsesSettings(),
@@ -189,7 +192,7 @@ void main() {
     // 应用一律不发送 tool_choice（搜索循环同样不需要）。
     expect(body1.containsKey('tool_choice'), isFalse);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('主角踏门而入'));
   });
 }

@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
@@ -26,57 +26,72 @@ import 'helpers/fakes.dart';
 void main() {
   const book = Book(uuid: 'b1', title: '测试书', historyRounds: 2);
 
-  ({RoundProvider provider, FakeRoundDao dao, RecordingAiService ai}) build({
+  /// 真库 Provider（TestStack：临时目录 + R3 五个库），绝不触碰真实用户数据。
+  Future<({RoundProvider provider, TestStack stack, RecordingAiService ai})>
+      build({
     AiSettingsProvider? settings,
     ExperimentalSettingsProvider? experimental,
     CloudSyncProvider? cloudSync,
-  }) {
-    final dao = FakeRoundDao();
+  }) async {
+    final stack = await TestStack.create();
+    await stack.seedBook(
+      uuid: book.uuid,
+      title: book.title,
+      historyRounds: book.historyRounds,
+    );
     final ai = RecordingAiService();
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(books: [book]),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: settings ?? _SearchDisabledSettings(),
       experimentalSettings: experimental,
       cloudSyncProvider: cloudSync,
       retryDelay: Duration.zero,
     );
-    return (provider: provider, dao: dao, ai: ai);
+    await provider.loadRounds(book.uuid);
+    return (provider: provider, stack: stack, ai: ai);
   }
 
   /// 直接预置第 1..[count] 轮（绕开生成，构造可控历史）。
   ///
   /// 输入文案刻意用「轮次N原文」这种**不会互为子串**的标记，便于断言某轮是否
   /// 真的进了请求。
-  Future<List<Round>> seedRounds(
-    FakeRoundDao dao,
+  Future<List<RoundGeneration>> seedRounds(
+    TestStack stack,
     int count, {
     String image = '',
   }) async {
-    final seeded = <Round>[];
+    final seeded = <RoundGeneration>[];
     for (var i = 1; i <= count; i++) {
-      final round = Round(
-        bookUuid: book.uuid,
+      final generation = await stack.seedRound(
+        book.uuid,
         roundIndex: i,
         userInput: '轮次$i原文',
         aiNarrative: '第 $i 轮正文',
-        currentTime: '第 $i 天',
+        operatedAt: DateTime.utc(2026, 1, i),
         userImages: image.isEmpty ? const [] : [image],
-        createdAt: DateTime(2026, 1, i),
       );
-      await dao.insertRound(round);
-      seeded.add(round);
+      await stack.repos.rounds.updateContent(
+        bookUuid: book.uuid,
+        generationUuid: generation.uuid,
+        fields: {'current_time': '第 $i 天'},
+      );
+      seeded.add(generation);
     }
     return seeded;
   }
 
+
   String textOfBody(Map<String, dynamic> body) => jsonEncode(body);
+
+  /// 活动链的身份快照（比较「有没有被改写」用；Round 没有值相等）。
+  List<String> chainUuids(RoundProvider provider) =>
+      [for (final r in provider.rounds) r.uuid];
 
   group('预览 ≡ 实发（首帧逐字一致）', () {
     test('直发：首帧一致，且没有后续帧', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
 
       final preview = await env.provider.previewRequestBody(
@@ -94,18 +109,18 @@ void main() {
         isTrue,
       );
       expect(env.ai.bodies.single, preview.firstFrame, reason: '注入替身收到的首帧');
-      final round = env.dao.rounds.firstWhere((r) => r.roundIndex == 1);
+      final round = env.provider.rounds.firstWhere((r) => r.roundIndex == 1);
       expect(
-        env.provider.rawExchangesFor(round.id!)!.single.requestBody,
+        env.provider.rawExchangesFor(round.uuid)!.single.requestBody,
         preview.firstFrameJson,
         reason: 'RAW 捕获的实发首帧',
       );
     });
 
     test('灰条「修改并重新提问」：按截断后的投影组装，首帧一致', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
-      await seedRounds(env.dao, 4);
+      await seedRounds(env.stack, 4);
       await env.provider.loadRounds(book.uuid);
 
       final intent = RoundSendIntent.reaskRound(
@@ -127,13 +142,13 @@ void main() {
       expect(await env.provider.sendIntent(intent: intent, book: book), isTrue);
       expect(env.ai.bodies.single, preview.firstFrame);
       // 截断真的发生了：投影停在第 3 轮（新代）。
-      expect(env.provider.rounds.map((r) => r.roundIndex), [0, 1, 2, 3]);
+      expect(env.provider.rounds.map((r) => r.roundIndex), [1, 2, 3]);
     });
 
     test('灰条「按意见修改」：修改轮请求（n+1 历史 + 意见），首帧一致', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
-      final seeded = await seedRounds(env.dao, 4, image: 'img/round.png');
+      final seeded = await seedRounds(env.stack, 4, image: 'img/round.png');
       await env.provider.loadRounds(book.uuid);
 
       final intent = RoundSendIntent.rewriteByOpinion(
@@ -163,7 +178,7 @@ void main() {
     });
 
     test('Agent Lv.1：首帧 = 准备帧（含准备阶段指令），与实发首帧逐字一致', () async {
-      final env = build(
+      final env = await build(
         settings: AiSettingsProvider(),
         experimental: AgentModeSettings(level: AgentModeLevel.lv1),
       );
@@ -206,7 +221,7 @@ void main() {
     });
 
     test('Agent Lv.2：首帧 = 正文帧，后续可用帧为维护帧', () async {
-      final env = build(
+      final env = await build(
         settings: AiSettingsProvider(),
         experimental: AgentModeSettings(),
       );
@@ -232,7 +247,7 @@ void main() {
     });
 
     test('联网工具循环：首帧一致，后续帧只含追加的消息（占位形态）', () async {
-      final env = build(settings: _SearchEnabledSettings());
+      final env = await build(settings: _SearchEnabledSettings());
       await env.provider.loadRounds(book.uuid);
 
       final intent = RoundSendIntent.newRound(userInput: '查一下青云宗');
@@ -263,7 +278,7 @@ void main() {
 
     test('状态一变预览立刻变：输入 / 联网开关变化后不复用上一次的拼合结果', () async {
       final settings = _MutableSettings();
-      final env = build(settings: settings);
+      final env = await build(settings: settings);
       await env.provider.loadRounds(book.uuid);
 
       final before = await env.provider.previewRequestBody(
@@ -293,11 +308,11 @@ void main() {
   group('预览零副作用', () {
     test('不落库 / 不发网络 / 不改生成状态 / 不触发同步', () async {
       final cloud = FakeCloudSyncProvider();
-      final env = build(cloudSync: cloud);
+      final env = await build(cloudSync: cloud);
       await env.provider.loadRounds(book.uuid);
-      await seedRounds(env.dao, 2);
+      await seedRounds(env.stack, 2);
       await env.provider.loadRounds(book.uuid);
-      final roundsBefore = List.of(env.dao.rounds);
+      final roundsBefore = chainUuids(env.provider);
 
       final preview = await env.provider.previewRequestBody(
         intent: RoundSendIntent.newRound(userInput: '你好'),
@@ -306,21 +321,21 @@ void main() {
 
       expect(preview.firstFrame, isNotEmpty);
       expect(env.ai.calls, 0, reason: '不发起任何 AI 调用');
-      expect(env.dao.rounds, roundsBefore, reason: '不新增 / 不改写轮次');
+      expect(chainUuids(env.provider), roundsBefore, reason: '不新增 / 不改写轮次');
       expect(env.provider.rounds.length, roundsBefore.length);
       expect(env.provider.isSending, isFalse);
       expect(env.provider.pendingUserInput, isEmpty);
-      expect(env.provider.hasFailureEntry, isFalse);
-      expect(env.provider.failedRawExchanges, isNull);
+      expect(env.provider.rounds.last.isError, isFalse);
+
       expect(cloud.triggers, 0, reason: '不触发云同步');
     });
 
     test('灰条用途预览同样不删轮次（截断只发生在意图实发时）', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
-      await seedRounds(env.dao, 4);
+      await seedRounds(env.stack, 4);
       await env.provider.loadRounds(book.uuid);
-      final roundsBefore = List.of(env.dao.rounds);
+      final roundsBefore = chainUuids(env.provider);
 
       await env.provider.previewRequestBody(
         intent: RoundSendIntent.rewriteByOpinion(
@@ -330,12 +345,12 @@ void main() {
         book: book,
       );
 
-      expect(env.dao.rounds, roundsBefore);
-      expect(env.provider.rounds.map((r) => r.roundIndex), [0, 1, 2, 3, 4]);
+      expect(chainUuids(env.provider), roundsBefore);
+      expect(env.provider.rounds.map((r) => r.roundIndex), [1, 2, 3, 4]);
     });
 
     test('输入为空：预览照常给出「此刻发出去会是什么」（不抛异常）', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
 
       final preview = await env.provider.previewRequestBody(
@@ -362,7 +377,7 @@ void main() {
 
   group('意图校验', () {
     test('目标轮次已不存在（按意见修改）：预览与实发给出同一句提示', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
       const intent = RoundSendIntent.rewriteByOpinion(
         targetRoundIndex: 3,
@@ -380,7 +395,7 @@ void main() {
     });
 
     test('「刷新本轮」载体允许指向尚不存在的轮次（失败条目「本该产生的那一轮」）', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
       env.ai.failWith = const AiException('模拟失败');
       await env.provider.sendRound(
@@ -388,7 +403,7 @@ void main() {
         book: book,
         userImages: const ['img/a.png'],
       );
-      expect(env.provider.hasFailureEntry, isTrue);
+      expect(env.provider.rounds.last.isError, isTrue);
 
       // 与 UI 同口径：失败条目现构一个「本该产生的那一轮」载体（投影里没有该轮）。
       const intent = RoundSendIntent.reaskRound(
@@ -418,7 +433,7 @@ void main() {
     });
 
     test('未选择书籍：预览抛出 StateError', () async {
-      final env = build();
+      final env = await build();
       await env.provider.loadRounds(book.uuid);
 
       await expectLater(

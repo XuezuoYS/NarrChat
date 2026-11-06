@@ -7,7 +7,6 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'database/database_helper.dart';
 import 'providers/ai_settings_provider.dart';
 import 'providers/book_provider.dart';
 import 'providers/cloud_sync_provider.dart';
@@ -19,6 +18,7 @@ import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
+import 'services/app_repositories.dart';
 import 'services/clipboard_paste_service.dart';
 import 'services/manual_licenses_service.dart';
 import 'services/image_import_service.dart';
@@ -49,12 +49,13 @@ Future<void> main() async {
   }
   // Windows 11：修复 Win+V 剪贴板历史粘贴（引擎下发的畸形 Ctrl+V 序列）。
   WindowsPasteFix.instance.inject();
-  // 提前初始化数据库（桌面端会在此处完成 FFI 工厂切换），
-  // 失败时不阻塞启动，后续请求会重试并暴露错误。
+  // 打开存储：解析路径 → 跑 R2→R3 迁移（首次启动）→ 打开各库 → 组装仓储。
+  // 迁移会把旧的 narrchat.db 改名成 .r2.bak，所以必须**早于**任何数据访问。
+  // 失败不阻塞启动（后续请求会重试并暴露错误），但应用会以空数据进入。
   try {
-    await DatabaseHelper.instance.database;
+    await AppRepositories.initialize();
   } catch (e) {
-    debugPrint('数据库初始化失败: $e');
+    debugPrint('存储初始化失败: $e');
   }
   // 创建 AI 设置 Provider：API Key 从安全存储（系统密钥库）读取，
   // 其余设置从本地 JSON 配置文件（local_config/app_settings.json）读取。
@@ -232,8 +233,11 @@ class NarrChatApp extends StatelessWidget {
         Provider<ClipboardPasteService>(
           create: (_) => const SystemClipboardPasteService(),
         ),
-        // 存储管理：本地数据库信息 / 导出、图片目录管理。
-        Provider<StorageService>(create: (_) => LocalStorageService()),
+        // 存储管理：多库总览 / 整组导出导入、图片目录管理。
+        Provider<StorageService>(
+          create: (_) =>
+              LocalStorageService(stores: AppRepositories.instance.stores),
+        ),
         // 图片"再添加复活"：导入/粘贴保存后取消待推送删除墓碑。
         Provider<ImageRevivalService>(create: (_) => SyncImageRevivalService()),
         // 图片删除：删除本机文件 + 记录待推送删除墓碑（同步删云端并传播）。

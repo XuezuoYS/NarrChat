@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/models/round.dart';
+import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
 
@@ -22,20 +22,38 @@ import 'helpers/notice_harness.dart';
 const int _roundCount = 3;
 const int _bodyRepeats = 200;
 
-Future<void> _seedRounds(FakeRoundDao dao, {Map<int, String> memory = const {}}) async {
-  for (var i = 1; i <= _roundCount; i++) {
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+/// 建库 → 播 [count] 轮 → pump 对话页。
+///
+/// **播种全部在 `pumpChatScreen` 之前、并包在 `tester.runAsync` 里**：
+/// 首帧的 `loadRounds` 要做真库 I/O，fake-async 区域里等不到，会永久挂起。
+Future<RoundProvider> _pumpThread(
+  WidgetTester tester, {
+  Map<int, String> memory = const {},
+  int count = _roundCount,
+  Size size = const Size(1400, 900),
+}) async {
+  final stack = (await tester.runAsync(TestStack.create))!;
+  addTearDown(() => tester.runAsync(stack.dispose));
+  await tester.runAsync(() async {
+    await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+    for (var i = 1; i <= count; i++) {
+      final seeded = await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: i,
         userInput: '第 $i 轮的用户输入',
         aiNarrative: '第 $i 轮的剧情正文。' * _bodyRepeats,
-        currentTime: '第 $i 天 午时',
-        memorySummary: memory[i] ?? '- $i | 第 $i 天 午时 | 第 $i 轮概括。',
-        createdAt: DateTime.now(),
-      ),
-    );
-  }
+      );
+      await stack.repos.rounds.updateContent(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: seeded.uuid,
+        fields: {
+          'current_time': '第 $i 天 午时',
+          'memory_summary': memory[i] ?? '- $i | 第 $i 天 午时 | 第 $i 轮概括。',
+        },
+      );
+    }
+  });
+  return pumpChatScreen(tester, stack: stack, seedRounds: 0, size: size);
 }
 
 /// 指定轮次用户气泡相对消息列表视口顶的偏差；该轮未构建时返回 null。
@@ -69,9 +87,9 @@ void _expectRoundStartAligned(WidgetTester tester, int roundIndex) {
 /// 长按侧栏记忆条目卡片的徽标 → 弹出菜单 → 选「跳转至对应条目」。
 Future<void> _jumpFromEntry(WidgetTester tester, String badge) async {
   await tester.longPress(find.text(badge));
-  await tester.pumpAndSettle();
+  await settle(tester);
   await tester.tap(find.text(kMemoryEntryJumpLabel));
-  await tester.pumpAndSettle();
+  await settle(tester);
 }
 
 /// 侧栏顶栏【查看上一轮】按钮。
@@ -86,13 +104,11 @@ bool _drawerHidden(WidgetTester tester, double windowWidth) =>
 
 void main() {
   testWidgets('长按条目选「跳转至对应条目」：对话区滚到该轮起点', (tester) async {
-    final dao = FakeRoundDao();
     // 最新轮（第 3 轮）的记忆总结里有合并条目 1~2。
-    await _seedRounds(dao, memory: {
+    await _pumpThread(tester, memory: {
       3: '- 1~2 | 第一天 午时 ~ 第二天 午时 | 这两天的事。\n'
           '- 3 | 第三天 午时 | 第3轮概括。',
     });
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
 
     // 侧栏默认展示最新轮（第 3 轮）的记忆总结。
     expect(find.text('当前轮次（第 3 轮）'), findsOneWidget);
@@ -106,15 +122,13 @@ void main() {
   });
 
   testWidgets('先看历史轮次再跳它的条目：定位到该轮起点，且侧栏仍在原轮次', (tester) async {
-    final dao = FakeRoundDao();
-    await _seedRounds(dao);
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+    await _pumpThread(tester);
 
     // 侧栏从最新轮（第 3 轮）逐轮退回第 1 轮：此时显示第 1 轮自己的条目。
     await tester.tap(_prevRoundButton());
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(_prevRoundButton());
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 1 轮）'), findsOneWidget);
 
     _expectNotAtTopBeforeJump(tester, 1);
@@ -128,14 +142,11 @@ void main() {
   });
 
   testWidgets('条目轮次在对话中不存在时按「向下就近取整」落在前一轮', (tester) async {
-    final dao = FakeRoundDao();
-    await _seedRounds(dao, memory: {
+    // 只播 2 轮：最新轮 = 第 2 轮，「第5轮」向下就近取整恰落在它身上。
+    await _pumpThread(tester, count: 2, memory: {
       // 最新轮的条目轮次写成 5（对话里只有 1、2 轮）。
       2: '- 5 | 第五天 午时 | 第五轮概括。\n- 2 | 第二天 午时 | 第2轮概括。',
     });
-    // 去掉第 3 轮：最新轮 = 第 2 轮，「第5轮」向下就近取整恰落在它身上。
-    dao.rounds.removeWhere((r) => r.roundIndex == 3);
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
 
     expect(find.text('当前轮次（第 2 轮）'), findsOneWidget);
     _expectNotAtTopBeforeJump(tester, 1);
@@ -149,15 +160,12 @@ void main() {
 
   testWidgets('窄屏抽屉里跳转：对话区对齐该轮起点，且抽屉自动收起', (tester) async {
     const windowWidth = 600.0;
-    final dao = FakeRoundDao();
-    await _seedRounds(dao, memory: {
-      1: '- 1 | 第一天 午时 | 第1轮概括。',
-    });
-    await pumpChatScreen(
+    await _pumpThread(
       tester,
-      roundDao: dao,
-      seedRounds: 0,
       size: const Size(windowWidth, 900),
+      memory: {
+        1: '- 1 | 第一天 午时 | 第1轮概括。',
+      },
     );
 
     // 抽屉默认关闭：侧栏整体在视口右侧之外。
@@ -166,14 +174,14 @@ void main() {
     // 打开抽屉（输入面板上方的方形按钮），侧栏滑入。
     // 用 tooltip 定位：AI 气泡操作条上也有一枚同名图标（「查看侧边栏」）。
     await tester.tap(find.byTooltip('打开右侧边栏'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(_drawerHidden(tester, windowWidth), isFalse);
 
     // 侧栏退到第 1 轮（历史视图），显示它自己的条目。
     await tester.tap(_prevRoundButton());
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(_prevRoundButton());
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 1 轮）'), findsOneWidget);
     _expectNotAtTopBeforeJump(tester, 1);
 

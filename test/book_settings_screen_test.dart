@@ -11,24 +11,40 @@ import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
 void main() {
-  late FakeBookDao dao;
+  late TestStack stack;
   late BookProvider bookProvider;
 
   setUp(() async {
-    dao = FakeBookDao(books: [
-      const Book(
-        uuid: 'b1',
-        title: '当前标题',
-        category: '当前分类',
-        baseSetting: '当前设定',
-      ),
-    ]);
-    bookProvider = BookProvider(dao: dao);
+    stack = await TestStack.create();
+    await stack.seedBook(
+      uuid: 'b1',
+      title: '当前标题',
+      category: '当前分类',
+      baseSetting: '当前设定',
+    );
+    bookProvider = BookProvider(repository: stack.repos.books);
     await bookProvider.loadBooks();
   });
+
+  tearDown(() async {
+    await stack.dispose();
+  });
+
+  /// 改库里那本书（模拟云备份落地），再让 provider 重载。
+  Future<void> patchStoredBook(
+    WidgetTester tester,
+    Book Function(Book current) update,
+  ) async {
+    await tester.runAsync(() async {
+      final current = await stack.repos.books.loadBook('b1');
+      await stack.repos.books.saveBook(update(current!));
+    });
+    await tester.runAsync(bookProvider.loadBooks);
+  }
 
   /// 以编辑模式 pump 书籍设置页（可注入一个"陈旧"的 Book 快照，模拟调用方持有旧实例）。
   ///
@@ -44,10 +60,10 @@ void main() {
         providers: [
           ChangeNotifierProvider.value(value: bookProvider),
           ChangeNotifierProvider(
-            create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
+            create: (_) => WorldBookProvider(repository: stack.repos.worldBook),
           ),
           ChangeNotifierProvider(
-            create: (_) => ModProvider(dao: FakeModDao()),
+            create: (_) => ModProvider(repository: stack.repos.mod),
           ),
           ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
         ],
@@ -61,12 +77,12 @@ void main() {
     navigatorKey.currentState!.push<void>(
       MaterialPageRoute(builder: (_) => BookSettingsScreen(book: book)),
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
   }
 
   testWidgets('打开时以 Provider 最新实例为准：陈旧快照不决定展示值', (tester) async {
     // 库中已有最新设置（模拟云同步落地后重载过）。
-    dao.books[0] = dao.books[0].copyWith(title: '云端新标题', category: '云端新分类');
+    await patchStoredBook(tester, (b) => b.copyWith(title: '云端新标题', category: '云端新分类'));
     await bookProvider.loadBooks();
 
     // 调用方传入陈旧快照（同步落地前打开的对话页遗留引用）。
@@ -93,10 +109,10 @@ void main() {
     expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget);
 
     // 云同步落地：标题 / 分类均被远端修改。
-    dao.books[0] = dao.books[0].copyWith(
+    await patchStoredBook(tester, (b) => b.copyWith(
       title: '远端新标题',
       category: '远端新分类',
-    );
+    ));
     await bookProvider.loadBooks();
     await tester.pump();
 
@@ -107,7 +123,7 @@ void main() {
     expect(find.widgetWithText(TextField, '远端新分类'), findsNothing);
 
     // 再次落地：已编辑字段仍不被覆盖。
-    dao.books[0] = dao.books[0].copyWith(title: '远端标题2');
+    await patchStoredBook(tester, (b) => b.copyWith(title: '远端标题2'));
     await bookProvider.loadBooks();
     await tester.pump();
 
@@ -116,18 +132,18 @@ void main() {
   });
 
   testWidgets('保存设置不重置未改动项：记忆总结轮次合并沿用既有档位', (tester) async {
-    dao.books[0] = dao.books[0].copyWith(memorySummaryRounds: 10);
+    await patchStoredBook(tester, (b) => b.copyWith(memorySummaryRounds: 10));
     await bookProvider.loadBooks();
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     await tester.enterText(find.widgetWithText(TextField, '当前标题'), '改后标题');
     await tester.pump();
     await tester.tap(find.text('保存'));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
-    expect(dao.books.single.title, '改后标题');
+    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.title, '改后标题');
     expect(
-      dao.books.single.memorySummaryRounds,
+      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds,
       10,
       reason: '用户未改档位，保存必须沿用既有值（不得重置为 0）',
     );
@@ -170,20 +186,21 @@ void main() {
     );
 
     await tester.tap(find.text('保存'));
-    await tester.pumpAndSettle();
-    expect(dao.books.single.memorySummaryRounds, 5);
+    await settle(tester);
+    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds, 5);
   });
 
   testWidgets('库内为非三档位（7）：控件按 0 展示，保存后按 0 落库', (tester) async {
-    // 真实链路上「库里有 7」= BookDao 用 fromMap 读出 → 模型在库边界收敛为 0。
-    dao.books[0] = Book.fromMap(const {
+    // 越界档位在**模型边界**收敛：`Book.fromMap` 读到 7 即按 0 处理。
+    final dirty = Book.fromMap(const {
       'uuid': 'b1',
       'title': '当前标题',
       'category': '当前分类',
       'base_setting': '当前设定',
       'memory_summary_rounds': 7,
     });
-    await bookProvider.loadBooks();
+    expect(dirty.memorySummaryRounds, 0, reason: '模型边界收敛为受支持档位');
+    await patchStoredBook(tester, (_) => dirty);
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     expect(
@@ -195,8 +212,9 @@ void main() {
     );
 
     await tester.tap(find.text('保存'));
-    await tester.pumpAndSettle();
-    expect(dao.books.single.memorySummaryRounds, 0, reason: '落库只会是受支持档位');
+    await settle(tester);
+    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds, 0,
+        reason: '落库只会是受支持档位');
   });
 
   testWidgets('窄屏（手机宽度）下档位控件不溢出且仍可选中', (tester) async {
@@ -204,7 +222,7 @@ void main() {
 
     tester.view.physicalSize = const Size(360, 720);
     tester.view.devicePixelRatio = 1.0;
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
     expect(tester.takeException(), isNull, reason: '窄屏布局不得溢出');
@@ -236,7 +254,7 @@ void main() {
     ];
     for (final label in pages) {
       await tester.tap(find.text(label).first);
-      await tester.pumpAndSettle();
+      await settle(tester);
       expect(
         find.text(PromptInputHint.text),
         findsOneWidget,

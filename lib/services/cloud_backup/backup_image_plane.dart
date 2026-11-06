@@ -49,6 +49,16 @@ class BackupImagePlane {
   /// 云端墓碑文件名。
   static const String tombstoneFileName = 'img_tombstones.json';
 
+  /// 图片平面只认这些扩展名。
+  ///
+  /// **必须过滤**：云端根目录同时放着各库快照（`*.db`）与清单（`*.json`），
+  /// 不筛的话图片平面会把它们当图片下载进 `user_data/img/`（既脏又可能因目录
+  /// 不存在直接失败）。与 `ImageStore.allowedExtensions` 保持一致。
+  static const Set<String> imageExtensions = {'png', 'jpg', 'jpeg'};
+
+  static bool isImageName(String name) =>
+      imageExtensions.contains(p.extension(name).toLowerCase().replaceFirst('.', ''));
+
   final DateTime Function() _clock;
 
   Future<BackupImageReport> sync({bool Function()? isCancelled}) async {
@@ -119,6 +129,7 @@ class BackupImagePlane {
     for (final name in remoteNames) {
       if (isCancelled?.call() ?? false) break;
       if (name == tombstoneFileName) continue;
+      if (!isImageName(name)) continue; // 快照 / 清单不属于图片平面
       if (localSet.contains(name)) continue;
       if (deletedNames.contains(name)) continue;
       final bytes = await remote.read(name);
@@ -149,7 +160,9 @@ class BackupImagePlane {
     final names = <String>[];
     await for (final entity in dir.list(followLinks: false)) {
       if (entity is! File) continue;
-      names.add(p.basename(entity.path));
+      final name = p.basename(entity.path);
+      if (!isImageName(name)) continue;
+      names.add(name);
     }
     names.sort();
     return names;

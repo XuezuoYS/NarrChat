@@ -4,7 +4,6 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/widgets/action_button.dart';
 import 'package:narrchat/widgets/ai_bubble_actions.dart';
-import 'package:narrchat/widgets/failed_attempt_bubble.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/chat_harness.dart';
@@ -86,7 +85,7 @@ void main() {
     final rp = await pumpChatScreen(tester, seedBodyRepeats: 1);
     await sendRound(tester, rp);
 
-    expect(rp.rawExchangesFor(rp.rounds.last.id!), isNotNull);
+    expect(rp.rawExchangesFor(rp.rounds.last.uuid), isNotNull);
     await tester.tap(aiFooterButton('RAW'));
     await tester.pumpAndSettle();
 
@@ -104,12 +103,12 @@ void main() {
     final rp = await pumpChatScreen(tester, ai: ai);
     await rp.sendRound(userInput: '失败的输入', book: book);
     await tester.pumpAndSettle();
-    expect(rp.hasFailureEntry, isTrue);
+    expect(rp.rounds.single.isError, isTrue);
 
     final labels = tester
         .widgetList<ActionButton>(
           find.descendant(
-            of: find.byType(FailedAttemptBubble),
+            of: find.byType(AiBubbleActions),
             matching: find.byType(ActionButton),
           ),
         )
@@ -119,7 +118,7 @@ void main() {
 
     await tester.tap(
       find.descendant(
-        of: find.byType(FailedAttemptBubble),
+        of: find.byType(AiBubbleActions),
         matching: find.ancestor(
           of: find.text('RAW'),
           matching: find.byType(ActionButton),

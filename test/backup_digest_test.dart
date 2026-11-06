@@ -41,8 +41,34 @@ void main() {
     tempDirs.clear();
   });
 
-  Future<Database> openDb(String path) =>
-      databaseFactory.openDatabase(path, options: OpenDatabaseOptions());
+  /// 打开一个**独立**连接来算摘要。
+  ///
+  /// `singleInstance` 必须关掉：sqflite 默认按路径复用 Database 实例，而这个
+  /// 文件里「BookDb.create → openDb 取摘要 → BookDb.open 改数据 → openDb 再取摘要」
+  /// 全在同一个路径上反复开关；复用实例时一旦某个旧 handle 还没真正关闭，
+  /// 第二次读到的就不是磁盘上的最新内容（全量并行跑时曾触发过一次摘要不一致）。
+  Future<Database> openDb(String path) => databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+
+  /// 摘要不一致时的现场：把这些表整表 dump 出来，一眼看出是哪张表/哪一列变了。
+  ///
+  /// 只在失败分支调用，正常路径零开销。
+  Future<String> digestScene(Database db) async {
+    Future<String> dump(String table, String orderBy) async {
+      final rows = await db.query(table, orderBy: orderBy);
+      return '$table(${rows.length})=$rows';
+    }
+
+    return [
+      await dump('book_meta', ''),
+      await dump('round_stack', 'uuid ASC'),
+      await dump('branches', 'branch_uuid ASC'),
+      await dump('world_book_entries', 'uuid ASC'),
+      await dump('use_mods', 'mod_uuid ASC'),
+    ].join('\n');
+  }
 
   RoundGeneration gen(String uuid, int index, {String narrative = '', bool using = false}) {
     return RoundGeneration(
@@ -100,8 +126,10 @@ void main() {
 
       final db2 = await openDb(path);
       final after = await BackupDigest.ofBook(BackupUnit.book('b1'), db2);
+      final scene = after == before ? '' : await digestScene(db2);
       await db2.close();
-      expect(after, before, reason: '只动时间戳不该被当成内容变更');
+      expect(after, before,
+          reason: '只动时间戳不该被当成内容变更。当前库内容：\n$scene');
     });
 
     test('branch_working 变化不影响摘要', () async {

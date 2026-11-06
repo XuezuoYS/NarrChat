@@ -10,11 +10,10 @@ import 'helpers/chat_harness.dart';
 /// 侧边栏开合 / 抽屉手势测试（宽屏常驻侧栏 + 窄屏抽屉）。
 void main() {
   Future<void> pumpWideChat(WidgetTester tester) async {
-    // 测试环境中 ChatScreen 的 post-frame 回调执行时书籍可能尚未就绪，
-    // 导致 loadRounds 未触发、侧边栏为空态；pumpChatScreen 在 pump 前显式
-    // loadRounds（第零轮）以保证有内容。
-    await pumpChatScreen(tester);
-    await tester.pumpAndSettle();
+    // 侧栏要展示某一轮的四个子模块，必须先有轮次。
+    // R3 没有「第零轮」兜底：0 轮次时侧栏是空态，所以这里显式播 1 轮。
+    await pumpChatScreen(tester, seedRounds: 1);
+    await settle(tester);
   }
 
   Future<void> pumpNarrowChat(WidgetTester tester) async {

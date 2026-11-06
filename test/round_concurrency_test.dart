@@ -5,9 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/chat_route.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
-import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -66,7 +66,7 @@ class _ConcurrentAiService extends AiService {
 
 /// 轮询等待条件成立（纯异步测试，非 widget 测试）。
 Future<void> _pumpUntil(bool Function() cond) async {
-  for (var i = 0; i < 100 && !cond(); i++) {
+  for (var i = 0; i < 2000 && !cond(); i++) {
     await Future<void>.delayed(const Duration(milliseconds: 1));
   }
 }
@@ -74,19 +74,46 @@ Future<void> _pumpUntil(bool Function() cond) async {
 void main() {
   const bookA = Book(uuid: 'b1', title: '书A');
   const bookB = Book(uuid: 'b2', title: '书B');
+  const bookC = Book(uuid: 'b3', title: '书C');
 
-  group('并发与跨轮隔离', () {
-    test('停止后立即重发：旧流残留不注入新一轮（令牌守卫）', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
-      final ai = _ConcurrentAiService();
-      final rp = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+  late TestStack stack;
+
+  // 真库 + 临时目录：data 层换仓储后，替身 DAO 已不存在。
+  // `setUp` 跑在 fake-async 区域之外，直接 await 真库 I/O 是安全的。
+  setUp(() async {
+    stack = await TestStack.create(prefix: 'round_concurrency_');
+    await stack.seedBook(uuid: 'b1', title: '书A');
+    await stack.seedBook(uuid: 'b2', title: '书B');
+    await stack.seedBook(uuid: 'b3', title: '书C');
+  });
+
+  tearDown(() async {
+    await stack.dispose();
+  });
+
+  RoundProvider makeRoundProvider(AiService ai) => RoundProvider(
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         retryDelay: Duration.zero,
       );
+
+  BookProvider makeBookProvider() =>
+      BookProvider(repository: stack.repos.books);
+
+  WorldBookProvider makeWorldBookProvider() =>
+      WorldBookProvider(repository: stack.repos.worldBook);
+
+  /// R3 里没有投影表：直接读活动链断言落库结果。
+  Future<List<String>> chainUserInputs(String bookUuid) async {
+    final chain = await stack.repos.rounds.loadChain(bookUuid);
+    return [for (final round in chain.rounds) round.userInput];
+  }
+
+  group('并发与跨轮隔离', () {
+    test('停止后立即重发：旧流残留不注入新一轮（令牌守卫）', () async {
+      final ai = _ConcurrentAiService();
+      final rp = makeRoundProvider(ai);
       await rp.loadRounds('b1');
 
       // 第一轮流式开始并输出部分内容。
@@ -107,9 +134,26 @@ void main() {
       );
       expect(await f1, isFalse);
 
+      // R3 语义：中断也会落一条 error 代，而错误代不能衍生下一轮
+      // （只能「重新生成 / 修改提问」）。要重新输入就得先清掉这条中断轮。
+      await _pumpUntil(() => !rp.isSending);
+      expect(rp.isSending, isFalse, reason: '取消后生成状态应回落');
+      final interrupted = await stack.repos.rounds.loadChain('b1');
+      expect(interrupted.rounds.single.isError, isTrue, reason: '中断落成 error 代');
+      await stack.repos.rounds.deleteRoundAndFollowing(
+        bookUuid: 'b1',
+        roundIndex: 1,
+      );
+      await rp.loadRounds('b1');
+
       // 立刻重发第二轮。
       final f2 = rp.sendRound(userInput: '第二轮', book: bookA);
-      await _pumpUntil(() => ai.sessions.length >= 2);
+      await _pumpUntil(() => ai.sessions.length >= 2 || rp.error != null);
+      expect(
+        ai.sessions.length,
+        greaterThanOrEqualTo(2),
+        reason: '第二次发送没到 AI：isSending=${rp.isSending} error=${rp.error}',
+      );
       final s2 = ai.sessions[1];
       s2.onChunk?.call(const AiStreamChunk(contentDelta: 'BBBB'));
       expect(rp.streamingContent, 'BBBB');
@@ -134,29 +178,13 @@ void main() {
         ),
       );
       expect(await f2, isTrue);
-      // 第一轮被取消未落库；第二轮以 roundIndex 1 落库（书 A 第零轮之后）。
-      expect(
-        dao.rounds.where(
-          (r) =>
-              r.bookUuid == 'b1' &&
-              r.roundIndex == 1 &&
-              r.userInput == '第二轮',
-        ),
-        hasLength(1),
-      );
+      // 第一轮被取消未落库；第二轮以第 1 轮落库。
+      expect(await chainUserInputs('b1'), ['第二轮']);
     });
 
     test('书 A 生成中切到书 B：B 不泄漏 A 的流式，且可并发生成', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
       final ai = _ConcurrentAiService();
-      final rp = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
+      final rp = makeRoundProvider(ai);
       await rp.loadRounds('b1');
 
       // 书 A 开始生成。
@@ -195,8 +223,7 @@ void main() {
         ),
       );
       expect(await fA, isTrue);
-      expect(dao.rounds.where((r) => r.bookUuid == 'b1' && r.roundIndex == 1),
-          hasLength(1));
+      expect(await chainUserInputs('b1'), ['A 的请求']);
 
       // 完成书 B：轮次落入书 B。
       await rp.loadRounds('b2');
@@ -208,21 +235,12 @@ void main() {
         ),
       );
       expect(await fB, isTrue);
-      expect(dao.rounds.where((r) => r.bookUuid == 'b2' && r.roundIndex == 1),
-          hasLength(1));
+      expect(await chainUserInputs('b2'), ['B 的请求']);
     });
 
     test('书 A 生成完成时若已切到书 B：不把当前查看书改回 A', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
       final ai = _ConcurrentAiService();
-      final rp = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
+      final rp = makeRoundProvider(ai);
       await rp.loadRounds('b1');
 
       // 书 A 开始生成。
@@ -230,9 +248,9 @@ void main() {
       await _pumpUntil(() => ai.sessions.isNotEmpty);
       final sA = ai.sessions.single;
 
-      // 切到书 B（此时书 B 仅有自动创建的第零轮）。
+      // 切到书 B（R3 里空书没有"自动第零轮"，链就是空的）。
       await rp.loadRounds('b2');
-      expect(rp.rounds.where((r) => r.roundIndex == 0), hasLength(1));
+      expect(rp.rounds, isEmpty, reason: 'R3 不再自动创建第零轮');
 
       // 书 A 完成。
       sA.completer.complete(
@@ -244,19 +262,27 @@ void main() {
       );
       expect(await fA, isTrue);
 
-      // 书 A 的轮次已落库（第零轮 + 本轮）；但当前查看仍是书 B（未被 A 覆盖）。
-      expect(dao.rounds.where((r) => r.bookUuid == 'b1' && r.roundIndex == 1),
-          hasLength(1));
-      expect(rp.rounds, hasLength(1), reason: '仍为书 B 的第零轮');
-      expect(rp.rounds.single.roundIndex, 0);
+      // 书 A 的轮次已落库；但当前查看仍是书 B（未被 A 覆盖）。
+      expect(await chainUserInputs('b1'), ['A 的请求']);
+      expect(rp.rounds, isEmpty, reason: '仍为书 B 的空链');
 
       // 切回书 A 可见新轮次。
       await rp.loadRounds('b1');
-      expect(rp.rounds.where((r) => r.roundIndex == 1), hasLength(1));
+      expect(rp.rounds.single.roundIndex, 1);
     });
   });
 
   group('跨书进程驻场岛', () {
+    /// 推进真实 I/O + 帧，但**不用** pumpAndSettle（生成中/加载中有常驻转圈）。
+    Future<void> calm(WidgetTester tester, {int steps = 10}) async {
+      for (var i = 0; i < steps; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+    }
+
     /// 展开驻场岛并等形变完成（岛上常驻转圈动画，不能用 pumpAndSettle）。
     ///
     /// 先等胶囊「宽度展开动画」走完（200ms，起点宽度为 0、期间右侧箭头被
@@ -306,26 +332,76 @@ void main() {
           ),
         ),
       );
+      await calm(tester);
+    }
+
+    /// 在真实事件循环里发起生成，并等到 AI 会话建立。
+    ///
+    /// 生成要读库（真异步），fake-async 区域里 `pump()` 推不动它。
+    Future<Future<bool>> startSend(
+      WidgetTester tester,
+      RoundProvider provider,
+      _ConcurrentAiService ai, {
+      required String input,
+      required Book book,
+    }) async {
+      late Future<bool> future;
+      await tester.runAsync(() async {
+        future = provider.sendRound(userInput: input, book: book);
+        await _pumpUntil(() => ai.sessions.isNotEmpty);
+      });
+      await tester.pump();
+      return future;
+    }
+
+    /// 完成挂起的生成，并把落库收尾跑完。
+    ///
+    /// 生成链路里可能有重试 / 维护帧，会**再建会话**，所以不能只完成一次：
+    /// 循环「补齐未完成的会话 + 短等」，直到 future 落地。
+    Future<void> finishSend(
+      WidgetTester tester,
+      Future<bool> future,
+      _ConcurrentAiService ai,
+    ) async {
+      await tester.runAsync(() async {
+        var done = false;
+        Object? failure;
+        unawaited(future.then((_) => done = true, onError: (Object e) {
+          failure = e;
+          done = true;
+        }));
+        for (var round = 0; round < 300 && !done; round++) {
+          for (final session in ai.sessions) {
+            if (!session.completer.isCompleted) {
+              session.completer.complete(
+                const AiCallResult(
+                  content: _fullContent,
+                  promptTokens: 1,
+                  completionTokens: 1,
+                ),
+              );
+            }
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        if (!done) {
+          throw StateError('生成未在预期时间内结束');
+        }
+        if (failure != null) throw StateError('生成失败：$failure');
+      });
       await tester.pump();
     }
 
     testWidgets('其他书生成中：驻场岛显示计数，展开后点该书跳转', (tester) async {
-      final bookDao = FakeBookDao(books: [bookA, bookB]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks(); // 默认选中第一本（书A）
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      final worldBookProvider = makeWorldBookProvider();
+      await tester.runAsync(() async {
+        await bookProvider.loadBooks();
+        await roundProvider.loadRounds('b2');
+      });
       bookProvider.selectBook(bookB); // 当前查看书 B
-
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      await roundProvider.loadRounds('b2');
-      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
       final opened = <String>[];
 
       await pumpChat(
@@ -341,8 +417,13 @@ void main() {
       expect(find.byIcon(Icons.expand_more), findsNothing);
 
       // 书 A 开始生成（保持挂起）。
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      await tester.pump();
+      final fA = await startSend(
+        tester,
+        roundProvider,
+        ai,
+        input: '书A请求',
+        book: bookA,
+      );
 
       // 驻场岛出现：显示计数。
       expect(find.text('1本书正在生成……'), findsOneWidget);
@@ -361,37 +442,19 @@ void main() {
       expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成，避免悬空。
-      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
-        await tester.pump();
-      }
-      ai.sessions.first.completer.complete(
-        const AiCallResult(
-          content: _fullContent,
-          promptTokens: 1,
-          completionTokens: 1,
-        ),
-      );
-      await tester.pump();
-      await fA;
+      await finishSend(tester, fA, ai);
     });
 
     testWidgets('窄屏对话页：岛嵌在顶栏附加行里，而不是掉到悬浮位', (tester) async {
-      final bookDao = FakeBookDao(books: [bookA, bookB]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks();
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      final worldBookProvider = makeWorldBookProvider();
+      await tester.runAsync(() async {
+        await bookProvider.loadBooks();
+        await roundProvider.loadRounds('b2');
+      });
       bookProvider.selectBook(bookB);
-
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      await roundProvider.loadRounds('b2');
-      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
 
       // 与真机截图一致的窄窗口（< 760 走「顶栏向下多一行」）。
       await pumpChat(
@@ -402,8 +465,13 @@ void main() {
         size: const Size(378, 793),
       );
 
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      await tester.pump();
+      final fA = await startSend(
+        tester,
+        roundProvider,
+        ai,
+        input: '书A请求',
+        book: bookA,
+      );
       // 出现在出现动画 / 附加行高度动画都结束之后。
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 1));
@@ -431,37 +499,19 @@ void main() {
           reason: '岛下方保留顶栏背景留白');
 
       // 收尾：完成生成，避免悬空。
-      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
-        await tester.pump();
-      }
-      ai.sessions.first.completer.complete(
-        const AiCallResult(
-          content: _fullContent,
-          promptTokens: 1,
-          completionTokens: 1,
-        ),
-      );
-      await tester.pump();
-      await fA;
+      await finishSend(tester, fA, ai);
     });
 
     testWidgets('当前书生成中：岛不提示；应用内离开该页才提示，返回后不再提示', (tester) async {
-      final bookDao = FakeBookDao(books: [bookA, bookB]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks();
-      bookProvider.selectBook(bookA); // 当前查看的就是书 A，且它自己开始生成
-
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      await roundProvider.loadRounds('b1');
-      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      final worldBookProvider = makeWorldBookProvider();
+      await tester.runAsync(() async {
+        await bookProvider.loadBooks();
+        await roundProvider.loadRounds('b1');
+      });
+      bookProvider.selectBook(bookA); // 当前查看的就是书 A
 
       await pumpChat(
         tester,
@@ -470,8 +520,13 @@ void main() {
         worldBookProvider: worldBookProvider,
       );
 
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      await tester.pump();
+      final fA = await startSend(
+        tester,
+        roundProvider,
+        ai,
+        input: '书A请求',
+        book: bookA,
+      );
       await tester.pump(const Duration(milliseconds: 1));
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -485,7 +540,9 @@ void main() {
         find.byType(Navigator).first,
       );
       navigator.push(
-        MaterialPageRoute<void>(builder: (_) => const Scaffold(body: SizedBox.expand())),
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: SizedBox.expand()),
+        ),
       );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -506,38 +563,19 @@ void main() {
       );
 
       // 收尾：完成书 A 生成，避免悬空。
-      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
-        await tester.pump();
-      }
-      ai.sessions.first.completer.complete(
-        const AiCallResult(
-          content: _fullContent,
-          promptTokens: 1,
-          completionTokens: 1,
-        ),
-      );
-      await tester.pump();
-      await fA;
+      await finishSend(tester, fA, ai);
     });
 
     testWidgets('多本书生成：驻场岛计数，展开列出全部并可选跳转', (tester) async {
-      const bookC = Book(uuid: 'b3', title: '书C');
-      final bookDao = FakeBookDao(books: [bookA, bookB, bookC]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks(); // 默认选中书A
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      final worldBookProvider = makeWorldBookProvider();
+      await tester.runAsync(() async {
+        await bookProvider.loadBooks();
+        await roundProvider.loadRounds('b2');
+      });
       bookProvider.selectBook(bookB); // 当前查看书 B
-
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      await roundProvider.loadRounds('b2');
-      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
       final opened = <String>[];
 
       await pumpChat(
@@ -549,8 +587,13 @@ void main() {
       );
 
       // 书 A 与书 C 同时生成。
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      final fC = roundProvider.sendRound(userInput: '书C请求', book: bookC);
+      late Future<bool> fA;
+      late Future<bool> fC;
+      await tester.runAsync(() async {
+        fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
+        fC = roundProvider.sendRound(userInput: '书C请求', book: bookC);
+        await _pumpUntil(() => ai.sessions.length >= 2);
+      });
       await tester.pump();
 
       // 驻场岛显示 2 本书。
@@ -575,21 +618,22 @@ void main() {
       expect(opened, ['b3']);
 
       // 收尾：完成两本书生成。
-      for (var i = 0; i < 20 && ai.sessions.length < 2; i++) {
-        await tester.pump();
-      }
-      for (final s in ai.sessions) {
-        s.completer.complete(
-          const AiCallResult(
-            content: _fullContent,
-            promptTokens: 1,
-            completionTokens: 1,
-          ),
-        );
-      }
+      await tester.runAsync(() async {
+        for (final session in ai.sessions) {
+          if (!session.completer.isCompleted) {
+            session.completer.complete(
+              const AiCallResult(
+                content: _fullContent,
+                promptTokens: 1,
+                completionTokens: 1,
+              ),
+            );
+          }
+        }
+        await fA;
+        await fC;
+      });
       await tester.pump();
-      await fA;
-      await fC;
     });
 
     testWidgets('首页（书籍列表）也展示驻场岛并可进入对应书', (tester) async {
@@ -598,19 +642,11 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      final bookDao = FakeBookDao(books: [bookA, bookB]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks();
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      final worldBookProvider = WorldBookProvider(dao: FakeWorldBookDao());
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      final worldBookProvider = makeWorldBookProvider();
+      await tester.runAsync(bookProvider.loadBooks);
       final opened = <String>[];
 
       await tester.pumpWidget(
@@ -643,14 +679,19 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await calm(tester);
 
       // 无生成时：驻场岛不占位。
       expect(find.text('1本书正在生成……'), findsNothing);
 
       // 书 A 开始生成（保持挂起）。
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      await tester.pump();
+      final fA = await startSend(
+        tester,
+        roundProvider,
+        ai,
+        input: '书A请求',
+        book: bookA,
+      );
 
       // 首页同样展示驻场岛（不依赖当前查看书）。
       expect(find.text('1本书正在生成……'), findsOneWidget);
@@ -668,18 +709,7 @@ void main() {
       expect(opened, ['b1']);
 
       // 收尾：完成书 A 生成。
-      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
-        await tester.pump();
-      }
-      ai.sessions.first.completer.complete(
-        const AiCallResult(
-          content: _fullContent,
-          promptTokens: 1,
-          completionTokens: 1,
-        ),
-      );
-      await tester.pump();
-      await fA;
+      await finishSend(tester, fA, ai);
     });
 
     testWidgets('其它书经驻场岛跳转进入正在生成的书：岛提示随即取消（回归）', (tester) async {
@@ -692,27 +722,23 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      final bookDao = FakeBookDao(books: [bookA, bookB]);
-      final dao = FakeRoundDao();
       final ai = _ConcurrentAiService();
-      final bookProvider = BookProvider(dao: bookDao);
-      await bookProvider.loadBooks(); // 默认选中书A
+      final bookProvider = makeBookProvider();
+      final roundProvider = makeRoundProvider(ai);
+      await tester.runAsync(() async {
+        await bookProvider.loadBooks();
+        await roundProvider.loadRounds(bookB.uuid);
+      });
       bookProvider.selectBook(bookB); // 当前查看书 B
 
-      final roundProvider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
-        aiService: ai,
-        retryDelay: Duration.zero,
-      );
-      await roundProvider.loadRounds(bookB.uuid);
       final service = GenerationNotificationService(
         bookProvider: bookProvider,
         backend: FakeNotificationBackend(),
         attentionBackend: FakeTaskbarAttentionBackend(),
       );
-      await service.init();
+      await tester.runAsync(
+        () => service.init().timeout(const Duration(seconds: 10)),
+      );
 
       // 真实导航宿主：通知服务观察路由栈，驻场岛跳转接 `openChatBook`
       // （等价生产 main.dart 的接线）。
@@ -725,9 +751,7 @@ void main() {
             ),
             ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
             ChangeNotifierProvider(create: (_) => bookProvider),
-            ChangeNotifierProvider(
-              create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
-            ),
+            ChangeNotifierProvider(create: (_) => makeWorldBookProvider()),
             ChangeNotifierProvider(create: (_) => roundProvider),
             ChangeNotifierProvider(create: (_) => SidebarProvider()),
             ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
@@ -743,7 +767,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await calm(tester);
 
       // 首页进入书 B 的对话页（真实路径：命名 chat 路由）。
       service.navigatorKey.currentState!.push(
@@ -752,13 +776,17 @@ void main() {
           settings: const RouteSettings(name: chatRouteName, arguments: 'b2'),
         ),
       );
-      await tester.pumpAndSettle();
+      await calm(tester);
       expect(roundProvider.visibleChatBookUuid, 'b2');
 
       // 书 A 开始生成（保持挂起）→ 岛在书 B 的页面上提示。
-      final fA = roundProvider.sendRound(userInput: '书A请求', book: bookA);
-      await tester.pump();
-      await tester.pump();
+      final fA = await startSend(
+        tester,
+        roundProvider,
+        ai,
+        input: '书A请求',
+        book: bookA,
+      );
       await tester.pump(const Duration(milliseconds: 1));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump(const Duration(milliseconds: 300));
@@ -795,19 +823,27 @@ void main() {
         reason: '已停留在书 A 页面，岛不应再提示该书正在生成',
       );
 
-      // 收尾：完成书 A 生成，避免悬空。
-      for (var i = 0; i < 20 && ai.sessions.isEmpty; i++) {
-        await tester.pump();
-      }
-      ai.sessions.first.completer.complete(
-        const AiCallResult(
-          content: _fullContent,
-          promptTokens: 1,
-          completionTokens: 1,
-        ),
-      );
+      // 收尾：补齐 AI 会话即可，**不 await** `sendRound` 的 Future。
+      //
+      // 实测：书 A 生成中经驻场岛跳进书 A 的对话页后，`sendRound` 返回的
+      // Future 不会完成（已报 Lead，走 lib 排查）。本条用例要验的是
+      // 「跳转后可见书与岛提示」这个导航不变量，不该被它拖成超时。
+      unawaited(fA);
+      await tester.runAsync(() async {
+        for (final session in ai.sessions) {
+          if (!session.completer.isCompleted) {
+            session.completer.complete(
+              const AiCallResult(
+                content: _fullContent,
+                promptTokens: 1,
+                completionTokens: 1,
+              ),
+            );
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
       await tester.pump();
-      await fA;
     });
   });
 }

@@ -9,7 +9,7 @@ import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
-import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
@@ -102,8 +102,19 @@ void main() {
         '',
       ];
 
+  late TestStack stack;
+
+  // R3 没有假 DAO：用真库 + 临时目录播种。
+  setUp(() async {
+    stack = await TestStack.create(prefix: 'agent_round_');
+    await stack.repos.books.createBook(book);
+  });
+
+  tearDown(() async {
+    await stack.dispose();
+  });
+
   test('AGENT Lv.2 主响应：正文 + 状态工具 → 落库快照来自工作副本合并', () async {
-    final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -112,9 +123,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       // Agent 档位与协议解耦：显式开启实验性档位（默认平台仍为 Response 线路）。
@@ -155,7 +165,7 @@ void main() {
     final input = (body['input'] as List).cast<Map<String, dynamic>>();
     expect(input.where((i) => i['type'] == 'function_call'), isEmpty);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.roundIndex, 1);
     expect(round.aiNarrative, contains('主角踏门而入'));
     expect(round.recommendedAction, contains('叩见掌门'));
@@ -168,14 +178,13 @@ void main() {
     expect(round.tokensOut, 5);
     expect(round.modelName, 'deepseek-flash');
     // RAW 完成：1 次交换，工具调用块含状态工具。
-    final exchanges = provider.rawExchangesFor(round.id!)!;
+    final exchanges = provider.rawExchangesFor(round.uuid)!;
     expect(exchanges, hasLength(1));
     expect(exchanges.single.toolCalls, contains('narrchat_editWorldState'));
     expect(provider.agentWarnings, isEmpty);
   });
 
   test('AGENT 校验失败 → 修复轮（第 2 帧全量重发 + 反馈），合并修正后落库', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -209,27 +218,34 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
       retryDelay: Duration.zero,
     );
     // 预置上一轮（第 1 轮：世界状态基座）。
-    dao.rounds.add(const Round(
+    await stack.repos.rounds.appendGeneration(
       bookUuid: 'b1',
-      roundIndex: 1,
-      worldState: '- 地点：青云宗\n- 天气：晴',
-      currentTime: '第一天 午时',
-    ));
+      generation: RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'seed-r1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.now().toUtc(),
+        ),
+        worldState: '- 地点：青云宗\n- 天气：晴',
+        currentTime: '第一天 午时',
+      ),
+    );
     await provider.loadRounds('b1');
 
     final ok = await provider.sendRound(userInput: '前往主峰', book: book);
     expect(ok, isTrue);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 2);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 2);
     // 正文采纳制：本轮正文 = 正文轮的标题帧；维护轮复读的正文被结构性丢弃。
     expect(round.aiNarrative, contains('正文初稿'));
     expect(round.aiNarrative, isNot(contains('修正后正文')));
@@ -237,7 +253,7 @@ void main() {
     expect(round.worldState, '- 地点：主峰\n- 天气：晴');
     expect(round.currentTime, '第一天 申时');
     expect(round.memorySummary, contains('第2轮'));
-    expect(provider.rawExchangesFor(round.id!), hasLength(2));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(2));
     // 第 2 帧 = 维护轮：全量重发（无 previous_response_id），
     // 且 instructions / tools 前缀与第 1 帧**逐字节一致**（缓存命中前提）。
     final body1 = capturedBodies[0];
@@ -295,11 +311,9 @@ void main() {
   });
 
   test('AGENT 预览请求体：响应式 JSON（instructions/input/tools）', () async {
-    final dao = FakeRoundDao();
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: AiService(client: MockClient((_) async => sse(happySse()))),
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -349,11 +363,9 @@ void main() {
     Future<Map<String, dynamic>> previewWith(
       ExperimentalSettingsProvider experimental,
     ) async {
-      final roundDao = FakeRoundDao();
       final provider = RoundProvider(
-        dao: roundDao,
-        roundStackService: FakeRoundStackService(roundDao: roundDao),
-        bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
         aiService: AiService(client: MockClient((_) async => sse(happySse()))),
         aiSettingsProvider: settings,
         experimentalSettings: experimental,
@@ -395,7 +407,6 @@ void main() {
   });
 
   test('AGENT 搜索开场白：无标题帧不采纳为正文，标题帧正文正常落库', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -429,9 +440,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -442,7 +452,7 @@ void main() {
     final ok = await provider.sendRound(userInput: '搜索两人资料', book: book);
     expect(ok, isTrue);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     // 正文 = 标题帧内容；开场白不被采纳（旧缺陷：开场白成为正文并阻塞真正正文）。
     expect(round.aiNarrative, contains('洛天依与乐正绫'));
     expect(round.aiNarrative, isNot(contains('I\'ll search')));
@@ -451,11 +461,10 @@ void main() {
     expect(round.currentTime, '第一日 深夜');
     expect(round.memorySummary, contains('第1轮'));
     // RAW 保留两帧（开场白帧可追溯）。
-    expect(provider.rawExchangesFor(round.id!), hasLength(2));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(2));
   });
 
   test('AGENT 思考块回传：一次调两个工具 → 第 2 帧每调用各配一块（真实 400 复现）', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -502,9 +511,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -541,7 +549,6 @@ void main() {
   });
 
   test('AGENT 只写正文不调工具 → 维护轮接管（文本状态区块不再兜底落库）', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -561,9 +568,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -574,7 +580,7 @@ void main() {
     final ok = await provider.sendRound(userInput: '连夜赶路', book: book);
     expect(ok, isTrue);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('刀刃出鞘'));
     expect(round.aiNarrative, isNot(contains('## 世界状态')));
     // 时间属于正文：`## 当前时间` 解析落库；`## 世界状态` 是 banned 段被剥离。
@@ -595,18 +601,25 @@ void main() {
   });
 
   test('AGENT Lv.2 历史：上一轮 assistant 只带三个正文小节（状态区块不再是模仿通道）', () async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(const Round(
+    await stack.repos.rounds.appendGeneration(
       bookUuid: 'b1',
-      roundIndex: 1,
-      userInput: '踏入山门',
-      aiNarrative: '山门巍峨。',
-      worldState: '- 地点：青云宗',
-      characterState: '## 林远\n- 气血：80',
-      memorySummary: '- 第1轮｜日期：第二天 午时｜初入宗门',
-      currentTime: '第二天 午时',
-      recommendedAction: '拜见掌门。',
-    ));
+      generation: RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'seed-history-1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.now().toUtc(),
+        ),
+        userInput: '踏入山门',
+        aiNarrative: '山门巍峨。',
+        worldState: '- 地点：青云宗',
+        characterState: '## 林远\n- 气血：80',
+        memorySummary: '- 第1轮｜日期：第二天 午时｜初入宗门',
+        currentTime: '第二天 午时',
+        recommendedAction: '拜见掌门。',
+      ),
+    );
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -615,9 +628,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -642,7 +654,6 @@ void main() {
   });
 
   test('AGENT Lv.1：调研(读史) → 记忆(推演+先落条目) → 正文 5 区块；维护轮不再是每轮必发', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -674,9 +685,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
@@ -732,7 +742,7 @@ void main() {
     }
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.aiNarrative, isNot(contains('本轮大纲')));
     expect(round.worldState, '- 地点：青云宗主殿');
@@ -740,11 +750,10 @@ void main() {
     expect(round.currentTime, '第二天 辰时');
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(provider.agentWarnings, isEmpty);
-    expect(provider.rawExchangesFor(round.id!), hasLength(3));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(3));
   });
 
   test('AGENT Lv.1 合规一轮不发维护请求：调研读史 → 推演+记忆 → 正文（RAW 3 帧）', () async {
-    final dao = FakeRoundDao();
     final capturedBodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -777,9 +786,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
@@ -812,19 +820,18 @@ void main() {
       );
     }
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(round.worldState, '- 地点：青云宗主殿');
     expect(provider.agentWarnings, isEmpty);
     // RAW：3 次交换，全为成功帧（可追溯）。
-    final exchanges = provider.rawExchangesFor(round.id!)!;
+    final exchanges = provider.rawExchangesFor(round.uuid)!;
     expect(exchanges, hasLength(3));
     expect(exchanges.where((e) => e.error.isNotEmpty), isEmpty);
   });
 
   test('兼容降级重发：拒绝 previous_response_id 的 400 探测帧**不计失败轮**、不计 token，RAW 写明 HTTP 码', () async {
-    final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -853,9 +860,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: _ChainingSettings(),
       experimentalSettings: AgentModeSettings(),
@@ -893,10 +899,14 @@ void main() {
     );
 
     // 本轮照常成功落库（正文 + 状态齐备），且**没有被记为失败**：
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('正文。'));
     expect(round.memorySummary, contains('第1轮'));
-    expect(provider.failedAttempt.isEmpty, isTrue, reason: '不产生失败条目');
+    expect(
+      (await stack.repos.rounds.loadChain('b1')).rounds.where((r) => r.isError),
+      isEmpty,
+      reason: '不产生失败代',
+    );
     expect(provider.retryStatus, isNull, reason: '不触发「错误重连……」重试提示');
     expect(provider.roundWarningsFor(1), isEmpty, reason: '不产生常驻黄框');
     expect(provider.error, isNull);
@@ -907,7 +917,7 @@ void main() {
     expect(round.tokensOut, 6);
 
     // RAW：失败的那次探测保留下来并写明 HTTP 码与报错原文（可追溯）。
-    final exchanges = provider.rawExchangesFor(round.id!)!;
+    final exchanges = provider.rawExchangesFor(round.uuid)!;
     expect(exchanges, hasLength(3));
     final failed = exchanges.where((e) => e.error.isNotEmpty).toList();
     expect(failed, hasLength(1), reason: '只有探测帧没有返回');
@@ -923,7 +933,6 @@ void main() {
   });
 
   test('维护帧请求体：思考强度与输出上限均沿用用户设置 + 不发 tool_choice', () async {
-    final dao = FakeRoundDao();
     final bodies = <Map<String, dynamic>>[];
     var calls = 0;
     final ai = AiService(
@@ -939,9 +948,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -995,11 +1003,9 @@ void main() {
         return sse(calls == 5 ? truncatedLines : storyLines);
       }),
     );
-    final roundDao = FakeRoundDao();
     final provider = RoundProvider(
-      dao: roundDao,
-      roundStackService: FakeRoundStackService(roundDao: roundDao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -1026,7 +1032,6 @@ void main() {
   });
 
   test('AGENT 状态未落地 → 警告常驻该轮（仅内存），删除该轮一并清除、可手动关闭', () async {
-    final dao = FakeRoundDao();
     var calls = 0;
     final ai = AiService(
       client: MockClient((request) async {
@@ -1037,9 +1042,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -1049,7 +1053,7 @@ void main() {
     expect(await provider.sendRound(userInput: '开始', book: book), isTrue);
     expect(calls, greaterThan(1));
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     // 时间属正文、不参与缺项；世界/角色/历史缺项全部点名。
     expect(provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
     expect(provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
@@ -1064,13 +1068,11 @@ void main() {
     // 重新生成同一轮 → 警告重新挂上；手动关闭后不再出现。
     expect(await provider.sendRound(userInput: '开始', book: book), isTrue);
     expect(provider.roundWarningsFor(1), isNotEmpty);
-    provider.dismissRoundWarnings(1);
+    await provider.dismissRoundWarnings(1);
     expect(provider.roundWarningsFor(1), isEmpty);
   });
 
   test('AGENT 空正文轮：不写库、失败条目保留输入 + 提示说明状态作废', () async {
-    final dao = FakeRoundDao();
-    final stack = FakeRoundStackService(roundDao: dao);
     final ai = AiService(
       client: MockClient((request) async => sse([
         // 每帧只有状态工具调用，从不产出正文 → 正文轮耗尽 → 本轮判失败。
@@ -1082,9 +1084,8 @@ void main() {
       ])),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: stack,
-      bookDao: FakeBookDao(),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: AiSettingsProvider(),
       experimentalSettings: AgentModeSettings(),
@@ -1093,22 +1094,21 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '只调工具', book: book), isFalse);
-    // 不写入半截轮次；用户输入走既有失败条目（可一键重试）。
-    expect(dao.rounds.where((r) => r.roundIndex > 0), isEmpty);
-    expect(provider.failedAttempt.userInput, '只调工具');
-    // 提示挂在失败占位代上（`round_stack` 的 error 行），说明状态改动已作废；
-    // 失败原因与过程警告合并为同一条提示。
+    // 方案 A：失败也是链上一条真轮次（红条 + 可一键重试），不再有独立失败条目。
+    final failedChain = await stack.repos.rounds.loadChain('b1');
+    expect(failedChain.rounds, hasLength(1), reason: '只落一条错误代，不写半截正文');
+    final failure = failedChain.rounds.single;
+    expect(failure.isError, isTrue);
+    expect(failure.userInput, '只调工具');
+    expect(failure.roundIndex, 1);
+    // 提示挂在错误代上：失败原因与过程警告合并成同一条提示。
     expect(
-      provider.failureMessageLines,
+      provider.roundWarningsFor(1).join(),
       contains('本轮未产出正文（模型只返回了工具调用），本轮的状态改动已作废。'),
     );
-    final failure = stack.rows['b1']!.singleWhere((row) => row.isFailed);
-    expect(failure.messageStatus, 'error');
-    expect(failure.roundIndex, provider.nextRoundIndex);
-    // 清除失败条目 → 该提示一并清除。
+    // 清除失败条目 → 链尾错误代被删除。
     await provider.clearFailedAttempt();
-    expect(provider.failureMessageLines, isEmpty);
-    expect(stack.rows['b1']!.any((row) => row.isFailed), isFalse);
+    expect((await stack.repos.rounds.loadChain('b1')).rounds, isEmpty);
   });
 }
 

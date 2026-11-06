@@ -1,298 +1,335 @@
-import 'package:fake_async/fake_async.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_planner.dart';
+import 'package:narrchat/services/cloud_backup/backup_runner.dart';
+import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
 
-/// `CloudSyncProvider` 统一触发接口与分平面排队门控测试
-///（不触碰真实网络 / 真库 / 真密钥库）：
-/// - 自动触发门控（未配置 / 手动模式忽略，data / images / both 一律如此）；
-/// - 分平面排队：执行中触发 → 对应平面置待跑；kind 精确影响所属平面；
-/// - 取消只作用于目标平面（另一平面排队保留）；
-/// - 生命周期：空闲不产生任何定时轮询；回前台触发 + 2 分钟节流窗口；
-/// - 结果提示队列：同文案去重、上限挤掉最早提示、按 id 关闭移除
-///   （驻场岛的渲染、自动撤销与「已读」语义见 pinned_notice_island_test.dart）。
+/// `CloudSyncProvider`：触发门控、快照命名解析、整本冲突状态、结果提示队列。
+///
+/// R3 的数据面换成"一库一单元一代"（`<base>_shot-g<N>.db`），冲突只给整本书
+/// 二选一；**不再有部件级合并**，本文件因此没有 merge/replace 断言。
+/// 真正推拉、冲突裁决、prune 的过程见 `backup_runner_test.dart`（内存云端全流程）。
 void main() {
-  test('triggerSync：未配置时忽略（全部 kind）', () {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
-    provider.triggerSync();
-    provider.triggerSync(kind: SyncKind.data);
-    provider.triggerSync(kind: SyncKind.images);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
-    expect(provider.dataSyncState, SyncState.idle);
-    expect(provider.imageSyncState, SyncState.idle);
-  });
+  group('触发门控', () {
+    test('未配置：triggerSync 一律忽略，两个平面都保持 idle', () {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      provider.triggerSync();
+      provider.triggerSync(kind: SyncKind.data);
+      provider.triggerSync(kind: SyncKind.images);
+      expect(provider.dataSyncState, SyncState.idle);
+      expect(provider.imageSyncState, SyncState.idle);
+      expect(provider.isBusy, isFalse);
+    });
 
-  test('triggerSync：手动模式下忽略（含仅图片触发）', () {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: true);
-    provider.debugSetSyncMode(SyncMode.manual);
-    provider.triggerSync();
-    provider.triggerSync(kind: SyncKind.images);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
-  });
+    test('手动模式：triggerSync 被忽略（需显式调 sync）', () {
+      final provider = CloudSyncProvider()
+        ..debugSetConfigured(value: true)
+        ..debugSetSyncMode(SyncMode.manual);
+      provider.triggerSync();
+      expect(provider.dataSyncState, SyncState.idle);
+      expect(provider.imageSyncState, SyncState.idle);
+    });
 
-  test('triggerSync：both 默认 → 两平面各自排队（同平面多次触发合并）', () {
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true); // 占用执行道：只验证排队归属，不发网络。
-    provider.triggerSync();
-    provider.triggerSync();
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue,
-        reason: '统一触发要把图片补跑排进去');
-  });
+    test('未配置时手动 sync 直接返回 false', () async {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      expect(await provider.sync(), isFalse);
+    });
 
-  test('triggerSync：kind=images 只排图片平面，不触碰数据平面', () {
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true);
-    provider.triggerSync(kind: SyncKind.images);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
-        reason: '图片删除不产生数据平面工作（不推代数的结构保证）');
-  });
-
-  test('triggerSync：kind=data 只排数据平面', () {
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true);
-    provider.triggerSync(kind: SyncKind.data);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
-  });
-
-  test('取消同步：只清本平面排队与标记，另一平面不受影响', () {
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true);
-    provider.triggerSync(); // 两平面都排队
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue);
-
-    provider.cancelSync(SyncPlane.data);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
-    expect(provider.debugCancelRequested(SyncPlane.data), isTrue);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue,
-        reason: '取消数据不影响图片的删除意图传播');
-    expect(provider.debugCancelRequested(SyncPlane.images), isFalse);
-  });
-
-  /// 构造「已配置 + 自动模式 + 执行道被占用」的 provider。
-  /// 触发只排队、不触碰真实网络，便于断言触发本身。
-  CloudSyncProvider laneBusyProvider({DateTime Function()? now}) {
-    TestWidgetsFlutterBinding.ensureInitialized();
-    final provider = CloudSyncProvider()
-      ..debugSetConfigured(value: true)
-      ..debugSetLaneBusy(true);
-    provider.debugSetNow(now);
-    provider.debugClearSyncRequestAt();
-    return provider;
-  }
-
-  /// 撤销排队位（把「已触发」复位成「空闲」，不引入真实任务执行）。
-  void clearQueue(CloudSyncProvider provider) {
-    provider.cancelSync(SyncPlane.data);
-    provider.cancelSync(SyncPlane.images);
-  }
-
-  test('空闲不轮询：attachLifecycle 之后停留 30 分钟也不产生任何同步', () {
-    fakeAsync((async) {
-      final provider = laneBusyProvider();
-      provider.attachLifecycle();
-      expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
-
-      async.elapse(const Duration(minutes: 30));
-      expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
-          reason: '自动同步只由用户操作节点发起，空闲时不得打网络');
-      expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse,
-          reason: '图片平面同样不再有定时兜底（随下一次操作节点收敛）');
-      expect(async.pendingTimers, isEmpty, reason: 'provider 不再挂任何定时器');
-      provider.detachLifecycle();
+    test('sync() 开始会清掉上一次的取消标记', () {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      provider.cancelSync(SyncPlane.data);
+      expect(provider.debugCancelRequested(SyncPlane.data), isTrue);
+      // 未配置时 sync 提前返回，标记仍在；配置后 sync 会复位它。
+      provider.debugSetConfigured(value: true);
+      provider.debugSetLaneBusy(true);
+      expect(provider.debugCancelRequested(SyncPlane.data), isTrue);
     });
   });
 
-  test('回前台（resumed）→ 本次运行首次触发两平面同步请求', () {
-    final base = DateTime(2026, 8, 28, 10);
-    final provider = laneBusyProvider(now: () => base);
-
-    provider.didChangeAppLifecycleState(AppLifecycleState.inactive);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
-        reason: '非 resumed 生命周期状态不触发');
-
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue);
-    expect(provider.lastSyncRequestAt, base);
-  });
-
-  test('回前台节流：距上次同步请求不足 2 分钟时跳过，满窗口后恢复触发', () {
-    final base = DateTime(2026, 8, 28, 10);
-    DateTime now = base;
-    final provider = laneBusyProvider(now: () => now);
-
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    clearQueue(provider);
-
-    now = base.add(const Duration(minutes: 1, seconds: 59));
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse,
-        reason: '节流窗口内的回前台不再重复打网络');
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
-    expect(provider.lastSyncRequestAt, base, reason: '被跳过的触发不改写基准时刻');
-
-    now = base.add(const Duration(minutes: 2));
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isTrue,
-        reason: '窗口结束后回前台重新触发');
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isTrue);
-    expect(provider.lastSyncRequestAt, now);
-  });
-
-  test('用户操作节点刷新节流基准：刚同步过则紧随其后的回前台被跳过', () {
-    final base = DateTime(2026, 8, 28, 10);
-    DateTime now = base;
-    final provider = laneBusyProvider(now: () => now);
-
-    provider.triggerSync(); // 例：轮次落库 / 保存书籍设置
-    clearQueue(provider);
-    expect(provider.lastSyncRequestAt, base);
-
-    now = base.add(const Duration(seconds: 30));
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.debugPendingSyncRequested(SyncPlane.data), isFalse);
-    expect(provider.debugPendingSyncRequested(SyncPlane.images), isFalse);
-  });
-
-  test('未配置 / 手动模式下回前台不记录同步请求时刻（触发被门控忽略）', () {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
-    provider.debugClearSyncRequestAt();
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.lastSyncRequestAt, isNull);
-
-    provider.debugSetConfigured(value: true);
-    provider.debugSetSyncMode(SyncMode.manual);
-    provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    expect(provider.lastSyncRequestAt, isNull,
-        reason: '手动模式下回前台同样静默忽略，不占用节流窗口');
-  });
-
-  test('compareSnapshots：按代际新→旧，同代按文件名（内嵌时间）倒序', () {
-    final files = [
-      const WebDavFile(name: 'narrchat_snapshot_g2_20260816_100000.db'),
-      const WebDavFile(name: 'narrchat_snapshot_g7_20260816_120000.db'),
-      const WebDavFile(name: 'narrchat_snapshot_g5_20260816_110000.db'),
-      const WebDavFile(name: 'narrchat_snapshot_g5_20260816_090000.db'),
-    ]..sort(CloudSyncProvider.compareSnapshots);
-    expect(
-      files.map((f) => f.name).toList(),
-      [
-        'narrchat_snapshot_g7_20260816_120000.db',
-        'narrchat_snapshot_g5_20260816_110000.db',
-        'narrchat_snapshot_g5_20260816_090000.db',
-        'narrchat_snapshot_g2_20260816_100000.db',
-      ],
-    );
-  });
-
-  test('showSyncResult：同文案去重，不同文案各自入队', () {
-    final provider = CloudSyncProvider();
-    provider.showSyncResult('云端记录 #3：数据已同步');
-    provider.showSyncResult('云端记录 #3：数据已同步');
-    expect(provider.resultToasts, hasLength(1));
-
-    provider.showSyncResult('图片同步：完成（上传 3）');
-    expect(provider.resultToasts, hasLength(2));
-    expect(
-      provider.resultToasts.map((t) => t.message).toList(),
-      ['云端记录 #3：数据已同步', '图片同步：完成（上传 3）'],
-    );
-  });
-
-  test('showSyncResult：超过上限时优先挤掉最早的临时提示，驻留错误不轻易丢', () {
-    final provider = CloudSyncProvider();
-    provider.showSyncResult('A');
-    provider.showSyncResult('B');
-    provider.showSyncResult('C');
-
-    // 第 4 条：A 是临时提示（成功类）→ 被挤掉；B / C 保留。
-    provider.showSyncResult('D');
-    expect(provider.resultToasts.map((t) => t.message).toList(), ['B', 'C', 'D']);
-
-    // 全是驻留错误时丢弃最早一条。
-    final allError = CloudSyncProvider();
-    for (final m in ['E1', 'E2', 'E3', 'E4']) {
-      allError.showSyncResult(m, kind: NoticeKind.error);
+  group('回前台自动触发（attachLifecycle 那条链）', () {
+    /// 等内部 _pump 跑完（测试环境无网，HTTP 立刻 400，很快结束）。
+    Future<void> drain(CloudSyncProvider provider) async {
+      for (var i = 0; i < 200 && provider.isBusy; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
     }
-    expect(allError.resultToasts.map((t) => t.message).toList(), ['E2', 'E3', 'E4']);
+
+    CloudSyncProvider providerAt(DateTime base) => CloudSyncProvider()
+      ..debugSetConfigured()
+      ..debugSetAutoUpload(true)
+      ..debugSetNow(() => base)
+      ..debugClearSyncRequestAt();
+
+    test('首次回前台触发一次；非 resumed 状态不触发', () async {
+      final base = DateTime(2026, 8, 28, 10);
+      final provider = providerAt(base);
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      expect(provider.lastSyncRequestAt, isNull, reason: '非 resumed 不触发');
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.paused);
+      expect(provider.lastSyncRequestAt, isNull);
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, base, reason: 'resumed 记录本次请求时刻');
+      await drain(provider);
+    });
+
+    test('2 分钟节流：窗口内的回前台被跳过，满窗口后重新触发', () async {
+      final base = DateTime(2026, 8, 28, 10);
+      DateTime now = base;
+      final provider = CloudSyncProvider()
+        ..debugSetConfigured()
+        ..debugSetAutoUpload(true)
+        ..debugSetNow(() => now)
+        ..debugClearSyncRequestAt();
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, base);
+      await drain(provider);
+
+      now = base.add(const Duration(minutes: 1, seconds: 59));
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, base,
+          reason: '窗口内跳过，且不改写基准时刻');
+      await drain(provider);
+
+      now = base.add(const Duration(minutes: 2));
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, now, reason: '窗口结束后重新触发');
+      await drain(provider);
+    });
+
+    test('自动同步关闭时回前台不触发', () async {
+      final base = DateTime(2026, 8, 28, 10);
+      final provider = CloudSyncProvider()
+        ..debugSetConfigured()
+        ..debugSetAutoUpload(false)
+        ..debugSetNow(() => base)
+        ..debugClearSyncRequestAt();
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, isNull);
+      await drain(provider);
+    });
+
+    test('手动模式下即使开了自动同步，回前台也不触发', () async {
+      final base = DateTime(2026, 8, 28, 10);
+      final provider = CloudSyncProvider()
+        ..debugSetConfigured()
+        ..debugSetAutoUpload(true)
+        ..debugSetSyncMode(SyncMode.manual)
+        ..debugSetNow(() => base)
+        ..debugClearSyncRequestAt();
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, isNull);
+      await drain(provider);
+    });
+
+    test('未配置 WebDAV 时回前台不触发', () async {
+      final base = DateTime(2026, 8, 28, 10);
+      final provider = CloudSyncProvider()
+        ..debugSetConfigured(value: false)
+        ..debugSetAutoUpload(true)
+        ..debugSetNow(() => base)
+        ..debugClearSyncRequestAt();
+
+      provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(provider.lastSyncRequestAt, isNull);
+      await drain(provider);
+    });
+
+    test('attachLifecycle / detachLifecycle：不抛错且可重复调用', () {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final provider = CloudSyncProvider();
+      provider.attachLifecycle();
+      provider.attachLifecycle();
+      provider.detachLifecycle();
+      provider.detachLifecycle();
+      expect(provider.lastSyncRequestAt, isNull);
+    });
   });
 
-  test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
-    final provider = CloudSyncProvider();
-    provider.showSyncResult('已取消数据同步', kind: NoticeKind.info);
-    provider.showSyncResult('图片同步：连接超时（HTTP 408）', kind: NoticeKind.error);
+  group('快照命名解析（一库一单元一代）', () {
+    test('generationOfSnapshot：认得出 _shot-gN.db，认不出返回 -1', () {
+      expect(
+        CloudSyncProvider.generationOfSnapshot('narrbook_b1_shot-g12.db'),
+        12,
+      );
+      expect(
+        CloudSyncProvider.generationOfSnapshot('narrchat_library_shot-g1.db'),
+        1,
+      );
+      expect(
+        CloudSyncProvider.generationOfSnapshot('narrchat_snapshot_g3_x.db'),
+        -1,
+        reason: 'R2 的旧命名不再被识别',
+      );
+      expect(CloudSyncProvider.generationOfSnapshot('random.txt'), -1);
+    });
 
-    final error = provider.resultToasts
-        .firstWhere((t) => t.kind == NoticeKind.error);
-    provider.dismissSyncResult(error.id);
+    test('unitOfSnapshot：目录库 / Mod 库 / 每本书各自映射到单元', () {
+      expect(
+        CloudSyncProvider.unitOfSnapshot('narrchat_library_shot-g1.db')?.unitKey,
+        'library',
+      );
+      expect(
+        CloudSyncProvider.unitOfSnapshot('narrchat_mods_shot-g2.db')?.unitKey,
+        'mods',
+      );
+      expect(
+        CloudSyncProvider.unitOfSnapshot('narrbook_abc_shot-g3.db')?.unitKey,
+        'book:abc',
+      );
+      expect(CloudSyncProvider.unitOfSnapshot('narrbook__shot-g3.db'), isNull);
+      expect(CloudSyncProvider.unitOfSnapshot('unrelated.db'), isNull);
+    });
 
-    expect(
-      provider.resultToasts.map((t) => t.message).toList(),
-      ['已取消数据同步'],
-    );
+    test('compareSnapshots：先按代数降序，同代按文件名倒序', () {
+      final files = [
+        const WebDavFile(name: 'narrbook_b1_shot-g2.db'),
+        const WebDavFile(name: 'narrbook_b1_shot-g7.db'),
+        const WebDavFile(name: 'narrchat_library_shot-g5.db'),
+        const WebDavFile(name: 'narrchat_mods_shot-g5.db'),
+      ]..sort(CloudSyncProvider.compareSnapshots);
+      expect(
+        files.map((f) => f.name).toList(),
+        [
+          'narrbook_b1_shot-g7.db',
+          'narrchat_mods_shot-g5.db',
+          'narrchat_library_shot-g5.db',
+          'narrbook_b1_shot-g2.db',
+        ],
+      );
+    });
 
-    // 重复关闭：无副作用（不再通知）。
-    provider.dismissSyncResult(error.id);
-    expect(provider.resultToasts, hasLength(1));
+    test('describeSnapshot：能识别的给出单元键，不能识别的标未知', () {
+      final provider = CloudSyncProvider();
+      expect(
+        provider.describeSnapshot('narrchat_mods_shot-g4.db'),
+        contains('mods'),
+      );
+      expect(provider.describeSnapshot('whatever.db'), '未知备份');
+    });
   });
 
-  test('结果条目驻留时长：成功 3 秒、失败 15 秒（驻场岛据此自动撤销）', () {
-    final provider = CloudSyncProvider();
-    provider.showSyncResult('数据已同步');
-    provider.showSyncResult('数据同步失败：超时', kind: NoticeKind.error);
-    final dwells = {
-      for (final t in provider.resultToasts) t.message: t.dwell,
-    };
-    expect(dwells['数据已同步'], const Duration(seconds: 3));
-    expect(dwells['数据同步失败：超时'], const Duration(seconds: 15));
+  group('整本二选一（冲突状态）', () {
+    test('初始没有待裁决冲突', () {
+      final provider = CloudSyncProvider();
+      expect(provider.unresolvedConflicts, isEmpty);
+    });
+
+    test('resolveConflict(skip)：直接返回 null，不改变冲突清单', () async {
+      final provider = CloudSyncProvider();
+      final unit = BackupUnit.book('b1');
+      final plan = BackupPlanner.plan(
+        unit: unit,
+        localDigest: 'L2',
+        base: const BackupBase(generation: 1, baseDigest: 'L'),
+        remote: BackupManifest(
+          unitKey: unit.unitKey,
+          kind: unit.kind,
+          refUuid: unit.refUuid,
+          generation: 2,
+          digest: 'R',
+          snapshotName: unit.snapshotName(2),
+          savedAt: '2026-01-01T00:00:00.000Z',
+        ),
+      );
+      expect(plan.action, BackupAction.conflict);
+      expect(
+        await provider.resolveConflict(plan, BackupConflictChoice.skip),
+        isNull,
+      );
+      expect(provider.unresolvedConflicts, isEmpty);
+    });
+
+    test('restoreSnapshot：无法识别的文件名给出明确错误', () async {
+      final provider = CloudSyncProvider()..debugSetConfigured();
+      expect(
+        await provider.restoreSnapshot('random.db'),
+        '无法识别的备份文件',
+      );
+    });
+
+    test('restoreSnapshot：未配置云备份时拒绝', () async {
+      final provider = CloudSyncProvider()..debugSetConfigured(value: false);
+      expect(
+        await provider.restoreSnapshot('narrchat_library_shot-g1.db'),
+        '尚未配置云备份',
+      );
+    });
   });
 
-  // ---------------------------------------------------------------------------
-  // 「保留历史版本」：本地不存，唯一权威来源是云端 sync_config.json
-  // ---------------------------------------------------------------------------
+  group('结果提示队列', () {
+    test('入队并累计（R3 起不再按文案去重）', () {
+      final provider = CloudSyncProvider();
+      provider.showSyncResult('云端记录 #3：数据已同步', NoticeKind.success);
+      provider.showSyncResult('云端记录 #3：数据已同步', NoticeKind.success);
+      expect(provider.resultToasts, hasLength(2));
 
-  test('saveKeepVersions：越界直接返回文案，不打网络、缓存不变', () async {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: true);
+      provider.showSyncResult('图片同步：完成（上传 3）', NoticeKind.success);
+      expect(provider.resultToasts, hasLength(3));
+    });
 
-    expect(await provider.saveKeepVersions(0), '需为 1 ~ 99 的整数');
-    expect(await provider.saveKeepVersions(100), '需为 1 ~ 99 的整数');
-    expect(provider.keepVersions, SyncConfig.defaultKeepVersions,
-        reason: '校验失败不触碰缓存');
-  });
+    test('空文案不入队', () {
+      final provider = CloudSyncProvider();
+      provider.showSyncResult('   ', NoticeKind.info);
+      expect(provider.resultToasts, isEmpty);
+    });
 
-  test('saveKeepVersions：未配置 → 返回「请先保存 WebDAV 连接配置」', () async {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
-    expect(await provider.saveKeepVersions(5), '请先保存 WebDAV 连接配置');
-  });
+    test('超过上限时挤掉最早一条', () {
+      final provider = CloudSyncProvider();
+      for (var i = 1; i <= CloudSyncProvider.maxResultToasts + 1; i++) {
+        provider.showSyncResult('消息 $i', NoticeKind.success);
+      }
+      expect(
+        provider.resultToasts,
+        hasLength(CloudSyncProvider.maxResultToasts),
+      );
+      expect(
+        provider.resultToasts.first.message,
+        '消息 2',
+        reason: '最早一条被挤掉',
+      );
+    });
 
-  test('refreshKeepVersions：未配置 → 返回文案且不置已加载', () async {
-    final provider = CloudSyncProvider()..debugSetConfigured(value: false);
-    expect(await provider.refreshKeepVersions(), '请先保存 WebDAV 连接配置');
-    expect(provider.keepVersionsLoaded, isFalse);
-  });
+    test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
+      final provider = CloudSyncProvider();
+      provider.showSyncResult('已取消数据同步', NoticeKind.info);
+      provider.showSyncResult('图片同步：连接超时（HTTP 408）', NoticeKind.error);
 
-  test('keepVersions 初始为默认 5 且未从云端读取过（展示「—」依据）', () {
-    final provider = CloudSyncProvider();
-    expect(provider.keepVersions, SyncConfig.defaultKeepVersions);
-    expect(provider.keepVersionsLoaded, isFalse);
-  });
+      final error = provider.resultToasts
+          .firstWhere((t) => t.kind == NoticeKind.error);
+      provider.dismissSyncResult(error.id);
 
-  test('debugSetKeepVersions：注入缓存后 loaded 为 true（测试钩子）', () {
-    final provider = CloudSyncProvider();
-    provider.debugSetKeepVersions(12);
-    expect(provider.keepVersions, 12);
-    expect(provider.keepVersionsLoaded, isTrue);
+      expect(
+        provider.resultToasts.map((t) => t.message).toList(),
+        ['已取消数据同步'],
+      );
+
+      // 重复关闭：无副作用。
+      provider.dismissSyncResult(error.id);
+      expect(provider.resultToasts, hasLength(1));
+    });
+
+    test('结果条目驻留时长：成功 3 秒、警告 5 秒、失败 15 秒', () {
+      final provider = CloudSyncProvider();
+      provider.showSyncResult('数据已同步', NoticeKind.success);
+      provider.showSyncResult('数据同步失败：超时', NoticeKind.error);
+      provider.showSyncResult('一般警告', NoticeKind.warning);
+      final dwells = {
+        for (final t in provider.resultToasts) t.message: t.dwell,
+      };
+      expect(dwells['数据已同步'], const Duration(seconds: 3));
+      expect(dwells['数据同步失败：超时'], const Duration(seconds: 15));
+      expect(dwells['一般警告'], const Duration(seconds: 5));
+    });
   });
 }

@@ -1,12 +1,9 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
-import '../screens/database_merge_screen.dart';
-import '../services/database_merge_service.dart';
+import '../services/cloud_backup/backup_unit.dart';
 import '../services/sync/sync_models.dart';
 import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
@@ -14,7 +11,6 @@ import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
 import 'keep_versions_dialog.dart';
 import 'settings_form_state.dart';
-import 'sync_restore_dialog.dart';
 
 /// 云同步（WebDAV）设置面板 —— 重新设计版。
 ///
@@ -26,7 +22,7 @@ import 'sync_restore_dialog.dart';
 /// - 同步模式：全自动（默认）或手动「同步」按钮；
 /// - 连接设置：服务器 / 用户名 / 密码 / 文件夹，测试连接 / 删除连接；
 /// - 保留历史版本：只读展示框（点击弹窗修改，值保存在云端 sync_config.json）；
-/// - 云端备份：统一「同步」、版本列表（下载→合并/替换）；
+/// - 云端备份：统一「同步」、版本列表（挑选某一代覆盖本地对应库）；
 /// - 图片：说明随同步自动多端同步、删除可在云端同步删除。
 class CloudSyncPanel extends StatefulWidget {
   final SettingsFormState form;
@@ -137,58 +133,90 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     }
   }
 
-  Future<void> _download(WebDavFile file) async {
+  Future<void> _restore(WebDavFile file) async {
     final provider = context.read<CloudSyncProvider>();
-    final tempPath = await provider.downloadBackup(file.name);
-    if (!mounted) return;
-    if (tempPath == null) {
-      _showSnack('下载失败：${provider.error ?? '未知错误'}', kind: NoticeKind.error);
+    final unit = CloudSyncProvider.unitOfSnapshot(file.name);
+    if (unit == null) {
+      _showSnack('无法识别的备份文件', kind: NoticeKind.warning);
       return;
     }
-    final mode = await showSyncRestoreDialog(context, file: file);
-    if (mode == null) {
-      _cleanupTemp(tempPath);
-      return;
-    }
-    if (mode == SyncRestoreMode.replace) {
-      final ok = await provider.applyReplace(tempPath);
-      _cleanupTemp(tempPath);
-      if (!mounted) return;
-      _showSnack(
-        ok ? '已用所选备份替换本地数据' : '处理失败：${provider.error ?? '未知错误'}',
-        kind: ok ? NoticeKind.success : NoticeKind.error,
-      );
-      return;
-    }
-    final DatabaseMergePlan plan;
-    try {
-      plan = await DatabaseMergeService.buildPlanFromBackup(tempPath);
-    } catch (e) {
-      _cleanupTemp(tempPath);
-      if (!mounted) return;
-      _showSnack('解析备份失败：$e', kind: NoticeKind.error);
-      return;
-    }
-    _cleanupTemp(tempPath);
-    if (!mounted) return;
-    await DatabaseMergeScreen.open(
-      context,
-      plan: plan,
-      onApply: (p, bd, md) => provider.applyMergePlan(p, bd, md),
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('用这个备份覆盖本地？'),
+        content: Text(
+          '将用云端快照「${file.name}」整份替换本地的 ${unit.unitKey}，'
+          '本机这一部分还没备份的改动会丢失。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('替换'),
+          ),
+        ],
+      ),
     );
-  }
+    if (confirmed != true || !mounted) return;
 
-  void _cleanupTemp(String path) {
-    try {
-      File(path).delete();
-    } catch (_) {
-      // 临时文件清理失败可忽略。
-    }
+    final error = await provider.restoreSnapshot(file.name);
+    if (!mounted) return;
+    _showSnack(
+      error == null ? '已用所选备份替换本地数据' : '处理失败：$error',
+      kind: error == null ? NoticeKind.success : NoticeKind.error,
+    );
   }
 
   void _showSnack(String message, {NoticeKind kind = NoticeKind.info}) {
     context.notices.show(message, kind: kind);
   }
+
+  /// 快照列表标题：归属库 + 代数。
+  String snapshotLabelOf(WebDavFile file) {
+    final unit = CloudSyncProvider.unitOfSnapshot(file.name);
+    final generation = CloudSyncProvider.generationOfSnapshot(file.name);
+    final label = switch (unit?.kind) {
+      BackupUnitKind.library => '目录库',
+      BackupUnitKind.mods => 'Mod 库',
+      BackupUnitKind.book => '书籍 ${_shortUuid(unit!.refUuid)}',
+      null => file.name,
+    };
+    return '$label · 第 $generation 代';
+  }
+
+  /// 快照列表副标题：时间 + 大小。
+  String snapshotMetaOf(WebDavFile file) {
+    final buffer = StringBuffer();
+    final time = file.lastModified?.toLocal();
+    if (time == null) {
+      buffer.write('时间未知');
+    } else {
+      String two(int value) => value.toString().padLeft(2, '0');
+      buffer
+        ..write(time.year)
+        ..write('-')
+        ..write(two(time.month))
+        ..write('-')
+        ..write(two(time.day))
+        ..write(' ')
+        ..write(two(time.hour))
+        ..write(':')
+        ..write(two(time.minute));
+    }
+    if (file.size > 0) {
+      buffer
+        ..write(' · ')
+        ..write((file.size / 1024).toStringAsFixed(1))
+        ..write(' KB');
+    }
+    return buffer.toString();
+  }
+
+  static String _shortUuid(String uuid) =>
+      uuid.length <= 8 ? uuid : uuid.substring(0, 8);
 
   @override
   Widget build(BuildContext context) {
@@ -462,7 +490,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           const SizedBox(height: 12),
           Text(
             _form.syncMode == SyncMode.auto
-                ? '全自动：在打开应用 / 进入书籍 / 每轮生成结束 / 保存书籍或 Mod 设置 / 回到前台（2 分钟内不重复）等操作节点自动推送与拉取；空闲时不周期性联网，仅在真冲突时弹合并确认。'
+                ? '全自动：在打开应用 / 进入书籍 / 每轮生成结束 / 保存书籍或 Mod 设置 / 回到前台（2 分钟内不重复）等操作节点自动推送与拉取；空闲时不周期性联网；冲突只按整本书二选一（替换本地 / 保留本地）。'
                 : '手动：仅在你点击「同步」时推送与拉取一次，适合希望完全掌控上传时机的场景。',
             style: TextStyle(fontSize: 12, color: colors.textSecondary),
           ),
@@ -597,7 +625,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.cloud_outlined,
       title: '云端备份',
-      subtitle: '一键同步本地与云端；也可从某个历史版本（云端记录 #N）合并或恢复本地数据。',
+      subtitle: '一键同步本地与云端；也可从某个历史版本（云端记录 #N）整份还原某个库。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -688,7 +716,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                   tooltip: '下载并恢复此版本',
                   icon: const Icon(Icons.cloud_download_outlined, size: 20),
                   color: NarrChatTheme.primary,
-                  onPressed: provider.isBusy ? null : () => _download(file),
+                  onPressed: provider.isBusy ? null : () => _restore(file),
                 ),
               ],
             ),

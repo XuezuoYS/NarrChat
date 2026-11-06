@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
@@ -20,7 +19,6 @@ import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/services/non_stream_replay.dart';
-import 'package:narrchat/services/round_stack_service.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/sidebar_panel.dart';
@@ -31,13 +29,11 @@ import 'notice_harness.dart';
 
 /// 公共 widget 测试脚手架（harness）。
 ///
-/// 此前各测试文件各自复制“MultiProvider + MaterialApp + ChatScreen/HomeScreen
-/// + 视口设置”组合（累计约 500 行）。统一收口到本文件后：
-/// - 新增对话页 / 首页测试直接复用，不再复制脚手架；
-/// - 视口 / Provider 组合行为保持一致，减少微小漂移。
+/// 统一收口「TestStack + MultiProvider + MaterialApp + 视口」这套组合，
+/// 各测试文件只关心交互与断言。
 ///
-/// 约定：仅包含“把被测页面 pump 起来”的公共流程；具体交互与断言
-/// 留在各测试文件内。
+/// 数据层一律是**真实临时库**（见 `TestStack`）：schema / 事务 / 唯一键
+/// 只有真库才测得出来，假 DAO 那套已经删除。
 
 /// 脚手架预置书籍的 uuid（书籍主键即身份，测试断言直接引用）。
 const String kHarnessBookUuid = 'book-1';
@@ -45,30 +41,26 @@ const String kHarnessBookUuid = 'book-1';
 /// 以 [size] 视口 pump 对话页（ChatScreen），返回 RoundProvider。
 ///
 /// 参数均为可覆盖项：
+/// - [stack]：共享的测试存储（不传则内部新建，并在用例结束时自动 dispose）；
 /// - [ai]：AI 服务替身（默认 [ToggleAiService]）；
-/// - [bookDao] / [roundDao] / [worldBookDao]：数据层替身（默认新建）；
-/// - [settings]：AI 设置（默认新建）；
+/// - [settings] / [aiSettingsProvider]：AI 设置（默认新建）；
 /// - [experimentalSettings]：实验性功能设置（Agent 模式开关；默认关闭）；
+/// - [uiSettings]：UI 设置（默认新建，不 load，避免触碰真实配置文件）；
 /// - [webSearchTool]：注入的搜索工具替身（AGENT / Chat 工具循环共用）；
 /// - [onGenerationCompleted]：生成完成回调（通知服务接线用）；
 /// - [retryDelay]：网络类失败自动重试间隔（测试可注入零时长）；
-/// - [searchService]：Agent 默认搜索工具共用的搜索服务替身（默认新建）；
+/// - [searchService]：Agent 默认搜索工具共用的搜索服务替身；
 /// - [nonStreamReplayer]：非流式展示回放器（测试可注入零间隔加速）；
-/// - [seedRounds]：预置的对话轮次（roundIndex 1..n，正文足够长便于滚动断言）；
-/// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；楼层跳转等需要
-///   “单轮高于视口”的场景可加大）；
-/// - [theme]：应用主题（默认浅色主题；深色置灰等外观用例可传 dark）；
-/// - [textScale]：全局文字缩放倍率（默认 1.0 不缩放；字体缩放档位用例传 1.45 等）；
-/// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作，
-///   需要断言跳转的用例注入自己的实现）；
-/// - [roundStackService]：版本树服务替身（默认 [FakeRoundStackService]，
-///   与传入的 [roundDao] 共享同一内存轮次表，**绝不触碰真实数据库**）。
+/// - [seedRounds]：预置的对话轮次（第 1..n 轮，正文足够长便于滚动断言）；
+/// - [seedBodyRepeats]：预置轮次正文的重复次数（默认 40；需要"单轮高于视口"
+///   的场景可加大）；
+/// - [theme]：应用主题（默认浅色主题；深色用例可传 dark）；
+/// - [textScale]：全局文字缩放倍率（默认 1.0）；
+/// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
+  TestStack? stack,
   AiService? ai,
-  FakeBookDao? bookDao,
-  FakeRoundDao? roundDao,
-  FakeWorldBookDao? worldBookDao,
   AiSettingsProvider? settings,
   AiSettingsProvider? aiSettingsProvider,
   ExperimentalSettingsProvider? experimentalSettings,
@@ -80,7 +72,6 @@ Future<RoundProvider> pumpChatScreen(
   Duration retryDelay = const Duration(milliseconds: 800),
   HtmlSearchService? searchService,
   NonStreamReplayer? nonStreamReplayer,
-  RoundStackService? roundStackService,
   int seedRounds = 0,
   int seedBodyRepeats = 40,
   ThemeData? theme,
@@ -93,55 +84,48 @@ Future<RoundProvider> pumpChatScreen(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
-  final bookDao0 = bookDao ?? FakeBookDao(books: [book]);
-  final dao = roundDao ?? FakeRoundDao();
-  final worldDao = worldBookDao ?? FakeWorldBookDao();
-  for (var i = 1; i <= seedRounds; i++) {
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
-        roundIndex: i,
-        userInput: '第 $i 轮的用户输入',
-        aiNarrative: '第 $i 轮的剧情正文。' * seedBodyRepeats,
-        currentTime: '第一天 午时',
-        createdAt: DateTime.now(),
-      ),
-    );
-  }
-
+  final store = await _resolveStack(tester, stack);
+  // 建库 + 播种：真库 I/O，必须放在真实事件循环里跑（见 [_resolveStack]）。
+  final bookProvider = BookProvider(repository: store.repos.books);
   final roundProvider = RoundProvider(
-    dao: dao,
+    rounds: store.repos.rounds,
+    books: store.repos.books,
     aiService: ai ?? ToggleAiService(),
-    bookDao: bookDao0,
     aiSettingsProvider: aiSettingsProvider,
     experimentalSettings: experimentalSettings,
     webSearchTool: webSearchTool,
     retryDelay: retryDelay,
     searchService: searchService,
     nonStreamReplayer: nonStreamReplayer,
-    roundStackService: roundStackService ?? FakeRoundStackService(roundDao: dao),
     onGenerationCompleted: onGenerationCompleted,
   );
-  await roundProvider.loadRounds(kHarnessBookUuid);
+  await tester.runAsync(() async {
+    await store.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+    await store.seedRounds(
+      kHarnessBookUuid,
+      count: seedRounds,
+      bodyRepeats: seedBodyRepeats,
+    );
+    await bookProvider.loadBooks();
+    await roundProvider.loadRounds(kHarnessBookUuid);
+  });
+  bookProvider.selectBook(bookProvider.books.first);
 
   await tester.pumpWidget(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => settings ?? AiSettingsProvider()),
-        // 实验性功能设置（Agent 模式开关，默认关闭；默认构造不 load）。
         ChangeNotifierProvider(
           create: (_) => experimentalSettings ?? ExperimentalSettingsProvider(),
         ),
-        // 宽屏侧栏宽度等 UI 设置（默认构造，不 load：避免触碰真实配置文件）。
         ChangeNotifierProvider(
           create: (_) => uiSettings ?? UiSettingsProvider(),
         ),
+        ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
         ChangeNotifierProvider(
-          create: (_) => BookProvider(dao: bookDao0)..loadBooks(),
+          create: (_) => WorldBookProvider(repository: store.repos.worldBook),
         ),
-        ChangeNotifierProvider(create: (_) => WorldBookProvider(dao: worldDao)),
-        ChangeNotifierProvider(create: (_) => roundProvider),
+        ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
         // 云同步（ChatScreen 进入书籍时触发自动同步；未配置时内部忽略）。
         ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
@@ -173,17 +157,15 @@ Future<RoundProvider> pumpChatScreen(
 
 /// 以 [size] 视口 pump 首页（HomeScreen，书籍列表）。
 ///
-/// [books] / [times]（键 = 书籍 uuid）注入书籍列表与最近对话时间；
-/// [notificationBackend] 注入通知后端（缺省时用 [FakeNotificationBackend]，
-/// 避免默认走真实 flutter_local_notifications 插件）；
-/// [notificationSettings] 注入预先构建（已 refresh）的通知设置 Provider，
-/// 用于「未开启通知提示条」等需要预置开关状态的用例；
-/// [textScale]：全局文字缩放倍率（默认 1.0 不缩放）；
-/// [onOpenBook]：驻场岛展开区点「正在生成的书」的回调（默认空操作）。
+/// [books] 注入书籍列表；[times]（键 = 书籍 uuid）注入"最近对话时间"；
+/// [notificationBackend] 注入通知后端（缺省 [FakeNotificationBackend]，避免走
+/// 真实插件通道）；[notificationSettings] 注入预先 refresh 过的设置；
+/// [textScale]：全局文字缩放倍率；[onOpenBook]：驻场岛展开区回调。
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
   required List<Book> books,
   Map<String, DateTime> times = const {},
+  TestStack? stack,
   NotificationBackend? notificationBackend,
   NotificationSettingsProvider? notificationSettings,
   Size size = const Size(1400, 900),
@@ -195,29 +177,36 @@ Future<BookProvider> pumpHomeScreen(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  final bookDao = FakeBookDao(books: books, times: times);
-  final bookProvider = BookProvider(dao: bookDao)..loadBooks();
-  final roundDao = FakeRoundDao();
+  final store = await _resolveStack(tester, stack);
+  final bookProvider = BookProvider(repository: store.repos.books);
+  await tester.runAsync(() async {
+    for (final book in books) {
+      await store.repos.books.createBook(book);
+      final time = times[book.uuid];
+      if (time != null) {
+        await store.setLastRoundAt(book.uuid, time);
+      }
+    }
+    await bookProvider.loadBooks();
+  });
+
   await tester.pumpWidget(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-        ChangeNotifierProvider(
-          create: (_) => ExperimentalSettingsProvider(),
-        ),
-        ChangeNotifierProvider(create: (_) => bookProvider),
+        ChangeNotifierProvider(create: (_) => ExperimentalSettingsProvider()),
+        ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
         // 首页可进入书籍对话页（对话页布局读取 UI 设置）。
         ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
         // 云同步（SyncStatusChip 需读取其 syncState）。
         ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
         ChangeNotifierProvider(
-          create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
+          create: (_) => WorldBookProvider(repository: store.repos.worldBook),
         ),
         ChangeNotifierProvider(
           create: (_) => RoundProvider(
-            dao: roundDao,
-            bookDao: bookDao,
-            roundStackService: FakeRoundStackService(roundDao: roundDao),
+            rounds: store.repos.rounds,
+            books: store.repos.books,
           ),
         ),
         if (notificationSettings != null)
@@ -241,7 +230,6 @@ Future<BookProvider> pumpHomeScreen(
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
-        // 应用内通知宿主（悬浮 + 驻场岛）；全局字体缩放等价生产 main.dart。
         builder: noticeHostBuilder(
           onOpenBook: onOpenBook,
           textScale: textScale,
@@ -264,8 +252,7 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
   WidgetTester tester, {
   required GenerationNotificationService service,
   required BookProvider bookProvider,
-  required FakeBookDao bookDao,
-  FakeRoundDao? roundDao,
+  required TestStack stack,
   AiService? ai,
   Size size = const Size(1400, 900),
 }) async {
@@ -274,12 +261,10 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  final dao = roundDao ?? FakeRoundDao();
   final roundProvider = RoundProvider(
-    dao: dao,
+    rounds: stack.repos.rounds,
+    books: stack.repos.books,
     aiService: ai ?? ToggleAiService(),
-    bookDao: bookDao,
-    roundStackService: FakeRoundStackService(roundDao: dao),
     onGenerationCompleted: service.onGenerationCompleted,
   );
 
@@ -287,14 +272,12 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AiSettingsProvider()),
-        ChangeNotifierProvider(
-          create: (_) => ExperimentalSettingsProvider(),
-        ),
+        ChangeNotifierProvider(create: (_) => ExperimentalSettingsProvider()),
         // 通知跳转会把 ChatScreen 推上路由栈（其布局读取 UI 设置）。
         ChangeNotifierProvider(create: (_) => UiSettingsProvider()),
         ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
         ChangeNotifierProvider(
-          create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
+          create: (_) => WorldBookProvider(repository: stack.repos.worldBook),
         ),
         ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
@@ -323,16 +306,54 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
   return (books: bookProvider, rounds: roundProvider);
 }
 
+/// 拿到可用的 TestStack：外面传了就用外面的（不负责销毁），否则新建并在
+/// 用例结束时自动 dispose。
+///
+/// **必须经 [WidgetTester.runAsync]**：`testWidgets` 的测试体跑在 fake-async
+/// 区域里，真实的文件 / sqlite 回调只有在真实事件循环里才会推进；直接 `await`
+/// 会永远卡住（现象是「did not complete」）。见 `test/zz_probe_test.dart`。
+Future<TestStack> _resolveStack(WidgetTester tester, TestStack? provided) async {
+  if (provided != null) return provided;
+  final stack = await tester.runAsync(TestStack.create);
+  addTearDown(() => tester.runAsync(stack!.dispose));
+  return stack!;
+}
+
+/// 让「真库 I/O + UI 动画」一起推进到静止。
+///
+/// 为什么需要它：`testWidgets` 的测试体跑在 fake-async 区域，`pump()` 只负责
+/// flush 微任务；真实文件 / sqlite 那一层要等真实事件循环转起来才会往下走。
+/// 所以「点一下 → provider 写库 → 重新加载列表」这类交互，光 `pumpAndSettle`
+/// 会在数据还没落地时就断言（现象：软删后书还在 / 提交后链上没新代）。
+///
+/// 一次 `runAsync` 只够推进**一步**真实异步，所以按轮次循环；
+/// 发一轮要经过「校验 → 插代 → 归一化 is_using → 落正文 → 重载链」好几步，
+/// 轮次给足（默认 12）比猜时长可靠。
+Future<void> settle(WidgetTester tester, {int rounds = 12}) async {
+  for (var i = 0; i < rounds; i++) {
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
+}
+
 /// 等待 sendRound 结束（isSending 期间发送按钮有无限转圈动画，
 /// 不能用 pumpAndSettle，须等 isSending 变 false 后再 settle）。
 Future<void> waitSendDone(
   WidgetTester tester,
   RoundProvider provider,
 ) async {
-  for (var i = 0; i < 20 && provider.isSending; i++) {
+  // 先给几步把「点击 → 真正开始生成」推进出来，否则第一轮判断时
+  // isSending 还是 false，会误以为已经结束。
+  for (var i = 0; i < 40 && !provider.isSending; i++) {
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pump();
   }
-  await tester.pumpAndSettle();
+  for (var i = 0; i < 60 && provider.isSending; i++) {
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+  }
+  await settle(tester);
 }
 
 /// 侧栏面板内容区（[SidebarPanel] 内的 CustomScrollView）的滚动控制器。

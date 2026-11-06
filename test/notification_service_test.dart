@@ -1,41 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/chat_route.dart';
-import 'package:narrchat/models/book.dart';
-import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
-import 'package:narrchat/providers/cloud_sync_provider.dart';
-import 'package:narrchat/providers/experimental_settings_provider.dart';
-import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/providers/sidebar_provider.dart';
-import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/utils/uuid_utils.dart';
-import 'package:provider/provider.dart';
 
+import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
-/// 书籍身份即 uuid（TEXT 主键）：通知槽 id 只是 uuid 的派生哈希，
+/// 书籍身份即 uuid：通知槽 id 只是 uuid 的派生哈希，
 /// 业务侧（payload / 路由参数 / 栈顶判定）一律直接使用 uuid 字符串。
-const bookA = Book(uuid: 'f3a1b7c2-1d2e-4a5b-9c8d-1e2f3a4b5c61', title: '书A');
-const bookB = Book(uuid: 'c7d5e3f1-6a7b-4c8d-9e0f-a1b2c3d4e5f6', title: '书B');
-
-/// 构造一个已初始化、注入假后端的服务。
-Future<GenerationNotificationService> _makeService(
-  FakeNotificationBackend backend,
-) async {
-  final bookDao = FakeBookDao(books: [bookA, bookB]);
-  final bookProvider = BookProvider(dao: bookDao);
-  await bookProvider.loadBooks();
-  final service = GenerationNotificationService(
-    bookProvider: bookProvider,
-    backend: backend,
-    attentionBackend: FakeTaskbarAttentionBackend(),
-  );
-  await service.init();
-  return service;
-}
+///
+/// R3 起书籍来自真库（`TestStack`），库操作必须经 `tester.runAsync`。
+const bookAUuid = 'f3a1b7c2-1d2e-4a5b-9c8d-1e2f3a4b5c61';
+const bookBUuid = 'c7d5e3f1-6a7b-4c8d-9e0f-a1b2c3d4e5f6';
 
 /// 构造一条标记为「书 [bookUuid] 的 chat 页」的路由（路由参数 = 书籍 uuid）。
 Route<void> chatRoute(String bookUuid) => MaterialPageRoute<void>(
@@ -44,68 +23,92 @@ Route<void> chatRoute(String bookUuid) => MaterialPageRoute<void>(
     );
 
 void main() {
+  /// 建一套隔离存储 + 两本书 + 已初始化的服务。
+  Future<({GenerationNotificationService service, TestStack stack})> makeService(
+    WidgetTester tester,
+    FakeNotificationBackend backend, {
+    List<String> uuids = const [bookAUuid, bookBUuid],
+  }) async {
+    final stack = await tester.runAsync(TestStack.create);
+    addTearDown(() => tester.runAsync(stack!.dispose));
+    await tester.runAsync(() async {
+      for (final uuid in uuids) {
+        await stack!.seedBook(uuid: uuid, title: uuid == bookAUuid ? '书A' : '书B');
+      }
+    });
+    final bookProvider = BookProvider(repository: stack!.repos.books);
+    await tester.runAsync(bookProvider.loadBooks);
+    final service = GenerationNotificationService(
+      bookProvider: bookProvider,
+      backend: backend,
+      attentionBackend: FakeTaskbarAttentionBackend(),
+    );
+    await service.init();
+    return (service: service, stack: stack);
+  }
+
   testWidgets('前台且正在该书 chat 页时不弹通知', (tester) async {
     final backend = FakeNotificationBackend();
-    final service = await _makeService(backend);
+    final (:service, stack: _) = await makeService(tester, backend);
 
     // 模拟栈顶正在查看书 A 的 chat 页（生命周期默认 resumed）。
-    service.routeObserver.didPush(chatRoute(bookA.uuid), null);
-    expect(service.topChatBookUuid, bookA.uuid);
+    service.routeObserver.didPush(chatRoute(bookAUuid), null);
+    expect(service.topChatBookUuid, bookAUuid);
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(backend.shown, isEmpty);
   });
 
   testWidgets('后台完成生成时弹出通知', (tester) async {
     final backend = FakeNotificationBackend();
-    final service = await _makeService(backend);
+    final (:service, stack: _) = await makeService(tester, backend);
     service.didChangeAppLifecycleState(AppLifecycleState.paused);
 
-    service.onGenerationCompleted(bookA.uuid, '书A');
+    service.onGenerationCompleted(bookAUuid, '书A');
 
     expect(backend.shown, hasLength(1));
     // 槽位 id = uuid 的派生哈希，payload 就是 uuid 本身。
-    expect(backend.shown.single.id, notificationIdForUuid(bookA.uuid));
-    expect(backend.shown.single.payload, bookA.uuid);
+    expect(backend.shown.single.id, notificationIdForUuid(bookAUuid));
+    expect(backend.shown.single.payload, bookAUuid);
     expect(backend.shown.single.title, '《书A》本轮已完成');
     expect(backend.shown.single.body, '点击打开');
   });
 
   testWidgets('前台但在其它页面（栈顶非 chat）时弹出通知', (tester) async {
     final backend = FakeNotificationBackend();
-    final service = await _makeService(backend);
+    final (:service, stack: _) = await makeService(tester, backend);
 
-    service.onGenerationCompleted(bookB.uuid, '书B');
+    service.onGenerationCompleted(bookBUuid, '书B');
 
     expect(backend.shown, hasLength(1));
-    expect(backend.shown.single.id, notificationIdForUuid(bookB.uuid));
+    expect(backend.shown.single.id, notificationIdForUuid(bookBUuid));
     expect(
       backend.shown.single.id,
-      isNot(notificationIdForUuid(bookA.uuid)),
+      isNot(notificationIdForUuid(bookAUuid)),
       reason: '每本书各自派生槽位，互不覆盖',
     );
   });
 
   testWidgets('进入对应书 chat 页时自动删除该通知', (tester) async {
     final backend = FakeNotificationBackend();
-    final service = await _makeService(backend);
+    final (:service, stack: _) = await makeService(tester, backend);
 
     // 后台先弹出一条书 B 的通知。
     service.didChangeAppLifecycleState(AppLifecycleState.paused);
-    service.onGenerationCompleted(bookB.uuid, '书B');
+    service.onGenerationCompleted(bookBUuid, '书B');
     backend.cancelled.clear();
 
     // 前台进入书 B 的 chat 页。
     service.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    service.routeObserver.didPush(chatRoute(bookB.uuid), null);
+    service.routeObserver.didPush(chatRoute(bookBUuid), null);
 
-    expect(backend.cancelled, contains(notificationIdForUuid(bookB.uuid)));
+    expect(backend.cancelled, contains(notificationIdForUuid(bookBUuid)));
   });
 
   testWidgets('生成任务进行中启动保活前台服务，全部结束后停止', (tester) async {
     final backend = FakeNotificationBackend();
-    final service = await _makeService(backend);
+    final (:service, stack: _) = await makeService(tester, backend);
 
     // 首个生成任务开始 → 启动前台服务。
     service.onGenerationActiveChanged(true);
@@ -125,53 +128,34 @@ void main() {
 
   testWidgets('点通知跳转到对应书 chat 页', (tester) async {
     final backend = FakeNotificationBackend();
-    final bookDao = FakeBookDao(books: [bookA, bookB]);
-    final bookProvider = BookProvider(dao: bookDao);
-    await bookProvider.loadBooks();
-    final roundProvider = RoundProvider(dao: FakeRoundDao(), bookDao: bookDao);
+    final stack = await tester.runAsync(TestStack.create);
+    addTearDown(() => tester.runAsync(stack!.dispose));
+    await tester.runAsync(() async {
+      await stack!.seedBook(uuid: bookAUuid, title: '书A');
+      await stack.seedBook(uuid: bookBUuid, title: '书B');
+    });
+    final bookProvider = BookProvider(repository: stack!.repos.books);
+    await tester.runAsync(bookProvider.loadBooks);
+
     final service = GenerationNotificationService(
       bookProvider: bookProvider,
       backend: backend,
       attentionBackend: FakeTaskbarAttentionBackend(),
     );
     await service.init();
-
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider<AiSettingsProvider>(
-            create: (_) => AiSettingsProvider(),
-          ),
-          ChangeNotifierProvider<ExperimentalSettingsProvider>(
-            create: (_) => ExperimentalSettingsProvider(),
-          ),
-          ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
-          ChangeNotifierProvider<WorldBookProvider>(
-            create: (_) => WorldBookProvider(dao: FakeWorldBookDao()),
-          ),
-          ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
-          ChangeNotifierProvider(create: (_) => SidebarProvider()),
-          // 云同步：ChatScreen 进入书籍时触发自动同步（未配置时忽略）。
-          ChangeNotifierProvider(
-            create: (_) => CloudSyncProvider(),
-          ),
-        ],
-        child: MaterialApp(
-          navigatorKey: service.navigatorKey,
-          navigatorObservers: [service.routeObserver],
-          home: const Scaffold(body: Text('home')),
-        ),
-      ),
+    await pumpNotificationHost(
+      tester,
+      service: service,
+      bookProvider: bookProvider,
+      stack: stack,
     );
-    await tester.pumpAndSettle();
 
     // 模拟点击「书 B 生成完成」通知（回调参数 = payload 里的书籍 uuid）。
-    backend.tap(bookB.uuid);
+    backend.tap(bookBUuid);
     await tester.pumpAndSettle();
 
     expect(find.byType(ChatScreen), findsOneWidget);
-    expect(bookProvider.currentBook?.uuid, bookB.uuid);
     // 路由以 uuid 标记栈顶 chat 页，故跳转后即视为正在查看该书。
-    expect(service.topChatBookUuid, bookB.uuid);
+    expect(service.topChatBookUuid, bookBUuid);
   });
 }

@@ -177,7 +177,7 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       _notifyPendingChanged();
       return;
     }
-    await context.read<WorldBookProvider>().removeEntry(entry.id!);
+    await context.read<WorldBookProvider>().removeEntry(entry.uuid);
   }
 
   void _showMessage(String message, {NoticeKind kind = NoticeKind.info}) {

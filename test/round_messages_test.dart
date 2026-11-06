@@ -6,10 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/role_category.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/round_stack.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
@@ -17,10 +14,15 @@ import 'package:narrchat/services/ai_service.dart';
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
-/// 「代级提示」（`round_stack.message` / `message_status`）的行为测试。
+/// 「代级提示」与「失败轮次」的行为测试（R3）。
 ///
-/// 覆盖：生成警告随代入库（warning）、失败占位代（error）与 `books.failed_*` 双写、
-/// 关闭提示触发同步、提示随代（切换 / 删除）而行、UI 三态展示。
+/// 覆盖：
+/// - 生成警告随代落库（`message_status='warning'`）；
+/// - 提示以库为唯一来源（重启仍在）、可手动关闭且关闭要推送；
+/// - 失败/中断 = 链上一条真轮次（`message_status='error'`），保留用户输入；
+/// - 错误代不能衍生下一轮，恢复方式是「重新生成」；
+/// - 提示随代而行（切版本 / 删轮次）；
+/// - 对话页两种渲染：warning 黄框可关、error 红条。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -45,52 +47,44 @@ void main() {
         '',
       ];
 
-  ({RoundProvider provider, FakeRoundDao dao, FakeRoundStackService stack,
-    FakeCloudSyncProvider cloud, FakeBookDao bookDao}) build({
+  late TestStack stack;
+
+  // R3 没有假 DAO：用真库 + 临时目录播种。
+  setUp(() async {
+    stack = await TestStack.create(prefix: 'round_messages_');
+    await stack.repos.books.createBook(book);
+  });
+
+  tearDown(() async {
+    await stack.dispose();
+  });
+
+  ({RoundProvider provider, FakeCloudSyncProvider cloud}) build({
     AiService? ai,
-    FakeRoundDao? roundDao,
-    FakeBookDao? bookDao,
+    FakeCloudSyncProvider? cloud,
   }) {
-    final dao = roundDao ?? FakeRoundDao();
-    final stack = FakeRoundStackService(roundDao: dao);
-    final books = bookDao ?? FakeBookDao();
-    final cloud = FakeCloudSyncProvider();
+    final sync = cloud ?? FakeCloudSyncProvider();
     final rp = RoundProvider(
-      dao: dao,
-      roundStackService: stack,
-      bookDao: books,
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai ?? ToggleAiService(),
       aiSettingsProvider: AiSettingsProvider(),
       // Agent 模式与协议解耦：显式开启实验性开关（默认平台仍为 Response 线路）。
       experimentalSettings: AgentModeSettings(),
-      cloudSyncProvider: cloud,
+      cloudSyncProvider: sync,
       retryDelay: Duration.zero,
     );
-    return (
-      provider: rp,
-      dao: dao,
-      stack: stack,
-      cloud: cloud,
-      bookDao: books,
-    );
+    return (provider: rp, cloud: sync);
   }
 
-  /// 该书的「真代」行（不含失败占位代）。
-  List<RoundStackRow> aliveRows(FakeRoundStackService stack) =>
-      [for (final row in stack.rows['b1'] ?? const []) if (!row.isFailed) row];
-
   /// 成功一轮 AGENT（状态缺项 → 常驻提示）的公共夹具。
-  Future<
-      ({
-        RoundProvider provider,
-        FakeRoundDao dao,
-        FakeRoundStackService stack,
-        FakeCloudSyncProvider cloud,
-        FakeBookDao bookDao,
-      })> runWarnedRound() async {
+  Future<({RoundProvider provider, FakeCloudSyncProvider cloud})>
+      runWarnedRound() async {
     var calls = 0;
     final env = build(
-      ai: AiService(client: MockClient((request) async => sse(unappliedSse(++calls)))),
+      ai: AiService(
+        client: MockClient((request) async => sse(unappliedSse(++calls))),
+      ),
     );
     await env.provider.loadRounds('b1');
     expect(await env.provider.sendRound(userInput: '开始', book: book), isTrue);
@@ -101,27 +95,23 @@ void main() {
     final env = await runWarnedRound();
 
     expect(env.provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
-    final row = aliveRows(env.stack).singleWhere((r) => r.roundIndex == 1);
-    expect(row.message, contains('世界状态本轮未更新'));
-    expect(row.messageStatus, 'warning');
-    expect(row.isUse, isTrue, reason: '提示挂在当前应用代上');
-    // 提示不是内容：`rounds` 投影行与 round_stack 的内容列保持同构（无提示字段）。
-    final round = env.dao.rounds.singleWhere((r) => r.roundIndex == 1);
-    expect(round.aiNarrative, contains('正文。'));
-    expect(round.useStackUuid, row.uuid);
+
+    final chain = await stack.repos.rounds.loadChain('b1');
+    final round = chain.rounds.singleWhere((r) => r.roundIndex == 1);
+    expect(round.message, contains('世界状态本轮未更新'));
+    expect(round.messageStatus, 'warning');
+    expect(round.isUsing, isTrue, reason: '提示挂在当前应用代上');
+    expect(round.aiNarrative, contains('正文。'), reason: '提示不是内容');
+    expect(round.isError, isFalse, reason: '警告不是失败');
   });
 
   test('「重启」后提示仍在（库是唯一来源，无本地副本）', () async {
-    final env = await runWarnedRound();
+    await runWarnedRound();
 
-    // 冷启动：同一内存版本树 + 同一轮次表，新 Provider 重新加载。
-    final restarted = build(
-      roundDao: env.dao,
-      bookDao: env.bookDao,
-      ai: AiService(client: MockClient((request) async => sse(unappliedSse(1)))),
-    );
-    restarted.stack.rows['b1'] = env.stack.rows['b1']!;
+    // 冷启动：同一套库 + 新 Provider 重新加载即可看到提示。
+    final restarted = build();
     await restarted.provider.loadRounds('b1');
+
     expect(restarted.provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
   });
 
@@ -129,55 +119,43 @@ void main() {
     final env = await runWarnedRound();
     expect(env.cloud.triggers, 1, reason: '生成结束已触发一次');
 
+    // 必须 await：关闭是一次真实写库，忘了 await 会靠微任务侥幸通过。
     await env.provider.dismissRoundWarnings(1);
 
     expect(env.provider.roundWarningsFor(1), isEmpty);
-    final row = aliveRows(env.stack).singleWhere((r) => r.roundIndex == 1);
-    expect(row.message, isEmpty);
-    expect(row.messageStatus, isNull);
-    expect(env.cloud.triggers, 2, reason: '关闭提示是轮次部件的真实变化，必须推送');
+    final chain = await stack.repos.rounds.loadChain('b1');
+    final round = chain.rounds.singleWhere((r) => r.roundIndex == 1);
+    expect(round.message, isEmpty);
+    expect(round.hasMessage, isFalse, reason: 'message 为空即无提示框');
+    expect(env.cloud.triggers, 2, reason: '关闭提示是轮次内容的真实变化，必须推送');
 
     // 关闭后重启不复活（库里已经没有了）。
-    final restarted = build(roundDao: env.dao, bookDao: env.bookDao);
-    restarted.stack.rows['b1'] = env.stack.rows['b1']!;
+    final restarted = build();
     await restarted.provider.loadRounds('b1');
     expect(restarted.provider.roundWarningsFor(1), isEmpty);
   });
 
-  test('失败：失败占位代（error 级）与 books.failed_* 双写，清除后两处一起消失', () async {
+  test('失败：落一条链上的 error 轮，保留用户输入；清除后消失并推送', () async {
     final env = build(ai: ToggleAiService()..fail = true);
     await env.provider.loadRounds('b1');
 
     expect(await env.provider.sendRound(userInput: '失败轮', book: book), isFalse);
 
-    // 双写①：books.failed_*（旧语义 + 老版本兼容）。
-    expect(env.provider.hasFailureEntry, isTrue);
-    expect(env.bookDao.failed.userInput, '失败轮');
-    // 双写②：round_stack 的失败占位代（提示的新版权威载体）。
-    final failure = (env.stack.rows['b1'] ?? const [])
-        .singleWhere((row) => row.isFailed);
-    expect(failure.roundIndex, 1);
+    final failure = env.provider.rounds.single;
+    expect(failure.isError, isTrue, reason: '失败就是链上一条真轮次');
     expect(failure.messageStatus, 'error');
-    expect(failure.message, isNotEmpty);
-    expect(failure.isUse, isFalse, reason: '失败占位代绝不参与活动链');
-    // 失败占位代不进代次索引（不显示为可切换的一代）。
-    final index = await env.stack.loadIndex('b1');
-    expect(index.infoFor(1, fatherUuid: null, currentUuid: null), isNull);
+    expect(failure.message.trim(), isNotEmpty, reason: '红条必须有文案');
+    expect(failure.userInput, '失败轮', reason: '失败也要保留用户输入');
+    expect(env.cloud.triggers, 1, reason: '错误代也是内容变更');
 
     await env.provider.clearFailedAttempt();
 
-    expect(env.provider.hasFailureEntry, isFalse);
-    expect(env.provider.failureMessageLines, isEmpty);
-    expect(
-      (env.stack.rows['b1'] ?? const []).any((row) => row.isFailed),
-      isFalse,
-    );
-    expect(env.cloud.triggers, 2, reason: '清除失败条目同样要推送（生成一次 + 清除一次）');
+    expect(env.provider.rounds, isEmpty);
+    expect(env.cloud.triggers, 2, reason: '清除同样要推送');
   });
 
-  test('失败占位代的提示 = 失败原因 + 本轮过程警告（合并为一条 error 提示）', () async {
-    // 首次请求：AGENT 只回工具调用 → 整轮无正文 → 判失败（并带上「状态改动已作废」）；
-    // 第二次请求：正常回正文 → 成功（用于验证「新请求开始即清除失败态」）。
+  test('失败提示 = 失败原因 + 本轮过程警告，合并进同一条 message', () async {
+    // 首次请求：AGENT 只回工具调用 → 整轮无正文 → 判失败（并带上「状态改动已作废」）。
     var failFirst = true;
     final env = build(
       ai: AiService(
@@ -196,184 +174,139 @@ void main() {
 
     expect(await env.provider.sendRound(userInput: '只调工具', book: book), isFalse);
 
-    final lines = env.provider.failureMessageLines;
-    expect(lines.any((l) => l.contains('未产出正文')), isTrue, reason: '失败原因');
-    expect(lines.any((l) => l.contains('状态改动已作废')), isTrue,
-        reason: '本轮过程警告并入同一条提示');
-    final failure = (env.stack.rows['b1'] ?? const [])
-        .singleWhere((row) => row.isFailed);
-    expect(failure.message, env.provider.failureMessageLines.join('\n'));
+    final failure = env.provider.rounds.single;
+    expect(failure.message, contains('未产出正文'), reason: '失败原因');
+    expect(failure.message, contains('状态改动已作废'), reason: '本轮过程警告并入同一条提示');
 
-    // 新请求开始即清除失败态（与 books.failed_* 同一时机，符合原版行为）。
+    // 错误代不能衍生下一轮：直接发新消息会被拒绝，提示用户先重新生成。
+    expect(await env.provider.sendRound(userInput: '再来', book: book), isFalse);
+    expect(env.provider.error, contains('上一轮生成失败'));
+
+    // 正确恢复：对这条错误轮「重新生成」→ 同组新增一代并切过去。
     failFirst = false;
-    expect(await env.provider.sendRound(userInput: '再来', book: book), isTrue);
-    expect(
-      (env.stack.rows['b1'] ?? const []).any((row) => row.isFailed),
-      isFalse,
-    );
-    expect(env.provider.hasFailureEntry, isFalse);
+    await env.provider.refreshRound(failure, book: book);
+
+    final recovered = env.provider.rounds.single;
+    expect(recovered.isError, isFalse, reason: '重新生成后链上是成功代');
+    expect(recovered.roundIndex, 1);
+    expect(recovered.aiNarrative, contains('正文。'));
   });
 
   test('删除轮次 → 该轮的提示随行消失', () async {
     final env = await runWarnedRound();
-    final round = env.dao.rounds.singleWhere((r) => r.roundIndex == 1);
+    final round = env.provider.rounds.single;
 
     await env.provider.deleteRound(round, deleteFollowing: true);
 
+    expect(env.provider.rounds, isEmpty);
     expect(env.provider.roundWarningsFor(1), isEmpty);
-    expect(aliveRows(env.stack).where((r) => r.roundIndex == 1), isEmpty);
   });
 
   test('提示跟随「当前应用代」：换成另一代即换成那一代的提示', () async {
-    final dao = FakeRoundDao();
-    final stack = FakeRoundStackService(roundDao: dao);
-    // 第 1 轮两代：g-old 是旧一代（带旧提示），g-new 是当前代（带新提示）。
-    stack.rows['b1'] = [
-      const RoundStackRow(
-        uuid: 'g-old',
-        bookUuid: 'b1',
-        roundIndex: 1,
-        roundSerialNum: 1,
-        message: '旧提示',
-        messageStatus: 'warning',
-      ),
-      const RoundStackRow(
-        uuid: 'g-new',
-        bookUuid: 'b1',
-        roundIndex: 1,
-        roundSerialNum: 2,
-        roundState: 'use',
-        message: '新提示',
-        messageStatus: 'warning',
-      ),
-    ];
-    final inserted = await dao.insertRound(
-      Round(
-        bookUuid: 'b1',
-        roundIndex: 1,
-        aiNarrative: '正文',
-        useStackUuid: 'g-new',
-        createdAt: DateTime.now(),
-      ),
+    // 第 1 轮两代：g-old 旧提示、g-new 当前代新提示（同组 = 同分支 + 同轮号 + 同父代）。
+    await stack.seedRound(
+      'b1',
+      roundIndex: 1,
+      uuid: 'g-old',
+      serialNum: 1,
+      isUsing: false,
+      userInput: '问',
+      aiNarrative: '答',
+      message: '旧提示',
+      messageStatus: 'warning',
     );
-    final env = build(roundDao: dao);
-    env.stack.rows['b1'] = stack.rows['b1']!;
+    await stack.seedRound(
+      'b1',
+      roundIndex: 1,
+      uuid: 'g-new',
+      serialNum: 2,
+      isUsing: true,
+      userInput: '问',
+      aiNarrative: '答',
+      message: '新提示',
+      messageStatus: 'warning',
+    );
+
+    final env = build();
     await env.provider.loadRounds('b1');
     expect(env.provider.roundWarningsFor(1), ['新提示']);
 
-    // 切回旧一代（投影锚点改指 g-old）→ 看到的是那一代自己的提示。
-    await dao.updateRoundFields(inserted, {'use_stack_uuid': 'g-old'});
-    await env.provider.loadRounds('b1');
+    // 切回旧一代 → 看到的是那一代自己的提示。
+    expect(await env.provider.switchRoundVersion(1, forward: false), isTrue);
     expect(env.provider.roundWarningsFor(1), ['旧提示']);
   });
 
-  test('提示写入归一化：超长截断、无提示不写键（老库 / 老备份兼容）', () {
-    final long = '提' * (RoundStackRow.maxMessageLength + 50);
-    final map = RoundStackRow(
-      uuid: 'g1',
-      bookUuid: 'b1',
+  test('空提示不显示提示框（message 为空即无框，无论级别）', () async {
+    await stack.seedRound(
+      'b1',
       roundIndex: 1,
-      roundSerialNum: 1,
-      message: long,
+      userInput: '问',
+      aiNarrative: '答',
+      message: '   ',
       messageStatus: 'warning',
-    ).toMap();
-    final written = map['message']! as String;
-    expect(written.length, RoundStackRow.maxMessageLength + 1, reason: '截断后带省略号');
-    expect(written.endsWith('…'), isTrue);
-    expect(map['message_status'], 'warning');
+    );
 
-    // 无提示时不写这两个键：对「没有这两列」的老库 / 老备份写入不会报 no column，
-    // 而先清后插 / INSERT OR REPLACE 时缺列取默认值 = 提示被清空（期望语义）。
-    final empty = RoundStackRow(
-      uuid: 'g2',
-      bookUuid: 'b1',
-      roundIndex: 1,
-      roundSerialNum: 1,
-    ).toMap();
-    expect(empty.containsKey('message'), isFalse);
-    expect(empty.containsKey('message_status'), isFalse);
+    final env = build();
+    await env.provider.loadRounds('b1');
 
-    // 只有文本没有级别：按「无级别」写（读时渲染为中性）。
-    final noStatus = RoundStackRow(
-      uuid: 'g3',
-      bookUuid: 'b1',
-      roundIndex: 1,
-      roundSerialNum: 1,
-      message: '提示',
-    ).toMap();
-    expect(noStatus['message'], '提示');
-    expect(noStatus.containsKey('message_status'), isFalse);
+    expect(env.provider.roundWarningsFor(1), isEmpty);
+    expect(env.provider.roundMessageFor(1), isNull);
   });
 
-  testWidgets('库内提示在对话页展示（warning 黄色框），可手动关闭', (tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+  testWidgets('库内提示在对话页展示（warning 黄框），可手动关闭', (tester) async {
+    // 复用 setUp 里的 stack：testWidgets 的测试体跑在 fake-async 区域，
+    // 这里再 `TestStack.create()` 会卡在真实文件 I/O 上（现象：10 分钟超时）。
+    final provider = await pumpChatScreen(
+      tester,
+      stack: stack,
+      seedRounds: 0,
+    );
+    // 真库 I/O 必须跑在真实事件循环里（见 chat_harness._resolveStack 的说明）。
+    await tester.runAsync(() async {
+      await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 1,
         userInput: '第一轮',
         aiNarrative: '正文',
-        useStackUuid: 'g1',
-        createdAt: DateTime.now(),
-      ),
-    );
-    final stack = FakeRoundStackService(roundDao: dao);
-    stack.rows[kHarnessBookUuid] = [
-      const RoundStackRow(
-        uuid: 'g1',
-        bookUuid: kHarnessBookUuid,
-        roundIndex: 1,
-        roundSerialNum: 1,
-        roundState: 'use',
         message: '世界状态本轮未更新',
         messageStatus: 'warning',
-      ),
-    ];
-
-    final provider = await pumpChatScreen(
-      tester,
-      seedRounds: 0,
-      roundDao: dao,
-      roundStackService: stack,
-    );
+      );
+      await provider.loadRounds(kHarnessBookUuid);
+    });
+    await settle(tester);
 
     expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('dismiss_round_warning')));
-    await tester.pump();
+    await settle(tester);
+
     expect(provider.roundWarningsFor(1), isEmpty);
     expect(find.textContaining('世界状态本轮未更新'), findsNothing);
-    await tester.pump();
-    expect(stack.rows[kHarnessBookUuid]!.single.message, isEmpty);
   });
 
-  testWidgets('红条以失败占位代的提示为准（缺位时回落 books.failed_*）',
+  testWidgets('错误代在对话页渲染红条（文案取库内 message，用户输入保留）',
       (tester) async {
-    final dao = FakeRoundDao();
-    final bookDao = FakeBookDao(
-      books: const [Book(uuid: kHarnessBookUuid, title: '测试书')],
-    )..failed = const FailedAttempt(userInput: '断线那一次');
-    final stack = FakeRoundStackService(roundDao: dao);
-    stack.rows[kHarnessBookUuid] = [
-      const RoundStackRow(
-        uuid: 'f1',
-        bookUuid: kHarnessBookUuid,
+    final provider = await pumpChatScreen(
+      tester,
+      stack: stack,
+      seedRounds: 0,
+    );
+    await tester.runAsync(() async {
+      await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 1,
-        roundSerialNum: 1,
-        roundState: 'failed',
+        userInput: '断线那一次',
         message: '连接超时（库内提示）',
         messageStatus: 'error',
-      ),
-    ];
+      );
+      await provider.loadRounds(kHarnessBookUuid);
+    });
+    await settle(tester);
 
-    await pumpChatScreen(
-      tester,
-      seedRounds: 0,
-      roundDao: dao,
-      bookDao: bookDao,
-      roundStackService: stack,
-    );
-
+    expect(provider.rounds.single.isError, isTrue);
     expect(find.textContaining('连接超时（库内提示）'), findsOneWidget);
+    expect(find.textContaining('断线那一次'), findsOneWidget);
+    // 错误代没有正文：不显示「AI 未返回剧情正文」的占位，避免盖住真正的失败原因。
+    expect(find.textContaining('AI 未返回剧情正文'), findsNothing);
   });
 }

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
-import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/widgets/image_preview.dart';
 
@@ -14,15 +13,13 @@ import 'helpers/fakes.dart';
 /// 依赖 [pumpChatScreen]（已注入 [FakeClipboardPasteService]）与
 /// [FakeClipboardPasteService]，不触碰真实剪贴板 / 文件系统。
 void main() {
-  const book = Book(uuid: kHarnessBookUuid, title: '测试书');
-
   /// 主输入框（悬浮输入卡内，按占位文案定位）。
   Finder composerField() => find.byWidgetPredicate(
         (w) => w is TextField && w.decoration?.hintText == '输入你的行动或对话…',
       );
 
   testWidgets('右键/长按菜单：包含全选、复制、粘贴、剪切', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.longPress(composerField());
     await tester.pumpAndSettle();
@@ -34,7 +31,7 @@ void main() {
   });
 
   testWidgets('输入框菜单是横排横条（四项在同一行，不是竖排列表）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.longPress(composerField());
     await tester.pumpAndSettle();
@@ -57,7 +54,6 @@ void main() {
   testWidgets('右键→粘贴文本：插入到输入框', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       clipboardPaste: FakeClipboardPasteService(text: '粘贴文本'),
     );
 
@@ -77,7 +73,6 @@ void main() {
     );
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       clipboardPaste: FakeClipboardPasteService(
         imagePng: Uint8List.fromList([0, 1, 2]),
@@ -101,7 +96,6 @@ void main() {
     );
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       clipboardPaste: FakeClipboardPasteService(
         imagePng: Uint8List.fromList([0, 1, 2]),
@@ -125,7 +119,6 @@ void main() {
     );
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       clipboardPaste: FakeClipboardPasteService(
         imageWarning: '剪贴板图片超过 16MB，请压缩后重试。',
@@ -144,7 +137,6 @@ void main() {
   testWidgets('Ctrl+V 粘贴文本（快捷键路径）', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       clipboardPaste: FakeClipboardPasteService(text: '快捷键粘贴'),
     );
 
@@ -166,7 +158,6 @@ void main() {
     );
     final rp = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       clipboardPaste: FakeClipboardPasteService(
         text: '看图说话',

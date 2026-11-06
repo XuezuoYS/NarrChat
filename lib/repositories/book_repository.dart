@@ -56,19 +56,100 @@ class BookRepositorySqlite implements BookRepository {
   final CacheStore cache;
   final BookDbPool books;
 
+  /// 正在进行的索引自愈（避免并发 listBooks 重复重建同一批书）。
+  Future<void>? _healing;
+
   @override
   Future<List<Book>> listBooks({bool includeDeleted = false}) async {
-    final rows = await cache.allIndex(includeDeleted: includeDeleted);
-    return rows.map(_bookFromIndex).toList(growable: false);
+    final rows = await _indexRows();
+    final visible = includeDeleted
+        ? rows
+        : rows.where((row) => !row.isDeleted);
+    return visible.map(_bookFromIndex).toList(growable: false);
   }
 
   @override
   Future<Map<String, DateTime>> lastRoundTimes() async {
-    final rows = await cache.allIndex(includeDeleted: true);
+    final rows = await _indexRows();
     return {
       for (final row in rows)
         if (row.lastRoundAt != null) row.bookUuid: row.lastRoundAt!,
     };
+  }
+
+  /// 读缓存副本；发现「目录里有、缓存里没有」时先自愈再读。
+  ///
+  /// 成本：正常情况（无差异）只多一次 `library.books()` 查询，**不开任何书库**；
+  /// 只有真缺行时才逐本打开补索引。
+  ///
+  /// 自愈本身失败（缓存库损坏等）不能让列表变空——退回缓存里已有的副本。
+  Future<List<BookIndexRow>> _indexRows() async {
+    var rows = await cache.allIndex(includeDeleted: true);
+    try {
+      if (await _healIndexIfNeeded(rows)) {
+        rows = await cache.allIndex(includeDeleted: true);
+      }
+    } catch (_) {
+      // 自愈是"锦上添花"，失败时宁可少几本书，也不能把整页打空。
+    }
+    return rows;
+  }
+
+  /// 目录里有、缓存里缺的书逐本重建索引行；返回是否发生过重建。
+  Future<bool> _healIndexIfNeeded(List<BookIndexRow> cached) async {
+    final directoryRows = await library.books(includeDeleted: true);
+    if (directoryRows.isEmpty) return false;
+    final known = {for (final row in cached) row.bookUuid};
+    final missing = [
+      for (final row in directoryRows)
+        if (!known.contains(row.bookUuid)) row,
+    ];
+    if (missing.isEmpty) return false;
+
+    // 并发调用只重建一次：两个 listBooks 同时进来时共用同一个 Future。
+    final pending = _healing;
+    if (pending != null) {
+      await pending;
+      return true;
+    }
+    final future = _rebuildIndex(missing);
+    _healing = future;
+    try {
+      await future;
+    } finally {
+      _healing = null;
+    }
+    return true;
+  }
+
+  Future<void> _rebuildIndex(List<LibraryBookRow> missing) async {
+    for (final row in missing) {
+      // 文件根本不在：不造"幻影书"（点进去必然打不开），下轮还会再试。
+      if (!await books.exists(row.bookUuid)) continue;
+      try {
+        final db = await books.open(row.bookUuid);
+        final meta = await db.meta.read();
+        await _writeIndex(meta, db);
+      } catch (_) {
+        // 文件在但读不出来（损坏 / 被占用）：用目录里的书名兜底，
+        // 至少让用户还能看到这本书并处理，而不是整页空白。
+        await _writeFallbackIndex(row);
+      }
+    }
+  }
+
+  /// 书库读不出来时的兜底索引行：只保证"能列出来"，其余字段留空。
+  Future<void> _writeFallbackIndex(LibraryBookRow row) async {
+    try {
+      await cache.putIndex(BookIndexRow(
+        bookUuid: row.bookUuid,
+        title: row.title,
+        deletedAt: row.deletedAt,
+        dbMtimeMs: await _mtimeOf(row.bookUuid),
+      ));
+    } catch (_) {
+      // 兜底也失败就真没办法了，不阻断其它书。
+    }
   }
 
   @override
@@ -84,6 +165,10 @@ class BookRepositorySqlite implements BookRepository {
   @override
   Future<String> createBook(Book book) async {
     final uuid = book.uuid.isEmpty ? UuidUtils.generateUuidV4() : book.uuid;
+    // 同一个 uuid 再建一次**不能**重建书库：`BookDb.create` 会覆盖文件，
+    // 等于把这本书的轮次 / 世界书 / 分支全删光。现实里也没有「新建一本已存在的书」
+    // 的需求，物理删除只走 [purgeBook]。这里直接返回，让调用方继续用已有数据。
+    if (await books.exists(uuid)) return uuid;
     final now = DateTime.now().toUtc();
     final masterUuid = await library.masterUuid();
     final meta = BookMeta(
@@ -192,7 +277,10 @@ class BookRepositorySqlite implements BookRepository {
   }
 
   /// 用信源校正缓存副本（打开书时顺手做，缓存不会长期漂移）。
+  ///
+  /// 墓碑从**目录库**取：缓存里那一列只是副本，单看它会把"删掉的书"写成活的。
   Future<void> _writeIndex(BookMeta meta, BookDb db) async {
+    final directoryRow = await library.book(meta.bookUuid);
     final lastRoundAt = await db.rounds.lastRoundAt();
     await cache.putIndex(BookIndexRow(
       bookUuid: meta.bookUuid,
@@ -201,6 +289,7 @@ class BookRepositorySqlite implements BookRepository {
       createdAt: meta.createdAt,
       updatedAt: meta.updatedAt,
       lastRoundAt: lastRoundAt,
+      deletedAt: directoryRow?.deletedAt,
       dbMtimeMs: await _mtimeOf(meta.bookUuid),
       baseSetting: meta.baseSetting,
       writingRequirements: meta.writingRequirements,

@@ -1,17 +1,18 @@
 import 'package:flutter/foundation.dart';
 
-import '../database/book_dao.dart';
 import '../models/book.dart';
+import '../repositories/book_repository.dart';
+import '../services/app_repositories.dart';
 import 'cloud_sync_provider.dart';
 
 /// 书籍状态管理：书籍列表、当前选中书籍、增删改。
 class BookProvider extends ChangeNotifier {
-  BookProvider({BookDao? dao, CloudSyncProvider? cloudSyncProvider})
-      : _dao = dao ?? BookDao(),
+  BookProvider({BookRepository? repository, CloudSyncProvider? cloudSyncProvider})
+      : _repo = repository ?? AppRepositories.instance.books,
         // ignore: prefer_initializing_formals
         _cloudSyncProvider = cloudSyncProvider;
 
-  final BookDao _dao;
+  final BookRepository _repo;
 
   /// 云同步 Provider：书籍创建 / 设置保存后触发全自动同步（null = 未接入，如测试）。
   final CloudSyncProvider? _cloudSyncProvider;
@@ -41,8 +42,8 @@ class BookProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
     try {
-      _books = await _dao.getAllBooks();
-      _lastRoundTimes = await _dao.getLastRoundTimes();
+      _books = await _repo.listBooks();
+      _lastRoundTimes = await _repo.lastRoundTimes();
       _currentBook = _refreshCurrent(_currentBook);
       if (_currentBook == null && _books.isNotEmpty) {
         _currentBook = _books.first;
@@ -68,7 +69,7 @@ class BookProvider extends ChangeNotifier {
   /// 刷新「最近对话时间」映射（从对话页返回首页时调用）。
   Future<void> refreshLastRoundTimes() async {
     try {
-      _lastRoundTimes = await _dao.getLastRoundTimes();
+      _lastRoundTimes = await _repo.lastRoundTimes();
       notifyListeners();
     } catch (e) {
       // 失败时保留旧数据，不影响列表展示。
@@ -78,7 +79,7 @@ class BookProvider extends ChangeNotifier {
   /// 新建书籍，成功后自动选中。
   Future<bool> createBook(Book book) async {
     try {
-      final uuid = await _dao.insertBook(book);
+      final uuid = await _repo.createBook(book);
       await loadBooks();
       _currentBook = _books.firstWhere(
         (b) => b.uuid == uuid,
@@ -97,7 +98,7 @@ class BookProvider extends ChangeNotifier {
   /// 更新书籍。
   Future<bool> updateBook(Book book) async {
     try {
-      await _dao.updateBook(book);
+      await _repo.saveBook(book);
       await loadBooks();
       // 保持选中同一本书（以最新列表中的实例为准）。
       _currentBook = _refreshCurrent(book) ?? book;
@@ -114,7 +115,7 @@ class BookProvider extends ChangeNotifier {
   /// 删除书籍（软删：打下跌碑并隐藏，行暂留用于云同步删除传播）。
   Future<bool> deleteBook(Book book) async {
     try {
-      await _dao.softDeleteBook(book.uuid);
+      await _repo.softDeleteBook(book.uuid);
       if (_currentBook?.uuid == book.uuid) {
         _currentBook = null;
       }

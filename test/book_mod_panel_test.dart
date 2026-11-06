@@ -1,50 +1,58 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/book_mod_panel.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
+/// 书籍设置页的 Mod 面板（真库 + ModRepository）。
+///
+/// 数据形态变化：R3 的 `use_mods` 只存**已启用**项的引用与顺序，
+/// 未启用只是面板里的本地状态，不再落库。
 void main() {
-  late FakeModDao dao;
+  late TestStack stack;
+  late String modPolish;
+  late String modDeAi;
 
-  setUp(() {
-    dao = FakeModDao(
-      mods: const [
-        Mod(
-          uuid: 'm1',
-          name: '文笔润色',
-          description: '让文风更流畅',
-          prePrompt: '前置词内容',
-        ),
-        Mod(
-          uuid: 'm2',
-          name: '去AI味',
-          description: '减少 AI 腔',
-          postPrompt: '后置词内容',
-        ),
-      ],
+  setUp(() async {
+    stack = await TestStack.create();
+    await stack.seedBook(uuid: 'b1', title: '书');
+    modPolish = await stack.seedMod(
+      name: '文笔润色',
+      description: '让文风更流畅',
+      prePrompt: '前置词内容',
     );
+    modDeAi = await stack.seedMod(
+      name: '去AI味',
+      description: '减少 AI 腔',
+      postPrompt: '后置词内容',
+    );
+  });
+
+  tearDown(() async {
+    await stack.dispose();
   });
 
   /// Pump 书籍设置页的 Mod 管理面板（编辑模式，书 b1）。
   Future<void> pumpPanel(
     WidgetTester tester, {
     Size size = const Size(1400, 900),
-    List<BookModConfig> configs = const [],
+    List<String> enabledUuids = const [],
   }) async {
-    dao.bookMods['b1'] = List.of(configs);
+    await tester.runAsync(
+      () => stack.repos.mod.setUseModUuids('b1', enabledUuids),
+    );
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       ChangeNotifierProvider(
-        create: (_) => ModProvider(dao: dao),
+        create: (_) => ModProvider(repository: stack.repos.mod),
         child: MaterialApp(
           theme: NarrChatTheme.light,
           home: Scaffold(
@@ -55,19 +63,14 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
   }
 
   testWidgets('点击已启用条目主体打开只读【预览 mod】对话框', (tester) async {
-    await pumpPanel(
-      tester,
-      configs: const [
-        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true),
-      ],
-    );
+    await pumpPanel(tester, enabledUuids: [modPolish]);
 
     await tester.tap(find.text('文笔润色'));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     // 打开的是只读「查看 Mod」对话框：5 个内容标签 + 仅「关闭」按钮。
     expect(find.text('查看 Mod'), findsOneWidget);
@@ -85,15 +88,10 @@ void main() {
   });
 
   testWidgets('点击开关只切换启用状态，不打开预览对话框', (tester) async {
-    await pumpPanel(
-      tester,
-      configs: const [
-        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true),
-      ],
-    );
+    await pumpPanel(tester, enabledUuids: [modPolish]);
 
     await tester.tap(find.byType(Switch));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(find.text('查看 Mod'), findsNothing, reason: '开关区域不应触发预览');
     expect(find.textContaining('暂无启用中的 Mod'), findsOneWidget,
@@ -101,16 +99,10 @@ void main() {
   });
 
   testWidgets('点击拖动柄不打开预览对话框，也不改变顺序', (tester) async {
-    await pumpPanel(
-      tester,
-      configs: const [
-        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true, sortOrder: 0),
-        BookModConfig(bookUuid: 'b1', modUuid: 'm2', isEnabled: true, sortOrder: 1),
-      ],
-    );
+    await pumpPanel(tester, enabledUuids: [modPolish, modDeAi]);
 
     await tester.tap(find.byIcon(Icons.drag_handle).first);
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(find.text('查看 Mod'), findsNothing, reason: '拖动柄区域不应触发预览');
     final firstY = tester.getTopLeft(find.text('文笔润色')).dy;
@@ -122,44 +114,46 @@ void main() {
     await pumpPanel(
       tester,
       size: const Size(400, 800),
-      configs: const [
-        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true),
-      ],
+      enabledUuids: [modPolish],
     );
 
     await tester.tap(find.text('文笔润色'));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(find.text('查看 Mod'), findsOneWidget);
     expect(find.widgetWithText(TextField, '文笔润色'), findsOneWidget);
   });
 
-  testWidgets('未配置过预置 Mod 的书籍：保存时预置行 modUuid 为 null（不违反外键）',
-      (tester) async {
-    // 模拟排障场景：书籍只配置过用户 Mod，未配置任何预置 Mod（
-    // 面板加载时会把预置 Mod 追加为「未启用」，随后任何开关操作都会整体保存）。
-    await pumpPanel(
-      tester,
-      configs: const [
-        BookModConfig(bookUuid: 'b1', modUuid: 'm1', isEnabled: true),
-      ],
+  testWidgets('停用唯一启用项后，库里的启用清单变空（只落启用项）', (tester) async {
+    await pumpPanel(tester, enabledUuids: [modPolish]);
+    expect(
+      await tester.runAsync(() => stack.repos.mod.useModUuids('b1')),
+      [modPolish],
     );
 
-    // 触发保存：关闭 m1 的开关。
     await tester.tap(find.byType(Switch));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
-    final saved = dao.bookMods['b1'] ?? const [];
-    expect(saved, isNotEmpty);
-    for (final c in saved) {
-      if (c.presetKey != null) {
-        expect(c.modUuid, isNull,
-            reason: '预置行 mod_uuid 必须为 NULL，空串会违反外键导致保存失败');
-      } else {
-        expect(c.modUuid, isNotNull, reason: '用户行必须带回其 uuid');
-      }
-    }
-    expect(saved.where((c) => c.presetKey != null), isNotEmpty,
-        reason: '未配置的预置 Mod 已被补全为禁用配置');
+    expect(
+      await tester.runAsync(() => stack.repos.mod.useModUuids('b1')),
+      isEmpty,
+        reason: '未启用项不落库，启用清单被整体替换为空');
+  });
+
+  testWidgets('启用顺序按面板自上而下的顺序落库', (tester) async {
+    await pumpPanel(tester, enabledUuids: [modPolish, modDeAi]);
+    expect(
+      await stack.repos.mod.useModUuids('b1'),
+      [modPolish, modDeAi],
+      reason: 'sort_order 决定提示词拼合顺序，必须原样保留',
+    );
+
+    // 停用一个后再保存：清单里只剩另一个，顺序不塌陷。
+    await tester.tap(find.byType(Switch).first);
+    await settle(tester);
+    expect(
+      await tester.runAsync(() => stack.repos.mod.useModUuids('b1')),
+      [modDeAi],
+    );
   });
 }

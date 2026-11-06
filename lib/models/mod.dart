@@ -114,6 +114,16 @@ class Mod {
   /// 是否为预置 Mod（仅可查看）。
   bool get isPreset => presetKey != null;
 
+  /// 书库 `use_mods.mod_uuid` 里预置 Mod 的引用前缀：`preset::<presetKey>`。
+  ///
+  /// 预置 Mod 不落 `mods` 表（程序内置），所以「某本书启用了哪些 Mod」只能
+  /// 用一个约定前缀把两类引用塞进同一列。注意是**两个**冒号，与界面用
+  /// [ref] 的 `preset:<key>` 不是一个东西，别混用。
+  static const String presetRefPrefix = 'preset::';
+
+  /// 预置 Mod 在书库里的引用串。
+  static String presetRef(String presetKey) => '$presetRefPrefix$presetKey';
+
   /// 唯一引用标识：预置用 `preset:<key>`，用户自定义用 `user:<uuid>`。
   String get ref => isPreset ? 'preset:$presetKey' : 'user:$uuid';
 

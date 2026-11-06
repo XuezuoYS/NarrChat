@@ -47,17 +47,19 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final sync = CloudSyncProvider();
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final bookProvider = BookProvider(repository: stack.repos.books);
+    await tester.runAsync(bookProvider.loadBooks);
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider<CloudSyncProvider>.value(value: sync),
-          ChangeNotifierProvider<BookProvider>.value(
-            value: BookProvider(dao: FakeBookDao())..loadBooks(),
-          ),
+          ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
           ChangeNotifierProvider<RoundProvider>.value(
             value: RoundProvider(
-              dao: FakeRoundDao(),
-              bookDao: FakeBookDao(),
+              rounds: stack.repos.rounds,
+              books: stack.repos.books,
               aiService: ToggleAiService(),
             ),
           ),

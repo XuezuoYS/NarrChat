@@ -2,7 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/models/round.dart';
+import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/widgets/recommended_action_view.dart';
 
@@ -19,19 +19,33 @@ void main() {
   /// 预置一条带推荐行动的轮次并 pump 对话页，返回主输入框的控制器与焦点。
   Future<({TextEditingController controller, FocusNode focus, RoundProvider rounds})>
       pumpWithAction(WidgetTester tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(
+    // 真库 I/O 必须走 runAsync：testWidgets 的测试体在 fake-async 区域里跑，
+    // 直接 await 会永远卡住（现象是「did not complete」）。
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final rounds = await pumpChatScreen(tester, stack: stack);
+    // 先 pump 再播种：harness 启动时会重建 kHarnessBookUuid 那本书，
+    // 提前播种会被覆盖掉。
+    await tester.runAsync(() async {
+      await stack.repos.rounds.appendGeneration(
         bookUuid: kHarnessBookUuid,
-        roundIndex: 1,
-        userInput: '我踏入青云宗。',
-        aiNarrative: '山门巍峨。',
-        recommendedAction: action,
-        currentTime: '第一天 午时',
-        createdAt: DateTime.now(),
-      ),
-    );
-    final rounds = await pumpChatScreen(tester, roundDao: dao, seedBodyRepeats: 1);
+        generation: RoundGeneration(
+          meta: RoundMeta(
+            uuid: 'round-1',
+            roundIndex: 1,
+            roundSerialNum: 1,
+            isUsing: true,
+            operatedAt: DateTime.now().toUtc(),
+          ),
+          userInput: '我踏入青云宗。',
+          aiNarrative: '山门巍峨。',
+          recommendedAction: action,
+          currentTime: '第一天 午时',
+        ),
+      );
+      await rounds.loadRounds(kHarnessBookUuid);
+    });
+    await tester.pumpAndSettle();
     // 输入框为空时 hint 可见，据此定位主输入框（侧边栏编辑框不匹配该 hint）。
     final field = tester.widget<TextField>(
       find.widgetWithText(TextField, '输入你的行动或对话…'),

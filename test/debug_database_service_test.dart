@@ -1,134 +1,156 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/database/database_helper.dart';
+import 'package:narrchat/database/db_schema.dart';
 import 'package:narrchat/services/debug_database_service.dart';
-import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// [SqliteDebugDatabaseService] 的 SQL/解析回归测试（sqflite_common_ffi + 临时库，
-/// 不触碰真实应用数据库）。
+import 'helpers/fakes.dart';
+
+/// 调试页的库浏览器：R3 是多库，先列库、再列表、再翻页读表。
+///
+/// 与 R2 的差别：不再有单一 `narrchat.db`，也没有 `readVersion()` 这种
+/// "一个库一个版本"的接口——版本按库逐个读。
 void main() {
-  setUpAll(() {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+  late TestStack stack;
+  late SqliteDebugDatabaseService service;
+
+  setUp(() async {
+    stack = await TestStack.create();
+    service = SqliteDebugDatabaseService(stores: stack.stores);
   });
 
-  tearDownAll(() async {
-    for (final dir in _tempDirs) {
-      try {
-        await dir.delete(recursive: true);
-      } catch (_) {
-        // 忽略清理失败。
-      }
-    }
-    _tempDirs.clear();
+  tearDown(() async {
+    await stack.dispose();
   });
 
-  test('listTables 返回业务表及总行数', () async {
-    final db = await _openDb();
-    await _createBooks(db);
-    await db.insert('books', {'title': '书A'});
-    await db.insert('books', {'title': '书B'});
+  test('listDatabases：目录库 / Mod 库 / 每本书 / 两个本地库都登记', () async {
+    final bookUuid = await stack.seedBook(title: '书A');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
 
-    final service = SqliteDebugDatabaseService(dbOpener: () async => db);
-    final tables = await service.listTables();
-    expect(tables.map((t) => t.name), contains('books'));
+    final databases = await service.listDatabases();
+    final ids = databases.map((d) => d.id).toList();
+
+    expect(ids, containsAll(['library', 'mods', 'cache', 'sync', 'book:$bookUuid']));
+
+    final library = databases.firstWhere((d) => d.id == 'library');
+    expect(library.exists, isTrue);
+    expect(library.sizeBytes, greaterThan(0));
+    expect(library.expectedVersion, userDataDbVersion);
+    expect(library.actualVersion, userDataDbVersion);
+
+    final book = databases.firstWhere((d) => d.id == 'book:$bookUuid');
+    expect(book.label, isNotEmpty);
+    expect(book.exists, isTrue);
+  });
+
+  test('listDatabases：书被物理删除后不再出现在列表里', () async {
+    final bookUuid = await stack.seedBook(title: '书A');
+    expect(
+      (await service.listDatabases()).map((d) => d.id),
+      contains('book:$bookUuid'),
+    );
+
+    await stack.repos.books.purgeBook(bookUuid);
+    expect(
+      (await service.listDatabases()).map((d) => d.id),
+      isNot(contains('book:$bookUuid')),
+    );
+  });
+
+  test('listTables：返回目录库的业务表与行数（排除 sqlite_*）', () async {
+    await stack.seedBook();
+    await stack.seedBook();
+
+    final tables = await service.listTables('library');
+    final names = tables.map((t) => t.name).toList();
+
+    expect(names, containsAll(['meta', 'books']));
+    expect(names.any((n) => n.startsWith('sqlite_')), isFalse);
     expect(tables.firstWhere((t) => t.name == 'books').rowCount, 2);
-    await db.close();
+    expect(tables.firstWhere((t) => t.name == 'meta').rowCount, 1);
   });
 
-  test('loadTable 返回列结构/索引/本页行与总行数', () async {
-    final db = await _openDb();
-    await _createBooks(db);
-    await _createRounds(db);
-    await db.insert('books', {'title': '书A'});
-    await db.insert('rounds', {
-      'book_id': 1,
-      'round_index': 1,
-      'user_input': '你好',
-      'ai_narrative': '正文',
-    });
+  test('listTables：书库里能看到轮次/分支/世界书/启用 Mod 四张业务表', () async {
+    final bookUuid = await stack.seedBook();
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
 
-    final service = SqliteDebugDatabaseService(dbOpener: () async => db);
-    final page = await service.loadTable('rounds', page: 0, pageSize: 20);
-    expect(page.columns.map((c) => c.name), containsAll(['id', 'book_id', 'user_input']));
-    expect(page.columns.firstWhere((c) => c.name == 'id').isPrimaryKey, true);
-    expect(page.columns.firstWhere((c) => c.name == 'book_id').notNull, true);
-    expect(page.indexes.map((i) => i.name), contains('idx_rounds_book_index'));
-    expect(page.rows.first['user_input'], '你好');
-    expect(page.rows.first['ai_narrative'], '正文');
+    final names = (await service.listTables('book:$bookUuid'))
+        .map((t) => t.name)
+        .toList();
+    expect(
+      names,
+      containsAll([
+        'book_meta',
+        'round_stack',
+        'branches',
+        'world_book_entries',
+        'use_mods',
+      ]),
+    );
+  });
+
+  test('loadTable：列结构 / 主键 / 行内容 / 总行数', () async {
+    final bookUuid = await stack.seedBook(title: '书A');
+    await stack.seedRound(
+      bookUuid,
+      roundIndex: 1,
+      userInput: '你好',
+      aiNarrative: '正文',
+    );
+
+    final page = await service.loadTable('book:$bookUuid', 'round_stack');
+    final columns = page.columns.map((c) => c.name).toList();
+
+    expect(columns, containsAll(['uuid', 'father_uuid', 'user_input', 'ai_narrative']));
+    expect(
+      page.columns.firstWhere((c) => c.name == 'uuid').isPrimaryKey,
+      isTrue,
+    );
+    expect(
+      page.columns.firstWhere((c) => c.name == 'round_index').notNull,
+      isTrue,
+    );
+    expect(page.rows.single['user_input'], '你好');
+    expect(page.rows.single['ai_narrative'], '正文');
     expect(page.totalCount, 1);
     expect(page.page, 0);
     expect(page.pageSize, 20);
-    await db.close();
   });
 
-  test('按页查询：超过一页的数据分页返回', () async {
-    final db = await _openDb();
-    await _createBooks(db);
-    for (var i = 1; i <= 25; i++) {
-      await db.insert('books', {'title': '书$i'});
+  test('loadTable：分页返回，越界页返回空行但总行数不变', () async {
+    for (var i = 1; i <= 5; i++) {
+      await stack.seedBook(title: '书$i');
     }
 
-    final service = SqliteDebugDatabaseService(dbOpener: () async => db);
-    final first = await service.loadTable('books', page: 0, pageSize: 20);
-    expect(first.rows.length, 20);
-    expect(first.totalCount, 25);
-    final second = await service.loadTable('books', page: 1, pageSize: 20);
-    expect(second.rows.length, 5);
-    expect(second.page, 1);
-    // 第二页第一行应为第 21 条记录。
-    expect(second.rows.first['title'], '书21');
-    await db.close();
-  });
+    final first = await service.loadTable('library', 'books', pageSize: 2);
+    expect(first.rows.length, 2);
+    expect(first.totalCount, 5);
 
-  test('readVersion 返回代码期望版本与库文件实际 user_version', () async {
-    final dir = Directory.systemTemp.createTempSync('debug_db_service_test_');
-    _tempDirs.add(dir);
-    // 以旧版本号打开全新库：user_version 落为 3，模拟文件版本未到最新。
-    final db = await databaseFactoryFfi.openDatabase(
-      p.join(dir.path, 'narrchat.db'),
-      options: OpenDatabaseOptions(version: 3, onCreate: (db, version) async {}),
+    final second = await service.loadTable('library', 'books', page: 1, pageSize: 2);
+    expect(second.rows.length, 2);
+    expect(second.page, 1);
+    expect(
+      second.rows.map((r) => r['book_uuid']),
+      isNot(equals(first.rows.map((r) => r['book_uuid']))),
     );
 
-    final service = SqliteDebugDatabaseService(dbOpener: () async => db);
-    final version = await service.readVersion();
-    expect(version.expectedVersion, DatabaseHelper.currentDbVersion);
-    expect(version.actualVersion, 3);
-    await db.close();
+    final beyond = await service.loadTable('library', 'books', page: 9, pageSize: 2);
+    expect(beyond.rows, isEmpty);
+    expect(beyond.totalCount, 5);
   });
-}
 
-final List<Directory> _tempDirs = [];
+  test('索引信息：目录库的墓碑索引能被读出来', () async {
+    await stack.seedBook();
+    final page = await service.loadTable('library', 'books');
+    expect(page.indexes.map((i) => i.name), contains('ix_books_deleted'));
+  });
 
-Future<Database> _openDb() async {
-  final dir = Directory.systemTemp.createTempSync('debug_db_service_test_');
-  _tempDirs.add(dir);
-  return databaseFactoryFfi.openDatabase(p.join(dir.path, 'narrchat.db'));
-}
-
-Future<void> _createBooks(Database db) async {
-  await db.execute('''
-    CREATE TABLE books (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL
-    )
-  ''');
-}
-
-Future<void> _createRounds(Database db) async {
-  await db.execute('''
-    CREATE TABLE rounds (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL,
-      round_index INTEGER NOT NULL,
-      user_input TEXT DEFAULT '',
-      ai_narrative TEXT DEFAULT '',
-      FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
-    )
-  ''');
-  await db.execute(
-    'CREATE INDEX idx_rounds_book_index ON rounds (book_id, round_index)',
-  );
+  test('库文件不存在时明确报错，而不是返回空结构', () async {
+    final missing = Directory('${stack.rootDir.path}/nope');
+    expect(missing.existsSync(), isFalse);
+    await expectLater(
+      service.listTables('book:not-exist'),
+      throwsA(anything),
+    );
+  });
 }

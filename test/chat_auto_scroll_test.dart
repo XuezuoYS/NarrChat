@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
+import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/services/ai_service.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -56,40 +57,53 @@ Future<void> scrollChatToBottom(WidgetTester tester) async {
 void main() {
   const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
-  /// 构造「前短后长」轮次：前 [shortCount] 轮短正文 + 末 [longCount] 轮长正文。
-  Future<FakeRoundDao> buildUnevenRounds({
+  /// 构造「前短后长」轮次并 pump 对话页：前 [shortCount] 轮短正文 + 末 [longCount] 轮长正文。
+  ///
+  /// 播种全部在 `pumpChatScreen` **之前**、并包在 `tester.runAsync` 里：
+  /// 首帧的 `loadRounds` 要做真库 I/O，fake-async 区域里等不到，会永久挂起。
+  /// （`createBook` 对已存在的 uuid 是幂等的，所以先播种再 pump 是安全的。）
+  Future<RoundProvider> pumpUnevenRounds(
+    WidgetTester tester, {
     int shortCount = 24,
     int longCount = 3,
+    AiService? ai,
   }) async {
-    final dao = FakeRoundDao();
-    for (var i = 1; i <= shortCount + longCount; i++) {
-      final isLong = i > shortCount;
-      await dao.insertRound(
-        Round(
-          bookUuid: kHarnessBookUuid,
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      for (var i = 1; i <= shortCount + longCount; i++) {
+        final isLong = i > shortCount;
+        final seeded = await stack.seedRound(
+          kHarnessBookUuid,
           roundIndex: i,
           userInput: '第 $i 轮的用户输入',
           aiNarrative: isLong ? '尾部剧情。' * 200 : '好。',
-          currentTime: '第一天 午时',
-          createdAt: DateTime.now(),
-        ),
-      );
-    }
-    return dao;
+        );
+        await stack.repos.rounds.updateContent(
+          bookUuid: kHarnessBookUuid,
+          generationUuid: seeded.uuid,
+          fields: const {'current_time': '第一天 午时'},
+        );
+      }
+    });
+    final provider = await pumpChatScreen(tester, stack: stack, ai: ai);
+    await settle(tester);
+    return provider;
   }
 
   testWidgets('打开内容不均的多轮次书籍：首帧即位于底部且稳定', (tester) async {
-    final dao = await buildUnevenRounds();
-    await pumpChatScreen(tester, roundDao: dao);
+    await pumpUnevenRounds(tester);
 
     expect(
       chatBottomGap(tester),
       closeTo(0, 1),
       reason: 'reverse 底部锚定：offset 0 就是真实底部，无需跳转与逐帧收敛',
     );
-    // 稳定：继续泵几帧不漂移（旧实现要 68 帧 / 1306ms 才收敛）。
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    // 稳定：再 settle 一次位置不变（旧实现要 68 帧 / 1306ms 才收敛）。
+    final offsetAfterFirst = chatScrollable(tester).position.pixels;
+    await settle(tester);
+    expect(chatScrollable(tester).position.pixels, closeTo(offsetAfterFirst, 0.5));
     expect(chatBottomGap(tester), closeTo(0, 1));
   });
 
@@ -267,8 +281,7 @@ void main() {
 
   testWidgets('长列表生成完成后仍贴在底部', (tester) async {
     final ai = FakeStreamingAiService();
-    final dao = await buildUnevenRounds();
-    final roundProvider = await pumpChatScreen(tester, ai: ai, roundDao: dao);
+    final roundProvider = await pumpUnevenRounds(tester, ai: ai);
     expect(chatBottomGap(tester), closeTo(0, 1));
 
     // 通过 UI 发送（走生产 _send → _startGeneration / _endGeneration 收尾，

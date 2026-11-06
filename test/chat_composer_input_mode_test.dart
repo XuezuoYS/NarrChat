@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
 import 'package:narrchat/widgets/composer_input_mode.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
@@ -42,22 +41,26 @@ void main() {
   }
 
   /// 预置一轮带图片的用户消息（识图门控用例复用）。
-  Future<FakeRoundDao> seedRoundWithImages(
+  ///
+  /// 真库 I/O 必须包 `tester.runAsync`（fake-async 区域里不会自己转起来）。
+  Future<TestStack> seedRoundWithImages(
+    WidgetTester tester,
     List<String> images, {
     String input = '第 1 轮的用户输入',
   }) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 1,
         userInput: input,
         aiNarrative: '第 1 轮的剧情正文。',
         userImages: images,
-        createdAt: DateTime.now(),
-      ),
-    );
-    return dao;
+      );
+    });
+    return stack;
   }
 
   testWidgets('未进入用途：输入卡不要灰条', (tester) async {
@@ -107,7 +110,9 @@ void main() {
     await waitSendDone(tester, rp);
 
     // 第 1 轮被替换为新输入、第 2 轮被删除；轮次清空后第零轮按既有规则重建。
-    expect(rp.rounds.map((r) => r.roundIndex).toList(), [0, 1]);
+    // R3 没有第零轮：修改并重新提问在第 1 轮组内新增一代，旧代仍在。
+    expect(rp.rounds.map((r) => r.roundIndex).toList(), [1]);
+    expect(rp.versionInfoFor(1)!.aliveCount, greaterThan(1));
     expect(rp.rounds.last.userInput, '改后的输入');
     expect(rp.rounds.last.aiNarrative, contains('成功正文'));
     // 用途已被消费：灰条收起、输入框清空。
@@ -146,32 +151,9 @@ void main() {
     expect(rp.rounds.last.userInput, '改后的输入');
   });
 
-  testWidgets('提交灰条用途后请求失败且失败条目也存不下：编辑内容还回输入框并提示', (tester) async {
-    // 清空发生在发请求之前，因此这条兜底必须把内容还回来，否则用户填的东西
-    // 会凭空消失（与普通发送的兜底同一口径）。
-    final ai = ToggleAiService()..fail = true;
-    final bookDao = FakeBookDao(books: [book])..failSetFailedAttempt = true;
-    final rp = await pumpChatScreen(
-      tester,
-      ai: ai,
-      bookDao: bookDao,
-      seedRounds: 1,
-      seedBodyRepeats: 1,
-    );
-
-    await tapEditAndReAsk(tester, '第 1 轮的用户输入');
-    await tester.enterText(composerField(), '改后的输入');
-    await tester.pump();
-    await tester.tap(sendButton());
-    await waitSendDone(tester, rp);
-
-    expect(fieldText(tester), '改后的输入');
-    expect(find.textContaining('请求失败：'), findsOneWidget);
-  });
-
   testWidgets('灰条右侧删除键：退出用途并清空输入与待发送图片', (tester) async {
-    final dao = await seedRoundWithImages(['img/aaa.png']);
-    await pumpChatScreen(tester, roundDao: dao);
+    final stack = await seedRoundWithImages(tester, ['img/aaa.png']);
+    await pumpChatScreen(tester, stack: stack);
 
     await tapEditAndReAsk(tester, '第 1 轮的用户输入');
     // 识图模型：该轮图片随文本一并载入待发送条。
@@ -189,8 +171,8 @@ void main() {
   testWidgets('非识图模型：进入用途只载入文本、不携带图片', (tester) async {
     final settings = ChatCompatibleSettings();
     settings.setSelectedModel(AiPlatforms.defaultPlatformId, 'deepseek-v4-pro');
-    final dao = await seedRoundWithImages(['img/aaa.png']);
-    await pumpChatScreen(tester, roundDao: dao, settings: settings);
+    final stack = await seedRoundWithImages(tester, ['img/aaa.png']);
+    await pumpChatScreen(tester, stack: stack, settings: settings);
 
     await tapEditAndReAsk(tester, '第 1 轮的用户输入');
 
@@ -202,13 +184,23 @@ void main() {
     final ai = ToggleAiService()..fail = true;
     final rp = await pumpChatScreen(tester, ai: ai);
 
-    // 先制造失败条目（失败原因以红框气泡展示）。
+    // 先制造失败代（R3：失败就是链上一条 message_status='error' 的真轮次）。
     await rp.sendRound(userInput: '失败的输入', book: book);
-    await tester.pumpAndSettle();
-    expect(rp.hasFailureEntry, isTrue);
+    await settle(tester);
+    expect(rp.rounds.single.isError, isTrue);
 
-    await tester.tap(find.text('修改并重新提问'));
-    await tester.pumpAndSettle();
+    // R3 没有独立的失败气泡：「修改并重新提问」走用户气泡的右键菜单（与其他轮次同一入口）。
+    await tester.longPress(find.text('失败的输入'));
+    await settle(tester);
+    await tester.tap(
+      find.descendant(
+        of: find.byWidgetPredicate(
+          (w) => w is PopupMenuItem<String> && w.value == 'editReask',
+        ),
+        matching: find.text('修改并重新提问'),
+      ),
+    );
+    await settle(tester);
 
     // 失败条目「本该产生」第 1 轮：灰条文案取该轮号。
     expect(find.text('修改并重新提问（第 1 轮）'), findsOneWidget);
@@ -221,9 +213,10 @@ void main() {
     await tester.pump();
     await waitSendDone(tester, rp);
 
-    expect(rp.hasFailureEntry, isFalse);
-    // 新书无轮次时自动建「第零轮」，故本次生成为第 1 轮（列表末项）。
-    expect(rp.rounds.length, 2);
+    expect(rp.rounds.last.isError, isFalse);
+    // R3 没有第零轮；「修改并重新提问」是在第 1 轮的组里新增一代（旧代留着可切回）。
+    expect(rp.rounds, hasLength(1));
+    expect(rp.versionInfoFor(1)!.aliveCount, 2, reason: '失败代 + 新代同组');
     expect(rp.rounds.last.userInput, '改后的失败输入');
     expect(rp.rounds.last.aiNarrative, contains('成功正文'));
     expect(modeBar(), findsNothing);

@@ -1,19 +1,22 @@
 import 'package:flutter/foundation.dart';
 
-import '../database/world_book_dao.dart';
 import '../models/world_book_entry.dart';
+import '../repositories/world_book_repository.dart';
+import '../services/app_repositories.dart';
 import 'cloud_sync_provider.dart';
 
 /// 世界书状态管理：加载/新增/更新/删除当前书籍的世界书条目。
 ///
 /// 世界书属「书籍设置部件」，修改后同样触发全自动同步。
 class WorldBookProvider extends ChangeNotifier {
-  WorldBookProvider({WorldBookDao? dao, CloudSyncProvider? cloudSyncProvider})
-      : _dao = dao ?? WorldBookDao(),
+  WorldBookProvider({
+    WorldBookRepository? repository,
+    CloudSyncProvider? cloudSyncProvider,
+  })  : _repo = repository ?? AppRepositories.instance.worldBook,
         // ignore: prefer_initializing_formals
         _cloudSyncProvider = cloudSyncProvider;
 
-  final WorldBookDao _dao;
+  final WorldBookRepository _repo;
 
   /// 云同步 Provider：世界书修改后触发全自动同步（null = 未接入，如测试）。
   final CloudSyncProvider? _cloudSyncProvider;
@@ -33,7 +36,7 @@ class WorldBookProvider extends ChangeNotifier {
   Future<void> loadEntries(String bookUuid) async {
     _bookUuid = bookUuid;
     try {
-      _entries = await _dao.getEntriesByBook(bookUuid);
+      _entries = await _repo.list(bookUuid);
     } catch (e) {
       _error = e.toString();
     }
@@ -54,7 +57,8 @@ class WorldBookProvider extends ChangeNotifier {
     final bookUuid = _bookUuid;
     if (bookUuid.isEmpty) return false;
     try {
-      await _dao.insertEntry(
+      await _repo.upsert(
+        bookUuid,
         WorldBookEntry(
           bookUuid: bookUuid,
           keyword: keyword.trim(),
@@ -74,8 +78,10 @@ class WorldBookProvider extends ChangeNotifier {
   }
 
   Future<bool> updateEntry(WorldBookEntry entry) async {
+    final bookUuid = entry.bookUuid.isEmpty ? _bookUuid : entry.bookUuid;
+    if (bookUuid.isEmpty) return false;
     try {
-      await _dao.updateEntry(entry);
+      await _repo.upsert(bookUuid, entry);
       await loadEntries(_bookUuid);
       _cloudSyncProvider?.triggerSync();
       return true;
@@ -86,9 +92,11 @@ class WorldBookProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> removeEntry(int id) async {
+  /// 删除一条：身份是 uuid（不再是 R2 的本地自增 id）。
+  Future<bool> removeEntry(String uuid) async {
+    if (uuid.isEmpty) return false;
     try {
-      await _dao.deleteEntry(id);
+      await _repo.delete(_bookUuid, uuid);
       await loadEntries(_bookUuid);
       _cloudSyncProvider?.triggerSync();
       return true;

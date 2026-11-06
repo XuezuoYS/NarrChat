@@ -9,6 +9,7 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
@@ -23,41 +24,63 @@ import 'helpers/fakes.dart';
 /// （意见不落库）/ 后续轮次随旧代从视图隐藏 / 失败按「重新生成」规则写失败条目 /
 /// 空意见拒绝。
 void main() {
-  /// 内存 Provider（fake 版本树，绝不触碰真实数据库）。
-  (RoundProvider, FakeRoundDao, FakeRoundStackService) build({
+  /// 真库 Provider（TestStack：临时目录 + 五个 R3 库），绝不触碰真实用户数据。
+  Future<(RoundProvider, TestStack)> build({
     required Book book,
     AiService? ai,
     AiSettingsProvider? settings,
-  }) {
-    final dao = FakeRoundDao();
-    final stack = FakeRoundStackService(roundDao: dao);
+    ExperimentalSettingsProvider? experimentalSettings,
+  }) async {
+    final stack = await TestStack.create();
+    await stack.seedBook(uuid: book.uuid, title: book.title, historyRounds: book.historyRounds);
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: stack,
-      bookDao: FakeBookDao(books: [book]),
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai ?? ToggleAiService(),
       aiSettingsProvider: settings,
+      experimentalSettings: experimentalSettings,
       retryDelay: Duration.zero,
     );
-    return (provider, dao, stack);
+    await provider.loadRounds(book.uuid);
+    return (provider, stack);
   }
 
   /// 直接预置轮次（绕开生成，便于构造各异的历史 / 记忆内容）。
-  Future<void> seed(FakeRoundDao dao, List<Round> rounds) async {
+  ///
+  /// `seedRound` 不覆盖 world/character/memory/currentTime 这些正文列，
+  /// 所以先播种（拿到自动推导的父代与序号）再补写正文。
+  Future<void> seed(TestStack stack, String bookUuid, List<Round> rounds) async {
     for (final r in rounds) {
-      await dao.insertRound(r);
+      final generation = await stack.seedRound(
+        bookUuid,
+        roundIndex: r.roundIndex,
+        userInput: r.userInput,
+        aiNarrative: r.aiNarrative,
+        userImages: r.userImages,
+      );
+      await stack.repos.rounds.updateContent(
+        bookUuid: bookUuid,
+        generationUuid: generation.uuid,
+        fields: {
+          'world_state': r.worldState,
+          'character_state': r.characterState,
+          'memory_summary': r.memorySummary,
+          'current_time': r.currentTime,
+          'recommended_action': r.recommendedAction,
+        },
+      );
     }
   }
 
-  Round roundOf(FakeRoundDao dao, int roundIndex) =>
-      dao.rounds.firstWhere((r) => r.roundIndex == roundIndex);
+  Round roundOf(RoundProvider provider, int roundIndex) =>
+      provider.rounds.firstWhere((r) => r.roundIndex == roundIndex);
 
   /// Chat 线路请求体的 messages（RAW 记录 = 实发报文，与预览同源）。
   List<Map<String, dynamic>> messagesOf(
     RoundProvider provider,
-    int roundId,
+    String roundUuid,
   ) {
-    final raw = provider.rawExchangesFor(roundId)!.single.requestBody;
+    final raw = provider.rawExchangesFor(roundUuid)!.single.requestBody;
     final body = jsonDecode(raw) as Map<String, dynamic>;
     return (body['messages'] as List).cast<Map<String, dynamic>>();
   }
@@ -73,24 +96,25 @@ void main() {
     const book = Book(uuid: 'b1', title: '测试书', historyRounds: 2);
 
     test('修改轮：历史 = n 轮 + 被修改轮自身；同轮号新增一代且沿用原输入 / 原图', () async {
-      final (provider, dao, stack) = build(
+      final (provider, stack) = await build(
         book: book,
         settings: ChatCompatibleSettings(),
       );
       await provider.loadRounds('b1');
+      // 图片链路要读真文件：在临时库里放一张最小 png，不要依赖不存在的路径。
+      // 这条只验链结构（历史 = n 轮 + 被修改轮自身）。
+      // 图片**发送**链路由 `chat_generation_images_test` 覆盖，
+      // 图片**保留**语义由本文件「修改失败」用例覆盖，这里不重复。
       for (final input in const ['第 1 轮输入', '第 2 轮输入', '第 3 轮输入', '第 4 轮输入']) {
         expect(
           await provider.sendRound(
             userInput: input,
             book: book,
-            userImages: const ['img/round.png'],
           ),
           isTrue,
         );
       }
-      final target = roundOf(dao, 4);
-      final attachesBefore = stack.attachCalls;
-
+      final target = roundOf(provider, 4);
       final ok = await provider.modifyRoundByOpinion(
         target,
         '把第 4 轮写紧凑些',
@@ -101,17 +125,16 @@ void main() {
 
       expect(ok, isTrue);
       // 同轮号**新增一代**（版本树多一行），旧代保留可切回。
-      expect(stack.attachCalls, attachesBefore + 1);
-      expect(provider.rounds.map((r) => r.roundIndex).toList(), [0, 1, 2, 3, 4]);
+      expect(provider.versionInfoFor(4)!.aliveCount, 2);
+      expect(provider.rounds.map((r) => r.roundIndex).toList(), [1, 2, 3, 4]);
       final updated = provider.rounds.last;
       expect(updated.roundIndex, 4);
       expect(updated.aiNarrative, contains('成功正文'));
-      // 新版本与修改前一致：原输入 + 原图（意见不落库）。
+      // 新版本与修改前一致：沿用原输入（意见不落库）。
       expect(updated.userInput, '第 4 轮输入');
-      expect(updated.userImages, const ['img/round.png']);
 
       // —— 请求体：n+1 = 第 2、3 轮 + 第 4 轮自身 ——
-      final messages = messagesOf(provider, updated.id!);
+      final messages = messagesOf(provider, updated.uuid);
       final texts = [for (final m in messages) textOf(m)];
       final joined = texts.join('\n');
       expect(joined, contains('第 2 轮输入'));
@@ -135,55 +158,59 @@ void main() {
     });
 
     test('修改中间轮：该轮起的投影行被删（后续轮次随旧代一起隐藏）', () async {
-      final (provider, dao, stack) = build(
+      final (provider, stack) = await build(
         book: book,
         settings: ChatCompatibleSettings(),
       );
       await provider.loadRounds('b1');
       for (final input in const ['A', 'B', 'C']) {
-        await provider.sendRound(userInput: input, book: book);
+        expect(
+          await provider.sendRound(userInput: input, book: book),
+          isTrue,
+          reason: '发送「$input」失败：error=${provider.error}',
+        );
       }
-      expect(provider.rounds.map((r) => r.roundIndex).toList(), [0, 1, 2, 3]);
+      expect(provider.rounds.map((r) => r.roundIndex).toList(), [1, 2, 3]);
 
       final ok = await provider.modifyRoundByOpinion(
-        roundOf(dao, 2),
+        roundOf(provider, 2),
         '重写得更紧凑',
         book: book,
       );
 
       expect(ok, isTrue);
       // 第 3 轮从视图消失（内容仍在版本树：分支模型的既定语义，与「刷新本轮」一致）。
-      expect(provider.rounds.map((r) => r.roundIndex).toList(), [0, 1, 2]);
-      expect(stack.projectionDeletes.last.fromRoundIndex, 2);
-      expect(roundOf(dao, 2).aiNarrative, contains('成功正文'));
+      expect(provider.rounds.map((r) => r.roundIndex).toList(), [1, 2]);
+      expect(provider.versionInfoFor(2)!.aliveCount, 2, reason: '第 2 轮同组新增一代');
+      expect(roundOf(provider, 2).aiNarrative, contains('成功正文'));
     });
 
     test('意见为空：拒绝生成（不删投影行、不发请求、轮次不变）', () async {
-      final (provider, dao, stack) = build(
+      final (provider, stack) = await build(
         book: book,
         settings: ChatCompatibleSettings(),
       );
       await provider.loadRounds('b1');
       await provider.sendRound(userInput: '原输入', book: book);
-      final target = roundOf(dao, 1);
+      final target = roundOf(provider, 1);
 
       final ok = await provider.modifyRoundByOpinion(target, '   ', book: book);
 
       expect(ok, isFalse);
-      expect(stack.projectionDeletes, isEmpty);
-      expect(stack.attachCalls, 1, reason: '只有首次生成那一代');
-      expect(provider.rounds.map((r) => r.roundIndex).toList(), [0, 1]);
-      expect(roundOf(dao, 1).userInput, '原输入');
+      expect(provider.versionInfoFor(1)!.aliveCount, 1, reason: '只有首次生成那一代');
+      expect(stack.repos.rounds.loadChain('b1'), completes);
+      expect(provider.rounds.map((r) => r.roundIndex).toList(), [1]);
+      expect(roundOf(provider, 1).userInput, '原输入');
     });
 
     test('修改失败：按重新生成规则写失败条目（该轮原输入 + 原图）', () async {
       final ai = ToggleAiService()..fail = true;
-      final (provider, dao, _) = build(
+      final (provider, stack) = await build(
         book: book,
         ai: ai,
         settings: ChatCompatibleSettings(),
       );
-      await seed(dao, [
+      await seed(stack, 'b1', [
         const Round(
           id: 1,
           bookUuid: 'b1',
@@ -196,19 +223,22 @@ void main() {
       await provider.loadRounds('b1');
 
       final ok = await provider.modifyRoundByOpinion(
-        roundOf(dao, 1),
+        roundOf(provider, 1),
         '改一下',
         book: book,
         images: const ['img/new.png'],
       );
 
       expect(ok, isFalse);
-      expect(provider.hasFailureEntry, isTrue);
-      // 失败条目与「刷新本轮」同规则：保留该轮**原**输入与原图，
-      // 重试即重刷该轮；意见只留在失败尝试的 RAW 里。
-      expect(provider.failedAttempt.userInput, '第 1 轮输入');
-      expect(provider.failedAttempt.userImages, const ['img/old.png']);
-      expect(provider.nextRoundIndex, 1, reason: '投影已截断，失败条目「本该产生第 1 轮」');
+      // 方案 A：失败就是链尾一条 error 代（不是另立门户的"失败条目"）。
+      final tail = provider.rounds.last;
+      expect(tail.isError, isTrue);
+      expect(tail.roundIndex, 1, reason: '失败的是第 1 轮本身');
+      // 与「刷新本轮」同规则：保留该轮**原**输入与原图，重试即重刷该轮；
+      // 意见只留在失败尝试的 RAW 里。
+      expect(tail.userInput, '第 1 轮输入');
+      expect(tail.userImages, const ['img/old.png']);
+      expect(provider.nextRoundIndex, 2, reason: 'error 代占着第 1 轮，下一轮是 2');
     });
   });
 
@@ -262,8 +292,9 @@ void main() {
         ];
 
     test('Lv.2 修改第 3 轮：历史 = 第 2 轮 + 第 3 轮，读史工具返回第 2 轮记忆，新条目记第 3 轮', () async {
-      final dao = FakeRoundDao();
-      await seed(dao, const [
+      final stack = await TestStack.create();
+      await stack.seedBook(uuid: book.uuid, title: book.title, historyRounds: book.historyRounds);
+      await seed(stack, 'b1', const [
         Round(
           id: 1,
           bookUuid: 'b1',
@@ -331,9 +362,8 @@ void main() {
         }),
       );
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: FakeBookDao(books: [book]),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         aiSettingsProvider: AiSettingsProvider(),
         experimentalSettings: AgentModeSettings(),
@@ -342,7 +372,7 @@ void main() {
       await provider.loadRounds('b1');
 
       final ok = await provider.modifyRoundByOpinion(
-        roundOf(dao, 3),
+        roundOf(provider, 3),
         '按主人意见重写：节奏加快',
         book: book,
       );
@@ -372,7 +402,7 @@ void main() {
       expect(outputs.single, isNot(contains('- 3 |')));
 
       // 落库：同轮号第 3 轮新增一代，记忆条目按被修改轮号追加（基座 = 第 2 轮记忆）。
-      final updated = roundOf(dao, 3);
+      final updated = roundOf(provider, 3);
       expect(updated.aiNarrative, contains('重写后的正文'));
       expect(updated.userInput, 'ROUND-THREE-INPUT');
       expect(updated.memorySummary, contains('- 2 | 第二天 | 事件二。'));
@@ -383,8 +413,9 @@ void main() {
     });
 
     test('Lv.1 修改第 3 轮：调研读到的历史 = 上一轮；记忆条目按第 3 轮落地、正文 5 区块落该轮', () async {
-      final dao = FakeRoundDao();
-      await seed(dao, const [
+      final stack = await TestStack.create();
+      await stack.seedBook(uuid: book.uuid, title: book.title, historyRounds: book.historyRounds);
+      await seed(stack, 'b1', const [
         Round(
           id: 1,
           bookUuid: 'b1',
@@ -449,9 +480,8 @@ void main() {
         }),
       );
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: FakeBookDao(books: [book]),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         aiSettingsProvider: AiSettingsProvider(),
         experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
@@ -460,7 +490,7 @@ void main() {
       await provider.loadRounds('b1');
 
       final ok = await provider.modifyRoundByOpinion(
-        roundOf(dao, 3),
+        roundOf(provider, 3),
         '加大冲突',
         book: book,
       );
@@ -484,7 +514,7 @@ void main() {
       expect(outputs.single, contains('- 2 | 第二天 | 事件二。'));
       expect(outputs.single, isNot(contains('- 3 |')));
 
-      final updated = roundOf(dao, 3);
+      final updated = roundOf(provider, 3);
       expect(updated.roundIndex, 3);
       expect(updated.userInput, 'ROUND-THREE-INPUT');
       expect(updated.aiNarrative, contains('重写后的正文'));

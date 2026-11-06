@@ -18,12 +18,21 @@ const GitHubRelease _release = GitHubRelease(
 
 const String _probeItemLabel = '触发检查到更新的提示框（即使版本相同或更旧也触发）';
 
-const String _versionItemLabel = '查看当前数据库版本';
+/// R3 起版本是"按库逐个看"，不再有单一数据库版本入口。
+const String _versionItemLabel = '查看各数据库版本';
+
+/// 读版本就抛错的服务替身（模拟库被占用 / 损坏）。
+class _ThrowingDebugDatabaseService extends FakeDebugDatabaseService {
+  @override
+  Future<List<DebugDbInfo>> listDatabases() async {
+    throw StateError('数据库已被占用');
+  }
+}
 
 Future<void> _pumpDebugScreen(
   WidgetTester tester,
   FakeUpdateCheckService service, {
-  FakeDebugDatabaseService? dbService,
+  DebugDatabaseService? dbService,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -45,7 +54,7 @@ Future<void> _tapProbeItem(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-/// 点击「查看当前数据库版本」入口。
+/// 点击「查看各数据库版本」入口。
 Future<void> _tapVersionItem(WidgetTester tester) async {
   final target = find.text(_versionItemLabel);
   expect(target, findsOneWidget);
@@ -95,25 +104,59 @@ void main() {
     await flushNotices(tester);
   });
 
-  testWidgets('查看数据库版本：对话框展示代码版本与文件版本', (tester) async {
+  testWidgets('查看数据库版本：按库列出实际版本，版本不符时标出期望值', (tester) async {
     final service = FakeUpdateCheckService([const NoRelease()]);
-    final dbService = FakeDebugDatabaseService(
-      version: const DebugDbVersion(expectedVersion: 16, actualVersion: 14),
-    );
+    final dbService = FakeDebugDatabaseService()
+      ..databases = const [
+        DebugDbInfo(
+          id: 'library',
+          label: '书籍目录库',
+          path: '/x/narrchat_library.db',
+          expectedVersion: 22,
+          actualVersion: 22,
+          sizeBytes: 10,
+          exists: true,
+        ),
+        DebugDbInfo(
+          id: 'book:b1',
+          label: '书 b1',
+          path: '/x/books/narrbook_b1.db',
+          expectedVersion: 22,
+          actualVersion: 20,
+          sizeBytes: 20,
+          exists: true,
+        ),
+        DebugDbInfo(
+          id: 'sync',
+          label: '本地同步库',
+          path: '/x/local_db/sync.db',
+          expectedVersion: 1,
+          actualVersion: 0,
+          sizeBytes: 0,
+          exists: false,
+        ),
+      ];
     await _pumpDebugScreen(tester, service, dbService: dbService);
 
     await _tapVersionItem(tester);
 
     expect(find.text('数据库版本'), findsOneWidget);
-    expect(find.textContaining('应用代码 schema 版本：16'), findsOneWidget);
-    expect(find.textContaining('数据库文件版本（user_version）：14'), findsOneWidget);
+    expect(find.textContaining('3.0 起数据分成多个库文件'), findsOneWidget);
+    // 版本一致：只显示实际版本。
+    expect(find.text('书籍目录库：22'), findsOneWidget);
+    // 版本落后：标出期望值。
+    expect(find.text('书 b1：20（期望 22）'), findsOneWidget);
+    // 文件不存在的库不展示。
+    expect(find.textContaining('本地同步库'), findsNothing);
   });
 
   testWidgets('读取数据库版本失败：悬浮通知提示，不弹对话框', (tester) async {
     final service = FakeUpdateCheckService([const NoRelease()]);
-    final dbService = FakeDebugDatabaseService()
-      ..versionError = StateError('数据库已被占用');
-    await _pumpDebugScreen(tester, service, dbService: dbService);
+    await _pumpDebugScreen(
+      tester,
+      service,
+      dbService: _ThrowingDebugDatabaseService(),
+    );
 
     await _tapVersionItem(tester);
 

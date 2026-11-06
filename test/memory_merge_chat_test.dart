@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
 import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
@@ -19,27 +18,33 @@ void main() {
 
   /// 返回固定 6 区块的 AI：`## 记忆总结` 内容由用例给定。
   final service = _FixedMemoryAiService();
-  late FakeRoundDao dao;
+  late TestStack stack;
 
   Future<Book> buildBook(int tier) async {
-    dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(
-        bookUuid: bookUuid,
-        roundIndex: 9,
-        userInput: '第九轮',
-        aiNarrative: '第九轮正文',
-        memorySummary: nineEntries,
-        currentTime: 't9',
-      ),
+    stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(
+      uuid: bookUuid,
+      title: '测试书',
+      memorySummaryRounds: tier,
+    );
+    final seeded = await stack.seedRound(
+      bookUuid,
+      roundIndex: 9,
+      userInput: '第九轮',
+      aiNarrative: '第九轮正文',
+    );
+    await stack.repos.rounds.updateContent(
+      bookUuid: bookUuid,
+      generationUuid: seeded.uuid,
+      fields: {'memory_summary': nineEntries, 'current_time': 't9'},
     );
     return Book(uuid: bookUuid, title: '测试书', memorySummaryRounds: tier);
   }
 
   RoundProvider providerFor(Book book) => RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: FakeBookDao(books: [book]),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: service,
         aiSettingsProvider: ChatCompatibleSettings(),
       );
@@ -93,8 +98,8 @@ void main() {
     expect(provider.roundWarningsFor(10), [
       '记忆总结未按档位（5）合并：应合并 1-5',
     ]);
-    expect(dao.rounds.last.memorySummary, contains('- 10 | t10 | 第十轮。'));
-    expect(dao.rounds.last.memorySummary, isNot(contains('- 1 - 5 |')));
+    expect((await stack.repos.rounds.loadChain(bookUuid)).rounds.last.memorySummary, contains('- 10 | t10 | 第十轮。'));
+    expect((await stack.repos.rounds.loadChain(bookUuid)).rounds.last.memorySummary, isNot(contains('- 1 - 5 |')));
   });
 
   test('模型完成合并 → 无警告，合并行落库', () async {
@@ -112,8 +117,8 @@ void main() {
 
     expect(ok, isTrue);
     expect(provider.roundWarningsFor(10), isEmpty);
-    expect(dao.rounds.last.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
-    expect(dao.rounds.last.memorySummary, contains('- 6 | t6 | 第6轮。'),
+    expect((await stack.repos.rounds.loadChain(bookUuid)).rounds.last.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
+    expect((await stack.repos.rounds.loadChain(bookUuid)).rounds.last.memorySummary, contains('- 6 | t6 | 第6轮。'),
         reason: '未触及的条目原样保留');
   });
 

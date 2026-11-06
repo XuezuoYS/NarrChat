@@ -4,31 +4,25 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
-import '../providers/cloud_sync_provider.dart';
-import '../screens/database_merge_screen.dart';
 import '../screens/image_gallery_page.dart';
-import '../services/app_paths.dart';
-import '../services/database_merge_service.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import '../utils/formats.dart';
 import 'app_notice_overlay.dart';
 
-/// 设置页「存储管理」面板。
+/// 设置页「存储管理」面板（R3 多库视角）。
 ///
-/// - **本地数据库导出/导入**：展示数据库路径 / 大小 / 修改时间，选择目标文件夹并
-///   以自定义文件名导出（SQLite 开启 WAL 时会连同 `-wal`/`-shm` 一并复制），
-///   或从本机 `.db` 备份导入并逐本确认合并；
-/// - **本地/云端图片管理**：列出 `img/` 目录下全部图片（按修改时间倒序），提供
-///   全屏查看、删除（带确认）与刷新，并显示图片总数与占用空间。图片库与云同步
-///   联动：删除是全局语义（同步删云端并传播到其它设备），其它设备新增的图片
-///   同步后也会出现在本地。
+/// - **存储总览**：逐库列出（书籍目录库 / Mod 库 / 每本书库 / 本地缓存库 /
+///   本地备份状态库 / 旧版 R2 备份）+ 各自大小，外加图片目录占用与合计；
+/// - **导出**：把整组用户数据打包成 `narrchat.zip`（library + mods + 全部书库 + img）；
+/// - **导入**：校验版本后整组落地，落地前自动备份现有 `user_data`；
+/// - **图片库**：与云备份联动——删除即全局删除，其它设备同步后也会消失。
 class StorageManagementPanel extends StatefulWidget {
   /// 目录选择回调（测试注入替身；缺省用 [FilePicker.platform.getDirectoryPath]）。
   final Future<String?> Function()? directoryPicker;
 
-  /// 数据库文件选择回调（测试注入替身；缺省用 [FilePicker.platform.pickFiles]）。
+  /// 文件选择回调（测试注入替身；缺省用 [FilePicker.platform.pickFiles]）。
   final Future<String?> Function()? filePicker;
 
   const StorageManagementPanel({
@@ -43,8 +37,8 @@ class StorageManagementPanel extends StatefulWidget {
 }
 
 class _StorageManagementPanelState extends State<StorageManagementPanel> {
-  late Future<StorageDbInfo?> _dbFuture;
-  // 图片列表用状态持有（而非 FutureBuilder 换 future），删除/刷新后重载更确定。
+  StorageOverview? _overview;
+  bool _overviewLoading = true;
   List<StorageImageInfo>? _images;
   bool _imagesLoading = true;
   bool _exporting = false;
@@ -55,17 +49,33 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
   @override
   void initState() {
     super.initState();
-    _dbFuture = _service.dbInfo();
+    _reload();
+  }
+
+  void _reload() {
+    _loadOverview();
     _loadImages();
   }
 
-  /// 重新加载图片列表（加载中置 loading，完成后写回状态）。
-  void _loadImages() {
-    setState(() => _imagesLoading = true);
-    _loadImagesAsync();
+  Future<void> _loadOverview() async {
+    setState(() => _overviewLoading = true);
+    try {
+      final overview = await _service.overview();
+      if (mounted) {
+        setState(() {
+          _overview = overview;
+          _overviewLoading = false;
+        });
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _overviewLoading = false);
+      _snack('读取存储信息失败：$error', kind: NoticeKind.error);
+    }
   }
 
-  Future<void> _loadImagesAsync() async {
+  Future<void> _loadImages() async {
+    setState(() => _imagesLoading = true);
     try {
       final list = await _service.listImages();
       if (mounted) {
@@ -74,136 +84,221 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           _imagesLoading = false;
         });
       }
-    } catch (_) {
-      // 读取失败：置空，避免挂在加载态。
-      if (mounted) {
-        setState(() {
-          _images = const [];
-          _imagesLoading = false;
-        });
-      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _images = const [];
+        _imagesLoading = false;
+      });
+      _snack('读取图片列表失败：$error', kind: NoticeKind.error);
     }
-  }
-
-  Future<String?> _pickDirectory() {
-    final custom = widget.directoryPicker;
-    if (custom != null) return custom();
-    return FilePicker.platform.getDirectoryPath(dialogTitle: '选择数据库导出文件夹');
-  }
-
-  String _defaultExportName() {
-    final now = DateTime.now();
-    final ts =
-        '${now.year}-${Formats.two(now.month)}-${Formats.two(now.day)}_'
-        '${Formats.two(now.hour)}-${Formats.two(now.minute)}-${Formats.two(now.second)}';
-    return 'narrchat_$ts.db';
-  }
-
-  /// 弹出「导出文件名」对话框，返回规范化后的文件名（取消返回 null）。
-  Future<String?> _askExportName() async {
-    final result = await showDialog<String>(
-      context: context,
-      builder: (_) => _ExportNameDialog(initialName: _defaultExportName()),
-    );
-    if (result == null) return null;
-    var name = result.trim();
-    if (name.isEmpty) return null;
-    if (!name.toLowerCase().endsWith('.db')) name = '$name.db';
-    return name;
-  }
-
-  Future<void> _exportDatabase() async {
-    final dirPath = await _pickDirectory();
-    if (dirPath == null || !mounted) return;
-    final name = await _askExportName();
-    if (name == null || !mounted) return;
-    setState(() => _exporting = true);
-    String message;
-    var ok = true;
-    try {
-      final target = await _service.exportDatabase(
-        targetDirPath: dirPath,
-        fileName: name,
-      );
-      message = '数据库已导出到 $target';
-    } catch (e) {
-      ok = false;
-      message = '数据库导出失败：$e';
-    }
-    if (mounted) {
-      setState(() => _exporting = false);
-      _snack(message, kind: ok ? NoticeKind.success : NoticeKind.error);
-    }
-  }
-
-  Future<void> _refresh() async {
-    _loadImages();
   }
 
   void _snack(String message, {NoticeKind kind = NoticeKind.info}) {
     context.notices.show(message, kind: kind);
   }
 
-  Future<String?> _pickDatabaseFile() {
-    final custom = widget.filePicker;
+  Future<String?> _pickDirectory() {
+    final custom = widget.directoryPicker;
     if (custom != null) return custom();
-    // 注意：不要用 FileType.custom + allowedExtensions:['db']。Android 的 MimeTypeMap
-    // 不识别 `.db` 扩展名，getMimeTypeFromExtension('db') 返回 null，file_picker 会得到空
-    // MIME 数组并直接以「Unsupported filter」报错，导致系统文件选择器根本弹不出来（按钮有
-    // 点击效果却无响应）。这里改用 FileType.any 可靠弹出选择器，选中后再校验 `.db` 后缀。
-    return FilePicker.platform.pickFiles(
-      dialogTitle: '选择数据库备份文件',
-      type: FileType.any,
-    ).then((result) => result?.files.single.path);
+    return FilePicker.platform.getDirectoryPath(dialogTitle: '选择导出文件夹');
   }
 
-  /// 判断路径是否以 `.db`（不区分大小写）结尾。
-  bool _isDbPath(String path) => p.extension(path).toLowerCase() == '.db';
+  Future<String?> _pickArchiveFile() {
+    final custom = widget.filePicker;
+    if (custom != null) return custom();
+    // 不用 FileType.custom + allowedExtensions:['zip']：Android 的 MimeTypeMap
+    // 对非常见扩展名会得到空 MIME 数组，file_picker 直接以「Unsupported filter」
+    // 报错，选择器根本弹不出来。选完再按后缀校验。
+    return FilePicker.platform
+        .pickFiles(dialogTitle: '选择导出包（narrchat.zip）', type: FileType.any)
+        .then((result) => result?.files.single.path);
+  }
 
-  /// 导入本机数据库备份：解析出合并计划后进入「合并决策页」逐本确认。
-  Future<void> _importDatabase() async {
-    final provider = context.read<CloudSyncProvider>();
+  String _defaultArchiveName() {
+    final now = DateTime.now();
+    final ts = '${now.year}-${Formats.two(now.month)}-${Formats.two(now.day)}';
+    return 'narrchat_$ts.zip';
+  }
+
+  Future<String?> _askArchiveName() async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => _FileNameDialog(
+        title: '导出整组数据',
+        initialName: _defaultArchiveName(),
+        hint: 'narrchat_2026-01-01.zip',
+        note: '将打包 library + mods + 全部书库 + 图片目录。',
+      ),
+    );
+    if (result == null) return null;
+    var name = result.trim();
+    if (name.isEmpty) return null;
+    if (!name.toLowerCase().endsWith('.zip')) name = '$name.zip';
+    return name;
+  }
+
+  Future<void> _exportArchive() async {
+    final String? dirPath;
+    final String? name;
+    try {
+      dirPath = await _pickDirectory();
+      if (dirPath == null || !mounted) return;
+      name = await _askArchiveName();
+    } catch (error) {
+      if (!mounted) return;
+      _snack('选择导出位置失败：$error', kind: NoticeKind.error);
+      return;
+    }
+    if (name == null || !mounted) return;
+
+    setState(() => _exporting = true);
+    String message;
+    var ok = true;
+    try {
+      final target = await _service.exportArchive(
+        targetDirPath: dirPath,
+        fileName: name,
+      );
+      message = '已导出到 $target';
+    } catch (error) {
+      ok = false;
+      message = '导出失败：$error';
+    }
+    if (!mounted) return;
+    setState(() => _exporting = false);
+    _snack(message, kind: ok ? NoticeKind.success : NoticeKind.error);
+  }
+
+  Future<void> _importArchive() async {
     final String? path;
     try {
-      path = await _pickDatabaseFile();
-    } catch (e) {
+      path = await _pickArchiveFile();
+    } catch (error) {
       if (!mounted) return;
-      _snack('选择数据库文件失败：$e', kind: NoticeKind.error);
+      _snack('选择导出包失败：$error', kind: NoticeKind.error);
       return;
     }
     if (path == null || !mounted) return;
-    if (!_isDbPath(path)) {
-      _snack('请选择 .db 数据库备份文件。', kind: NoticeKind.warning);
+    if (p.extension(path).toLowerCase() != '.zip') {
+      _snack('请选择 .zip 导出包。', kind: NoticeKind.warning);
       return;
     }
-    // 防止选择当前本地库本身（只会产生「全一致」且无意义的自我合并）。
-    final localPath = await AppPaths.userDatabasePath();
-    if (!mounted) return;
-    if (_samePath(path, localPath)) {
-      _snack('请选择备份文件，而非当前数据库。', kind: NoticeKind.warning);
-      return;
-    }
-    setState(() => _importing = true);
-    final DatabaseMergePlan plan;
-    try {
-      plan = await DatabaseMergeService.buildPlanFromBackup(path);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _importing = false);
-      _snack('解析导入文件失败：$e', kind: NoticeKind.error);
-      return;
-    }
-    if (!mounted) return;
-    await DatabaseMergeScreen.open(
-      context,
-      plan: plan,
-      onApply: (p, bd, md) => provider.applyMergePlan(p, bd, md),
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('导入整组数据'),
+        content: const Text(
+          '导入会用压缩包里的内容**整体替换**当前书库、Mod 与图片。\n\n'
+          '现有数据会先自动备份到 user_data 旁边的 .import-backup-* 目录。\n'
+          '导入完成后建议重启应用，让界面重新加载数据。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('开始导入'),
+          ),
+        ],
+      ),
     );
-    if (mounted) setState(() => _importing = false);
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _importing = true);
+    final result = await _service.importArchive(archivePath: path);
+    if (!mounted) return;
+    setState(() => _importing = false);
+    if (result.ok) {
+      await _showImportDone(result);
+      if (mounted) _reload();
+      return;
+    }
+    _snack(result.message, kind: NoticeKind.error);
   }
 
-  bool _samePath(String a, String b) => p.normalize(a).toLowerCase() ==
-      p.normalize(b).toLowerCase();
+  /// 导入成功后的收尾提示：备份位置 + 是否需要重启。
+  ///
+  /// 用对话框而不是浮条：这段信息（备份目录、要重启）用户很可能要抄下来，
+  /// 浮条几秒就没了。
+  Future<void> _showImportDone(StorageImportResult result) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('导入完成'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(result.message),
+              if (result.suggestRestart) ...[
+                const SizedBox(height: 10),
+                const Text('数据库文件已被整体替换，请重启应用让界面重新加载数据。'),
+              ],
+              if (result.backupPath != null) ...[
+                const SizedBox(height: 10),
+                const Text('原数据已备份到：'),
+                SelectableText(
+                  result.backupPath!,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteLegacyBackup() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除旧版数据库备份'),
+        content: const Text(
+          '这会删除升级到 3.0 时留下的 narrchat.db.r2.bak。\n'
+          '删除后无法再用 2.x 版应用打开旧数据，请确认不再需要。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _service.deleteLegacyBackup();
+      if (!mounted) return;
+      _snack('旧版备份已删除。', kind: NoticeKind.success);
+      _loadOverview();
+    } catch (error) {
+      if (!mounted) return;
+      _snack('删除失败：$error', kind: NoticeKind.error);
+    }
+  }
+
+  Future<void> _openGallery() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ImageGalleryPage()),
+    );
+    if (mounted) _reload();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -218,35 +313,27 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
         ),
         const SizedBox(height: 4),
         Text(
-          '导出本地数据库到指定位置；图片库与云同步联动——删除即全局删除，'
-          '其它设备同步后也会一并消失。',
+          '3.0 起数据按「一个库一个文件」存放：书籍目录、Mod、每本书各一个库，'
+          '图片单独存放。导出会把整组打成 zip，导入会整组替换并先备份。',
           style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         const SizedBox(height: 20),
-        // ---------- 本地数据库导出/导入 ----------
         _SectionHeader(
           icon: Icons.storage_outlined,
-          title: '本地数据库导出/导入',
-          subtitle: '把当前书籍及剧情的 sqlite 数据库复制到你选择的文件夹，或从本机备份导入并逐本确认合并。',
+          title: '本地数据',
+          subtitle: '逐库占用；导出/导入针对整组用户数据。',
         ),
         const SizedBox(height: 12),
-        FutureBuilder<StorageDbInfo?>(
-          future: _dbFuture,
-          builder: (context, snapshot) {
-            return _Card(
-              child: snapshot.connectionState != ConnectionState.done
-                  ? const LinearProgressIndicator(minHeight: 2)
-                  : _buildDbContent(context, snapshot.data),
-            );
-          },
+        _Card(
+          child: _overviewLoading
+              ? const LinearProgressIndicator(minHeight: 2)
+              : _buildOverview(context),
         ),
         const SizedBox(height: 24),
-        // ---------- 本地/云端图片管理 ----------
         _SectionHeader(
           icon: Icons.photo_library_outlined,
-          title: '本地/云端图片管理',
-          subtitle: '按修改时间浏览、查看与清理图片；删除会同步到云端与其它设备，'
-              '其它设备新增的图片同步后也会出现在本地。',
+          title: '图片库',
+          subtitle: '按修改时间浏览、查看与清理；删除会同步到云端与其它设备。',
         ),
         const SizedBox(height: 12),
         _buildImageEntry(context),
@@ -254,26 +341,149 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     );
   }
 
-  Future<void> _openGallery() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ImageGalleryPage()),
+  Widget _buildOverview(BuildContext context) {
+    final colors = context.narrColors;
+    final overview = _overview;
+    if (overview == null) {
+      return Text(
+        '存储信息暂不可用。',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, color: colors.textSecondary),
+      );
+    }
+
+    final rows = overview.existingDatabases;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (rows.isEmpty)
+          Text(
+            '还没有任何库文件。',
+            style: TextStyle(fontSize: 12, color: colors.textSecondary),
+          )
+        else
+          for (final file in rows) _buildDbRow(context, file),
+        const Divider(height: 20),
+        _buildKeyValue(
+          context,
+          '图片',
+          overview.imageCount == 0
+              ? '暂无图片'
+              : '${overview.imageCount} 张 · ${Formats.formatBytes(overview.imageBytes)}',
+        ),
+        const SizedBox(height: 4),
+        _buildKeyValue(
+          context,
+          '合计占用',
+          '${Formats.formatBytes(overview.totalBytes)}'
+              '（库 ${Formats.formatBytes(overview.databaseBytes)}'
+              ' + 图片 ${Formats.formatBytes(overview.imageBytes)}）',
+          emphasize: true,
+        ),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton.icon(
+              onPressed: _exporting || _importing ? null : _exportArchive,
+              icon: const Icon(Icons.archive_outlined, size: 18),
+              label: Text(_exporting ? '导出中…' : '导出整组数据'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _exporting || _importing ? null : _importArchive,
+              icon: const Icon(Icons.unarchive_outlined, size: 18),
+              label: Text(_importing ? '导入中…' : '导入整组数据'),
+            ),
+            if (rows.any((file) => file.id == 'legacy-backup'))
+              TextButton.icon(
+                onPressed: _exporting || _importing ? null : _deleteLegacyBackup,
+                icon: const Icon(Icons.delete_outline, size: 18),
+                label: const Text('删除旧版备份'),
+              ),
+          ],
+        ),
+      ],
     );
-    // 返回后刷新图片统计（可能已删除）。
-    if (mounted) _refresh();
+  }
+
+  Widget _buildDbRow(BuildContext context, StorageFileInfo file) {
+    final colors = context.narrColors;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.dns_outlined, size: 16, color: colors.textSecondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  file.label,
+                  style: TextStyle(fontSize: 12, color: colors.textPrimary),
+                ),
+                Text(
+                  file.path,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            Formats.formatBytes(file.sizeBytes),
+            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKeyValue(
+    BuildContext context,
+    String label,
+    String value, {
+    bool emphasize = false,
+  }) {
+    final colors = context.narrColors;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 72,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: emphasize ? 12 : 11,
+              fontWeight: emphasize ? FontWeight.w600 : FontWeight.w400,
+              color: colors.textPrimary,
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildImageEntry(BuildContext context) {
     final colors = context.narrColors;
-    String summary;
-    if (_imagesLoading) {
-      summary = '加载中…';
-    } else {
-      final images = _images ?? const <StorageImageInfo>[];
-      final total = images.fold<int>(0, (s, i) => s + i.size);
-      summary = images.isEmpty
-          ? '暂无图片'
-          : '共 ${images.length} 张 · 合计 ${Formats.formatBytes(total)}';
-    }
+    final images = _images ?? const <StorageImageInfo>[];
+    final total = images.fold<int>(0, (sum, image) => sum + image.size);
+    final summary = _imagesLoading
+        ? '加载中…'
+        : images.isEmpty
+            ? '暂无图片'
+            : '共 ${images.length} 张 · 合计 ${Formats.formatBytes(total)}';
+
     return Material(
       color: colors.background,
       shape: RoundedRectangleBorder(
@@ -305,58 +515,6 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildDbContent(BuildContext context, StorageDbInfo? db) {
-    final colors = context.narrColors;
-    if (db == null) {
-      return Text(
-        '本地数据库暂不可用。',
-        textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 12, color: colors.textSecondary),
-      );
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.dns_outlined, size: 20, color: colors.textSecondary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                db.path,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: colors.textPrimary),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '大小 ${Formats.formatBytes(db.size)} · '
-          '修改于 ${Formats.formatDateTime(db.modified)}',
-          style: TextStyle(fontSize: 11, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            FilledButton.icon(
-              onPressed: _exporting ? null : _exportDatabase,
-              icon: const Icon(Icons.upload_file_outlined, size: 18),
-              label: Text(_exporting ? '导出中…' : '导出数据库'),
-            ),
-            OutlinedButton.icon(
-              onPressed: _importing ? null : _importDatabase,
-              icon: const Icon(Icons.file_open_outlined, size: 18),
-              label: Text(_importing ? '导入中…' : '导入数据库'),
-            ),
-          ],
-        ),
-      ],
     );
   }
 }
@@ -422,17 +580,25 @@ class _Card extends StatelessWidget {
   }
 }
 
-/// 导出文件名对话框：自持 controller，避免关闭动画期间被外部 dispose。
-class _ExportNameDialog extends StatefulWidget {
+/// 文件名输入对话框：自持 controller，避免关闭动画期间被外部 dispose。
+class _FileNameDialog extends StatefulWidget {
+  final String title;
   final String initialName;
+  final String hint;
+  final String note;
 
-  const _ExportNameDialog({required this.initialName});
+  const _FileNameDialog({
+    required this.title,
+    required this.initialName,
+    required this.hint,
+    required this.note,
+  });
 
   @override
-  State<_ExportNameDialog> createState() => _ExportNameDialogState();
+  State<_FileNameDialog> createState() => _FileNameDialogState();
 }
 
-class _ExportNameDialogState extends State<_ExportNameDialog> {
+class _FileNameDialogState extends State<_FileNameDialog> {
   late final TextEditingController _controller =
       TextEditingController(text: widget.initialName);
 
@@ -445,7 +611,7 @@ class _ExportNameDialogState extends State<_ExportNameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('导出数据库'),
+      title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -454,16 +620,16 @@ class _ExportNameDialogState extends State<_ExportNameDialog> {
             controller: _controller,
             onTapOutside: unfocusOnTapOutside,
             autofocus: true,
-            decoration: const InputDecoration(
-              labelText: '导出文件名',
-              hintText: 'narrchat_2026-01-01_12-00-00.db',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: '文件名',
+              hintText: widget.hint,
+              border: const OutlineInputBorder(),
               isDense: true,
             ),
           ),
           const SizedBox(height: 8),
           Text(
-            '文件将保存到你选择的文件夹。',
+            widget.note,
             style: TextStyle(
               fontSize: 11,
               color: context.narrColors.textSecondary,
@@ -478,7 +644,7 @@ class _ExportNameDialogState extends State<_ExportNameDialog> {
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(_controller.text),
-          child: const Text('导出'),
+          child: const Text('确定'),
         ),
       ],
     );

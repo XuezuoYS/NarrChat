@@ -1,20 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/round_stack.dart';
+import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/widgets/round_version_stepper.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 import 'helpers/notice_harness.dart';
 
-/// 对话页「删除此代」（单代删除）契约：扩展菜单入口 → 二次确认 → 自动回落相邻代。
+/// 对话页「删除此代」契约：扩展菜单入口 → 二次确认 → 自动回落相邻代。
 ///
-/// 版本树服务用内存替身：入口显隐 / 确认与取消的编排 / 删除后的 UI 反馈
-/// （左右箭头按剩余代置灰、「最新第 y 代」不因删除而重排）都在此断言；
-/// 真实删除语义（后代子树、序号保留、回落规则）由 `round_stack_service_test.dart`
-/// 的真库用例覆盖。
+/// R3 起走**真库**：删除语义由 `RoundRepository.deleteGeneration` +
+/// `BranchRules` 承担（删该代及后代子树、回落前一代、唯一一代拒绝）。
 void main() {
   const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
@@ -31,7 +28,7 @@ void main() {
     await tester.tap(
       find.descendant(of: menuItem(value), matching: find.text(label)),
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
   }
 
   /// 代次控件的箭头状态（false = 置灰不可点）。
@@ -46,45 +43,66 @@ void main() {
             null,
       );
 
-  /// 预置：第 0 轮 + 第 1 轮（3 代 g1/g2/g3，当前 = g2「第 2 代正文」）。
-  Future<({FakeRoundDao dao, FakeRoundStackService stack})> seedThreeGens() async {
-    RoundStackMeta meta(String uuid, int serial, {bool use = false}) =>
-        RoundStackMeta(
-          uuid: uuid,
-          bookUuid: kHarnessBookUuid,
-          roundIndex: 1,
-          roundSerialNum: serial,
-          roundState: use ? 'use' : null,
-        );
-    final dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(bookUuid: kHarnessBookUuid, roundIndex: 0, createdAt: DateTime.now()),
-    );
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+  /// 预置：第 1 轮三代（g1/g2/g3，当前 = g2「第 2 代正文」）。
+  Future<TestStack> seedThreeGens(WidgetTester tester) async {
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 1,
+        uuid: 'g1',
+        userInput: '第一轮输入',
+        aiNarrative: '第 1 代正文',
+        isUsing: false,
+      );
+      await stack.seedRound(
+        kHarnessBookUuid,
+        roundIndex: 1,
+        uuid: 'g2',
         userInput: '第一轮输入',
         aiNarrative: '第 2 代正文',
-        createdAt: DateTime.now(),
-        useStackUuid: 'g2',
-      ),
-    );
-    final stack = FakeRoundStackService(roundDao: dao)
-      ..metas = [meta('g1', 1), meta('g2', 2, use: true), meta('g3', 3)];
-    return (dao: dao, stack: stack);
+        isUsing: true,
+      );
+      await stack.seedRound(
+        kHarnessBookUuid,
+        roundIndex: 1,
+        uuid: 'g3',
+        userInput: '第一轮输入',
+        aiNarrative: '第 3 代正文',
+        isUsing: false,
+      );
+    });
+    return stack;
+  }
+
+  /// 收窄到唯一一代（保留当前代 g2）。
+  Future<void> shrinkToOne(
+    WidgetTester tester,
+    TestStack stack,
+    RoundProvider provider,
+  ) async {
+    await tester.runAsync(() async {
+      await stack.repos.rounds.deleteGeneration(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: 'g1',
+      );
+      await stack.repos.rounds.deleteGeneration(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: 'g3',
+      );
+    });
+    await tester.runAsync(() => provider.loadRounds(kHarnessBookUuid));
+    await settle(tester);
   }
 
   testWidgets('入口显隐：≥2 存活代时菜单含「删除此代」，唯一一代不显示', (tester) async {
-    final seed = await seedThreeGens();
-    final provider = await pumpChatScreen(
-      tester,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
+    final stack = await seedThreeGens(tester);
+    final provider = await pumpChatScreen(tester, stack: stack);
 
     await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(menuItem('deleteGen'), findsOneWidget);
     expect(
       find.descendant(of: menuItem('deleteGen'), matching: find.text('删除此代')),
@@ -94,13 +112,12 @@ void main() {
 
     // 关掉菜单，把该轮收窄到唯一一代（当前代仍在）再看。
     await tester.tapAt(const Offset(4, 4));
-    await tester.pumpAndSettle();
-    seed.stack.metas = [seed.stack.metas[1]];
-    await provider.loadRounds(kHarnessBookUuid);
-    await tester.pumpAndSettle();
+    await settle(tester);
+    await shrinkToOne(tester, stack, provider);
+    expect(provider.versionInfoFor(1)!.aliveCount, 1);
 
     await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(
       menuItem('deleteGen'),
       findsNothing,
@@ -108,20 +125,16 @@ void main() {
     );
     expect(menuItem('delete'), findsOneWidget);
     await tester.tapAt(const Offset(4, 4));
-    await tester.pumpAndSettle();
+    await settle(tester);
   });
 
   testWidgets('确认框：给出落点与剩余代；取消则不删除、不切换', (tester) async {
-    final seed = await seedThreeGens();
-    await pumpChatScreen(
-      tester,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
+    final stack = await seedThreeGens(tester);
+    final provider = await pumpChatScreen(tester, stack: stack);
     expect(find.text('2/3'), findsOneWidget, reason: '夹具：当前第 2 代 / 最新第 3 代');
 
     await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tapMenuItem(tester, 'deleteGen', '删除此代');
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -131,44 +144,29 @@ void main() {
     expect(find.textContaining('无法恢复'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(TextButton, '取消'));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(seed.stack.generationDeletes, isEmpty, reason: '取消不调用删除');
-    expect(find.text('2/3'), findsOneWidget, reason: '代次与投影原样不动');
+    expect(provider.versionInfoFor(1)!.aliveCount, 3, reason: '取消不删除');
+    expect(find.text('2/3'), findsOneWidget, reason: '代次与正文原样不动');
     expect(find.text('第 2 代正文'), findsOneWidget);
   });
 
-  testWidgets('确认删除：删当前代 → 回落前一代，最大数不变、左右箭头按剩余代置灰', (tester) async {
-    final seed = await seedThreeGens();
-    final provider = await pumpChatScreen(
-      tester,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
+  testWidgets('确认删除：删当前代 → 回落前一代，最大数不变、左右箭头按剩余代置灰',
+      (tester) async {
+    final stack = await seedThreeGens(tester);
+    final provider = await pumpChatScreen(tester, stack: stack);
     expect(arrowState(tester), (prev: true, next: true));
 
-    // 「删除落地」的投影效果（真实语义由真库用例覆盖）：切到第 1 代。
-    seed.stack.onDeleteGeneration = (bookUuid, roundIndex, _) {
-      final index = seed.dao.rounds.indexWhere(
-        (r) => r.bookUuid == bookUuid && r.roundIndex == roundIndex,
-      );
-      seed.dao.rounds[index] = seed.dao.rounds[index].copyWith(
-        aiNarrative: '第 1 代正文',
-        useStackUuid: 'g1',
-      );
-    };
-
     await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tapMenuItem(tester, 'deleteGen', '删除此代');
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
-    await tester.pumpAndSettle();
+    await settle(tester);
 
-    expect(seed.stack.generationDeletes, hasLength(1));
-    expect(seed.stack.generationDeletes.single.generationUuid, 'g2');
-    expect(seed.stack.generationDeletes.single.roundIndex, 1);
-    expect(seed.stack.generationDeletes.single.bookUuid, kHarnessBookUuid);
+    // R3：删代即真实写库，当前代回落到前一代 g1。
+    expect(provider.versionInfoFor(1)!.aliveCount, 2);
+    expect(provider.rounds.single.uuid, 'g1', reason: '回落到前一代');
     expect(find.text('第 1 代正文'), findsOneWidget, reason: '正文随回落代');
     expect(
       find.text('1/3'),
@@ -181,67 +179,48 @@ void main() {
     expect(provider.isSending, isFalse, reason: '删除不发起生成');
   });
 
-  testWidgets('服务拒绝（唯一代 / 失败）：提示删除失败且不改动视图', (tester) async {
-    final seed = await seedThreeGens();
-    await pumpChatScreen(
-      tester,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
-    seed.stack.deleteGenerationResult = false;
+  testWidgets('守卫：菜单已开出后缩到唯一一代 → 悬浮提示「请删除此轮」且不删除',
+      (tester) async {
+    final stack = await seedThreeGens(tester);
+    final provider = await pumpChatScreen(tester, stack: stack);
 
     await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
-    await tapMenuItem(tester, 'deleteGen', '删除此代');
-    await tester.tap(find.widgetWithText(FilledButton, '删除'));
-    await settleNoticeEnter(tester);
-
-    expect(find.textContaining('删除失败'), findsOneWidget);
-    expect(find.text('2/3'), findsOneWidget, reason: '失败不改动代次');
-    await flushNotices(tester);
-  });
-
-  testWidgets('守卫：菜单已开出后缩到唯一一代 → 悬浮提示「请删除此轮」且不删除', (tester) async {
-    final seed = await seedThreeGens();
-    final provider = await pumpChatScreen(
-      tester,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
-
-    await tester.longPress(find.text('第 2 代正文'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(menuItem('deleteGen'), findsOneWidget);
 
     // 菜单开着的期间版本树变化（模拟特殊手段触发 / 竞态）。
-    seed.stack.metas = [seed.stack.metas[1]];
-    await provider.loadRounds(kHarnessBookUuid);
+    await tester.runAsync(() async {
+      await stack.repos.rounds.deleteGeneration(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: 'g1',
+      );
+      await stack.repos.rounds.deleteGeneration(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: 'g3',
+      );
+    });
+    await tester.runAsync(() => provider.loadRounds(kHarnessBookUuid));
     await tester.pump();
 
     await tapMenuItem(tester, 'deleteGen', '删除此代');
     await settleNoticeEnter(tester);
     expect(find.textContaining('唯一代不可删除，请删除此轮。'), findsOneWidget);
-    expect(seed.stack.generationDeletes, isEmpty, reason: '守卫拦截：不做任何删除');
+    expect(provider.versionInfoFor(1)!.aliveCount, 1, reason: '守卫拦截：不做任何删除');
     expect(find.byType(AlertDialog), findsNothing, reason: '不进入确认框');
     await flushNotices(tester);
   });
 
   testWidgets('守卫：正在生成中点击「删除此代」→ 提示暂不可删除', (tester) async {
-    final seed = await seedThreeGens();
+    final stack = await seedThreeGens(tester);
     final ai = FakeStreamingAiService();
-    final provider = await pumpChatScreen(
-      tester,
-      ai: ai,
-      roundDao: seed.dao,
-      roundStackService: seed.stack,
-    );
+    final provider = await pumpChatScreen(tester, stack: stack, ai: ai);
 
     final sendFuture = provider.sendRound(userInput: '继续剧情', book: book);
     await tester.pump();
     expect(provider.isSending, isTrue);
 
     await tester.longPress(find.text('第 2 代正文'));
-    // 生成中不能用 pumpAndSettle（转圈动画永不结束），手动推一帧让菜单弹出。
+    // 生成中不能用 settle（转圈动画永不结束），手动推一帧让菜单弹出。
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(
       find.descendant(
@@ -252,7 +231,11 @@ void main() {
     await settleNoticeEnter(tester);
 
     expect(find.textContaining('正在生成中，暂不可删除此代。'), findsOneWidget);
-    expect(seed.stack.generationDeletes, isEmpty);
+    expect(
+      provider.rounds.firstWhere((r) => r.roundIndex == 1).uuid,
+      'g2',
+      reason: '守卫拦截：代次不动',
+    );
     await flushNotices(tester);
     expect(await finishStream(tester, ai, provider, sendFuture), isTrue);
   });

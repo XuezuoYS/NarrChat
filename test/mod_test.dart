@@ -1,12 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/database/mod_dao.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/preset_mods.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/services/prompt_interface.dart';
+
+import 'helpers/fakes.dart';
 
 void main() {
   group('Mod 模型', () {
@@ -195,10 +196,37 @@ void main() {
     });
   });
 
+  /// 用真库搭一个 ModProvider：`mods` 落库，`configs` 里**启用的**落成 `use_mods`。
+  ///
+  /// R3 的 `use_mods` 只存启用项，所以「未启用被忽略」是结构保证，
+  /// 不再靠"禁用配置行"表达。
+  Future<ModProvider> seededProvider({
+    List<Mod> mods = const [],
+    List<BookModConfig> configs = const [],
+  }) async {
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '书');
+    // 第二本书：用来验证「别的书没有关联行 -> 什么都不注入」。
+    await stack.seedBook(uuid: 'b2', title: '书 B');
+    for (final mod in mods) {
+      await stack.repos.mod.createMod(mod);
+    }
+    final refs = <String>[];
+    for (final config in configs) {
+      if (!config.isEnabled) continue;
+      final ref = config.presetKey != null
+          ? Mod.presetRef(config.presetKey!)
+          : (config.modUuid ?? '');
+      if (ref.isNotEmpty) refs.add(ref);
+    }
+    await stack.repos.mod.setUseModUuids('b1', refs);
+    return ModProvider(repository: stack.repos.mod);
+  }
+
   group('ModProvider 世界书解析', () {
     test('关键词命中才注入，恒定条目始终注入', () async {
-      final provider = ModProvider(
-        dao: _MockModDao(
+      final provider = await seededProvider(
           mods: const [
             Mod(
               uuid: 'm1',
@@ -220,7 +248,6 @@ void main() {
               sortOrder: 0,
             ),
           ],
-        ),
       );
 
       // 命中关键词：恒定条目 + 命中条目都注入
@@ -261,8 +288,7 @@ void main() {
     });
 
     test('未启用或引用不存在的 Mod 被忽略', () async {
-      final provider = ModProvider(
-        dao: _MockModDao(
+      final provider = await seededProvider(
           mods: const [
             Mod(uuid: 'm1', name: 'A', worldBookEntries: [
               ModWorldBookEntry(content: 'A 恒定'),
@@ -283,7 +309,6 @@ void main() {
               sortOrder: 1,
             ),
           ],
-        ),
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -294,8 +319,7 @@ void main() {
     });
 
     test('同名不同 uuid 的 Mod 是两台独立实体：只按 uuid 命中', () async {
-      final provider = ModProvider(
-        dao: _MockModDao(
+      final provider = await seededProvider(
           mods: const [
             Mod(uuid: 'm1', name: '同名', worldBookEntries: [
               ModWorldBookEntry(content: 'm1 的内容'),
@@ -308,7 +332,6 @@ void main() {
           configs: const [
             BookModConfig(bookUuid: 'b1', modUuid: 'm2', isEnabled: true),
           ],
-        ),
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -330,8 +353,7 @@ void main() {
 
   group('ModProvider · 多 Mod 文案拼接（块间空行 + 归一化）', () {
     test('不同 Mod 的同类文案之间恰好空一行，且不信任 Mod 文本自带的空白', () async {
-      final provider = ModProvider(
-        dao: _MockModDao(
+      final provider = await seededProvider(
           mods: const [
             // 第一个 Mod 故意在行尾留空格、块尾留多余空行（拼合端必须自行归一化）。
             Mod(
@@ -363,7 +385,6 @@ void main() {
               sortOrder: 1,
             ),
           ],
-        ),
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -448,17 +469,3 @@ void main() {
   });
 }
 
-/// 内存版 ModDao，避免测试依赖 sqflite。
-class _MockModDao extends ModDao {
-  final List<Mod> mods;
-  final List<BookModConfig> configs;
-
-  _MockModDao({required this.mods, required this.configs});
-
-  @override
-  Future<List<Mod>> getAllMods() async => mods;
-
-  @override
-  Future<List<BookModConfig>> getBookMods(String bookUuid) async =>
-      configs.where((c) => c.bookUuid == bookUuid).toList();
-}

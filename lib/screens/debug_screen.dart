@@ -41,20 +41,40 @@ class DebugScreen extends StatelessWidget {
     );
   }
 
-  /// 展示当前数据库版本：代码期望的 schema 版本 + 库文件实际 `user_version`；
-  /// 读取失败（库被占用 / 损坏等）时以悬浮通知提示。
+  /// 展示各库版本：3.0 起数据分成多个库文件，逐个列出实际 `user_version`
+  /// 与期望值；读取失败（库被占用 / 损坏等）时以悬浮通知提示。
   Future<void> _showDatabaseVersion(BuildContext context) async {
     final service = databaseService ?? SqliteDebugDatabaseService();
     try {
-      final version = await service.readVersion();
+      final databases = await service.listDatabases();
       if (!context.mounted) return;
+      final existing = databases.where((db) => db.exists).toList();
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('数据库版本'),
-          content: Text(
-            '应用代码 schema 版本：${version.expectedVersion}\n'
-            '数据库文件版本（user_version）：${version.actualVersion}',
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('3.0 起数据分成多个库文件，各自带版本号：'),
+                const SizedBox(height: 10),
+                if (existing.isEmpty)
+                  const Text('还没有任何库文件。', style: TextStyle(fontSize: 12))
+                else
+                  for (final db in existing)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '${db.label}：${db.actualVersion}'
+                        '${db.versionMatches ? '' : '（期望 ${db.expectedVersion}）'}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -108,13 +128,13 @@ class DebugScreen extends StatelessWidget {
         children: [
           _DebugOptionCard(
             icon: Icons.info_outline,
-            label: '查看当前数据库版本',
+            label: '查看各数据库版本',
             onTap: () => _showDatabaseVersion(context),
           ),
           const SizedBox(height: 12),
           _DebugOptionCard(
             icon: Icons.storage_outlined,
-            label: '查看当前数据库结构、内容和表',
+            label: '查看数据库结构、内容和表（可切换库）',
             onTap: () => _openDatabaseInspect(context),
           ),
           const SizedBox(height: 12),

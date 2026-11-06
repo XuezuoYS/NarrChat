@@ -334,4 +334,37 @@ void main() {
     );
     expect(context.rounds, isEmpty);
   });
+
+  test('超长提示在写入口被截断（插代 / 批量导入 / 改元信息都收口）', () async {
+    final long = '提' * (BookDb.maxMessageLength + 2000);
+
+    // ① 插代路径
+    await book.rounds.insert(
+      gen('g1', 1, using: true, status: 'error', message: long),
+    );
+    final inserted = (await book.rounds.generation('g1'))!;
+    expect(inserted.meta.message.length, BookDb.maxMessageLength);
+    expect(inserted.meta.message.endsWith('…'), isTrue, reason: '截断处有省略号');
+
+    // ② 批量导入路径（迁移 / 还原走这条）
+    await book.rounds.importAll([
+      gen('g2', 2, father: 'g1', status: 'warning', message: long),
+    ]);
+    final imported = (await book.rounds.generation('g2'))!;
+    expect(imported.meta.message.length, BookDb.maxMessageLength);
+
+    // ③ 改元信息路径（关闭提示 / 生成后写警告走这条）
+    await book.rounds.updateMeta('g1', {
+      'message_status': 'warning',
+      'message': long,
+    });
+    final updated = (await book.rounds.generation('g1'))!;
+    expect(updated.meta.message.length, BookDb.maxMessageLength);
+    expect(updated.meta.messageStatus, 'warning');
+
+    // 清空仍然是空串：不能被截断逻辑变成「只剩一个省略号」。
+    await book.rounds.updateMeta('g1', {'message_status': '', 'message': ''});
+    final cleared = (await book.rounds.generation('g1'))!;
+    expect(cleared.meta.message, isEmpty);
+  });
 }

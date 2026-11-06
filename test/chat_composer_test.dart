@@ -61,7 +61,7 @@ void main() {
       );
 
   testWidgets('输入框：预设 2 行起步，最高 8 行（超出内滚）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     final field = tester.widget<TextField>(composerField());
     expect(field.minLines, 2);
@@ -91,7 +91,7 @@ void main() {
       tester.getSize(composerField()).height;
 
   testWidgets('输入框：第 3 行起才向上顶高（默认高度只按 2 行起算）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     final defaultHeight = textAreaHeight(tester);
 
@@ -110,13 +110,13 @@ void main() {
   });
 
   testWidgets('输入卡：文本区与底部控件行之间保留间隙（不再无间隙贴合）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     expect(controlRowTop(tester) - textAreaBottom(tester), closeTo(8, 0.01));
   });
 
   testWidgets('输入卡：填满三行（已被顶高）时底部间隙依旧保留', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.enterText(composerField(), '第一行\n第二行\n第三行');
     await tester.pump();
@@ -126,7 +126,7 @@ void main() {
   });
 
   testWidgets('宽屏侧栏常驻：仅显示滚动到底部按钮（侧栏按钮隐藏）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 宽屏 + 侧栏默认展开（常驻）：只保留滚动到底部按钮，自动右对齐。
     expect(find.byIcon(Icons.vertical_align_bottom), findsOneWidget);
@@ -136,7 +136,6 @@ void main() {
   testWidgets('窄屏：两个 1:1 方形按钮齐全（从右往左 = 打开侧栏在右）', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       size: const Size(600, 900),
     );
 
@@ -152,7 +151,7 @@ void main() {
   });
 
   testWidgets('下拉摘要：默认「流式 | 思考」（搜索默认关闭），开启后搜索段警告色', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 默认：思考/流式开启、联网搜索关闭。
     expect(find.textContaining('流式'), findsOneWidget);
@@ -183,7 +182,6 @@ void main() {
   testWidgets('下拉摘要：全部选项关闭时显示「无」', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: _AllDisabledSettings(),
     );
 
@@ -192,7 +190,7 @@ void main() {
   });
 
   testWidgets('下拉菜单：打开与关闭带 Material 动画（淡入淡出）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 任一祖先 FadeTransition 透明度 < 1 → 动画进行中（淡入/淡出）。
     bool anyFading() {
@@ -229,7 +227,7 @@ void main() {
   });
 
   testWidgets('联网搜索：未启用时二级提示灰色，启用后变警告色', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 打开选项下拉：搜索默认关闭 → 二级提示为灰色。
     await tester.tap(find.byIcon(Icons.tune));
@@ -253,7 +251,7 @@ void main() {
   });
 
   testWidgets('联网搜索二级提示：未启用为灰且可点二级文本启用', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 打开菜单：搜索默认关闭，二级提示显示且为灰色。
     await tester.tap(find.byIcon(Icons.tune));
@@ -280,7 +278,7 @@ void main() {
   });
 
   testWidgets('下拉菜单：切换选项后摘要实时更新', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 默认：思考/流式开启、联网搜索关闭。
     expect(find.textContaining('思考'), findsOneWidget);
@@ -310,7 +308,6 @@ void main() {
     final completion = _RecordingCompletion();
     final roundProvider = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       onGenerationCompleted: completion.call,
     );
 
@@ -327,7 +324,6 @@ void main() {
   testWidgets('Ctrl+Enter 快捷发送：发送并清空输入框', (tester) async {
     final roundProvider = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
     );
 
     await tester.enterText(composerField(), '快捷键发送');
@@ -353,7 +349,6 @@ void main() {
     final ai = FakeStreamingAiService();
     final roundProvider = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       ai: ai,
       seedRounds: 1,
     );
@@ -379,7 +374,6 @@ void main() {
     final ai = FakeStreamingAiService();
     final roundProvider = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       ai: ai,
       seedRounds: 4,
     );
@@ -415,7 +409,6 @@ void main() {
   testWidgets('红点不因调整窗口宽度/修改左下角选项误触发', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       seedRounds: 2,
     );
 
@@ -640,7 +633,7 @@ void main() {
   }
 
   testWidgets('发送按钮：输入为空时禁用，底色为浅色（区分可点态）', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     expect(tester.widget<IconButton>(sendButton()).onPressed, isNull);
     expect(
@@ -651,7 +644,7 @@ void main() {
   });
 
   testWidgets('发送按钮：输入文本后恢复可点且底色为品牌蓝', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.enterText(composerField(), '有内容');
     await tester.pump();
@@ -661,7 +654,7 @@ void main() {
   });
 
   testWidgets('发送按钮：仅空白字符仍禁用，清空后回到禁用', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.enterText(composerField(), '   ');
     await tester.pump();
@@ -683,7 +676,6 @@ void main() {
   testWidgets('发送按钮：深色主题下禁用底色为深色', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       theme: NarrChatTheme.dark,
     );
 
@@ -700,7 +692,6 @@ void main() {
     final ai = FakeStreamingAiService();
     final rp = await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       ai: ai,
     );
 
@@ -738,7 +729,7 @@ void main() {
       tester.widget<Text>(charCountText()).style!.color!;
 
   testWidgets('实时字数：空输入显示 0 字（弱化色），随键入实时更新', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     expect(charCount('0 字'), findsOneWidget);
     expect(charCountColor(tester), NarrChatColors.light.placeholder);
@@ -756,7 +747,7 @@ void main() {
   });
 
   testWidgets('实时字数：空格与换行计入，表情按 1 个字符计', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.enterText(composerField(), 'a b\nc');
     await tester.pump();
@@ -768,7 +759,7 @@ void main() {
   });
 
   testWidgets('实时字数：位于模型名正下方、右边界与模型名对齐，字号更小', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     final labelRect = tester.getRect(modelLabel());
     final countRect = tester.getRect(find.byType(CharCountIndicator));
@@ -787,7 +778,7 @@ void main() {
   });
 
   testWidgets('实时字数：点击字数即展开模型选择器下拉菜单', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     // 字数属于模型选择器热区：点它应弹出模型菜单（而非无响应）。
     await tester.tap(find.byType(CharCountIndicator));
@@ -797,7 +788,7 @@ void main() {
   });
 
   testWidgets('实时字数：位数增长既不推动控件行，也不挤占模型名', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     final sendLeft = tester.getTopLeft(sendButton()).dx;
     final labelWidth = tester.getSize(modelLabel()).width;
@@ -812,7 +803,7 @@ void main() {
   });
 
   testWidgets('实时字数：两行小字不额外撑高底部控件行', (tester) async {
-    await pumpChatScreen(tester, bookDao: FakeBookDao(books: [book]));
+    await pumpChatScreen(tester);
 
     await tester.enterText(composerField(), 'x' * 1234);
     await tester.pump();
@@ -827,7 +818,6 @@ void main() {
   testWidgets('实时字数：窄屏（360 宽）下不挤占模型名且不溢出', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       size: const Size(360, 740),
     );
 
@@ -874,7 +864,6 @@ void main() {
   testWidgets('Agent Lv.1：左下角改为联网同款黄色徽标，不再显示选项摘要', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       experimentalSettings: AgentModeSettings(level: AgentModeLevel.lv1),
     );
 
@@ -893,7 +882,6 @@ void main() {
   testWidgets('Agent Lv.2：徽标为 Agent Lv.2 On (BETA)', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       experimentalSettings: AgentModeSettings(),
     );
 
@@ -904,7 +892,6 @@ void main() {
   testWidgets('Agent 窄屏（360 宽）：徽标单行省略且不溢出', (tester) async {
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       experimentalSettings: AgentModeSettings(),
       size: const Size(360, 740),
     );
@@ -924,7 +911,6 @@ void main() {
     final settings = AiSettingsProvider();
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       experimentalSettings: AgentModeSettings(),
     );
@@ -961,7 +947,6 @@ void main() {
     final settings = _NoSearchSettings();
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
       experimentalSettings: AgentModeSettings(),
     );
@@ -979,7 +964,6 @@ void main() {
     final settings = AiSettingsProvider();
     await pumpChatScreen(
       tester,
-      bookDao: FakeBookDao(books: [book]),
       settings: settings,
     );
 

@@ -7,7 +7,6 @@ import 'package:narrchat/widgets/composer_input_mode.dart';
 import 'package:narrchat/widgets/round_version_stepper.dart';
 
 import 'helpers/chat_harness.dart';
-import 'helpers/fakes.dart';
 
 /// AI 气泡「按意见修改」的 UI 入口测试（灰条复用 + 落库口径）。
 ///
@@ -40,7 +39,8 @@ void main() {
     await tester.enterText(composerField(), opinion);
     await tester.pump();
     await tester.tap(sendButton());
-    await tester.pump();
+    // 点发送后 provider 要跑真库 I/O：交给 settle 按轮次推进真实事件循环。
+    await settle(tester);
     expect(find.byType(AlertDialog), findsNothing, reason: '灰条用途不再二次确认');
     await waitSendDone(tester, provider);
   }
@@ -118,14 +118,20 @@ void main() {
     expect(find.textContaining('将删除本轮及之后的所有轮次'), findsNothing);
     await waitSendDone(tester, rp);
 
-    // 同轮号新增一代：第 1 轮仍是第 1 轮，正文换成新生成的内容。
+    // 同轮号新增一代：活动链长度不变（同轮换代），但组内代数 +1，
+    // 且链上展示的正文换成新生成的内容。
+    final vi = rp.versionInfoFor(1);
+    expect(rp.versionInfoFor(1)!.aliveCount, 2,
+        reason: 'error=${rp.error} sending=${rp.isSending} '
+            'vi=$vi rounds=${rp.rounds.length} '
+            'tail=${rp.rounds.isEmpty ? null : rp.rounds.last.aiNarrative}');
     final updated = rp.rounds.last;
     expect(updated.roundIndex, 1);
     expect(updated.aiNarrative, contains('成功正文'));
     // 内容与修改前一致：原输入沿用（意见不落库）。
     expect(updated.userInput, '第 1 轮的用户输入');
     // 实发报文 = 修改轮注入：重写第 1 轮 + 意见。
-    final raw = rp.rawExchangesFor(updated.id!)!.single.requestBody;
+    final raw = rp.rawExchangesFor(updated.uuid)!.single.requestBody;
     expect(raw, contains('重写第 1 轮：'));
     expect(raw, contains('把这段写紧凑些'));
     // 用途已消费：灰条收起、输入框清空。
@@ -149,35 +155,28 @@ void main() {
   });
 
   testWidgets('多次修改后出现代次控件（与刷新本轮同一套 ← / → 口径）', (tester) async {
-    final dao = FakeRoundDao();
-    final stack = FakeRoundStackService(roundDao: dao);
-    final rp = await pumpChatScreen(
-      tester,
-      roundDao: dao,
-      roundStackService: stack,
-      seedRounds: 1,
-      seedBodyRepeats: 1,
-    );
+    final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
-    // 第一次修改：只有单代 → 不显示控件。
+    // R3：重新生成 / 按意见修改不删旧代，所以**第一次**修改后同组就是 2 代，
+    // 代次控件立刻出现（R2 时代种进去的那轮没有版本树条目，才要等第二次）。
     await tester.tap(modifyButton());
     await tester.pumpAndSettle();
     await submitOpinion(tester, rp, '第一版意见');
-    expect(find.byKey(RoundVersionStepper.stepperKey), findsNothing);
+    expect(rp.versionInfoFor(1)!.aliveCount, 2);
+    expect(find.byType(RoundVersionStepper), findsOneWidget);
+    expect(find.text('2/2'), findsOneWidget);
 
-    // 第二次修改：同分组新增一代 → 出现控件，当前 = 最新（2/2）。
+    // 第二次修改：3 代 → 3/3。
     await tester.tap(modifyButton());
     await tester.pumpAndSettle();
     await submitOpinion(tester, rp, '第二版意见');
+    expect(rp.versionInfoFor(1)!.aliveCount, 3);
+    expect(find.text('3/3'), findsOneWidget);
 
-    expect(find.byKey(RoundVersionStepper.stepperKey), findsOneWidget);
-    expect(find.text('2/2'), findsOneWidget);
-
-    // ← 走真实切换入口（投影重建由 RoundStackService 负责，其语义另有真库用例覆盖）。
+    // ← 走真实切换入口：同组切到上一代（旧代不会被删除，只是 is_using 换人）。
     await tester.tap(find.byKey(RoundVersionStepper.prevKey));
-    await tester.pumpAndSettle();
-    expect(stack.switches, hasLength(1));
-    expect(stack.switches.single.roundIndex, 1);
+    await settle(tester);
+    expect(find.text('2/3'), findsOneWidget, reason: '切回上一代');
     expect(rp.rounds.last.roundIndex, 1);
   });
 }

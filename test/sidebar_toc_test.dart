@@ -53,14 +53,35 @@ Finder _sectionHeader(String label) => find.ancestor(
 Finder _inOverlay(String text) =>
     find.descendant(of: _overlay(), matching: find.text(text));
 
+/// 把一轮 `Round` 播进真库（R3 没有 rounds 投影表，正文列走 updateContent 补齐）。
+Future<void> _seedRound(TestStack stack, Round round) async {
+  final seeded = await stack.seedRound(
+    kHarnessBookUuid,
+    roundIndex: round.roundIndex,
+    userInput: round.userInput,
+    aiNarrative: round.aiNarrative,
+  );
+  await stack.repos.rounds.updateContent(
+    bookUuid: kHarnessBookUuid,
+    generationUuid: seeded.uuid,
+    fields: {
+      'current_time': round.currentTime,
+      'world_state': round.worldState,
+      'character_state': round.characterState,
+      'memory_summary': round.memorySummary,
+    },
+  );
+}
 Future<void> _pumpSidebar(
   WidgetTester tester, {
   /// 角色状态文本；缺省用 [_charState]（2 名角色）。落点类用例传
   /// [_manyCharState] 把文档拉长，保证落点不被末尾折叠吃掉。
   String? characterState,
 }) async {
-  final dao = FakeRoundDao();
-  await dao.insertRound(
+  final stack = (await tester.runAsync(TestStack.create))!;
+  addTearDown(() => tester.runAsync(stack.dispose));
+  final rp = await pumpChatScreen(tester, stack: stack, seedRounds: 0);
+  await _seedRound(stack,
     Round(
       bookUuid: kHarnessBookUuid,
       roundIndex: 1,
@@ -73,7 +94,8 @@ Future<void> _pumpSidebar(
       createdAt: DateTime.now(),
     ),
   );
-  await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+  await rp.loadRounds(kHarnessBookUuid);
+  await settle(tester);
 }
 
 /// 侧栏 CustomScrollView 的控制器（与导轨共用）见 [sidebarScrollController]。
@@ -170,7 +192,7 @@ void main() {
           )
           .first,
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
     // 折叠后：角色名条目同步消失（未折叠时同为在列位置）。
     await _dragSession(tester, move: const Offset(0, 1000000), body: (g) async {
       expect(_inOverlay('陆尘'), findsNothing);
@@ -208,8 +230,10 @@ void main() {
   });
 
   testWidgets('多角色真机形态：任意拖动位置完整目录都在浮层中', (tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final rp = await pumpChatScreen(tester, stack: stack, seedRounds: 0);
+    await _seedRound(stack,
       Round(
         bookUuid: kHarnessBookUuid,
         roundIndex: 18,
@@ -222,7 +246,8 @@ void main() {
         createdAt: DateTime.now(),
       ),
     );
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+  await rp.loadRounds(kHarnessBookUuid);
+  await settle(tester);
 
     // 拖到中部：目录（4 区块 + 类别 + 全部角色名）完整可见。
     const names = ['当前时间', '世界状态', '角色状态', '主角', 'NPC', '唐小棠',
@@ -239,8 +264,10 @@ void main() {
   });
 
   testWidgets('拖动大幅度越出轨道边界仍钳制在 maxScrollExtent', (tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final rp = await pumpChatScreen(tester, stack: stack, seedRounds: 0);
+    await _seedRound(stack,
       Round(
         bookUuid: kHarnessBookUuid,
         roundIndex: 18,
@@ -253,7 +280,8 @@ void main() {
         createdAt: DateTime.now(),
       ),
     );
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+  await rp.loadRounds(kHarnessBookUuid);
+  await settle(tester);
 
     final controller = sidebarScrollController(tester);
     final maxExtent = controller.position.maxScrollExtent;
@@ -275,8 +303,10 @@ void main() {
   });
 
   testWidgets('角色状态编辑→取消：锚点当帧尚未布局也不抛 hasSize 断言', (tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final rp = await pumpChatScreen(tester, stack: stack, seedRounds: 0);
+    await _seedRound(stack,
       Round(
         bookUuid: kHarnessBookUuid,
         roundIndex: 1,
@@ -293,12 +323,13 @@ void main() {
         createdAt: DateTime.now(),
       ),
     );
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+  await rp.loadRounds(kHarnessBookUuid);
+  await settle(tester);
 
     await tester.tap(
       find.descendant(of: _sectionHeader('角色状态'), matching: find.text('编辑')),
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
     final cancelBtn = find.descendant(
       of: _sectionHeader('角色状态'),
       matching: find.text('取消'),
@@ -309,7 +340,7 @@ void main() {
     // 关键断言：取消当帧导轨重解析目录偏移不得触发
     // 「RenderBox was not laid out」断言（否则会在面板内渲染错误红框）。
     expect(tester.takeException(), isNull);
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(tester.takeException(), isNull);
     // 视图模式与目录条目恢复。
     expect(find.byType(MarkdownCollapsibleEditor), findsOneWidget);
@@ -320,8 +351,15 @@ void main() {
   });
 
   testWidgets('窄屏（移动抽屉）同样接入导轨', (tester) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final rp = await pumpChatScreen(
+      tester,
+      stack: stack,
+      seedRounds: 0,
+      size: const Size(600, 900),
+    );
+    await _seedRound(stack,
       Round(
         bookUuid: kHarnessBookUuid,
         roundIndex: 1,
@@ -334,12 +372,8 @@ void main() {
         createdAt: DateTime.now(),
       ),
     );
-    await pumpChatScreen(
-      tester,
-      roundDao: dao,
-      seedRounds: 0,
-      size: const Size(600, 900),
-    );
+    await rp.loadRounds(kHarnessBookUuid);
+    await settle(tester);
     // 窄屏抽屉默认收起：导轨随侧栏（抽屉内）一并挂载但位于屏幕外。
     expect(find.byType(QuickScrollRail), findsOneWidget);
     // 打开抽屉（聊天区左滑）。
@@ -348,7 +382,7 @@ void main() {
       const Offset(-400, 0),
       1200,
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.byType(SidebarPanel), findsOneWidget);
     // 抽屉展开后导轨仍可用（宽度归抽屉右缘）。
     final railRect = tester.getRect(find.byType(QuickScrollRail));

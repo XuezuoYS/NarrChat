@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/image_gallery_page.dart';
 import 'package:narrchat/services/storage_service.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
@@ -13,7 +12,52 @@ import 'package:provider/provider.dart';
 import 'helpers/fakes.dart';
 import 'helpers/notice_harness.dart';
 
+/// 存储管理面板（R3）：多库占用总览 + 整组导出/导入 + 旧版备份清理 + 图片库入口。
 void main() {
+  const sampleOverview = StorageOverview(
+    databases: [
+      StorageFileInfo(
+        id: 'library',
+        label: '书籍目录库',
+        path: 'C:/data/user_data/narrchat_library.db',
+        sizeBytes: 2048,
+        exists: true,
+      ),
+      StorageFileInfo(
+        id: 'book:b1',
+        label: '书 b1',
+        path: 'C:/data/user_data/books/narrbook_b1.db',
+        sizeBytes: 4096,
+        exists: true,
+      ),
+      StorageFileInfo(
+        id: 'legacy-backup',
+        label: '旧版数据库备份（2.x）',
+        path: 'C:/data/user_data/narrchat.db.r2.bak',
+        sizeBytes: 1024,
+        exists: true,
+      ),
+    ],
+    imageCount: 2,
+    imageBytes: 1536,
+    bookCount: 1,
+  );
+
+  final sampleImages = [
+    StorageImageInfo(
+      relPath: 'img/b.png',
+      name: 'b.png',
+      size: 512,
+      modified: DateTime(2026, 1, 2),
+    ),
+    StorageImageInfo(
+      relPath: 'img/a.png',
+      name: 'a.png',
+      size: 1024,
+      modified: DateTime(2026, 1, 1),
+    ),
+  ];
+
   Widget wrap(
     StorageService service, {
     Future<String?> Function()? pick,
@@ -21,7 +65,6 @@ void main() {
   }) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider.value(value: CloudSyncProvider()),
         Provider<StorageService>.value(value: service),
         // 图片库二级页依赖删除服务（删除 = 删文件 + 记录同步墓碑）。
         Provider<ImageDeletionService>.value(value: FakeImageDeletionService()),
@@ -46,73 +89,53 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    // 与云同步面板同一列宽（曾在该列宽出现 RenderFlex overflow）。
     await tester.pumpWidget(
-      wrap(
-        FakeStorageService(
-          db: StorageDbInfo(
-            path: 'C:/data/narrchat.db',
-            size: 2048,
-            modified: DateTime(2026, 1, 1),
-          ),
-        ),
-      ),
+      wrap(FakeStorageService(overviewValue: sampleOverview)),
     );
     await tester.pumpAndSettle();
+
     expect(find.text('存储管理'), findsOneWidget);
     expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
   });
 
-  testWidgets('渲染：数据库导出区 + 图片管理入口（含统计）', (tester) async {
+  testWidgets('渲染：多库占用总览 + 图片入口 + 三个操作按钮', (tester) async {
     final service = FakeStorageService(
-      db: StorageDbInfo(
-        path: 'C:/data/narrchat.db',
-        size: 2048,
-        modified: DateTime(2026, 1, 1),
-      ),
-      images: [
-        StorageImageInfo(
-          relPath: 'img/b.png',
-          name: 'b.png',
-          size: 512,
-          modified: DateTime(2026, 1, 2),
-        ),
-        StorageImageInfo(
-          relPath: 'img/a.png',
-          name: 'a.png',
-          size: 1024,
-          modified: DateTime(2026, 1, 1),
-        ),
-      ],
+      overviewValue: sampleOverview,
+      images: sampleImages,
     );
     await tester.pumpWidget(wrap(service));
     await tester.pumpAndSettle();
 
     expect(find.text('存储管理'), findsOneWidget);
-    expect(find.text('导出数据库'), findsOneWidget);
-    expect(find.textContaining('共 2 张'), findsOneWidget);
-    expect(find.text('本地/云端图片管理'), findsOneWidget);
-    // 不再是内联列表（无行名文本，而是入口卡）。
+    expect(find.text('本地数据'), findsOneWidget);
+    expect(find.text('书籍目录库'), findsOneWidget);
+    expect(find.text('书 b1'), findsOneWidget);
+
+    // 占用合计 = 库 + 图片；面板展示"合计/明细"。
+    expect(find.text('合计占用'), findsOneWidget);
+
+    expect(find.text('导出整组数据'), findsOneWidget);
+    expect(find.text('导入整组数据'), findsOneWidget);
+    expect(find.text('删除旧版备份'), findsOneWidget);
+    expect(find.text('图片库'), findsOneWidget);
+    expect(find.textContaining('2 张'), findsWidgets, reason: '总览与入口各显示一次');
+    // 不再是内联图片列表，而是入口卡。
     expect(find.text('b.png'), findsNothing);
     expect(find.byType(ImageGalleryPage), findsNothing);
   });
 
   testWidgets('空图片：入口显示暂无', (tester) async {
-    await tester.pumpWidget(wrap(FakeStorageService()));
+    await tester.pumpWidget(
+      wrap(FakeStorageService(overviewValue: sampleOverview)),
+    );
     await tester.pumpAndSettle();
     expect(find.textContaining('暂无图片'), findsOneWidget);
   });
 
   testWidgets('点击图片管理入口：进入图片库二级页面', (tester) async {
     final service = FakeStorageService(
-      images: [
-        StorageImageInfo(
-          relPath: 'img/a.png',
-          name: 'a.png',
-          size: 10,
-          modified: DateTime(2026, 1, 1),
-        ),
-      ],
+      overviewValue: sampleOverview,
+      images: sampleImages,
     );
     await tester.pumpWidget(wrap(service));
     await tester.pumpAndSettle();
@@ -123,14 +146,8 @@ void main() {
     expect(find.byType(ImageGalleryPage), findsOneWidget);
   });
 
-  testWidgets('导出数据库：选目录 + 自定义名后调用导出并提示', (tester) async {
-    final service = FakeStorageService(
-      db: StorageDbInfo(
-        path: 'C:/data/narrchat.db',
-        size: 2048,
-        modified: DateTime(2026, 1, 1),
-      ),
-    );
+  testWidgets('导出整组数据：选目录 + 自定义名后调用 exportArchive 并提示', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
     final outDir = Directory.systemTemp.createTempSync('storage_out_');
     addTearDown(() {
       if (outDir.existsSync()) outDir.deleteSync(recursive: true);
@@ -139,99 +156,86 @@ void main() {
     await tester.pumpWidget(wrap(service, pick: () async => outDir.path));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('导出数据库'));
+    await tester.tap(find.text('导出整组数据'));
     await tester.pumpAndSettle();
 
-    // 自定义文件名对话框。
-    await tester.enterText(find.byType(TextField), 'backup');
-    await tester.tap(find.text('导出'));
+    // 自定义文件名对话框；默认名带 .zip，用户改成 narrchat。
+    await tester.enterText(find.byType(TextField), 'narrchat');
+    await tester.tap(find.text('确定'));
     await tester.pumpAndSettle();
 
     expect(service.exportedTo, outDir.path);
-    expect(service.exportedName, 'backup.db'); // 自动补全 .db
+    expect(service.exportedName, 'narrchat.zip'); // 自动补全 .zip
     expect(find.textContaining('已导出'), findsOneWidget);
     await flushNotices(tester);
   });
 
-  testWidgets('本地数据库导出/导入：渲染入口', (tester) async {
-    await tester.pumpWidget(
-      wrap(
-        FakeStorageService(
-          db: StorageDbInfo(
-            path: 'C:/data/narrchat.db',
-            size: 2048,
-            modified: DateTime(2026, 1, 1),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('本地数据库导出/导入'), findsOneWidget);
-    expect(find.text('导出数据库'), findsOneWidget);
-    expect(find.text('导入数据库'), findsOneWidget);
-  });
+  testWidgets('导入整组数据：确认后调用 importArchive 并提示结果', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview)
+      ..importResult = const StorageImportResult(
+        ok: true,
+        message: '已还原 3 个文件',
+        backupPath: 'C:/data/.import-backup-1',
+        restoredFiles: 3,
+      );
 
-  testWidgets('本地数据库导入：取消选择文件时不导航', (tester) async {
     await tester.pumpWidget(
-      wrap(
-        FakeStorageService(
-          db: StorageDbInfo(
-            path: 'C:/data/narrchat.db',
-            size: 2048,
-            modified: DateTime(2026, 1, 1),
-          ),
-        ),
-        filePick: () async => null,
-      ),
+      wrap(service, filePick: () async => 'C:/data/narrchat.zip'),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('导入数据库'));
-    await tester.pumpAndSettle();
-    // 仍在存储管理页，未进入合并决策页。
-    expect(find.text('存储管理'), findsOneWidget);
-    expect(find.text('数据库合并'), findsNothing);
-  });
 
-  testWidgets('本地数据库导入：选择器异常时提示且不导航', (tester) async {
-    await tester.pumpWidget(
-      wrap(
-        FakeStorageService(
-          db: StorageDbInfo(
-            path: 'C:/data/narrchat.db',
-            size: 2048,
-            modified: DateTime(2026, 1, 1),
-          ),
-        ),
-        filePick: () async => throw Exception('picker failed'),
-      ),
-    );
+    await tester.tap(find.text('导入整组数据'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('导入数据库'));
+    expect(find.text('导入整组数据'), findsWidgets);
+    expect(find.text('开始导入'), findsOneWidget);
+
+    await tester.tap(find.text('开始导入'));
     await tester.pumpAndSettle();
-    // 吞掉异常并给出提示，仍在存储管理页。
-    expect(find.textContaining('选择数据库文件失败'), findsOneWidget);
-    expect(find.text('数据库合并'), findsNothing);
+
+    expect(service.importedArchive, 'C:/data/narrchat.zip');
+    expect(find.textContaining('已还原 3 个文件'), findsOneWidget);
     await flushNotices(tester);
   });
 
-  testWidgets('本地数据库导入：选择非 .db 文件时提示且不导航', (tester) async {
-    await tester.pumpWidget(
-      wrap(
-        FakeStorageService(
-          db: StorageDbInfo(
-            path: 'C:/data/narrchat.db',
-            size: 2048,
-            modified: DateTime(2026, 1, 1),
-          ),
-        ),
-        filePick: () async => 'C:/data/note.txt',
-      ),
-    );
+  testWidgets('导入整组数据：取消选择文件时不调导入', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
+    await tester.pumpWidget(wrap(service, filePick: () async => null));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('导入数据库'));
+
+    await tester.tap(find.text('导入整组数据'));
     await tester.pumpAndSettle();
-    expect(find.text('请选择 .db 数据库备份文件。'), findsOneWidget);
-    expect(find.text('数据库合并'), findsNothing);
+
+    expect(service.importedArchive, isNull);
+    expect(find.text('开始导入'), findsNothing);
+  });
+
+  testWidgets('导入整组数据：选择非 .zip 文件时提示且不调导入', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
+    await tester.pumpWidget(wrap(service, filePick: () async => 'C:/data/x.txt'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('导入整组数据'));
+    await tester.pumpAndSettle();
+
+    expect(service.importedArchive, isNull);
+    expect(find.text('请选择 .zip 导出包。'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  testWidgets('删除旧版备份：确认后调用 deleteLegacyBackup', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
+    await tester.pumpWidget(wrap(service));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('删除旧版备份'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除旧版数据库备份'), findsOneWidget);
+
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    expect(service.deleteLegacyCalls, 1);
+    expect(find.textContaining('旧版备份已删除'), findsOneWidget);
     await flushNotices(tester);
   });
 }

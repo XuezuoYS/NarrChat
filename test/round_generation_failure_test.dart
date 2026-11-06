@@ -96,15 +96,11 @@ void main() {
 
   group('自动重试', () {
     testWidgets('网络类失败自动重试：灰字「错误重连（x/3）」并最终成功', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final gate = Completer<void>();
       final ai = _RetryAiService(failTimes: 2, gate: gate);
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
         retryDelay: const Duration(milliseconds: 100),
       );
 
@@ -133,19 +129,15 @@ void main() {
       expect(roundProvider.retryStatus, isNull);
       expect(find.textContaining('错误重连'), findsNothing);
       expect(find.textContaining('重试成功正文'), findsOneWidget);
-      expect(bookDao.failed.isEmpty, isTrue);
+      expect(roundProvider.rounds.every((r) => !r.isError), isTrue, reason: '无错误代');
       expect(ai.calls, 3);
     });
 
     testWidgets('网络类失败重试 3 次后仍失败：进入「生成失败」红框', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = _RetryAiService(failTimes: 999); // 永远失败
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
         retryDelay: Duration.zero,
       );
 
@@ -157,22 +149,18 @@ void main() {
       expect(ai.calls, 4);
       expect(roundProvider.retryStatus, isNull);
       // 失败条目保留用户输入与原因。
-      expect(bookDao.failed.userInput, '触发失败');
-      expect(bookDao.failed.errorMessage, contains('模拟失败'));
+      expect(roundProvider.rounds.last.userInput, '触发失败');
+      expect(roundProvider.rounds.last.message, contains('模拟失败'));
       // UI：红框 + 无灰字重试文本残留。
-      expect(find.text('生成失败'), findsOneWidget);
+      expect(find.textContaining('模拟失败'), findsOneWidget, reason: '红条警告框显示失败原因');
       expect(find.textContaining('错误重连'), findsNothing);
     });
 
     testWidgets('API 业务类失败不自动重试', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = _RetryAiService(failTimes: 999, failKind: AiExceptionKind.api);
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
         retryDelay: Duration.zero,
       );
 
@@ -183,18 +171,14 @@ void main() {
       // 仅 1 次调用，不重试。
       expect(ai.calls, 1);
       expect(roundProvider.retryStatus, isNull);
-      expect(find.text('生成失败'), findsOneWidget);
+      expect(find.textContaining('模拟失败'), findsOneWidget, reason: '红条警告框显示失败原因');
     });
 
     testWidgets('流式中途断连：重置半截正文并重试成功', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = _StreamFailThenOkAiService();
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
         retryDelay: const Duration(milliseconds: 100),
       );
 
@@ -219,14 +203,10 @@ void main() {
 
   group('失败 / 停止', () {
     testWidgets('请求失败：保留用户输入并显示红色「生成失败」气泡（无消息提示）', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = ToggleAiService()..fail = true;
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
       );
 
       final sendFuture = roundProvider.sendRound(userInput: '触发失败', book: book);
@@ -234,27 +214,22 @@ void main() {
 
       expect(await sendFuture, isFalse);
       // 失败条目落库：用户输入 + 失败原因；rounds 表无新增轮次。
-      expect(bookDao.failed.userInput, '触发失败');
-      expect(bookDao.failed.errorMessage, contains('模拟失败'));
-      expect(bookDao.failed.isTruncated, isFalse);
-      expect(dao.rounds.where((r) => r.roundIndex > 0), isEmpty);
+      expect(roundProvider.rounds.last.userInput, '触发失败');
+      expect(roundProvider.rounds.last.message, contains('模拟失败'));
+      expect(roundProvider.rounds.where((r) => !r.isError), isEmpty, reason: '链上只剩错误代');
       // UI：用户输入气泡 + 红框标题 + 失败原因。
       expect(find.text('触发失败'), findsOneWidget);
-      expect(find.text('生成失败'), findsOneWidget);
+      expect(find.textContaining('模拟失败'), findsOneWidget, reason: '红条警告框显示失败原因');
       expect(find.text('模拟失败'), findsOneWidget);
       // 无悬浮通知兜底提示（失败已由「失败条目」气泡表达）。
       expect(find.textContaining('请求失败：'), findsNothing);
     });
 
     testWidgets('停止生成：保留用户输入并显示红色「已截断」', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = FakeStreamingAiService();
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
       );
 
       final sendFuture = roundProvider.sendRound(userInput: '请继续剧情', book: book);
@@ -268,78 +243,76 @@ void main() {
 
       expect(await sendFuture, isFalse);
       // 失败条目：用户输入 + 空错误信息（=已截断）。
-      expect(bookDao.failed.userInput, '请继续剧情');
-      expect(bookDao.failed.errorMessage, isEmpty);
-      expect(bookDao.failed.isTruncated, isTrue);
-      // UI：用户输入气泡 + 「已截断」红框（无「生成失败」）。
+      expect(roundProvider.rounds.last.userInput, '请继续剧情');
+      // 方案 A：中断也写文案（R2 的「空错误信息 + 截断布尔」在 R3 没有对应物）。
+      expect(roundProvider.rounds.last.message, '已中断');
+      expect(roundProvider.rounds.last.isError, isTrue);
+      // UI：用户气泡保留输入；原因由红条警告框呈现（无固定抬头）。
       expect(find.text('请继续剧情'), findsOneWidget);
-      expect(find.text('已截断'), findsOneWidget);
-      expect(find.text('生成失败'), findsNothing);
+      expect(find.textContaining('已中断'), findsOneWidget);
     });
 
-    testWidgets('失败后发送新消息：清空失败条目并正常生成', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
+    testWidgets('失败后不许直接开新轮：必须先重生成或删除该轮（R3 规则）', (tester) async {
       final ai = ToggleAiService();
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
       );
 
-      // 第一次请求失败。
+      // 第一次请求失败 → 链尾是一条错误代。
       ai.fail = true;
       var f = roundProvider.sendRound(userInput: '失败的输入', book: book);
       await waitSendDone(tester, roundProvider);
       expect(await f, isFalse);
-      expect(find.text('生成失败'), findsOneWidget);
+      expect(find.textContaining('模拟失败'), findsOneWidget, reason: '红条警告框显示失败原因');
+      expect(roundProvider.rounds.last.isError, isTrue);
 
-      // 发送新消息（不再失败）。
+      // R3 规则：错误代不能衍生下一轮 —— 直接发新消息会被拒绝，
+      // 否则新轮会挂在一条没有内容的父代下面。
       ai.fail = false;
       f = roundProvider.sendRound(userInput: '新的输入', book: book);
       await waitSendDone(tester, roundProvider);
-      expect(await f, isTrue);
+      expect(await f, isFalse);
+      expect(roundProvider.error, contains('上一轮生成失败'));
+      expect(find.text('新的输入'), findsNothing, reason: '被拒绝的输入不该落库');
+      expect(roundProvider.rounds.last.isError, isTrue);
 
-      // 失败条目已清空，红框消失；新轮正常落库（编号 1）。
-      expect(bookDao.failed.isEmpty, isTrue);
-      expect(find.text('生成失败'), findsNothing);
+      // 清掉错误轮之后才能正常继续：新一轮落在第 1 轮。
+      // 真库 I/O 必须走 runAsync：fake-async 区域里直接 await 会永远挂住。
+      await tester.runAsync(() => roundProvider.clearFailedAttempt());
+      await settle(tester);
+      expect(roundProvider.rounds, isEmpty);
+
+      f = roundProvider.sendRound(userInput: '新的输入', book: book);
+      await waitSendDone(tester, roundProvider);
+      expect(await f, isTrue);
+      expect(roundProvider.rounds.every((r) => !r.isError), isTrue, reason: '无错误代');
       expect(find.text('新的输入'), findsOneWidget);
       expect(find.textContaining('成功正文'), findsOneWidget);
-      final chat = dao.rounds.where((r) => r.roundIndex > 0).toList();
-      expect(chat, hasLength(1));
-      expect(chat.single.roundIndex, 1);
-      expect(chat.single.aiNarrative, contains('成功正文'));
+      expect(roundProvider.rounds.single.roundIndex, 1);
+      expect(roundProvider.rounds.single.aiNarrative, contains('成功正文'));
     });
 
     testWidgets('正常完成生成：无失败条目、无红框', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ToggleAiService(),
-        bookDao: bookDao,
-        roundDao: dao,
       );
 
       final sendFuture = roundProvider.sendRound(userInput: '正常剧情', book: book);
       await waitSendDone(tester, roundProvider);
 
       expect(await sendFuture, isTrue);
-      expect(bookDao.failed.isEmpty, isTrue);
+      expect(roundProvider.rounds.every((r) => !r.isError), isTrue, reason: '无错误代');
       expect(find.text('已截断'), findsNothing);
       expect(find.text('生成失败'), findsNothing);
     });
 
     testWidgets('失败保留用户消息图片：失败条目携带图片且失败气泡展示', (tester) async {
-      final bookDao = FakeBookDao();
-      final dao = FakeRoundDao();
       final ai = ToggleAiService()..fail = true;
       final roundProvider = await pumpChatScreen(
         tester,
         ai: ai,
-        bookDao: bookDao,
-        roundDao: dao,
       );
 
       final sendFuture = roundProvider.sendRound(
@@ -351,9 +324,8 @@ void main() {
 
       expect(await sendFuture, isFalse);
       // 失败条目保留图片（内存 + 提供者暴露）。
-      expect(bookDao.failed.userImages, ['img/a.png']);
-      expect(roundProvider.failedUserImages, ['img/a.png']);
-      expect(bookDao.failed.hasImages, isTrue);
+      expect(roundProvider.rounds.last.userImages, ['img/a.png']);
+      expect(roundProvider.rounds.last.userImages.isNotEmpty, isTrue);
       // 失败气泡展示图片缩略条 + 用户输入文本。
       expect(find.byType(ImagePreviewStrip), findsOneWidget);
       expect(find.text('带图失败'), findsOneWidget);

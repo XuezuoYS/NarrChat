@@ -1,43 +1,296 @@
 import 'dart:async';
-import 'dart:math' as math;
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:narrchat/config/ai_platforms.dart';
-import 'package:narrchat/database/book_dao.dart';
-import 'package:narrchat/database/mod_dao.dart';
-import 'package:narrchat/database/round_dao.dart';
-import 'package:narrchat/database/world_book_dao.dart';
-import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/database/migration/migration_paths.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
+import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/models/book.dart';
-import 'package:narrchat/models/failed_attempt.dart';
 import 'package:narrchat/models/mod.dart';
-import 'package:narrchat/models/round.dart';
-import 'package:narrchat/models/round_stack.dart';
+import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/models/world_book_entry.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
+import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
+import 'package:narrchat/repositories/book_repository.dart';
+import 'package:narrchat/repositories/mod_repository.dart';
+import 'package:narrchat/repositories/round_repository.dart';
+import 'package:narrchat/repositories/world_book_repository.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/app_repositories.dart';
+import 'package:narrchat/services/app_stores.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/services/notification_service.dart';
-import 'package:narrchat/services/round_stack_service.dart';
 import 'package:narrchat/services/storage_service.dart';
-import 'package:narrchat/services/update_check_service.dart';
-import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/services/sync/image_revival.dart';
 import 'package:narrchat/services/sync/img_tombstones.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
-import 'package:narrchat/services/sync/sync_remote_store.dart';
 import 'package:narrchat/services/taskbar_attention_backend.dart';
-import 'package:narrchat/database/sync_dao.dart';
+import 'package:narrchat/services/update_check_service.dart';
+import 'package:narrchat/utils/uuid_utils.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+/// 一套**隔离的真实存储**：临时目录 + 五个 R3 库 + 仓储集合。
+///
+/// 为什么不再用假 DAO：
+/// - schema / 事务 / 唯一键 / 外键这些只有真库才测得出来；
+/// - R3 里一本书就是一个文件，假 DAO 根本无法模拟"跨库一致性"。
+///
+/// 用法（每个用例独立一套，**禁止**跨用例共享）：
+/// ```dart
+/// late TestStack stack;
+/// setUp(() async => stack = await TestStack.create());
+/// tearDown(() async => stack.dispose());
+/// final bookUuid = await stack.seedBook();
+/// await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
+/// ```
+///
+/// 注意：本类**不会**初始化 `AppRepositories.instance`，provider 必须显式注入
+/// `stack.repos`；这样测试永远不会碰到真实用户目录。
+class TestStack {
+  TestStack._({
+    required this.stores,
+    required this.repos,
+    required this.rootDir,
+  });
+
+  /// 五个库与连接池。
+  final AppStores stores;
+
+  /// 整册仓储（books / rounds / worldBook / mod）。
+  final AppRepositories repos;
+
+  /// 本次用例的临时根目录（dispose 时整个删掉）。
+  final Directory rootDir;
+
+  /// 建一套隔离存储（内部会 `sqfliteFfiInit` 并把全局 factory 切到 FFI）。
+  ///
+  /// **用 no-isolate 版工厂**：`testWidgets` 的测试体跑在 fake-async 区域，
+  /// 真实事件循环不会自己转起来；带 isolate 的工厂要靠真实事件循环回消息，
+  /// 于是在 widget 用例里 `await` 一句查库就永远不返回（现象：did not complete）。
+  /// no-isolate 版把 sqlite 调用同步执行、结果用微任务回，`pump()` 一次就能推进完。
+  static Future<TestStack> create({String prefix = 'narrchat_test_'}) async {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfiNoIsolate;
+
+    final root = Directory.systemTemp.createTempSync(prefix);
+    final paths = MigrationPaths(
+      userDataDir: p.join(root.path, 'user_data'),
+      localConfigDir: p.join(root.path, 'local_config'),
+    );
+    // 临时目录里没有旧库，迁移只会写"已完成"标记，不会碰任何真实数据。
+    final stores = await AppStores.openAt(paths);
+    final repos = AppRepositories(
+      stores: stores,
+      books: BookRepositorySqlite(
+        library: stores.library,
+        cache: stores.cache,
+        books: stores.books,
+      ),
+      rounds: RoundRepository(books: stores.books),
+      worldBook: WorldBookRepository(books: stores.books),
+      mod: ModRepository(mods: stores.mods, books: stores.books),
+    );
+    return TestStack._(stores: stores, repos: repos, rootDir: root);
+  }
+
+  /// 本次用例使用的路径（调试 / 需要直接开库的用例用）。
+  MigrationPaths get paths => stores.paths;
+
+  /// 关掉所有连接并删临时目录。放 `tearDown` 里，失败也要执行。
+  Future<void> dispose() async {
+    try {
+      await stores.dispose();
+    } catch (_) {
+      // 关库失败不阻塞清理。
+    }
+    try {
+      await rootDir.delete(recursive: true);
+    } catch (_) {
+      // Windows 上偶发占用，留个临时目录不影响结论。
+    }
+  }
+
+  /// 建一本书，返回 uuid。[uuid] 传空则自动生成。
+  Future<String> seedBook({
+    String? uuid = '',
+    String title = '测试书',
+    String category = '',
+    String baseSetting = '',
+    String globalPrePrompt = '',
+    String globalPostPrompt = '',
+    int historyRounds = 1,
+    int memorySummaryRounds = 0,
+  }) {
+    return repos.books.createBook(Book(
+      uuid: uuid ?? '',
+      title: title,
+      category: category,
+      baseSetting: baseSetting,
+      globalPrePrompt: globalPrePrompt,
+      globalPostPrompt: globalPostPrompt,
+      historyRounds: historyRounds,
+      memorySummaryRounds: memorySummaryRounds,
+    ));
+  }
+
+  /// 直接改某本书的"最近对话时间"（首页时间排序用例用）。
+  ///
+  /// 缓存行是"列表读的副本"，改它等价于"这本书最近一次对话发生在 [time]"。
+  Future<void> setLastRoundAt(String bookUuid, DateTime time) async {
+    final existing = await stores.cache.indexOf(bookUuid);
+    if (existing == null) return;
+    await stores.cache.putIndex(existing.copyWith(lastRoundAt: time));
+  }
+
+  /// 「上一个轮号」在该分支上的当前选中代 uuid；第 1 轮返回 null（链首）。
+  ///
+  /// 用它而不是「活动链末尾」，见 [seedRound] 的说明。
+  static String? _fatherOf(
+    RoundChain chain,
+    int roundIndex,
+    String branchUuid,
+  ) {
+    if (roundIndex <= 1) return null;
+    for (final round in chain.rounds) {
+      if (round.roundIndex != roundIndex - 1) continue;
+      if (round.branchUuid != branchUuid) continue;
+      return round.uuid.isEmpty ? null : round.uuid;
+    }
+    return null;
+  }
+
+  /// 播一代（一轮的一个版本）。
+  ///
+  /// - [fatherUuid] 不传时自动接「**上一个轮号**的当前选中代」（第 1 轮为链首）；
+  ///   注意不是「活动链末尾」——给同一轮播两个版本时（比如造一组可切换的代），
+  ///   两代必须挂同一个父代才算同组；接链尾会让它们落进不同组，
+  ///   版本步进控件根本不出现（这个坑真实踩过）。
+  /// - 组内序号不传时自动取「同组最大 +1」；
+  /// - [isUsing] 为 true 时同组其它代会被清掉选中（与真实写入路径一致）。
+  Future<RoundGeneration> seedRound(
+    String bookUuid, {
+    int roundIndex = 1,
+    String? uuid,
+    String? fatherUuid,
+    String branchUuid = '',
+    int? serialNum,
+    bool isUsing = true,
+    String userInput = '',
+    String aiNarrative = '',
+    String messageStatus = '',
+    String message = '',
+    String modelName = '',
+    int? tokensIn,
+    int? tokensOut,
+    int? tokensCachedIn,
+    DateTime? operatedAt,
+    List<String> userImages = const [],
+    List<String> aiImages = const [],
+  }) async {
+    final chain = await repos.rounds.loadChain(bookUuid);
+    final resolvedFather = fatherUuid ?? _fatherOf(chain, roundIndex, branchUuid);
+
+    var maxSerial = 0;
+    for (final meta in chain.allMeta) {
+      final sameGroup = meta.branchUuid == branchUuid &&
+          meta.roundIndex == roundIndex &&
+          (meta.fatherUuid ?? '') == (resolvedFather ?? '');
+      if (sameGroup && meta.roundSerialNum > maxSerial) {
+        maxSerial = meta.roundSerialNum;
+      }
+    }
+
+    final generation = RoundGeneration(
+      meta: RoundMeta(
+        uuid: uuid ?? UuidUtils.generateUuidV4(),
+        fatherUuid: resolvedFather,
+        branchUuid: branchUuid,
+        roundIndex: roundIndex,
+        roundSerialNum: serialNum ?? maxSerial + 1,
+        isUsing: isUsing,
+        operatedAt: operatedAt ?? DateTime.now().toUtc(),
+        messageStatus: messageStatus,
+        message: message,
+      ),
+      modelName: modelName,
+      tokensIn: tokensIn,
+      tokensOut: tokensOut,
+      tokensCachedIn: tokensCachedIn,
+      userInput: userInput,
+      aiNarrative: aiNarrative,
+      userImages: userImages,
+      aiImages: aiImages,
+    );
+    await repos.rounds.appendGeneration(
+      bookUuid: bookUuid,
+      generation: generation,
+    );
+    return generation;
+  }
+
+  /// 连续播 [count] 轮（第 1..count 轮），返回全部代。
+  Future<List<RoundGeneration>> seedRounds(
+    String bookUuid, {
+    int count = 0,
+    int bodyRepeats = 40,
+  }) async {
+    final seeded = <RoundGeneration>[];
+    for (var i = 1; i <= count; i++) {
+      seeded.add(await seedRound(
+        bookUuid,
+        roundIndex: i,
+        userInput: '第 $i 轮的用户输入',
+        aiNarrative: '第 $i 轮的剧情正文。' * bodyRepeats,
+      ));
+    }
+    return seeded;
+  }
+
+  /// 建一条世界书条目，返回 uuid。
+  Future<String> seedWorldBookEntry(
+    String bookUuid, {
+    required String keyword,
+    String content = '',
+    bool isUsing = true,
+  }) async {
+    final saved = await repos.worldBook.upsert(
+      bookUuid,
+      WorldBookEntry(
+        bookUuid: bookUuid,
+        keyword: keyword,
+        content: content,
+        isActive: isUsing,
+      ),
+    );
+    return saved.uuid;
+  }
+
+  /// 建一个用户 Mod，返回 uuid。
+  Future<String> seedMod({
+    String name = '测试 Mod',
+    String description = '',
+    String prePrompt = '',
+    String postPrompt = '',
+    String systemPrompt = '',
+  }) {
+    return repos.mod.createMod(Mod(
+      name: name,
+      description: description,
+      prePrompt: prePrompt,
+      postPrompt: postPrompt,
+      systemPrompt: systemPrompt,
+    ));
+  }
+}
 
 /// 公共测试替身（Fakes）。
 ///
@@ -87,638 +340,6 @@ class ChatCompatibleSettings extends AiSettingsProvider {
 class AgentModeSettings extends ExperimentalSettingsProvider {
   AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv2})
       : super(initialLevel: level);
-}
-
-/// 内存版 [BookDao]：可注入书籍列表与最近对话时间，记录失败条目。
-///
-/// 身份一律为 uuid（书籍主键）；`insertBook` 对空 uuid 补发身份并回写列表，
-/// 与真实实现同语义，测试不触碰真实数据库。
-class FakeBookDao extends BookDao {
-  FakeBookDao({List<Book> books = const [], this.times = const {}})
-      : books = List.of(books);
-
-  final List<Book> books;
-
-  /// 「最近对话时间」映射（键 = 书籍 uuid）。
-  final Map<String, DateTime> times;
-  FailedAttempt failed = const FailedAttempt();
-
-  /// 置 true 时 [setFailedAttempt] 抛错（模拟「失败条目落库也失败」）。
-  ///
-  /// 这是 UI「恢复输入并提示」兜底路径的唯一入口：请求失败但失败条目存不下时，
-  /// 界面才需要把用户输入还回输入框（见 `_ChatScreenState._send` /
-  /// `_submitInputMode`）。
-  bool failSetFailedAttempt = false;
-
-  /// 每次 insertBook 分配的 uuid（可预置队列；耗尽则按序号自动生成）。
-  final List<String> uuidQueue = [];
-  int _insertSeq = 0;
-
-  @override
-  Future<List<Book>> getAllBooks({bool includeDeleted = false}) async =>
-      List.of(books);
-
-  @override
-  Future<Book?> getBookByUuid(
-    String uuid, {
-    bool includeDeleted = false,
-  }) async {
-    if (uuid.isEmpty) return null;
-    for (final b in books) {
-      if (b.uuid == uuid) return b;
-    }
-    return null;
-  }
-
-  /// 软删：从内存列表移除（等价于真实实现中 `deleted_at` 墓碑被过滤）。
-  @override
-  Future<void> softDeleteBook(String uuid) async {
-    books.removeWhere((b) => b.uuid == uuid);
-  }
-
-  @override
-  Future<Map<String, DateTime>> getLastRoundTimes() async => times;
-
-  @override
-  Future<String> insertBook(Book book) async {
-    final uuid = uuidQueue.isNotEmpty
-        ? uuidQueue.removeAt(0)
-        : ((book.uuid.isNotEmpty) ? book.uuid : 'book-${++_insertSeq}');
-    final stored = book.uuid.isEmpty && uuid != book.uuid
-        ? book.copyWith(uuid: uuid)
-        : book;
-    if (!books.any((b) => b.uuid == stored.uuid)) books.add(stored);
-    return stored.uuid;
-  }
-
-  @override
-  Future<int> updateBook(Book book) async {
-    final index = books.indexWhere((b) => b.uuid == book.uuid);
-    if (index < 0) return 0;
-    books[index] = book;
-    return 1;
-  }
-
-  @override
-  Future<FailedAttempt> getFailedAttempt(String bookUuid) async => failed;
-
-  @override
-  Future<void> setFailedAttempt(String bookUuid, FailedAttempt attempt) async {
-    if (failSetFailedAttempt) throw StateError('模拟失败条目落库失败');
-    failed = attempt;
-  }
-}
-
-/// 内存版 [RoundDao]：轮次按 bookUuid 过滤、insert 分配递增 id（轮次自身主键）、
-/// delete 支持“仅本轮 / 后续全部”两种语义（与真实实现一致）。
-class FakeRoundDao extends RoundDao {
-  final List<Round> rounds = [];
-  int _nextId = 1;
-
-  @override
-  Future<List<Round>> getRoundsByBook(String bookUuid) async =>
-      List.of(rounds.where((r) => r.bookUuid == bookUuid));
-
-  @override
-  Future<int> insertRound(Round round) async {
-    final created = Round(
-      id: _nextId++,
-      bookUuid: round.bookUuid,
-      roundIndex: round.roundIndex,
-      userInput: round.userInput,
-      aiNarrative: round.aiNarrative,
-      worldState: round.worldState,
-      characterState: round.characterState,
-      memorySummary: round.memorySummary,
-      currentTime: round.currentTime,
-      recommendedAction: round.recommendedAction,
-      tokensIn: round.tokensIn,
-      tokensOut: round.tokensOut,
-      cachedTokensIn: round.cachedTokensIn,
-      modelName: round.modelName,
-      createdAt: round.createdAt,
-      userImages: List.of(round.userImages),
-      aiImages: List.of(round.aiImages),
-      useStackUuid: round.useStackUuid,
-    );
-    rounds.add(created);
-    return created.id!;
-  }
-
-  @override
-  Future<int> updateRoundFields(
-    int roundId,
-    Map<String, Object?> fields,
-  ) async {
-    final index = rounds.indexWhere((r) => r.id == roundId);
-    if (index < 0) return 0;
-    final updated = rounds[index].copyWith(
-      userInput: (fields['user_input'] as String?) ?? rounds[index].userInput,
-      aiNarrative:
-          (fields['ai_narrative'] as String?) ?? rounds[index].aiNarrative,
-      worldState:
-          (fields['world_state'] as String?) ?? rounds[index].worldState,
-      characterState:
-          (fields['character_state'] as String?) ?? rounds[index].characterState,
-      memorySummary:
-          (fields['memory_summary'] as String?) ?? rounds[index].memorySummary,
-      currentTime:
-          (fields['current_time'] as String?) ?? rounds[index].currentTime,
-      useStackUuid: (fields['use_stack_uuid'] as String?) ??
-          rounds[index].useStackUuid,
-    );
-    rounds[index] = updated;
-    return 1;
-  }
-
-  /// v19 投影重建（服务层走真库时不会用到；此处保证替身「全部方法已覆写」）。
-  @override
-  Future<void> deleteRoundsFrom(
-    DatabaseExecutor e,
-    String bookUuid,
-    int fromRoundIndex,
-  ) async {
-    rounds.removeWhere(
-      (r) => r.bookUuid == bookUuid && r.roundIndex >= fromRoundIndex,
-    );
-  }
-
-  @override
-  Future<void> deleteRoundAt(
-    DatabaseExecutor e,
-    String bookUuid,
-    int roundIndex,
-  ) async {
-    rounds.removeWhere(
-      (r) => r.bookUuid == bookUuid && r.roundIndex == roundIndex,
-    );
-  }
-
-  @override
-  Future<void> replaceProjectionFrom(
-    DatabaseExecutor e,
-    String bookUuid,
-    int fromRoundIndex,
-    List<Round> rows,
-  ) async {
-    await deleteRoundsFrom(e, bookUuid, fromRoundIndex);
-    for (final row in rows) {
-      await insertRound(row.copyWith(id: null));
-    }
-  }
-
-  @override
-  Future<int> upsertProjectionRow(
-    DatabaseExecutor e,
-    Round round,
-    String useStackUuid,
-  ) async {
-    await deleteRoundAt(e, round.bookUuid, round.roundIndex);
-    return insertRound(round.copyWith(id: null, useStackUuid: useStackUuid));
-  }
-
-  @override
-  Future<void> updateProjectionFields(
-    DatabaseExecutor e,
-    int roundId,
-    Map<String, Object?> fields,
-  ) async {
-    await updateRoundFields(roundId, fields);
-  }
-
-  @override
-  Future<void> deleteRound(int roundId, {bool deleteFollowing = false}) async {
-    Round? target;
-    for (final r in rounds) {
-      if (r.id == roundId) {
-        target = r;
-        break;
-      }
-    }
-    if (target == null) return;
-    if (deleteFollowing) {
-      rounds.removeWhere(
-        (r) =>
-            r.bookUuid == target!.bookUuid &&
-            r.roundIndex >= target.roundIndex,
-      );
-    } else {
-      rounds.removeWhere((r) => r.id == roundId);
-    }
-  }
-}
-
-/// 内存版 [RoundStackService]：Provider / UI 用例专用，**绝不触碰真实数据库**。
-///
-/// 只承担 Provider 真正依赖的两件事：
-/// 1. **投影写入**：委托给注入的 [RoundDao]（通常与 Provider 同一个
-///    `FakeRoundDao`），既有用例的轮次落库行为因此完全不变；
-/// 2. 版本索引 / 切换 / 删除的内存记账与可编程返回，供断言使用。
-///
-/// 真实版本树语义（采纳 / 归一化 / 活动链 / 孤儿清理）由真库用例
-/// `round_stack_service_test.dart` / `round_stack_adoption_test.dart` 覆盖，
-/// 本替身不重复实现，避免「替身与实现各写一套」的漂移。
-class FakeRoundStackService extends RoundStackService {
-  FakeRoundStackService({RoundDao? roundDao})
-      : _rounds = roundDao ?? FakeRoundDao();
-
-  final RoundDao _rounds;
-
-  /// 内存版本树：book_uuid → 全部代。
-  final Map<String, List<RoundStackRow>> rows = {};
-
-  /// UI 索引的额外数据源（测试预置；与 [rows] 合并成索引）。
-  List<RoundStackMeta> metas = [];
-
-  int attachCalls = 0;
-  int adoptCalls = 0;
-  bool lastAdoptForce = false;
-  RoundStackAdoptionReport? adoptReport;
-  int adoptAllCalls = 0;
-  int adoptAllResult = 0;
-  int purgeCalls = 0;
-
-  /// 切换记录（bookUuid, roundIndex, targetUuid）。
-  final List<({String bookUuid, int roundIndex, String targetUuid})> switches =
-      [];
-  bool switchResult = true;
-
-  /// 切换钩子：可在切换「落地」时改写注入的 [RoundDao] 内容，用于模拟真实
-  /// 投影重建后条目高度变化（「视图停在切换控件」用例）。
-  void Function(String bookUuid, int roundIndex, String targetUuid)? onSwitch;
-
-  /// 删除记录（bookUuid, fromRoundIndex, deleteFollowing）。
-  final List<({String bookUuid, int fromRoundIndex, bool deleteFollowing})>
-      deletes = [];
-
-  /// 「重写本轮」的投影删除记录。
-  final List<({String bookUuid, int fromRoundIndex})> projectionDeletes = [];
-
-  int _seq = 0;
-
-  List<RoundStackRow> _rowsFor(String bookUuid) =>
-      rows.putIfAbsent(bookUuid, () => []);
-
-  @override
-  Future<RoundStackIndex> loadIndex(String bookUuid) async =>
-      RoundStackIndex.fromMetas([
-        ...metas,
-        for (final row in _rowsFor(bookUuid))
-          RoundStackMeta(
-            uuid: row.uuid,
-            bookUuid: row.bookUuid,
-            fatherUuid: row.fatherUuid,
-            roundIndex: row.roundIndex,
-            roundSerialNum: row.roundSerialNum,
-            roundState: row.roundState,
-            roundCreatedAt: row.roundCreatedAt,
-          ),
-      ]);
-
-  @override
-  Future<int> attachNewGeneration({
-    required String bookUuid,
-    required Round round,
-    String? fatherUuid,
-    String message = '',
-    String? messageStatus,
-  }) async {
-    attachCalls++;
-    // 与真实 `RoundDao.upsertProjectionRow` 同语义：该轮只保留一行。
-    final existing = await _rounds.getRoundsByBook(bookUuid);
-    for (final r in existing.where((r) => r.roundIndex == round.roundIndex)) {
-      await _rounds.deleteRound(r.id!);
-    }
-    final father = RoundStackRow.normalizeFather(fatherUuid);
-    final list = _rowsFor(bookUuid);
-    final group = list
-        .where(
-          (r) => r.roundIndex == round.roundIndex && r.fatherUuid == father,
-        )
-        .toList();
-    final serial = group.isEmpty
-        ? 1
-        : group.map((r) => r.roundSerialNum).reduce(math.max) + 1;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].isUse && group.any((g) => g.uuid == list[i].uuid)) {
-        list[i] = list[i].copyWith(clearState: true);
-      }
-    }
-    final row = RoundStackRow.fromRound(
-      round,
-      uuid: 'gen-${round.roundIndex}-${_seq++}',
-      fatherUuid: father,
-      roundSerialNum: serial,
-      roundState: 'use',
-      message: message,
-      messageStatus: messageStatus,
-    );
-    list.add(row);
-    return _rounds.insertRound(round.copyWith(useStackUuid: row.uuid));
-  }
-
-  @override
-  Future<List<RoundStackMessage>> loadMessages(String bookUuid) async {
-    if (bookUuid.isEmpty) return const [];
-    return [
-      for (final row in _rowsFor(bookUuid))
-        if (row.hasMessage)
-          RoundStackMessage(
-            uuid: row.uuid,
-            roundIndex: row.roundIndex,
-            isFailure: row.isFailed,
-            text: row.message,
-            status: RoundStackRow.normalizeStatus(row.messageStatus),
-          ),
-    ];
-  }
-
-  @override
-  Future<void> setGenerationMessage({
-    required String bookUuid,
-    required String generationUuid,
-    String message = '',
-    String? messageStatus,
-  }) async {
-    messageWrites.add((
-      bookUuid: bookUuid,
-      generationUuid: generationUuid,
-      message: message,
-      status: messageStatus,
-    ));
-    final list = _rowsFor(bookUuid);
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].uuid != generationUuid) continue;
-      list[i] = list[i].copyWith(
-        message: message,
-        messageStatus: messageStatus,
-        clearMessage: message.trim().isEmpty,
-      );
-    }
-  }
-
-  /// 提示写入记录（关闭提示 / 失败落库的断言锚点）。
-  final List<
-      ({
-        String bookUuid,
-        String generationUuid,
-        String message,
-        String? status,
-      })> messageWrites = [];
-
-  /// 失败占位代记录（bookUuid, roundIndex, message）。
-  final List<({String bookUuid, int roundIndex, String message})> failures = [];
-
-  @override
-  Future<String> recordFailure({
-    required String bookUuid,
-    required int roundIndex,
-    String? fatherUuid,
-    String message = '',
-  }) async {
-    failures.add((
-      bookUuid: bookUuid,
-      roundIndex: roundIndex,
-      message: message,
-    ));
-    final list = _rowsFor(bookUuid)..removeWhere((r) => r.isFailed);
-    final father = RoundStackRow.normalizeFather(fatherUuid);
-    final group = list
-        .where((r) => r.roundIndex == roundIndex && r.fatherUuid == father)
-        .toList();
-    final serial = group.isEmpty
-        ? 1
-        : group.map((r) => r.roundSerialNum).reduce(math.max) + 1;
-    final uuid = 'failed-$roundIndex-${_seq++}';
-    list.add(
-      RoundStackRow(
-        uuid: uuid,
-        bookUuid: bookUuid,
-        fatherUuid: father,
-        roundIndex: roundIndex,
-        roundSerialNum: serial,
-        roundState: 'failed',
-        roundCreatedAt: DateTime.now(),
-        message: message,
-        messageStatus: 'error',
-      ),
-    );
-    return uuid;
-  }
-
-  /// [clearFailures] 的调用次数。
-  int clearFailureCalls = 0;
-
-  @override
-  Future<bool> clearFailures(String bookUuid) async {
-    clearFailureCalls++;
-    final list = _rowsFor(bookUuid);
-    final had = list.any((r) => r.isFailed);
-    list.removeWhere((r) => r.isFailed);
-    return had;
-  }
-
-  @override
-  Future<void> applyInPlaceEdit({required Round round}) async {
-    final id = round.id;
-    if (id != null) {
-      await _rounds.updateRoundFields(id, round.contentMap());
-    }
-    final list = _rowsFor(round.bookUuid);
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].uuid != round.useStackUuid) continue;
-      list[i] = list[i].copyWith(
-        userInput: round.userInput,
-        aiNarrative: round.aiNarrative,
-        worldState: round.worldState,
-        characterState: round.characterState,
-        memorySummary: round.memorySummary,
-        currentTime: round.currentTime,
-        recommendedAction: round.recommendedAction,
-        modelName: round.modelName,
-        userImages: round.userImages,
-        aiImages: round.aiImages,
-      );
-    }
-  }
-
-  @override
-  Future<void> deleteProjectionFrom(String bookUuid, int fromRoundIndex) async {
-    projectionDeletes.add((bookUuid: bookUuid, fromRoundIndex: fromRoundIndex));
-    final rounds = await _rounds.getRoundsByBook(bookUuid);
-    for (final r in rounds.where((r) => r.roundIndex >= fromRoundIndex)) {
-      await _rounds.deleteRound(r.id!);
-    }
-  }
-
-  @override
-  Future<bool> switchTo({
-    required String bookUuid,
-    required int roundIndex,
-    required String targetUuid,
-  }) async {
-    switches.add((
-      bookUuid: bookUuid,
-      roundIndex: roundIndex,
-      targetUuid: targetUuid,
-    ));
-    onSwitch?.call(bookUuid, roundIndex, targetUuid);
-    return switchResult;
-  }
-
-  @override
-  Future<void> deleteFrom({
-    required String bookUuid,
-    required int fromRoundIndex,
-    required bool deleteFollowing,
-  }) async {
-    deletes.add((
-      bookUuid: bookUuid,
-      fromRoundIndex: fromRoundIndex,
-      deleteFollowing: deleteFollowing,
-    ));
-    final rounds = await _rounds.getRoundsByBook(bookUuid);
-    for (final r in rounds) {
-      final hit = deleteFollowing
-          ? r.roundIndex >= fromRoundIndex
-          : r.roundIndex == fromRoundIndex;
-      if (hit) await _rounds.deleteRound(r.id!);
-    }
-    _rowsFor(bookUuid).removeWhere(
-      (r) => deleteFollowing
-          ? r.roundIndex >= fromRoundIndex
-          : r.roundIndex == fromRoundIndex,
-    );
-  }
-
-  /// 单代删除记录（bookUuid, roundIndex, generationUuid）。
-  final List<({String bookUuid, int roundIndex, String generationUuid})>
-      generationDeletes = [];
-
-  /// 单代删除的返回值（false = 模拟「唯一一代 / 失败」）。
-  bool deleteGenerationResult = true;
-
-  /// 删除钩子：可在删除「落地」时改写注入的 [RoundDao]（模拟真实服务
-  /// 「删这一代 + 投影按回落代重建」的结果），与 [onSwitch] 同一套路。
-  void Function(String bookUuid, int roundIndex, String generationUuid)?
-      onDeleteGeneration;
-
-  @override
-  Future<bool> deleteGeneration({
-    required String bookUuid,
-    required int roundIndex,
-    required String generationUuid,
-  }) async {
-    generationDeletes.add((
-      bookUuid: bookUuid,
-      roundIndex: roundIndex,
-      generationUuid: generationUuid,
-    ));
-    if (!deleteGenerationResult) return false;
-    // 该代退出索引与内存版本树（真实服务里「最新号 / 存活代数」随之更新）。
-    metas.removeWhere((meta) => meta.uuid == generationUuid);
-    _rowsFor(bookUuid).removeWhere((row) => row.uuid == generationUuid);
-    onDeleteGeneration?.call(bookUuid, roundIndex, generationUuid);
-    return true;
-  }
-
-  @override
-  Future<RoundStackAdoptionReport?> adoptIfNeeded(
-    String bookUuid, {
-    bool force = false,
-  }) async {
-    adoptCalls++;
-    lastAdoptForce = force;
-    return adoptReport;
-  }
-
-  @override
-  Future<int> adoptAllBooks({bool force = true}) async {
-    adoptAllCalls++;
-    return adoptAllResult;
-  }
-
-  @override
-  Future<void> normalizeGroup(
-    String bookUuid,
-    int roundIndex,
-    String? fatherUuid,
-  ) async {}
-
-  @override
-  Future<void> normalizeBook(String bookUuid) async {}
-
-  @override
-  Future<int> purgeOrphans(String bookUuid) async {
-    purgeCalls++;
-    return 0;
-  }
-}
-
-/// 内存版 [WorldBookDao]：默认返回空条目。
-class FakeWorldBookDao extends WorldBookDao {
-  @override
-  Future<List<WorldBookEntry>> getEntriesByBook(String bookUuid) async => [];
-}
-
-/// 内存版 [ModDao]：Mod 主键即 uuid（无 int id），书-Mod 配置按 bookUuid 分桶。
-class FakeModDao extends ModDao {
-  FakeModDao({List<Mod> mods = const []}) : mods = List.of(mods);
-
-  final List<Mod> mods;
-
-  /// 书籍挂载：键 = 书籍 uuid。
-  final Map<String, List<BookModConfig>> bookMods = {};
-
-  int _insertSeq = 0;
-
-  @override
-  Future<List<Mod>> getAllMods() async => List.of(mods);
-
-  @override
-  Future<Mod?> getModByUuid(String uuid) async {
-    if (uuid.isEmpty) return null;
-    for (final m in mods) {
-      if (m.uuid == uuid) return m;
-    }
-    return null;
-  }
-
-  @override
-  Future<String> insertMod(Mod mod) async {
-    final uuid = mod.uuid.isNotEmpty ? mod.uuid : 'mod-${++_insertSeq}';
-    final stored = mod.uuid == uuid ? mod : mod.copyWith(uuid: uuid);
-    if (!mods.any((m) => m.uuid == stored.uuid)) mods.add(stored);
-    return stored.uuid;
-  }
-
-  @override
-  Future<int> updateMod(Mod mod) async {
-    final index = mods.indexWhere((m) => m.uuid == mod.uuid);
-    if (index < 0) return 0;
-    mods[index] = mod;
-    return 1;
-  }
-
-  @override
-  Future<void> deleteMod(String uuid) async {
-    mods.removeWhere((m) => m.uuid == uuid);
-    bookMods.updateAll(
-      (key, list) => list.where((c) => c.modUuid != uuid).toList(),
-    );
-  }
-
-  @override
-  Future<List<BookModConfig>> getBookMods(String bookUuid) async =>
-      List.of(bookMods[bookUuid] ?? const []);
-
-  @override
-  Future<void> replaceBookMods(
-    String bookUuid,
-    List<BookModConfig> configs,
-  ) async {
-    bookMods[bookUuid] = List.of(configs);
-  }
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，
@@ -1015,34 +636,38 @@ class FakeClipboardPasteService implements ClipboardPasteService {
   }
 }
 
-/// 可控存储管理替身：返回预设数据并记录导出调用。
+/// 可控存储管理替身（R3：多库概览 + 整包导出导入 + 旧备份删除）。
 class FakeStorageService implements StorageService {
-  FakeStorageService({this.db, this.images = const []});
+  FakeStorageService({
+    this.overviewValue = const StorageOverview(
+      databases: [],
+      imageCount: 0,
+      imageBytes: 0,
+      bookCount: 0,
+    ),
+    this.images = const [],
+  });
 
-  StorageDbInfo? db;
+  StorageOverview overviewValue;
   List<StorageImageInfo> images;
   int deleteCalls = 0;
-  List<String> deleted = [];
+  int deleteLegacyCalls = 0;
   String? exportedTo;
   String? exportedName;
   List<String>? exportedImages;
   String? exportedImagesTo;
+  String? importedArchive;
+  bool? exportedWithLocalConfig;
+  StorageImportResult importResult = const StorageImportResult(
+    ok: true,
+    message: '导入成功',
+  );
 
   @override
-  Future<StorageDbInfo?> dbInfo() async => db;
+  Future<StorageOverview> overview() async => overviewValue;
 
   @override
   Future<List<StorageImageInfo>> listImages() async => List.of(images);
-
-  @override
-  Future<String> exportDatabase({
-    required String targetDirPath,
-    required String fileName,
-  }) async {
-    exportedTo = targetDirPath;
-    exportedName = fileName;
-    return p.join(targetDirPath, fileName);
-  }
 
   @override
   Future<int> exportImages({
@@ -1052,6 +677,29 @@ class FakeStorageService implements StorageService {
     exportedImages = List.of(relPaths);
     exportedImagesTo = targetDirPath;
     return relPaths.length;
+  }
+
+  @override
+  Future<String> exportArchive({
+    required String targetDirPath,
+    required String fileName,
+    bool includeLocalConfig = false,
+  }) async {
+    exportedTo = targetDirPath;
+    exportedName = fileName;
+    exportedWithLocalConfig = includeLocalConfig;
+    return p.join(targetDirPath, fileName);
+  }
+
+  @override
+  Future<StorageImportResult> importArchive({required String archivePath}) async {
+    importedArchive = archivePath;
+    return importResult;
+  }
+
+  @override
+  Future<void> deleteLegacyBackup() async {
+    deleteLegacyCalls++;
   }
 }
 
@@ -1073,53 +721,59 @@ class FakeImageDeletionService implements ImageDeletionService {
   }
 }
 
-/// 内存版 [DebugDatabaseService]：按 [pageBuilder] 生成每页数据，
-/// 记录最近一次调用的页参数，供「数据库结构」页测试校验翻页。
+/// 内存版 [DebugDatabaseService]（R3：多库选择器 + 按库列表 / 读表）。
+///
+/// 按 [pageBuilder] 生成每页数据，记录最近一次调用的库、表与页参数，
+/// 供「数据库结构」页测试校验切换库与翻页。
 class FakeDebugDatabaseService implements DebugDatabaseService {
   FakeDebugDatabaseService({
+    this.databases = const [],
     this.tables = const [],
     this.pageBuilder,
-    this.version = const DebugDbVersion(expectedVersion: 16, actualVersion: 16),
   });
+
+  /// listDatabases 的返回值（含"文件不存在"的项）。
+  List<DebugDbInfo> databases;
 
   final List<DebugTableSummary> tables;
 
-  /// 按 `(name, page, pageSize)` 生成一页数据；为 null 时返回空页。
-  final DebugTablePage Function(String name, int page, int pageSize)? pageBuilder;
+  /// 按 `(dbId, name, page, pageSize)` 生成一页数据；为 null 时返回空页。
+  final DebugTablePage Function(String dbId, String name, int page, int pageSize)?
+      pageBuilder;
 
-  /// readVersion 的返回值（默认代码版本与文件版本一致）。
-  DebugDbVersion version;
-
-  /// 非 null：readVersion 抛出该异常（模拟读取失败）。
-  Object? versionError;
-
+  int listDatabasesCount = 0;
   int loadCount = 0;
+  String? lastDbId;
   String? lastName;
   int? lastPage;
   int? lastPageSize;
 
   @override
-  Future<DebugDbVersion> readVersion() async {
-    final err = versionError;
-    if (err != null) throw err;
-    return version;
+  Future<List<DebugDbInfo>> listDatabases() async {
+    listDatabasesCount++;
+    return List.of(databases);
   }
 
   @override
-  Future<List<DebugTableSummary>> listTables() async => tables;
+  Future<List<DebugTableSummary>> listTables(String dbId) async {
+    lastDbId = dbId;
+    return tables;
+  }
 
   @override
   Future<DebugTablePage> loadTable(
+    String dbId,
     String tableName, {
     int page = 0,
     int pageSize = 20,
   }) async {
     loadCount++;
+    lastDbId = dbId;
     lastName = tableName;
     lastPage = page;
     lastPageSize = pageSize;
     final builder = pageBuilder;
-    if (builder != null) return builder(tableName, page, pageSize);
+    if (builder != null) return builder(dbId, tableName, page, pageSize);
     return DebugTablePage(
       name: tableName,
       columns: const [],
@@ -1164,103 +818,6 @@ class FakeUpdateCheckService extends UpdateCheckService {
   }
 }
 
-/// 内存版云端同步存储（manifest / 快照 / 图片 / 墓碑文件 / 软锁），供同步测试复用。
-///
-/// 锁默认"可获取"（可注入持锁设备 id 模拟并发占用）；`close()` 无操作。
-class MemorySyncStore extends SyncRemoteStore {
-  MemorySyncStore({this.manifest, this.lockedBy = ''});
-
-  SyncManifest? manifest;
-  final Map<String, Uint8List> snapshots = {};
-  final Map<String, Uint8List> images = {};
-
-  /// 云端图片删除墓碑文件（null = 文件不存在，首次同步按空处理）。
-  ImgTombstones? tombstones;
-
-  /// 云端同步配置（`sync_config.json` 的替身；null = 文件未配置）。
-  SyncConfig? syncConfig;
-
-  /// 非 null：`readSyncConfig` 抛出该异常（模拟云端不可达）。
-  Object? syncConfigError;
-
-  int readSyncConfigCalls = 0;
-  int writeSyncConfigCalls = 0;
-
-  /// 当前持锁设备（非空表示锁被占用；`{deviceId, expiresAt}` 模拟）。
-  String lockedBy = '';
-
-  /// 可选：拦截读 manifest（模拟"同步期间其它设备已更新"等并发场景）。
-  Future<SyncManifest?> Function()? onReadManifest;
-
-  @override
-  Future<SyncManifest?> readManifest() async =>
-      onReadManifest?.call() ?? manifest;
-
-  @override
-  Future<void> writeManifest(SyncManifest m) async => manifest = m;
-
-  @override
-  Future<List<String>> listSnapshotNames() async => snapshots.keys.toList();
-
-  @override
-  Future<Uint8List?> readSnapshot(String name) async => snapshots[name];
-
-  @override
-  Future<void> writeSnapshot(String name, Uint8List b) async =>
-      snapshots[name] = b;
-
-  @override
-  Future<void> deleteSnapshot(String name) async => snapshots.remove(name);
-
-  @override
-  Future<List<String>> listImages() async => images.keys.toList();
-
-  @override
-  Future<Uint8List?> readImage(String path) async => images[path];
-
-  @override
-  Future<void> writeImage(String path, Uint8List b) async => images[path] = b;
-
-  @override
-  Future<void> deleteImage(String path) async => images.remove(path);
-
-  @override
-  Future<ImgTombstones?> readImageTombstones() async => tombstones;
-
-  @override
-  Future<void> writeImageTombstones(ImgTombstones t) async => tombstones = t;
-
-  @override
-  Future<SyncConfig?> readSyncConfig() async {
-    readSyncConfigCalls++;
-    final err = syncConfigError;
-    if (err != null) throw err;
-    return syncConfig;
-  }
-
-  @override
-  Future<void> writeSyncConfig(SyncConfig config) async {
-    writeSyncConfigCalls++;
-    syncConfig = config;
-  }
-
-  @override
-  Future<bool> acquireLock({String deviceId = '', int ttlSeconds = 300}) async {
-    // 被其它设备持有 → 拒绝（注入的持锁状态视为未过期）。
-    if (lockedBy.isNotEmpty && lockedBy != deviceId) return false;
-    lockedBy = deviceId;
-    return true;
-  }
-
-  @override
-  Future<void> releaseLock({String deviceId = ''}) async {
-    if (lockedBy == deviceId) lockedBy = '';
-  }
-
-  @override
-  void close() {}
-}
-
 /// 内存版图片删除墓碑工作副本（`local_config/img_tombstones.json` 的替身）。
 class MemoryTombstoneStore implements SyncTombstoneStore {
   MemoryTombstoneStore([this.state = ImgTombstones.empty]);
@@ -1272,37 +829,6 @@ class MemoryTombstoneStore implements SyncTombstoneStore {
 
   @override
   Future<void> save(ImgTombstones tombstones) async => state = tombstones;
-}
-
-/// 内存版同步状态/共基存储（`sync_state` / 基表；图片墓碑见 [MemoryTombstoneStore]）。
-class MemorySyncStateStore implements SyncStateStore {
-  SyncStateRecord state = const SyncStateRecord();
-  final Map<String, SyncBookBase> bookBases = {};
-  final Map<String, SyncModBase> modBases = {};
-
-  @override
-  Future<SyncStateRecord> getState() async => state;
-
-  @override
-  Future<void> saveState(SyncStateRecord s) async => state = s;
-
-  @override
-  Future<Map<String, SyncBookBase>> getAllBookBases() async => bookBases;
-
-  @override
-  Future<void> putBookBase(SyncBookBase b) async => bookBases[b.uuid] = b;
-
-  @override
-  Future<void> deleteBookBase(String uuid) async => bookBases.remove(uuid);
-
-  @override
-  Future<Map<String, SyncModBase>> getAllModBases() async => modBases;
-
-  @override
-  Future<void> putModBase(SyncModBase b) async => modBases[b.uuid] = b;
-
-  @override
-  Future<void> deleteModBase(String uuid) async => modBases.remove(uuid);
 }
 
 /// [CloudSyncProvider] 替身：只记录 `triggerSync` 调用（不打网络、不碰本地配置）。

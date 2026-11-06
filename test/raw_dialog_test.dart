@@ -286,8 +286,9 @@ void main() {
 
   group('RoundProvider RAW 捕获', () {
     test('直发路径：捕获 1 对请求/返回三块', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final ai = _ScriptAiService([
         AiCallResult(
           content: _fullContent,
@@ -298,9 +299,8 @@ void main() {
         ),
       ]);
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         aiSettingsProvider: _SearchDisabledSettings(),
         retryDelay: Duration.zero,
@@ -309,8 +309,8 @@ void main() {
 
       expect(await provider.sendRound(userInput: '你好', book: book), isTrue);
 
-      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
-      final exchanges = provider.rawExchangesFor(round.id!);
+      final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+      final exchanges = provider.rawExchangesFor(round.uuid);
       expect(exchanges, isNotNull);
       expect(exchanges, hasLength(1));
       final ex = exchanges!.single;
@@ -325,8 +325,9 @@ void main() {
     });
 
     test('Agent 路径：多对交换且搜索块为 tool_calls JSON', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final ai = _ScriptAiService([
         AiCallResult(
           content: '',
@@ -350,9 +351,8 @@ void main() {
         ),
       ]);
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         webSearchTool: _FakeWebSearchTool(),
         retryDelay: Duration.zero,
@@ -361,8 +361,8 @@ void main() {
 
       expect(await provider.sendRound(userInput: '查一下青云宗', book: book), isTrue);
 
-      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
-      final exchanges = provider.rawExchangesFor(round.id!)!;
+      final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+      final exchanges = provider.rawExchangesFor(round.uuid)!;
       expect(ai.calls, 2);
       expect(exchanges, hasLength(2));
       // 第 1 对：思考 + 搜索块（tool_calls JSON），无正文。
@@ -376,8 +376,9 @@ void main() {
     });
 
     test('Agent 路径：搜索 → 打开页面（fetch 事件与 RAW 捕获）', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final ai = _ScriptAiService([
         AiCallResult(
           content: '',
@@ -428,9 +429,8 @@ void main() {
         ),
       );
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         searchService: search,
         retryDelay: Duration.zero,
@@ -462,8 +462,8 @@ void main() {
       expect(fetchDone, isTrue, reason: '应有完成的打开页面事件');
 
       // RAW 捕获 3 对交换，第 2 对搜索块含 narrchat_webFetchPage 调用。
-      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
-      final exchanges = provider.rawExchangesFor(round.id!)!;
+      final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+      final exchanges = provider.rawExchangesFor(round.uuid)!;
       expect(ai.calls, 3);
       expect(exchanges, hasLength(3));
       expect(exchanges[1].toolCalls, contains('narrchat_webFetchPage'));
@@ -471,12 +471,12 @@ void main() {
     });
 
     test('请求失败：捕获失败条目的请求（无返回三块）', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: _FailingAiService(),
         aiSettingsProvider: _SearchDisabledSettings(),
         retryDelay: Duration.zero,
@@ -485,7 +485,8 @@ void main() {
 
       expect(await provider.sendRound(userInput: '触发失败', book: book), isFalse);
 
-      final failed = provider.failedRawExchanges;
+      final errorRound = provider.rounds.firstWhere((r) => r.isError);
+      final failed = provider.rawExchangesFor(errorRound.uuid);
       expect(failed, isNotNull);
       expect(failed, hasLength(1));
       expect(jsonDecode(failed!.single.requestBody), isA<Map>());
@@ -496,8 +497,9 @@ void main() {
 
   group('RoundProvider 预览请求体', () {
     test('直发路径：预览 JSON 与实发首帧逐字一致', () async {
-      final dao = FakeRoundDao();
-      final bookDao = FakeBookDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final ai = _ScriptAiService([
         AiCallResult(
           content: _fullContent,
@@ -507,9 +509,8 @@ void main() {
         ),
       ]);
       final provider = RoundProvider(
-        dao: dao,
-        roundStackService: FakeRoundStackService(roundDao: dao),
-        bookDao: bookDao,
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: ai,
         aiSettingsProvider: _SearchDisabledSettings(),
         retryDelay: Duration.zero,
@@ -524,8 +525,8 @@ void main() {
       );
       expect(await provider.sendRound(userInput: '你好', book: book), isTrue);
 
-      final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
-      final actual = provider.rawExchangesFor(round.id!)!.single.requestBody;
+      final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+      final actual = provider.rawExchangesFor(round.uuid)!.single.requestBody;
       expect(actual, preview.firstFrameJson);
 
       // 结构校验：system 在首、user 在末且包含输入。
@@ -537,11 +538,12 @@ void main() {
     });
 
     test('联网搜索开启：预览含工具 schema，system 不再追加联网指令', () async {
-      final roundDao = FakeRoundDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final provider = RoundProvider(
-        dao: roundDao,
-        roundStackService: FakeRoundStackService(roundDao: roundDao),
-        bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: _ScriptAiService([
           AiCallResult(
             content: _fullContent,
@@ -580,11 +582,12 @@ void main() {
     });
 
     test('未选择书籍：抛出 StateError', () async {
-      final roundDao = FakeRoundDao();
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '测试书');
       final provider = RoundProvider(
-        dao: roundDao,
-        roundStackService: FakeRoundStackService(roundDao: roundDao),
-        bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
         aiService: _ScriptAiService([
           AiCallResult(
             content: _fullContent,
@@ -1354,6 +1357,55 @@ void main() {
 
       expect(copied, hasLength(1));
       expect(copied.single, onScreen.substring(0, 8));
+    });
+  });
+
+  group('RAW 归属：换书即清（只保留当前书）', () {
+    test('A 书生成的 RAW 在切到 B 书后取不到；切回 A 书也不恢复', () async {
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '书一');
+      await stack.seedBook(uuid: 'b2', title: '书二');
+
+      final ai = _ScriptAiService([
+        const AiCallResult(
+          content: _fullContent,
+          promptTokens: 1,
+          completionTokens: 1,
+        ),
+      ]);
+      final provider = RoundProvider(
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
+        aiService: ai,
+        aiSettingsProvider: _SearchDisabledSettings(),
+        retryDelay: Duration.zero,
+      );
+
+      // A 书：生成一轮，拿到该代的 RAW。
+      await provider.loadRounds('b1');
+      expect(
+        await provider.sendRound(userInput: 'A 书第一章', book: book),
+        isTrue,
+      );
+      final roundA = provider.rounds.single;
+      expect(provider.rawExchangesFor(roundA.uuid), isNotNull);
+
+      // 换成 B 书：RAW 缓存整体清空（RAW 只服务于当前书的代）。
+      await provider.loadRounds('b2');
+      expect(
+        provider.rawExchangesFor(roundA.uuid),
+        isNull,
+        reason: '换书即清：A 书的代 RAW 不该跟着到 B 书',
+      );
+
+      // 切回 A 书：按当前实现「换书即清且不恢复」，需要重新生成才有 RAW。
+      await provider.loadRounds('b1');
+      expect(
+        provider.rawExchangesFor(roundA.uuid),
+        isNull,
+        reason: '实现是「换书即清」，切回来不会凭空恢复旧 RAW',
+      );
     });
   });
 }

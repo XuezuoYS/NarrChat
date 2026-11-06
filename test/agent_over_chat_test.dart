@@ -116,7 +116,9 @@ void main() {
           .toList();
 
   test('Agent Lv.2 开 + Chat 协议：两阶段在 Chat 通道（frames 转 tool_calls/tool 消息）', () async {
-    final dao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -157,9 +159,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: ai,
       // Agent 档位开启 + Chat 兼容协议（全解耦组合）。
       aiSettingsProvider: ChatCompatibleSettings(),
@@ -231,16 +232,18 @@ void main() {
     expect((directive['content'] as String?), contains('narrchat_editHistory'));
 
     // 落库：状态来自工作副本合并（工具落地），正文为标题帧内容。
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('主角踏门而入'));
     expect(round.worldState, '- 地点：青云宗');
     expect(round.characterState, contains('气血：100'));
     expect(round.memorySummary, contains('第1轮'));
-    expect(provider.rawExchangesFor(round.id!), hasLength(2));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(2));
   });
 
   test('Agent Lv.1 开 + Chat 协议：准备/记忆/正文三帧（仅历史工具，世界/角色取自正文）', () async {
-    final dao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final bodies = <Map<String, dynamic>>[];
     final ai = AiService(
       client: MockClient((request) async {
@@ -278,9 +281,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),
       // Lv.1：仅历史工具 + 联网。
@@ -341,7 +343,7 @@ void main() {
     expect((toolMsg['content'] as String?) ?? '', contains('已更新'));
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.aiNarrative, isNot(contains('本轮大纲')));
     expect(round.worldState, '- 地点：青云宗主殿');
@@ -350,15 +352,16 @@ void main() {
     expect(round.currentTime, '第二天 辰时');
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(provider.agentWarnings, isEmpty);
-    expect(provider.rawExchangesFor(round.id!), hasLength(3));
+    expect(provider.rawExchangesFor(round.uuid), hasLength(3));
   });
 
   test('Agent 开 + Chat 协议：预览请求体为 Chat 形态（messages/tools），无指令字段', () async {
-    final roundDao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final provider = RoundProvider(
-      dao: roundDao,
-      roundStackService: FakeRoundStackService(roundDao: roundDao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: AiService(client: MockClient((_) async => sse(['']))),
       aiSettingsProvider: ChatCompatibleSettings(),
       experimentalSettings: AgentModeSettings(),
@@ -389,7 +392,9 @@ void main() {
   });
 
   test('Agent 开 + Chat 协议：思考强度全程沿用用户设置（维护帧不再降为 low）', () async {
-    final dao = FakeRoundDao();
+    final stack = await TestStack.create();
+    addTearDown(stack.dispose);
+    await stack.seedBook(uuid: 'b1', title: '测试书');
     final bodies = <Map<String, dynamic>>[];
     var served = 0;
     final ai = AiService(
@@ -428,9 +433,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-      dao: dao,
-      roundStackService: FakeRoundStackService(roundDao: dao),
-      bookDao: FakeBookDao(),
+        rounds: stack.repos.rounds,
+        books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),
       experimentalSettings: AgentModeSettings(),
@@ -439,7 +443,7 @@ void main() {
     await provider.loadRounds('b1');
 
     final ok = await provider.sendRound(userInput: '第一章', book: book);
-    expect(ok, isTrue, reason: provider.failedAttempt.errorMessage);
+    expect(ok, isTrue, reason: provider.rounds.where((r) => r.isError).map((r) => r.message).join('；'));
     // 2 帧（正文 + 维护）：两帧的思考强度**都**来自用户设置（默认 high），
     // 维护帧不再中途降为 low。
     expect(bodies, hasLength(2));
@@ -456,7 +460,7 @@ void main() {
     // Chat 线路同样一律不发 tool_choice。
     expect(bodies.every((b) => !b.containsKey('tool_choice')), isTrue);
 
-    final round = dao.rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('正文。'));
   });
 }

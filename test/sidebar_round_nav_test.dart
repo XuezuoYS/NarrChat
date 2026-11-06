@@ -26,6 +26,7 @@ const List<String> _navTooltips = ['查看上一轮', '查看下一轮', '回到
 /// （吸顶标题栏是懒构建，视口外不挂载）。
 Round _round(int index, {int worldStateRepeats = 30}) => Round(
       id: index,
+      uuid: 'gen-$index',
       bookUuid: kHarnessBookUuid,
       roundIndex: index,
       userInput: '第 $index 轮输入',
@@ -81,10 +82,29 @@ Future<ValueNotifier<Round?>> _pumpPanel(
       ),
     ),
   );
-  await tester.pumpAndSettle();
+  await settle(tester);
   return current;
 }
 
+/// 把一轮 `Round` 播进真库（R3 没有 rounds 投影表，正文列走 updateContent 补齐）。
+Future<void> _seedRound(TestStack stack, Round round) async {
+  final seeded = await stack.seedRound(
+    kHarnessBookUuid,
+    roundIndex: round.roundIndex,
+    userInput: round.userInput,
+    aiNarrative: round.aiNarrative,
+  );
+  await stack.repos.rounds.updateContent(
+    bookUuid: kHarnessBookUuid,
+    generationUuid: seeded.uuid,
+    fields: {
+      'current_time': round.currentTime,
+      'world_state': round.worldState,
+      'character_state': round.characterState,
+      'memory_summary': round.memorySummary,
+    },
+  );
+}
 void main() {
   testWidgets('顶栏常驻三个方形导航按钮：几何一致且左→右为上一轮/下一轮/回到最新轮', (tester) async {
     // 全部回调为空（无对应目标）时仍必须常驻。
@@ -173,7 +193,7 @@ void main() {
 
     // 折叠「记忆总结」。
     await tester.tap(find.text('记忆总结'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('已折叠'), findsOneWidget);
 
     current.value = _round(2, worldStateRepeats: 1);
@@ -202,7 +222,7 @@ void main() {
         matching: find.text('编辑'),
       ),
     );
-    await tester.pumpAndSettle();
+    await settle(tester);
     final timeField = find.descendant(
       of: find.byType(PlainTextFieldEditor),
       matching: find.byType(TextField),
@@ -211,7 +231,7 @@ void main() {
     await tester.enterText(timeField, '被丢弃的修改');
 
     current.value = _round(2);
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     // 未保存修改被丢弃：不写库、退出编辑、显示新轮次内容。
     expect(saves, isEmpty);
@@ -238,18 +258,24 @@ void main() {
     expect(controller.offset, 300);
 
     current.value = _round(2);
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(controller.offset, 300, reason: '跳转轮次后不得回到顶部');
   });
 
   testWidgets('大字号档位（+45%）下顶栏标题仍单行：自动缩放而非折行', (tester) async {
-    final dao = FakeRoundDao();
-    for (var i = 1; i <= 12; i++) {
-      await dao.insertRound(_round(i));
-    }
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    // 播种必须在**同一个** runAsync 里完成：runAsync 不能嵌套，
+    // 嵌套调用会静默不执行，链上就没有轮次。
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      for (var i = 1; i <= 12; i++) {
+        await _seedRound(stack, _round(i));
+      }
+    });
     await pumpChatScreen(
       tester,
-      roundDao: dao,
+      stack: stack,
       seedRounds: 0,
       textScale: 1.45,
     );
@@ -271,11 +297,16 @@ void main() {
   });
 
   testWidgets('对话页集成：按钮跳转轮次并全程保持侧栏滚动位置', (tester) async {
-    final dao = FakeRoundDao();
-    for (var i = 1; i <= 3; i++) {
-      await dao.insertRound(_round(i));
-    }
-    await pumpChatScreen(tester, roundDao: dao, seedRounds: 0);
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    // 同上：runAsync 不能嵌套，播种全部放进同一个真实异步段。
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      for (var i = 1; i <= 3; i++) {
+        await _seedRound(stack, _round(i));
+      }
+    });
+    await pumpChatScreen(tester, stack: stack, seedRounds: 0);
     expect(find.text('当前轮次（第 3 轮）'), findsOneWidget);
 
     final controller = sidebarScrollController(tester);
@@ -285,13 +316,13 @@ void main() {
 
     // 查看上一轮 → 第 2 轮（历史视图）。
     await tester.tap(_navButton('查看上一轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 2 轮）'), findsOneWidget);
     expect(controller.offset, 300);
 
     // 再上一轮 → 第 1 轮；上一轮此时无目标（置灰）。
     await tester.tap(_navButton('查看上一轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 1 轮）'), findsOneWidget);
     expect(controller.offset, 300);
     expect(
@@ -301,13 +332,13 @@ void main() {
 
     // 查看下一轮 → 第 2 轮。
     await tester.tap(_navButton('查看下一轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 2 轮）'), findsOneWidget);
     expect(controller.offset, 300);
 
     // 回到最新轮 → 当前轮次（第 3 轮），位置仍保持。
     await tester.tap(_navButton('回到最新轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('当前轮次（第 3 轮）'), findsOneWidget);
     expect(controller.offset, 300);
     expect(
@@ -322,10 +353,10 @@ void main() {
     // 另一条回到最新轮的路径：历史轮次下点「下一轮」逐轮前进，
     // 走到最后一轮即回到「当前轮次」视图。
     await tester.tap(_navButton('查看上一轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('历史轮次（第 2 轮）'), findsOneWidget);
     await tester.tap(_navButton('查看下一轮'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.text('当前轮次（第 3 轮）'), findsOneWidget);
     expect(controller.offset, 300, reason: '逐轮前进同样保持位置');
   });

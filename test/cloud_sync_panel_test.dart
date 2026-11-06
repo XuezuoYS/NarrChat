@@ -11,10 +11,10 @@ import 'package:provider/provider.dart';
 
 import 'helpers/notice_harness.dart';
 
-/// 云同步面板（重新设计版）widget 测试。
+/// 云备份面板 widget 测试（R3：一库一单元一代）。
 ///
-/// 重点：窄屏（360）下不溢出、亮/暗主题均可渲染、滑动式同步模式分段可选、
-/// 云端备份列表按新版快照命名展示（云端记录 #N · 时间 · 大小）。
+/// 重点：窄屏不溢出、亮/暗主题可渲染、同步模式分段可选、
+/// 快照列表按「归属库 · 第 N 代」展示、点击快照走整份替换确认。
 void main() {
   SettingsFormState makeForm({CloudSyncProvider? provider}) {
     return SettingsFormState(
@@ -56,7 +56,6 @@ void main() {
     await pumpPanel(tester, theme: NarrChatTheme.light, form: makeForm());
     expect(find.text('云同步'), findsOneWidget);
     expect(find.byType(TextField), findsWidgets);
-    // 无 RenderFlex overflow 异常即通过（溢出会在测试中抛异常导致失败）。
   });
 
   testWidgets('窄屏(360) 暗色：面板渲染且无溢出', (tester) async {
@@ -71,7 +70,6 @@ void main() {
   });
 
   testWidgets('超窄卡片(261)：连接操作行换行而不溢出', (tester) async {
-    // 卡片内边距 all(16) → 内容宽 229：正是 Windows 实机日志里溢出的约束宽度。
     await pumpPanel(tester,
         theme: NarrChatTheme.light, form: makeForm(), width: 261);
     expect(find.text('测试连接'), findsOneWidget);
@@ -93,16 +91,17 @@ void main() {
     expect(form.syncMode, SyncMode.auto);
   });
 
-  testWidgets('云端备份列表：按新版快照命名展示「云端记录 #N」并过滤旧命名', (tester) async {
+  testWidgets('备份列表：按「归属库 · 第 N 代」展示，认不出的文件原样显示名字', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
     provider.debugSetBackups([
       const WebDavFile(
-        name: 'narrchat_snapshot_g3_20260816_100000.db',
+        name: 'narrchat_library_shot-g3.db',
         size: 2048,
+        lastModified: null,
       ),
-      const WebDavFile(name: 'narrchat_user_2026-08-16_10-00-00.db'), // 旧命名
-      const WebDavFile(name: 'manifest.json'),
+      const WebDavFile(name: 'narrbook_abcdef12-3456-7890-abcd-ef1234567890_shot-g7.db'),
+      const WebDavFile(name: 'manifest_narrchat_library.json'),
     ]);
     await pumpPanel(
       tester,
@@ -110,41 +109,96 @@ void main() {
       form: form,
       provider: provider,
     );
-    // 旧版命名与 manifest 不再出现在备份列表中。
-    expect(find.text('narrchat_user_2026-08-16_10-00-00.db'), findsNothing);
-    expect(find.text('manifest.json'), findsNothing);
-    expect(find.text('云端记录 #3'), findsOneWidget);
-    expect(find.textContaining('2026-08-16'), findsWidgets);
+
+    expect(find.text('目录库 · 第 3 代'), findsOneWidget);
+    expect(find.textContaining('书籍 '), findsWidgets);
+    expect(find.textContaining('第 7 代'), findsOneWidget);
+    // 清单文件不是快照，不展示成条目。
+    expect(find.text('manifest_narrchat_library.json'), findsNothing);
     expect(find.textContaining('2.0 KB'), findsOneWidget);
   });
 
-  testWidgets('云端备份列表：多代快照按代际新 → 旧排列', (tester) async {
+  testWidgets('备份列表：多代快照按代际新 → 旧排列', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
     provider.debugSetBackups([
-      const WebDavFile(name: 'narrchat_snapshot_g2_20260816_100000.db'),
-      const WebDavFile(name: 'narrchat_snapshot_g7_20260816_120000.db'),
-      const WebDavFile(name: 'narrchat_snapshot_g5_20260816_110000.db'),
+      const WebDavFile(name: 'narrchat_library_shot-g2.db'),
+      const WebDavFile(name: 'narrchat_library_shot-g7.db'),
+      const WebDavFile(name: 'narrchat_library_shot-g5.db'),
     ]);
-    // 直接验证排序规则（纯函数），再验证面板展示顺序。
     final sorted = [...provider.backups]..sort(CloudSyncProvider.compareSnapshots);
     expect(
       sorted.map((f) => f.name).toList(),
       [
-        'narrchat_snapshot_g7_20260816_120000.db',
-        'narrchat_snapshot_g5_20260816_110000.db',
-        'narrchat_snapshot_g2_20260816_100000.db',
+        'narrchat_library_shot-g7.db',
+        'narrchat_library_shot-g5.db',
+        'narrchat_library_shot-g2.db',
       ],
     );
+
     await pumpPanel(
       tester,
       theme: NarrChatTheme.light,
       form: form,
       provider: provider,
     );
-    expect(find.text('云端记录 #7'), findsOneWidget);
-    expect(find.text('云端记录 #5'), findsOneWidget);
-    expect(find.text('云端记录 #2'), findsOneWidget);
+    expect(find.text('目录库 · 第 7 代'), findsOneWidget);
+    expect(find.text('目录库 · 第 5 代'), findsOneWidget);
+    expect(find.text('目录库 · 第 2 代'), findsOneWidget);
+  });
+
+  testWidgets('点击快照：弹「整份替换」确认，确认后走 restoreSnapshot', (tester) async {
+    final provider = CloudSyncProvider(); // 未配置：restoreSnapshot 直接拒绝
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups([
+      const WebDavFile(name: 'narrchat_library_shot-g1.db'),
+    ]);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    final button = find.byTooltip('下载并恢复此版本');
+    await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+
+    expect(find.text('用这个备份覆盖本地？'), findsOneWidget);
+    expect(find.textContaining('整份替换本地'), findsOneWidget);
+
+    await tester.tap(find.text('替换'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('处理失败'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  testWidgets('点击快照后取消：不调用还原', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups([
+      const WebDavFile(name: 'narrchat_mods_shot-g1.db'),
+    ]);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    final button = find.byTooltip('下载并恢复此版本');
+    await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用这个备份覆盖本地？'), findsNothing);
+    expect(find.textContaining('处理失败'), findsNothing);
   });
 
   // ---------------------------------------------------------------------------
@@ -187,7 +241,5 @@ void main() {
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pumpAndSettle();
     expect(find.byType(AlertDialog), findsOneWidget, reason: '点击打开修改弹窗');
-    // 弹窗打开会尝试 refreshKeepVersions（真实 provider 走 flutter_test 的
-    // 假 HTTP 400 → 内联展示错误；控件行为断言见 keep_versions_dialog_test.dart）。
   });
 }

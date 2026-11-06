@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/models/round.dart';
 import 'package:narrchat/widgets/chat_bubble.dart';
 import 'package:narrchat/widgets/collapsible_content.dart';
 
@@ -69,23 +68,29 @@ void main() {
     return count;
   }
 
+  /// 播种**全部在 pump 之前**并包 `tester.runAsync`：首帧 `loadRounds` 要做真库
+  /// I/O，fake-async 区域里等不到，会永久挂起。
   Future<void> pumpWith(WidgetTester tester, String userInput,
       {Size size = const Size(1400, 900)}) async {
-    final dao = FakeRoundDao();
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      final seeded = await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 1,
         userInput: userInput,
         aiNarrative: '第 1 轮的剧情正文。',
-        currentTime: '第一天 午时',
-        createdAt: DateTime.now(),
-      ),
-    );
-    await pumpChatScreen(tester, roundDao: dao, size: size);
-    // 收起判定按帧末回报：多推两帧让「箭头出现 + 正文按新宽度重排」都落定。
-    await tester.pump();
-    await tester.pump();
+      );
+      await stack.repos.rounds.updateContent(
+        bookUuid: kHarnessBookUuid,
+        generationUuid: seeded.uuid,
+        fields: const {'current_time': '第一天 午时'},
+      );
+    });
+    await pumpChatScreen(tester, stack: stack, size: size);
+    // 收起判定按帧末回报：settle 让「箭头出现 + 正文按新宽度重排」都落定。
+    await settle(tester);
   }
 
   testWidgets('对话页：超长用户气泡默认收起，点箭头展开为全文', (tester) async {
@@ -149,35 +154,40 @@ void main() {
     String? roundSevenInput,
     int trailingReplyRepeats = 40,
   }) async {
-    final dao = FakeRoundDao();
-    for (var i = 1; i <= 6; i++) {
-      await dao.insertRound(
-        Round(
-          bookUuid: kHarnessBookUuid,
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: kHarnessBookUuid, title: '测试书');
+      final seeded = <String>[];
+      for (var i = 1; i <= 6; i++) {
+        final round = await stack.seedRound(
+          kHarnessBookUuid,
           roundIndex: i,
           userInput: '第 $i 轮的用户输入',
           aiNarrative: '第 $i 轮的剧情正文。' * 40,
-          currentTime: '第一天 午时',
-          createdAt: DateTime.now(),
-        ),
-      );
-    }
-    await dao.insertRound(
-      Round(
-        bookUuid: kHarnessBookUuid,
+        );
+        seeded.add(round.uuid);
+      }
+      final last = await stack.seedRound(
+        kHarnessBookUuid,
         roundIndex: 7,
         userInput: roundSevenInput ?? twentyLines,
         // 末尾（AI 还没回复）时这一条就是列表最末条目 —— 列表自带的阅读锚定
         // 也会盯它的高度变化，这里用来验证「锚定 + 气泡补偿」不会叠加成两倍。
         aiNarrative:
             trailingReply ? '第 7 轮的剧情正文。' * trailingReplyRepeats : '',
-        currentTime: '第一天 午时',
-        createdAt: DateTime.now(),
-      ),
-    );
-    await pumpChatScreen(tester, roundDao: dao);
-    await tester.pump();
-    await tester.pump();
+      );
+      seeded.add(last.uuid);
+      for (final uuid in seeded) {
+        await stack.repos.rounds.updateContent(
+          bookUuid: kHarnessBookUuid,
+          generationUuid: uuid,
+          fields: const {'current_time': '第一天 午时'},
+        );
+      }
+    });
+    await pumpChatScreen(tester, stack: stack);
+    await settle(tester);
   }
 
   /// 消息列（`ListView`）的滚动位置。
