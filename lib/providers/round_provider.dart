@@ -194,8 +194,8 @@ class RoundProvider extends ChangeNotifier {
 
   /// 版本树 / 分支变更计数：任何代或分支变化都自增。
   ///
-  /// 供 UI 做缓存失效（楼层跳转的条目高度估算依赖「代次控件是否显示」，
-  /// 控件显隐会改变条目高度 → 必须并入失效依据）。
+  /// 供 UI 做缓存失效（对话页的条目高度依赖「代次控件是否显示」，
+  /// 控件显隐会改变条目高度 → 必须并入几何重建的失效依据）。
   int get versionsRevision => _versionsRevision;
 
   /// 生成成功回调（书籍 uuid, 书名）。
@@ -241,6 +241,13 @@ class RoundProvider extends ChangeNotifier {
       _experimentalSettings?.reduceReasoningReplay ?? false;
 
   List<Round> get rounds => _roundsView;
+
+  /// 当前活动链所属书的 uuid（空串 = 尚未加载任何书）。
+  ///
+  /// 对话页用它判断 `rounds` 是不是**当前这本书**的数据：换书时数据是异步来的，
+  /// 首帧读到的可能还是上一本书的活动链（全局 provider 不随页面销毁），
+  /// 拿它建几何 / 建窗口会把新页面的窗口带到旧书的总轮数上。
+  String get loadedBookUuid => _bookUuid;
 
   /// 当前查看书的运行时生成状态（未加载任何书或从未生成时为 null）。
   _BookGenState? get _curGen => _gens[_bookUuid];
@@ -422,9 +429,17 @@ class RoundProvider extends ChangeNotifier {
   ///
   /// R3 没有投影表：界面上的每一轮就是活动链上的某一代。
   /// RAW 时间线不随加载清空（按代 uuid 保存），仅换书时整体清理。
+  ///
+  /// **换书先清链**：上一本书的活动链必须在 await 之前就消失并通知出去。
+  /// 否则新打开的对话页首帧会拿上一本书的轮次建窗口——链变短时 `delta` 为负，
+  /// 那次负 delta 正是「整页空白 + 只有轨道」的根因（见 `ChatWindowController
+  /// .setTotalRounds` 的不变量说明）。
   Future<void> loadRounds(String bookUuid) async {
     if (_bookUuid.isNotEmpty && _bookUuid != bookUuid) {
       _rawByGeneration.clear();
+      _setChain(RoundChain.empty);
+      _bumpVersions();
+      notifyListeners();
     }
     _bookUuid = bookUuid;
     try {

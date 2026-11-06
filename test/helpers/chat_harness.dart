@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
@@ -56,7 +58,11 @@ const String kHarnessBookUuid = 'book-1';
 ///   的场景可加大）；
 /// - [theme]：应用主题（默认浅色主题；深色用例可传 dark）；
 /// - [textScale]：全局文字缩放倍率（默认 1.0）；
-/// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调。
+/// - [onOpenBook]：驻场岛展开区点「正在生成的书」的回调；
+/// - [preloadRounds]：pump 前是否先 `loadRounds`（默认 true）。置 false 可复现
+///   「新页面首帧时全局 provider 里还是上一本书的活动链」这条真实路径；
+/// - [beforePump]：pumpWidget **之前**的预热钩子（拿到两个 provider），用来摆出
+///   「上一本书的链 + 当前书已选」这种跨书首帧状态。
 Future<RoundProvider> pumpChatScreen(
   WidgetTester tester, {
   TestStack? stack,
@@ -78,6 +84,8 @@ Future<RoundProvider> pumpChatScreen(
   Size size = const Size(1400, 900),
   double textScale = 1.0,
   void Function(String bookUuid)? onOpenBook,
+  bool preloadRounds = true,
+  FutureOr<void> Function(RoundProvider rounds, BookProvider books)? beforePump,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -107,9 +115,16 @@ Future<RoundProvider> pumpChatScreen(
       bodyRepeats: seedBodyRepeats,
     );
     await bookProvider.loadBooks();
-    await roundProvider.loadRounds(kHarnessBookUuid);
+    if (preloadRounds) {
+      await roundProvider.loadRounds(kHarnessBookUuid);
+    }
   });
   bookProvider.selectBook(bookProvider.books.first);
+  if (beforePump != null) {
+    await tester.runAsync(() async {
+      await beforePump(roundProvider, bookProvider);
+    });
+  }
 
   await tester.pumpWidget(
     MultiProvider(

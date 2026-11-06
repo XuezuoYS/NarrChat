@@ -53,12 +53,10 @@ class ChatWindowController extends ChangeNotifier {
   ChatWindowController({
     this.initialRounds = 30,
     this.expandRounds = 20,
-    this.minRounds = 10,
     this.minViewports = 2.0,
     this.prefetchViewports = 1.5,
     this.jumpRadius = 15,
     this.maxRounds = 200,
-    this.trimViewports = 4.0,
   });
 
   /// 首屏轮的轮数。
@@ -66,9 +64,6 @@ class ChatWindowController extends ChangeNotifier {
 
   /// 每次向上/向下扩的轮数。
   final int expandRounds;
-
-  /// 首屏最少轮数（即使一屏都撑不满也不再往前扩）。
-  final int minRounds;
 
   /// 首屏至少撑满几个视口。
   final double minViewports;
@@ -81,9 +76,6 @@ class ChatWindowController extends ChangeNotifier {
 
   /// 窗口轮数上限（内存保护）。
   final int maxRounds;
-
-  /// 某一端距视口超过几个视口高时允许裁剪。
-  final double trimViewports;
 
   int _totalRounds = 0;
   ChatWindow? _window;
@@ -98,7 +90,8 @@ class ChatWindowController extends ChangeNotifier {
   /// 首屏建窗。
   ///
   /// [heightOfWindow] 回传"按当前窗口估算/实测的总高"，用来判断要不要继续往前扩；
-  /// 返回 [viewerHeightUnknown] 表示高度还测不出来（首帧），那就先按轮数终止。
+  /// 首帧（`viewportDimension == 0`）判不出来就先按轮数建窗，布局完成后由
+  /// [satisfyMinimumHeight] 补做。
   void initialize({
     required int totalRounds,
     double Function(ChatWindow window)? heightOfWindow,
@@ -110,12 +103,8 @@ class ChatWindowController extends ChangeNotifier {
       return;
     }
     var first = _clampRound(_totalRounds - initialRounds + 1);
-    var last = _totalRounds;
-    // 不足两屏就继续往前扩（最少也留 minRounds 轮）。
-    while (first > 1 &&
-        last - first + 1 < minRounds) {
-      first = _clampRound(first - expandRounds);
-    }
+    final last = _totalRounds;
+    // 首帧还没有视口高度时这里跳过；布局完成后由 [satisfyMinimumHeight] 补一次。
     if (heightOfWindow != null && viewportDimension > 0) {
       while (first > 1) {
         final height = heightOfWindow(
@@ -130,15 +119,57 @@ class ChatWindowController extends ChangeNotifier {
     );
   }
 
+  /// 首屏「至少撑满 [minViewports] 屏」的补做。
+  ///
+  /// 首帧通常拿不到视口高度（列表还没布局完），[initialize] 只能按轮数建窗；
+  /// 布局完成后再调本方法，把窗口继续往前扩。只在**窗口仍贴着末端**时扩，
+  /// 用户已经跳走就不要再动。返回是否改了窗口。
+  bool satisfyMinimumHeight({
+    required double Function(ChatWindow window) heightOfWindow,
+    required double viewportDimension,
+  }) {
+    final window = _window;
+    if (window == null || viewportDimension <= 0) return false;
+    if (!window.includesTail(_totalRounds)) return false;
+    var first = window.firstRoundIndex;
+    while (first > 1) {
+      final height = heightOfWindow(
+        ChatWindow(firstRoundIndex: first, lastRoundIndex: window.lastRoundIndex),
+      );
+      if (height <= 0 || height >= viewportDimension * minViewports) break;
+      final next = _clampRound(first - expandRounds);
+      if (next == first) break;
+      first = next;
+    }
+    if (first == window.firstRoundIndex) return false;
+    _setWindow(
+      ChatWindow(firstRoundIndex: first, lastRoundIndex: window.lastRoundIndex),
+    );
+    return true;
+  }
+
+  /// 换书 / 换分支：忘掉旧链的一切，下一帧按新链重新建窗。
+  ///
+  /// 刻意**不**通知（调用方正在 build 里换链，自己就会重建）；通知留到
+  /// [initialize] / [setTotalRounds] 真正换了窗口时再发。
+  void reset() {
+    _totalRounds = 0;
+    _window = null;
+  }
+
   /// 全书轮数变化（新书 / 新增一轮）。
   ///
   /// 只有窗口本来就贴着末端时才尾随扩展；用户在翻历史时不该被新轮拽走。
+  ///
+  /// **不变量**：窗口必须落在 `[1, totalRounds]` 且 `first <= last`。旧实现只把
+  /// `lastRoundIndex` 夹回新总数、`firstRoundIndex` 不动，链变短（换书 / 切分支 /
+  /// 删轮）时会造出 `(91..10)` 这种**倒置窗**：`contains()` 恒 false → 列表一层
+  /// 轮次都没有 → 对话页整页空白。这里改成「装不下就按尾部重建」。
   void setTotalRounds(int totalRounds) {
     final next = totalRounds < 0 ? 0 : totalRounds;
     if (next == _totalRounds) return;
     final window = _window;
     final oldTotal = _totalRounds;
-    final wasAtTail = window != null && window.includesTail(oldTotal);
     _totalRounds = next;
     if (next == 0) {
       _setWindow(null);
@@ -148,6 +179,12 @@ class ChatWindowController extends ChangeNotifier {
       initialize(totalRounds: next);
       return;
     }
+    if (window.lastRoundIndex > next || window.firstRoundIndex > next) {
+      // 新链比窗口覆盖的范围还短：窗口整体作废，从尾部重来。
+      initialize(totalRounds: next);
+      return;
+    }
+    final wasAtTail = window.includesTail(oldTotal);
     if (!wasAtTail) {
       // 用户正在翻历史：新轮不该把他拽走。
       notifyListeners();
@@ -212,52 +249,13 @@ class ChatWindowController extends ChangeNotifier {
     _setWindow(ChatWindow(firstRoundIndex: first, lastRoundIndex: last));
   }
 
-  /// 空闲时裁剪：轮数超上限、且某一端已经离视口很远，就把那一端丢掉。返回是否裁了。
-  ///
-  /// [keepRoundIndex] 是"用户正看着的那一轮"——裁到它就算到底，绝不让它被裁掉
-  /// （否则用户会看到内容突然跳走）。
-  bool trimIfNeeded({
-    required double distanceToWindowTop,
-    required double distanceToWindowBottom,
-    required double viewportDimension,
-    int? keepRoundIndex,
-  }) {
-    final window = _window;
-    if (window == null || viewportDimension <= 0) return false;
-    if (window.roundCount <= maxRounds) return false;
-    final farTop =
-        distanceToWindowTop > viewportDimension * trimViewports;
-    final farBottom =
-        distanceToWindowBottom > viewportDimension * trimViewports;
-    if (!farTop && !farBottom) return false;
-    // 优先裁离得远的那一端；两端都远就裁更远的。
-    final trimTop = farTop && (!farBottom || distanceToWindowTop >= distanceToWindowBottom);
-    final drop = expandRounds;
-    final maxDrop = window.roundCount - minRounds;
-    if (maxDrop <= 0) return false;
-    var actual = drop > maxDrop ? maxDrop : drop;
-    if (keepRoundIndex != null) {
-      final allowed = trimTop
-          ? keepRoundIndex - window.firstRoundIndex
-          : window.lastRoundIndex - keepRoundIndex;
-      if (allowed < actual) actual = allowed < 0 ? 0 : allowed;
-    }
-    if (actual <= 0) return false;
-    _setWindow(
-      trimTop
-          ? window.copyWith(firstRoundIndex: _clampRound(window.firstRoundIndex + actual))
-          : window.copyWith(lastRoundIndex: _clampRound(window.lastRoundIndex - actual)),
-    );
-    return true;
-  }
-
   int _clampRound(int roundIndex) {
     if (roundIndex < 1) return 1;
     if (_totalRounds > 0 && roundIndex > _totalRounds) return _totalRounds;
     return roundIndex;
   }
 
-  /// 窗口轮数超上限时从远端收缩（保底 [minRounds] 轮）。
+  /// 窗口轮数超上限时从远端收缩（保底 1 轮）。
   ChatWindow _shrinkToLimit(ChatWindow window) {
     if (window.roundCount <= maxRounds) return window;
     final overflow = window.roundCount - maxRounds;

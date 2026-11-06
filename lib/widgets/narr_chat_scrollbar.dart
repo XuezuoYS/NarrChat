@@ -120,8 +120,9 @@ const double kScrollbarThumbWidth = 10;
 /// 拇指与右缘间距（两滚动条共用）。
 const double kScrollbarThumbEdgeGap = 4;
 
-/// 右缘命中带宽度：通用滚动条的悬停显隐区（与楼层跳转悬浮条等右缘控件
-/// 保持不相交；快速定位导轨另用整条 28px 触屏命中带）。
+/// 右缘命中带宽度：通用滚动条的悬停显隐区（与右缘控件保持不相交；
+/// 快速定位导轨另用整条 28px 触屏命中带）。对话页的消息列**不用**它
+/// （那边由 `ChatRail` 接管，见 `ScrollConfiguration.copyWith(scrollbars: false)`）。
 const double kScrollbarHitBandWidth = 16;
 
 /// 拇指拾取宽度（比拇指本体宽，便于点中拖动）。

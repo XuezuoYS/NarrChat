@@ -75,12 +75,13 @@ void main() {
   tearDown(() => controller.dispose());
 
   group('当前轮与进度', () {
-    test('贴底时 currentRoundIndex 是最新轮', () {
+    test('当前轮 = 视口**顶部**那一轮（规格 §6.4）', () {
+      // 3 轮 ×（96 + 320），视口 400：贴底时视口顶落在第 3 轮的气泡里。
       expect(controller.currentRoundIndex, 3);
     });
 
-    test('往上翻到中间时 currentRoundIndex 跟着变', () {
-      viewport.drag(geometry.total - 400);
+    test('往上翻到顶时 currentRoundIndex 变成第一轮', () {
+      viewport.drag(geometry.total - viewport.viewportDimension);
       expect(controller.currentRoundIndex, 1);
     });
 
@@ -88,6 +89,16 @@ void main() {
       expect(controller.progress, 0.0);
       viewport.drag(geometry.total - viewport.viewportDimension);
       expect(controller.progress, 1.0);
+    });
+
+    test('visibleFraction = 视口高 / 全书总高', () {
+      expect(controller.visibleFraction, closeTo(400 / geometry.total, 1e-9));
+    });
+
+    test('isPinnedToBottom：贴底为真，翻走为假', () {
+      expect(controller.isPinnedToBottom, isTrue);
+      viewport.drag(200);
+      expect(controller.isPinnedToBottom, isFalse);
     });
 
     test('未挂上滚动位置时 progress 为 null，轮号仍可算', () {
@@ -104,22 +115,25 @@ void main() {
 
   group('跳转', () {
     test('jumpToRound 落到该轮起点，且轮号自洽', () async {
-      await controller.jumpToRound(1);
+      expect(await controller.jumpToRound(1), isTrue);
       expect(controller.currentRoundIndex, 1);
       final index = geometry.indexOfRound(1)!;
       expect(
         viewport.pixels,
-        geometry.offsetOf(index) + geometry.heightOf(index),
-        reason: '落点是目标条目顶边贴视口顶，不是底边',
+        geometry.topEdgeOf(index) - viewport.viewportDimension,
+        reason: '`pixels` 是视口底边：顶边贴视口顶 = 顶边距底 − 视口高',
       );
     });
 
-    test('jumpToRound 未知轮号不动', () async {
-      viewport.drag(120);
-      final before = viewport.pixels;
-      await controller.jumpToRound(99);
-      expect(viewport.pixels, before);
-      expect(viewport.jumps, isEmpty);
+    test('jumpToRound 超出最大轮号：夹到最后一轮（落点因此被夹到 16px）', () async {
+      expect(await controller.jumpToRound(99), isTrue);
+      expect(controller.maxRoundIndex, 3);
+      expect(controller.currentRoundIndex, 3, reason: '最后一轮仍在视口顶部');
+      expect(
+        viewport.pixels,
+        lessThan(controller.geometry.topEdgeOf(geometry.indexOfRound(3)!)),
+        reason: '贴不到视口顶，只能到它自身的最大偏移',
+      );
     });
 
     test('jumpToTop 到最早一轮', () async {
@@ -133,6 +147,21 @@ void main() {
       await controller.jumpToBottom();
       expect(viewport.pixels, 0);
       expect(controller.currentRoundIndex, 3);
+    });
+
+    test('目标轮号有缺口时向下就近取整', () async {
+      final gapped = ChatGeometry();
+      gapped.rebuild([
+        ChatItem(
+            roundUuid: 'r1', roundIndex: 1, kind: ChatItemKind.user),
+        ChatItem(roundUuid: 'r1', roundIndex: 1, kind: ChatItemKind.ai),
+        ChatItem(
+            roundUuid: 'r4', roundIndex: 4, kind: ChatItemKind.user),
+        ChatItem(roundUuid: 'r4', roundIndex: 4, kind: ChatItemKind.ai),
+      ]);
+      controller.geometry = gapped;
+      expect(await controller.jumpToRound(3), isTrue);
+      expect(controller.currentRoundIndex, 1, reason: '第 3 轮不存在 → 落在第 1 轮');
     });
   });
 

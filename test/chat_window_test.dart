@@ -144,49 +144,90 @@ void main() {
     });
   });
 
-  group('裁剪', () {
-    test('轮数没超上限时不裁', () {
-      final controller = ChatWindowController(maxRounds: 40)
-        ..initialize(totalRounds: 60);
-      expect(
-        controller.trimIfNeeded(
-          distanceToWindowTop: 99999,
-          distanceToWindowBottom: 99999,
-          viewportDimension: 600,
-        ),
-        isFalse,
-      );
+  group('轮数变少', () {
+    test('链变短时按尾部重建窗口，绝不产生倒置窗', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 120);
+      expect(controller.window, const ChatWindow(firstRoundIndex: 91, lastRoundIndex: 120));
+
+      // 换书 / 切早期短分支：新链只有 10 轮。
+      controller.setTotalRounds(10);
+
+      final window = controller.window!;
+      expect(window.firstRoundIndex, lessThanOrEqualTo(window.lastRoundIndex),
+          reason: '倒置窗（如 91..10）会让窗口里一层轮次都查不到，整页空白');
+      expect(window, const ChatWindow(firstRoundIndex: 1, lastRoundIndex: 10));
+      expect(window.contains(5), isTrue);
+      expect(controller.totalRounds, 10);
     });
 
-    test('超上限且顶端离得远：从头部裁掉一页', () {
-      final controller = ChatWindowController(maxRounds: 20, minRounds: 5)
-        ..initialize(totalRounds: 400, heightOfWindow: (_) => 99999);
-      controller.rebuildAround(200);
-      // 窗口 185..215 共 31 轮，超上限 20。
-      expect(controller.window!.roundCount, greaterThan(20));
-      final trimmed = controller.trimIfNeeded(
-        distanceToWindowTop: 6000,
-        distanceToWindowBottom: 10,
+    test('链变短但仍长于初始窗口：窗口留在尾部', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 100);
+      controller.setTotalRounds(40);
+      expect(controller.window, const ChatWindow(firstRoundIndex: 11, lastRoundIndex: 40));
+      expect(controller.window!.includesTail(40), isTrue);
+    });
+
+    test('链变长为 0 时窗口消失', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 30);
+      controller.setTotalRounds(0);
+      expect(controller.window, isNull);
+      expect(controller.isInitialized, isFalse);
+    });
+  });
+
+  group('换书 / 换分支重置', () {
+    test('reset 后窗口与总数一起清空', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 50);
+      controller.reset();
+      expect(controller.window, isNull);
+      expect(controller.isInitialized, isFalse);
+      expect(controller.totalRounds, 0);
+    });
+
+    test('reset 后按新链重新建窗', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      controller.rebuildAround(40);
+      controller.reset();
+      controller.initialize(totalRounds: 6);
+      expect(controller.window, const ChatWindow(firstRoundIndex: 1, lastRoundIndex: 6));
+    });
+  });
+
+  group('首屏补足高度', () {
+    test('首帧量不到视口高：布局后补做，一直扩到撑满两屏', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      expect(controller.window!.firstRoundIndex, 171, reason: '首帧只按轮数建窗');
+
+      final grew = controller.satisfyMinimumHeight(
+        heightOfWindow: (_) => 300,
         viewportDimension: 600,
-        keepRoundIndex: 200,
       );
-      expect(trimmed, isTrue);
-      expect(controller.window!.firstRoundIndex, greaterThan(185));
-      expect(controller.window!.contains(200), isTrue, reason: '不该把正在看的轮裁掉');
+
+      expect(grew, isTrue);
+      expect(controller.window!.firstRoundIndex, 1);
+      expect(controller.window!.lastRoundIndex, 200);
     });
 
-    test('两端都近时不裁（避免手势中重建）', () {
-      final controller = ChatWindowController(maxRounds: 20)
-        ..initialize(totalRounds: 400, heightOfWindow: (_) => 99999);
-      controller.rebuildAround(200);
-      expect(
-        controller.trimIfNeeded(
-          distanceToWindowTop: 10,
-          distanceToWindowBottom: 10,
-          viewportDimension: 600,
-        ),
-        isFalse,
+    test('高度已经够两屏就不白扩', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      final grew = controller.satisfyMinimumHeight(
+        heightOfWindow: (_) => 5000,
+        viewportDimension: 600,
       );
+      expect(grew, isFalse);
+      expect(controller.window, const ChatWindow(firstRoundIndex: 171, lastRoundIndex: 200));
+    });
+
+    test('窗口已不在末端（用户跳去历史）时不补', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      controller.rebuildAround(40);
+      final before = controller.window;
+      final grew = controller.satisfyMinimumHeight(
+        heightOfWindow: (_) => 100,
+        viewportDimension: 600,
+      );
+      expect(grew, isFalse);
+      expect(controller.window, before);
     });
   });
 

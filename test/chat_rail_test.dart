@@ -2,10 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/chat/chat_locator.dart';
 import 'package:narrchat/chat/chat_rail.dart';
+import 'package:narrchat/chat/chat_rail_handle.dart';
 
 /// 记录调用的定位器替身。
 class _FakeLocator extends ChangeNotifier implements ChatLocator {
-  _FakeLocator({this.currentRoundIndex = 3});
+  _FakeLocator({
+    this.currentRoundIndex = 3,
+    this.maxRoundIndex = 10,
+    this.visibleFraction = 0.2,
+    this.viewportDimension = 600,
+  });
 
   @override
   int? currentRoundIndex;
@@ -13,20 +19,42 @@ class _FakeLocator extends ChangeNotifier implements ChatLocator {
   @override
   double? progress = 0;
 
+  @override
+  double? visibleFraction;
+
+  @override
+  int? maxRoundIndex;
+
+  @override
+  double? viewportDimension;
+
+  @override
+  bool get isPinnedToBottom => true;
+
   final List<int> jumpedRounds = [];
   final List<double> velocities = [];
   int topCalls = 0;
   int bottomCalls = 0;
   int stopCalls = 0;
+  int cancelJumpCalls = 0;
 
   @override
-  Future<void> jumpToRound(int roundIndex) async => jumpedRounds.add(roundIndex);
+  Future<bool> jumpToRound(int roundIndex) async {
+    jumpedRounds.add(roundIndex);
+    return true;
+  }
 
   @override
-  Future<void> jumpToTop() async => topCalls++;
+  Future<bool> jumpToTop() async {
+    topCalls++;
+    return true;
+  }
 
   @override
-  Future<void> jumpToBottom() async => bottomCalls++;
+  Future<bool> jumpToBottom() async {
+    bottomCalls++;
+    return true;
+  }
 
   @override
   void scrollByVelocity(double viewportsPerSecond) =>
@@ -34,6 +62,12 @@ class _FakeLocator extends ChangeNotifier implements ChatLocator {
 
   @override
   void stopVelocity() => stopCalls++;
+
+  @override
+  void cancelPendingJump() => cancelJumpCalls++;
+
+  @override
+  void notifyGeometryChanged() => notifyListeners();
 }
 
 /// 把轨道放进一个固定尺寸的盒子里（轨道按父级高度算拇指）。
@@ -44,8 +78,14 @@ Future<_FakeLocator> _pumpRail(
   int currentRound = 3,
   double viewportHeight = 600,
   bool isTouch = false,
+  ChatRailHandle? handle,
 }) async {
-  final locator = _FakeLocator(currentRoundIndex: currentRound);
+  final locator = _FakeLocator(
+    currentRoundIndex: currentRound,
+    maxRoundIndex: totalRounds,
+    visibleFraction: visibleFraction,
+    viewportDimension: viewportHeight,
+  );
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
@@ -56,9 +96,7 @@ Future<_FakeLocator> _pumpRail(
             height: 600,
             child: ChatRail(
               locator: locator,
-              totalRounds: totalRounds,
-              viewportHeight: viewportHeight,
-              visibleFraction: visibleFraction,
+              handle: handle,
               isTouchPlatform: isTouch,
             ),
           ),
@@ -113,6 +151,50 @@ void main() {
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
       expect(find.text('3 / 10'), findsOneWidget);
+    });
+
+    testWidgets('外部开关可收起（点消息区 / Esc 走这个入口）', (tester) async {
+      final handle = ChatRailHandle();
+      addTearDown(handle.dispose);
+      await _pumpRail(tester, handle: handle);
+
+      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('顶部'), findsOneWidget);
+      expect(handle.expanded, isTrue, reason: '轨道自己的开合也要回写同一个开关');
+
+      handle.collapse();
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('顶部'), findsNothing);
+    });
+
+    testWidgets('外部开关可展开', (tester) async {
+      final handle = ChatRailHandle();
+      addTearDown(handle.dispose);
+      await _pumpRail(tester, handle: handle);
+      expect(find.byTooltip('顶部'), findsNothing);
+
+      handle.expand();
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('顶部'), findsOneWidget);
+    });
+
+    testWidgets('面板贴在轨道左侧、纵向居中', (tester) async {
+      await _pumpRail(tester);
+      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.pumpAndSettle();
+
+      final railBox = tester.getRect(find.byType(ChatRail));
+      final top = tester.getRect(find.byTooltip('顶部'));
+
+      // 面板宽 64、右缘距父级右缘 panelRightInset；按钮直径 40、居中。
+      expect(
+        top.center.dx,
+        closeTo(railBox.right - ChatRail.panelRightInset - ChatRail.panelWidth / 2,
+            0.5),
+      );
+      // 总高 232，在 600 高的父级里居中：面板顶 = (600-232)/2 = 184。
+      expect(top.top, closeTo((600 - ChatRail.panelHeight) / 2, 0.5));
     });
   });
 
