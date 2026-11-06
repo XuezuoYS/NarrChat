@@ -1,14 +1,17 @@
 import 'dart:math' as math;
 
-/// 轨道把「手指位移」翻译成「滚动速度」的纯函数部分。
+/// 小滑块把「手指位移」翻译成「滚动速度」的纯函数部分。
 ///
-/// 为什么是速度而不是位置：拖轨道时内容要跟着动，但拇指**不跟手**
-/// （拇指始终等于真实进度）。"位置映射"做不到这点——手指一动拇指就得跳，
-/// 而内容还没滚到那儿。用速度驱动就没有这个矛盾。
+/// 为什么是速度而不是位置：滑块拖动时内容要跟着滚，但**手指到哪不等于内容到哪**
+/// （尤其窗口化之后一窗内容的 extent 会变）。"位置映射"在拖动中就会撒谎；
+/// 用速度驱动没有这个矛盾 —— 滑块只反馈"推了多远"，松手弹回中央。
+///
+/// 用法：`originY = 0`、`pointerY = 滑块相对中央的位移`、
+/// `viewportHeight = 滑块行程`（满量程 = 推到行程尽头）。
 ///
 /// 规格（`.agents/2026-11-06_chat_rail_spec.md` §7.5）：
 /// ```
-/// Δ = clamp((originY − pointerY) / 视口高, −1, +1)
+/// Δ = clamp((originY − pointerY) / 满量程, −1, +1)
 /// |Δ| < 死区 → v = 0
 /// s = sign(Δ) × |Δ|^指数
 /// v = s × VMAX
@@ -23,7 +26,7 @@ class ChatRailMotion {
   /// 满位移速度（视口/秒）。
   final double maxVelocity;
 
-  /// 死区：手抖这几分之一屏不该让内容动。
+  /// 死区：手抖这几分之一行程不该让内容动。
   final double deadZone;
 
   /// 曲线指数：>1 时中心附近更精细（小位移慢、大位移快）。
@@ -31,8 +34,8 @@ class ChatRailMotion {
 
   /// 计算当前速度（视口/秒）。正 = 往历史翻。
   ///
-  /// [originY] 按下时的指针纵坐标，[pointerY] 当前纵坐标，
-  /// [viewportHeight] 消息区可视高度（"满量程 = 1 个视口高"）。
+  /// [originY] 起点纵坐标，[pointerY] 当前纵坐标，
+  /// [viewportHeight] 满量程对应的距离（对话页传滑块行程）。
   double velocityFor({
     required double originY,
     required double pointerY,

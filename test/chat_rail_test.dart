@@ -70,7 +70,7 @@ class _FakeLocator extends ChangeNotifier implements ChatLocator {
   void notifyGeometryChanged() => notifyListeners();
 }
 
-/// 把轨道放进一个固定尺寸的盒子里（轨道按父级高度算拇指）。
+/// 把轨道放进一个固定尺寸的盒子里（滑块按父级高度居中）。
 Future<_FakeLocator> _pumpRail(
   WidgetTester tester, {
   int totalRounds = 10,
@@ -92,7 +92,7 @@ Future<_FakeLocator> _pumpRail(
         body: Align(
           alignment: Alignment.centerRight,
           child: SizedBox(
-            width: 180,
+            width: 200,
             height: 600,
             child: ChatRail(
               locator: locator,
@@ -119,7 +119,7 @@ void main() {
       expect(find.byKey(ChatRail.trackKey), findsNothing);
     });
 
-    testWidgets('可滚动时显示轨道与拇指', (tester) async {
+    testWidgets('可滚动时显示滑块', (tester) async {
       await _pumpRail(tester);
       expect(find.byKey(ChatRail.trackKey), findsOneWidget);
     });
@@ -150,7 +150,7 @@ void main() {
       await _pumpRail(tester, currentRound: 3, totalRounds: 10);
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
-      expect(find.text('3 / 10'), findsOneWidget);
+      expect(find.textContaining('3 / 10', findRichText: true), findsOneWidget);
     });
 
     testWidgets('外部开关可收起（点消息区 / Esc 走这个入口）', (tester) async {
@@ -179,22 +179,156 @@ void main() {
       expect(find.byTooltip('顶部'), findsOneWidget);
     });
 
-    testWidgets('面板贴在轨道左侧、纵向居中', (tester) async {
+    testWidgets('五个部件各自成形：右缘对齐滑块侧、纵向居中', (tester) async {
       await _pumpRail(tester);
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
 
       final railBox = tester.getRect(find.byType(ChatRail));
       final top = tester.getRect(find.byTooltip('顶部'));
-
-      // 面板宽 64、右缘距父级右缘 panelRightInset；按钮直径 40、居中。
-      expect(
-        top.center.dx,
-        closeTo(railBox.right - ChatRail.panelRightInset - ChatRail.panelWidth / 2,
-            0.5),
+      final capsule = tester.getRect(
+        find.ancestor(
+          of: find.textContaining('3 / 10', findRichText: true),
+          matching: find.byType(SizedBox),
+        ).first,
       );
-      // 总高 232，在 600 高的父级里居中：面板顶 = (600-232)/2 = 184。
+
+      // 部件右缘 = 父级右缘 -（内缩 + 命中带 + 间隙）；桌面内缩 8。
+      final chipRight = railBox.right -
+          (ChatRail.gutterDesktop + ChatRail.hitWidth + ChatRail.panelGap);
+      expect(top.right, closeTo(chipRight, 0.5));
+      expect(capsule.right, closeTo(chipRight, 0.5));
+
+      // 圆形按钮 40、胶囊 120（页码要放得开）。
+      expect(top.width, ChatRail.itemHeight);
+      expect(capsule.width, ChatRail.capsuleWidth);
+      expect(capsule.width, greaterThan(top.width * 2));
+
+      // 五个部件总高 = 4 按钮 + 1 胶囊 + 4 间距，在 600 高的父级里居中。
       expect(top.top, closeTo((600 - ChatRail.panelHeight) / 2, 0.5));
+    });
+
+    testWidgets('没有包裹五个部件的大面板（每个部件自带 Material）', (tester) async {
+      await _pumpRail(tester);
+      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.pumpAndSettle();
+
+      for (final tooltip in ['顶部', '上一轮', '下一轮', '底部']) {
+        expect(
+          find.descendant(
+            of: find.byTooltip(tooltip),
+            matching: find.byType(Material),
+          ),
+          findsOneWidget,
+          reason: '$tooltip 自己有一层 Material（底色 + 形状 + 阴影）',
+        );
+      }
+    });
+  });
+
+  group('滑块', () {
+    testWidgets('滑块钉在垂直中央，且是小胶囊（不是整条滚动条）', (tester) async {
+      await _pumpRail(tester);
+
+      final knob = tester.getRect(find.byKey(ChatRail.knobKey));
+      expect(knob.center.dy, closeTo(300, 0.5), reason: '垂直居中');
+      expect(knob.width, greaterThanOrEqualTo(ChatRail.knobWidth));
+      expect(knob.height, ChatRail.knobHeight);
+      // 不再是"整条竖条"：高度远小于父级高度。
+      expect(knob.height, lessThan(600 / 4));
+    });
+
+    testWidgets('拖动时滑块跟着手指走', (tester) async {
+      final locator = await _pumpRail(tester);
+      final knob = find.byKey(ChatRail.knobKey);
+      final start = tester.getCenter(knob);
+
+      final gesture = await tester.startGesture(start);
+      await tester.pump();
+      // 第一段位移用于越过拖拽判定阈值（框架把它算进"起点"），之后才是跟手。
+      await gesture.moveBy(const Offset(0, -40));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, -40));
+      await tester.pump();
+
+      expect(
+        tester.getRect(knob).center.dy,
+        closeTo(start.dy - 80, 0.5),
+        reason: '滑块跟手（按绝对位置算，不丢前半段位移）',
+      );
+      expect(locator.velocities, isNotEmpty);
+      expect(locator.velocities.last, greaterThan(0), reason: '往上拖 = 往历史翻');
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('松手弹回中央并停止滚动', (tester) async {
+      final locator = await _pumpRail(tester);
+      final knob = find.byKey(ChatRail.knobKey);
+      final start = tester.getCenter(knob);
+
+      final gesture = await tester.startGesture(start);
+      await gesture.moveBy(const Offset(0, 45));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, 45));
+      await tester.pump();
+      expect(tester.getRect(knob).center.dy, closeTo(start.dy + 90, 0.5));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getRect(knob).center.dy,
+        closeTo(start.dy, 0.5),
+        reason: '松手回中',
+      );
+      expect(locator.stopCalls, greaterThan(0));
+    });
+
+    testWidgets('拖动超出行程被夹住（不会跑到屏幕外）', (tester) async {
+      await _pumpRail(tester);
+      final knob = find.byKey(ChatRail.knobKey);
+      final start = tester.getCenter(knob);
+
+      final gesture = await tester.startGesture(start);
+      await gesture.moveBy(const Offset(0, -300));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, -300));
+      await tester.pump();
+
+      expect(
+        tester.getRect(knob).center.dy,
+        closeTo(start.dy - ChatRail.knobMaxTravel, 0.5),
+      );
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('收起态拖动弹出跟随滑块的页码胶囊', (tester) async {
+      await _pumpRail(tester);
+      expect(find.textContaining('3 / 10', findRichText: true), findsNothing);
+
+      final gesture =
+          await tester.startGesture(tester.getCenter(find.byKey(ChatRail.knobKey)));
+      await gesture.moveBy(const Offset(0, -30));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, -30));
+      await tester.pump();
+
+      expect(
+        find.textContaining('3 / 10', findRichText: true),
+        findsOneWidget,
+        reason: '收起态拖动时只弹中间胶囊',
+      );
+      expect(find.byTooltip('顶部'), findsNothing, reason: '不展开五个部件');
+
+      await gesture.up();
+      // 胶囊停留 1.2s 后淡出（计时器收敛，避免测试结束残留）。
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('3 / 10', findRichText: true), findsNothing);
     });
   });
 
@@ -241,7 +375,7 @@ void main() {
       final locator = await _pumpRail(tester);
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('3 / 10'));
+      await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
       expect(find.byType(TextField), findsOneWidget);
       await tester.enterText(find.byType(TextField), '7');
@@ -255,7 +389,7 @@ void main() {
       final locator = await _pumpRail(tester);
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('3 / 10'));
+      await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '99');
       await tester.testTextInput.receiveAction(TextInputAction.done);
@@ -267,7 +401,7 @@ void main() {
       final locator = await _pumpRail(tester);
       await tester.tap(find.byKey(ChatRail.trackKey));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('3 / 10'));
+      await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'abc');
       await tester.testTextInput.receiveAction(TextInputAction.done);

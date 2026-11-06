@@ -2764,9 +2764,9 @@ class _ChatScreenState extends State<ChatScreen>
             bottom: 0,
             right: 0,
             child: SizedBox(
-              // 轨道命中区 + 面板宽（面板贴在轨道左侧），父级必须给够宽度，
-              // 否则展开时面板会落到父级边界外（实测会报 off-screen）。
-              width: ChatRail.panelRightInset + ChatRail.panelWidth,
+              // 轨道占用的右侧宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）：
+              // 父级必须给够，否则展开的胶囊会落到父级边界外（实测会报 off-screen）。
+              width: ChatRail.reservedWidth,
               child: ChatRail(locator: _chatLocator, handle: _railHandle),
             ),
           ),

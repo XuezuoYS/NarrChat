@@ -29,7 +29,7 @@ void main() {
     expect(find.byTooltip('顶部'), findsOneWidget);
     expect(find.byTooltip('底部'), findsOneWidget);
     expect(
-      find.textContaining('/ 10'),
+      find.textContaining('/ 10', findRichText: true),
       findsOneWidget,
       reason: '胶囊显示「当前轮 / 最大轮号」',
     );

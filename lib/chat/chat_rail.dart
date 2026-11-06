@@ -9,17 +9,17 @@ import 'chat_locator.dart';
 import 'chat_rail_handle.dart';
 import 'chat_rail_motion.dart';
 
-/// 对话页右侧的定位轨：一条细轨 + 拇指，点开变成一列跳转按钮。
+/// 对话页右侧的**小滑块**定位器：一颗居中的滑块 + 点开后的五个独立部件。
 ///
-/// 为什么不用 Flutter 的 [Scrollbar]：`Scrollbar` 的拇指位置/长度读的是
-/// 滚动容器的 `maxScrollExtent`，而窗口化之后那个值只反映"当前这一窗"，
-/// 全书进度会跳来跳去。这里一律读定位层（[ChatLocator]），一个数说话。
+/// 为什么不是滚动条：滚动条拇指要"长度表示视口占比、位置表示进度"，在窗口化列表
+/// 里这两个数只能来自几何模型，稍一变窗就跳；而用户要的是**上下拖动**就能翻页。
+/// 所以这里做成一颗固定在垂直中央的小滑块：
+/// - 拖动时滑块**跟着手指走**（限制在 [knobMaxTravel] 内），松手弹回中央；
+/// - 滚动速度只跟"离中央多远"有关（速度驱动，不是位置映射）；
+/// - 不做进度条：进度由中间胶囊的"当前轮 / 最大轮号"直接读。
 ///
-/// 形态（规格 §7）：
-/// - 轨道：视觉 3dp（拖动时 6dp）、命中 24dp、右侧内缩桌面 8dp / 触控 20dp；
-/// - 拇指：高 = `max(24, 轨道高 × 视口/总高)`，位置**始终等于真实进度**（不跟手）；
-/// - 面板：宽 64dp，4 个 40dp 圆形按钮 + 1 个 40dp 胶囊，间距 8dp，总高 232dp；
-/// - 收起态拖动只弹中间胶囊，跟随**拇指**纵向并夹取安全区。
+/// 展开后是**五个各自独立**的部件（规格 §7.3 的形态），不是一个面板包住五个：
+/// 4 个圆形按钮 + 1 个加宽的胶囊，间距 8dp，纵向居中。
 class ChatRail extends StatefulWidget {
   const ChatRail({
     super.key,
@@ -29,7 +29,7 @@ class ChatRail extends StatefulWidget {
     this.motion = const ChatRailMotion(),
   });
 
-  /// 定位门面（进度 / 跳转 / 速度 / 最大轮号）。所有数字都向它要。
+  /// 定位门面（跳转 / 速度 / 最大轮号 / 可见比例）。所有数字都向它要。
   final ChatLocator locator;
 
   /// 展开 / 收起的外部开关（点消息区收起、Esc 收起用）。不传则轨道自己管。
@@ -40,47 +40,57 @@ class ChatRail extends StatefulWidget {
 
   final ChatRailMotion motion;
 
-  /// 轨道视觉宽度（拖动时用 [draggingTrackWidth]）。
-  static const double trackWidth = 3;
-  static const double draggingTrackWidth = 6;
+  /// 滑块视觉宽度（拖动时用 [knobDraggingWidth]）：比滚动条拇指粗得多，
+  /// 一眼能看出"这是个可以抓住的把手"。
+  static const double knobWidth = 14;
+  static const double knobDraggingWidth = 16;
 
-  /// 轨道命中宽度。
-  static const double hitWidth = 24;
+  /// 滑块高度（圆角胶囊）。
+  static const double knobHeight = 48;
+
+  /// 滑块相对中央的上下行程；也是速度模型的满量程。
+  static const double knobMaxTravel = 120;
+
+  /// 拖动的死区（像素）：手抖这几像素不该让内容动。
+  static const double knobDeadZone = 6;
+
+  /// 交互命中带宽（透明）：滑块在中央，所以整条右缘都能按下开始拖。
+  static const double hitWidth = 32;
 
   /// 轨道右侧内缩：桌面避开窗口边缘、触控避开系统返回手势。
   static const double gutterDesktop = 8;
   static const double gutterTouch = 20;
 
-  /// 轨道从其父级右缘起占用的宽度（内缩 + 命中区）。
-  ///
-  /// 展开面板与浮动胶囊会再向左多占一段，但那是瞬态；输入面板的按钮行只需要
-  /// 让开这一段，否则最右侧的按钮正好压在命中带里点不动（触控端实测整个按钮
-  /// 右半都收不到点击）。
-  static const double reservedFromRight = gutterTouch + hitWidth;
+  /// 部件与命中带之间的间隙。
+  static const double panelGap = 8;
 
-  /// 从父级右缘到面板右缘的距离（面板贴在轨道左侧）。
-  static const double panelRightInset = hitWidth + gutterTouch + 4;
-
-  /// 轨道命中区（测试与手势竞技场用它定位）。
-  static const Key trackKey = ValueKey('chat-rail-track');
-
-  /// 面板宽度。
-  static const double panelWidth = 64;
-
-  /// 一个按钮的高度/直径。
+  /// 圆形按钮直径。
   static const double itemHeight = 40;
 
-  /// 面板总高：5 项 + 4 个间距。
-  static const double panelHeight = itemHeight * 5 + 8 * 4;
+  /// 中间胶囊尺寸（比按钮宽，页码才放得开）。
+  static const double capsuleWidth = 120;
+  static const double capsuleHeight = 44;
 
-  /// 轨道纵向内缩（安全区上下各留一点）。
-  static const double trackInset = 12;
+  /// 运行时占用的右侧总宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）。
+  static const double reservedFromRight = gutterTouch + hitWidth;
+  static const double reservedWidth =
+      gutterTouch + hitWidth + panelGap + capsuleWidth;
 
-  /// 面板划出 / 收起的时长（规格 §7.8）。
+  /// 五个部件堆叠后的总高：4 个按钮 + 1 个胶囊 + 4 个间距。
+  static const double panelHeight = itemHeight * 4 + capsuleHeight + 8 * 4;
+
+  /// 滑块命中区（测试与手势用它定位）。
+  static const Key trackKey = ValueKey('chat-rail-track');
+
+  /// 滑块本体（测试用它量位置 / 位移）。
+  static const Key knobKey = ValueKey('chat-rail-knob');
+
+  /// 面板划出 / 收起的时长、松手回中的时长。
   static const Duration expandDuration = Duration(milliseconds: 200);
   static const Duration collapseDuration = Duration(milliseconds: 160);
+  static const Duration snapBackDuration = Duration(milliseconds: 180);
 
-  /// 静止淡出的延迟与时长。
+  /// 静止淡出的延迟与时长（仅触控）。
   static const Duration dimDelay = Duration(seconds: 2);
   static const Duration dimDuration = Duration(milliseconds: 600);
 
@@ -88,28 +98,36 @@ class ChatRail extends StatefulWidget {
   State<ChatRail> createState() => _ChatRailState();
 }
 
-class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin {
+class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
   /// 展开状态（外部可驱动）。
   late final ChatRailHandle _handle = widget.handle ?? ChatRailHandle();
 
   bool get _ownsHandle => widget.handle == null;
 
-  /// 面板划出 / 收起。
+  /// 面板淡入淡出。
   late final AnimationController _panelController = AnimationController(
     vsync: this,
     duration: ChatRail.expandDuration,
     reverseDuration: ChatRail.collapseDuration,
   );
 
+  /// 松手后滑块回中。
+  late final AnimationController _snapController = AnimationController(
+    vsync: this,
+    duration: ChatRail.snapBackDuration,
+  );
+
+  /// 滑块相对中央的位移（正值 = 往下）。
+  double _knobOffset = 0;
+  double _dragStartY = 0;
+  double _dragStartOffset = 0;
   bool _dragging = false;
   bool _hovering = false;
   bool _active = false;
   bool _editing = false;
 
-  /// 收起态拖动时是否显示跟随拇指的胶囊。
+  /// 拖动中显示的浮动胶囊。
   bool _floatingCapsule = false;
-
-  double _originY = 0;
 
   Timer? _dimTimer;
   Timer? _floatTimer;
@@ -138,13 +156,14 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
 
   int get _currentRound => widget.locator.currentRoundIndex ?? 1;
 
-  double get _progress => widget.locator.progress ?? 0;
-
   @override
   void initState() {
     super.initState();
     widget.locator.addListener(_onLocatorChanged);
     _handle.addListener(_onHandleChanged);
+    _snapController.addListener(_onSnapTick);
+    // 外部注入的 handle 可能已经是展开态（热重载 / 外部预置），对齐动画初值。
+    _panelController.value = _expanded ? 1 : 0;
     _scheduleDim();
   }
 
@@ -171,11 +190,21 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
     if (_ownsHandle) _handle.dispose();
     _dimTimer?.cancel();
     _floatTimer?.cancel();
+    _snapController.removeListener(_onSnapTick);
     _panelController.dispose();
+    _snapController.dispose();
     _jumpController.dispose();
     _jumpFocus.dispose();
     super.dispose();
   }
+
+  void _onSnapTick() {
+    if (!mounted) return;
+    setState(() => _knobOffset = (_snapController.value - 1) * _snapFrom);
+  }
+
+  /// 回中动画的起点位移。
+  double _snapFrom = 0;
 
   void _onHandleChanged() {
     if (!mounted) return;
@@ -201,40 +230,56 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
   }
 
   void _setActive(bool value) {
-    if (_active == value) return;
-    if (!mounted) return;
+    if (_active == value || !mounted) return;
     setState(() => _active = value);
   }
 
   void _onLocatorChanged() {
     if (!mounted) return;
     setState(() {});
-    // 滚动中保持常亮（触控静置才淡出）。
     if (_isTouch) _scheduleDim();
   }
 
-  double _trackHeight(double maxHeight) =>
-      math.max(0, maxHeight - ChatRail.trackInset * 2);
-
   // ---------- 手势 ----------
 
-  void _onDragStart(DragStartDetails details) {
-    HapticFeedback.selectionClick();
+  /// 按下（手势竞技场还没裁决）：先记基准点。
+  ///
+  /// 用 `onVerticalDragDown` 而不是 `DragStartDetails`：拖动被识别时（越过 slop）
+  /// 起点已经是"现在"的位置，拿它当基准会把前半段位移吃掉（实测单步拖动 80px
+  /// 时滑块纹丝不动）。按下点才是滑块该跟的基准。
+  void _onDragDown(DragDownDetails details) {
+    _snapController.stop();
+    _dragStartY = details.globalPosition.dy;
+    _dragStartOffset = _knobOffset;
     setState(() {
       _dragging = true;
-      _originY = details.globalPosition.dy;
       if (!_expanded) _floatingCapsule = true;
     });
     _scheduleDim();
   }
 
+  void _onDragStart(DragStartDetails details) {
+    HapticFeedback.selectionClick();
+    _scheduleDim();
+  }
+
   void _onDragUpdate(DragUpdateDetails details) {
-    final velocity = widget.motion.velocityFor(
-      originY: _originY,
-      pointerY: details.globalPosition.dy,
-      // 满量程 = 1 个消息视口高（不是轨道高，也不是整个聊天区高）。
-      viewportHeight: widget.locator.viewportDimension ?? 0,
-    );
+    final raw =
+        _dragStartOffset + (details.globalPosition.dy - _dragStartY);
+    final offset = raw
+        .clamp(-ChatRail.knobMaxTravel, ChatRail.knobMaxTravel)
+        .toDouble();
+    if (offset != _knobOffset) {
+      setState(() => _knobOffset = offset);
+    }
+    // 速度只跟"离中央多远"有关：满量程 = 一颗滑块的行程。
+    final velocity = offset.abs() < ChatRail.knobDeadZone
+        ? 0.0
+        : widget.motion.velocityFor(
+            originY: 0,
+            pointerY: offset,
+            viewportHeight: ChatRail.knobMaxTravel,
+          );
     widget.locator.scrollByVelocity(velocity);
     _scheduleDim();
   }
@@ -242,15 +287,25 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
   void _onDragEnd() {
     widget.locator.stopVelocity();
     setState(() => _dragging = false);
-    if (!_expanded && _floatingCapsule) {
-      // 松手后胶囊停留 1.2 秒再淡出（收起态拖动才有）。
-      _floatTimer?.cancel();
-      _floatTimer = Timer(const Duration(milliseconds: 1200), () {
-        if (!mounted) return;
-        setState(() => _floatingCapsule = false);
-      });
+    _snapBack();
+    if (!_expanded) {
+      if (_floatingCapsule) {
+        // 胶囊停留 1.2 秒再淡出。
+        _floatTimer?.cancel();
+        _floatTimer = Timer(const Duration(milliseconds: 1200), () {
+          if (!mounted) return;
+          setState(() => _floatingCapsule = false);
+        });
+      }
     }
     _scheduleDim();
+  }
+
+  /// 松手回中（180ms easeOutCubic）。
+  void _snapBack() {
+    if (_knobOffset == 0) return;
+    _snapFrom = _knobOffset;
+    _snapController.forward(from: 0);
   }
 
   void _onTapTrack() {
@@ -327,70 +382,26 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
       return const SizedBox.shrink();
     }
     final theme = Theme.of(context);
-    final color = theme.colorScheme.onSurface;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final trackHeight = _trackHeight(constraints.maxHeight);
-        final thumbHeight = ChatRailMotion.thumbHeight(
-          trackHeight: trackHeight,
-          visibleFraction: fraction,
-        );
-        final thumbTop = ChatRailMotion.thumbTop(
-          trackHeight: trackHeight,
-          thumbHeight: thumbHeight,
-          progress: _progress,
-        );
-        final opacity = _railOpacity;
+        final centerY = constraints.maxHeight / 2;
+        final knobCenterY = centerY + _knobOffset;
         return Stack(
+          clipBehavior: Clip.none,
           children: [
-            // 面板先画（在轨道下方），展开时从轨道左侧划出。
-            _buildPanelLayer(color, theme, constraints),
+            _buildPanelStack(theme, constraints),
+            // 滑块：垂直居中，拖动时跟着手指走（有行程限制）。
             Positioned(
-              right: _gutter + (ChatRail.hitWidth - ChatRail.trackWidth) / 2,
-              top: ChatRail.trackInset,
-              height: trackHeight,
-              width: ChatRail.trackWidth,
+              top: knobCenterY - ChatRail.knobHeight / 2,
+              right: _gutter + (ChatRail.hitWidth - ChatRail.knobWidth) / 2,
+              width: ChatRail.knobWidth,
+              height: ChatRail.knobHeight,
               child: IgnorePointer(
-                child: Opacity(
-                  opacity: opacity,
-                  child: Center(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      width: _dragging
-                          ? ChatRail.draggingTrackWidth
-                          : ChatRail.trackWidth,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.35),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                ),
+                key: ChatRail.knobKey,
+                child: _buildKnob(theme),
               ),
             ),
-            // 拇指：位置永远等于真实进度（拖动期间也不跟手）。
-            Positioned(
-              right: _gutter + (ChatRail.hitWidth - 8) / 2,
-              top: ChatRail.trackInset + thumbTop,
-              width: 8,
-              height: thumbHeight,
-              child: IgnorePointer(
-                child: Opacity(
-                  opacity: opacity,
-                  child: Center(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      width: _dragging ? 8 : 5,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.85),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            // 命中区 + 手势（轨道永远在最上层、永远可拖）。
+            // 命中带：整条右缘都能按下开始拖（拖动按位移算，按在哪都不会跳）。
             Positioned(
               right: _gutter,
               top: 0,
@@ -404,6 +415,7 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
                   key: ChatRail.trackKey,
                   behavior: HitTestBehavior.opaque,
                   onTap: _onTapTrack,
+                  onVerticalDragDown: _onDragDown,
                   onVerticalDragStart: _onDragStart,
                   onVerticalDragUpdate: _onDragUpdate,
                   onVerticalDragEnd: (_) => _onDragEnd(),
@@ -412,41 +424,61 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
                 ),
               ),
             ),
-            // 收起态拖动：胶囊跟随**拇指**（手指是速度输入，拇指才是位置）。
+            // 收起态拖动：胶囊跟着滑块走，松开 1.2s 后淡出。
             if (!_expanded && _floatingCapsule)
-              _buildFloatingCapsule(
-                color,
-                theme,
-                constraints,
-                thumbTop,
-                thumbHeight,
-              ),
+              _buildFloatingCapsule(theme, constraints, centerY),
           ],
         );
       },
     );
   }
 
-  /// 轨道 / 拇指的透明度：桌面常显 70%，触控静置淡到 25%、交互回 70%。
-  double get _railOpacity {
-    if (!_isTouch) return _hovering || _dragging || _expanded ? 0.9 : 0.7;
-    if (_hovering || _dragging || _expanded || _active) return 0.7;
-    return 0.25;
+  /// 滑块本体：品牌色的圆角小胶囊，拖动 / 悬停时更实。
+  Widget _buildKnob(ThemeData theme) {
+    final primary = theme.colorScheme.primary;
+    final emphasized = _dragging || _hovering;
+    final opacity = _railOpacity;
+    final width = _dragging ? ChatRail.knobDraggingWidth : ChatRail.knobWidth;
+    return Opacity(
+      opacity: opacity,
+      child: Center(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          width: width,
+          height: ChatRail.knobHeight,
+          decoration: BoxDecoration(
+            color: primary.withValues(alpha: emphasized ? 0.95 : 0.6),
+            borderRadius: BorderRadius.circular(width / 2),
+            boxShadow: [
+              BoxShadow(
+                color: primary.withValues(alpha: emphasized ? 0.38 : 0.2),
+                blurRadius: emphasized ? 10 : 6,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
-  Widget _buildPanelLayer(
-    Color color,
-    ThemeData theme,
-    BoxConstraints constraints,
-  ) {
+  /// 轨道 / 滑块的透明度：桌面常显，触控静置淡出、交互回亮。
+  double get _railOpacity {
+    if (!_isTouch) return _hovering || _dragging || _expanded ? 1 : 0.82;
+    if (_hovering || _dragging || _expanded || _active) return 1;
+    return 0.35;
+  }
+
+  /// 展开后的五个部件（各自有背景和形状，互不包裹）。
+  Widget _buildPanelStack(ThemeData theme, BoxConstraints constraints) {
     final panelHeight = math.min(
       ChatRail.panelHeight,
       math.max(0, constraints.maxHeight - 24),
     );
     final top = math.max(12.0, (constraints.maxHeight - panelHeight) / 2);
-    // `Positioned` 必须是 Stack 的直接子项：动画包在它里面，不能反过来。
     return Positioned(
-      right: ChatRail.panelRightInset,
+      right: _gutter + ChatRail.hitWidth + ChatRail.panelGap,
       top: top,
       child: AnimatedBuilder(
         animation: _panelController,
@@ -458,117 +490,124 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
             child: Opacity(
               opacity: value,
               child: Transform.translate(
-                // 从轨道左侧"划出"：收起时贴近轨道并透明。
-                offset: Offset(24 * (1 - value), 0),
+                // 从轨道左侧"划出"：收起时贴近滑块并透明。
+                offset: Offset(20 * (1 - value), 0),
                 child: child,
               ),
             ),
           );
         },
-        child: _buildPanel(color, theme),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            _railChip(
+              theme,
+              tooltip: '顶部',
+              icon: Icons.vertical_align_top,
+              onTap: _jumpTop,
+            ),
+            const SizedBox(height: 8),
+            _railChip(
+              theme,
+              tooltip: '上一轮',
+              icon: Icons.keyboard_arrow_up,
+              onTap: _previousRound,
+            ),
+            const SizedBox(height: 8),
+            _buildCapsule(theme),
+            const SizedBox(height: 8),
+            _railChip(
+              theme,
+              tooltip: '下一轮',
+              icon: Icons.keyboard_arrow_down,
+              onTap: _nextRound,
+            ),
+            const SizedBox(height: 8),
+            _railChip(
+              theme,
+              tooltip: '底部',
+              icon: Icons.vertical_align_bottom,
+              onTap: _jumpBottom,
+            ),
+          ],
+        ),
       ),
     );
   }
 
+  /// 收起态拖动时跟在滑块旁边的胶囊（只读，不挡手势）。
   Widget _buildFloatingCapsule(
-    Color color,
     ThemeData theme,
     BoxConstraints constraints,
-    double thumbTop,
-    double thumbHeight,
+    double centerY,
   ) {
-    final half = ChatRail.itemHeight / 2;
-    final minCenter = half + 12;
-    final maxCenter = math.max(
-      minCenter,
-      constraints.maxHeight - half - 12,
-    );
-    final center = (ChatRail.trackInset + thumbTop + thumbHeight / 2)
-        .clamp(minCenter, maxCenter)
+    final half = ChatRail.capsuleHeight / 2;
+    final center = (centerY + _knobOffset)
+        .clamp(half + 12, math.max(half + 12, constraints.maxHeight - half - 12))
         .toDouble();
     return Positioned(
-      right: ChatRail.panelRightInset,
+      right: _gutter + ChatRail.hitWidth + ChatRail.panelGap,
       top: center - half,
       child: IgnorePointer(
         child: AnimatedOpacity(
           opacity: 1,
           duration: const Duration(milliseconds: 120),
-          child: _buildCapsule(color, theme, compact: true),
+          child: _buildCapsule(theme),
         ),
       ),
     );
   }
 
-  Widget _buildPanel(Color color, ThemeData theme) {
-    return Container(
-      width: ChatRail.panelWidth,
-      height: ChatRail.panelHeight,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: LinearGradient(
-          begin: Alignment.centerRight,
-          end: Alignment.centerLeft,
-          colors: [
-            theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.96),
-            theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-          ],
-        ),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          _RailButton(
-            icon: Icons.vertical_align_top,
-            tooltip: '顶部',
-            onTap: _jumpTop,
-          ),
-          const SizedBox(height: 8),
-          _RailButton(
-            icon: Icons.keyboard_arrow_up,
-            tooltip: '上一轮',
-            onTap: _previousRound,
-          ),
-          const SizedBox(height: 8),
-          _buildCapsule(color, theme),
-          const SizedBox(height: 8),
-          _RailButton(
-            icon: Icons.keyboard_arrow_down,
-            tooltip: '下一轮',
-            onTap: _nextRound,
-          ),
-          const SizedBox(height: 8),
-          _RailButton(
-            icon: Icons.vertical_align_bottom,
-            tooltip: '底部',
-            onTap: _jumpBottom,
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 中间胶囊：左半数字（可点开内联输入），右半跳转按钮。
-  Widget _buildCapsule(Color color, ThemeData theme, {bool compact = false}) {
-    final label = '$_currentRound / $_maxRound';
-    return Container(
-      width: ChatRail.panelWidth,
+  /// 一个圆形按钮：自己的底色、细边框、轻阴影（不是一个面板里的图标）。
+  Widget _railChip(
+    ThemeData theme, {
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return _chipSurface(
+      theme,
+      width: ChatRail.itemHeight,
       height: ChatRail.itemHeight,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.9),
-        borderRadius: BorderRadius.circular(20),
+      radius: ChatRail.itemHeight / 2,
+      onTap: onTap,
+      tooltip: tooltip,
+      child: Icon(
+        icon,
+        size: 20,
+        color: theme.colorScheme.onSurfaceVariant,
       ),
+    );
+  }
+
+  /// 中间胶囊：左半页码（可点开内联输入），右半跳转按钮。
+  Widget _buildCapsule(ThemeData theme) {
+    final onSurface = theme.colorScheme.onSurface;
+    final variant = theme.colorScheme.onSurfaceVariant;
+    final primary = theme.colorScheme.primary;
+    return _chipSurface(
+      theme,
+      width: ChatRail.capsuleWidth,
+      height: ChatRail.capsuleHeight,
+      radius: ChatRail.capsuleHeight / 2,
+      onTap: null,
       child: Row(
         children: [
           Expanded(
-            child: _editing && !compact
+            child: _editing
                 ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     child: TextField(
                       controller: _jumpController,
                       focusNode: _jumpFocus,
                       keyboardType: TextInputType.number,
                       textAlign: TextAlign.center,
-                      style: theme.textTheme.labelMedium,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: onSurface,
+                      ),
                       decoration: const InputDecoration(
                         isDense: true,
                         border: InputBorder.none,
@@ -579,13 +618,37 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
                     ),
                   )
                 : InkWell(
-                    onTap: compact ? null : _startEditing,
-                    child: Center(
-                      child: Text(
-                        label,
-                        style: theme.textTheme.labelMedium,
-                        maxLines: 1,
-                        overflow: TextOverflow.clip,
+                    onTap: _startEditing,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Center(
+                        // 页码可能很长（四位数），放不下就整体缩放，不裁掉。
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: '$_currentRound',
+                                  style: TextStyle(
+                                    color: onSurface,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: ' / ',
+                                  style: TextStyle(color: variant),
+                                ),
+                                TextSpan(
+                                  text: '$_maxRound',
+                                  style: TextStyle(color: variant),
+                                ),
+                              ],
+                            ),
+                            maxLines: 1,
+                            style: const TextStyle(fontSize: 14, height: 1.1),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -593,16 +656,16 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
           Container(
             width: 1,
             height: 20,
-            color: color.withValues(alpha: 0.2),
+            color: theme.colorScheme.outlineVariant,
           ),
           SizedBox(
-            width: 22,
+            width: 34,
             child: InkWell(
-              onTap: compact ? null : () => _submitJump(_jumpController.text),
+              onTap: () => _submitJump(_jumpController.text),
               child: Icon(
                 Icons.play_arrow_rounded,
-                size: 16,
-                color: color.withValues(alpha: 0.8),
+                size: 18,
+                color: primary.withValues(alpha: 0.9),
               ),
             ),
           ),
@@ -610,34 +673,44 @@ class _ChatRailState extends State<ChatRail> with SingleTickerProviderStateMixin
       ),
     );
   }
-}
 
-/// 面板里的圆形按钮（40dp）。
-class _RailButton extends StatelessWidget {
-  const _RailButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.onSurface;
-    return Tooltip(
-      message: tooltip,
-      child: InkResponse(
-        onTap: onTap,
-        radius: ChatRail.itemHeight / 2,
-        child: SizedBox(
-          width: ChatRail.itemHeight,
-          height: ChatRail.itemHeight,
-          child: Icon(icon, size: 20, color: color.withValues(alpha: 0.8)),
+  /// 独立的"芯片"表面：Material 自带底色 + 圆角 + 轻阴影，外面一圈细边。
+  ///
+  /// 底色要随亮暗主题选：浅色主题里"内容面"是白色（背景浅灰），深色主题里
+  /// `surface` 与背景几乎同色 —— 用 `surfaceContainerHighest` 才看得出是独立部件。
+  Widget _chipSurface(
+    ThemeData theme, {
+    required double width,
+    required double height,
+    required double radius,
+    required Widget child,
+    VoidCallback? onTap,
+    String? tooltip,
+  }) {
+    final isDark = theme.brightness == Brightness.dark;
+    final content = SizedBox(
+      width: width,
+      height: height,
+      child: Material(
+        color: isDark
+            ? theme.colorScheme.surfaceContainerHighest
+            : theme.colorScheme.surface,
+        elevation: _hovering ? 3 : 2,
+        shadowColor: Colors.black.withValues(alpha: isDark ? 0.45 : 0.12),
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(radius),
+          side: BorderSide(
+            color: isDark
+                ? theme.colorScheme.outline.withValues(alpha: 0.5)
+                : theme.colorScheme.outlineVariant,
+          ),
         ),
+        child: onTap == null
+            ? child
+            : InkWell(onTap: onTap, child: Center(child: child)),
       ),
     );
+    return tooltip == null ? content : Tooltip(message: tooltip, child: content);
   }
 }
