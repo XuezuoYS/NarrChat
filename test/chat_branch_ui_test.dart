@@ -244,6 +244,64 @@ void main() {
     expect(find.text('从此新建分支'), findsNothing);
   });
 
+  testWidgets('改名后分支列表立即更新（不用重开小窗），顶栏标签同步', (tester) async {
+    final thread = await _pumpThread(tester);
+    final provider = thread.provider;
+    await settle(tester);
+
+    await tester.runAsync(
+      () => provider.forkBranch(round: provider.rounds.first, title: '分支 2'),
+    );
+    await tester.runAsync(() => provider.loadRounds(kHarnessBookUuid));
+    await settle(tester);
+    expect(provider.workingBranchUuid, isNotEmpty);
+
+    await _openBranchPanel(tester);
+    final panel = find.byType(BranchPanel);
+    expect(
+      find.descendant(of: panel, matching: find.text('分支 2')),
+      findsOneWidget,
+    );
+
+    // 走面板里的「分支操作 → 重命名 → 确定」。
+    await tester.tap(find.byTooltip('分支操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重命名'));
+    await tester.pumpAndSettle();
+    final dialog = find.byType(AlertDialog);
+    await tester.enterText(
+      find.descendant(of: dialog, matching: find.byType(TextField)),
+      '如果线',
+    );
+    await tester.tap(find.descendant(of: dialog, matching: find.text('确定')));
+    await settle(tester);
+
+    expect(provider.currentBranch?.branchName, '如果线');
+    expect(panel, findsOneWidget, reason: '改名不关闭小窗');
+    expect(
+      find.descendant(of: panel, matching: find.text('如果线')),
+      findsOneWidget,
+      reason: '列表要立即显示新名字，而不是等重开小窗',
+    );
+    expect(
+      find.descendant(of: panel, matching: find.text('分支 2')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: _branchEntry(), matching: find.text('如果线')),
+      findsOneWidget,
+      reason: '顶栏分支标签同步更新',
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('chat-branch-header-card')),
+        matching: find.text('如果线'),
+      ),
+      findsOneWidget,
+      reason: '链首分支头卡片同步更新',
+    );
+  });
+
   testWidgets('链首卡片：起始点 + 父 UUID + Git 图标，点击跳转回父分支并定位', (tester) async {
     // 播长正文：贴底时第 3 轮早已不在视口，跳转对齐断言才有意义。
     final thread = await _pumpThread(tester, rounds: 8, bodyRepeats: 80);

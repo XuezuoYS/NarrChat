@@ -2252,47 +2252,51 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// 关闭方式统一交给 [showAnchoredPopup]：点窗外任意位置——包括入口按钮
   /// 本身——都会先关闭遮罩，因此不会出现「关了又立刻重开」。
+  ///
+  /// 面板内容放在 [Consumer] 里：改名后 Provider 会重载分支表，小窗要
+  /// 立即换成新名字，而不是等用户关掉再打开才更新。
   Future<void> _openBranchPanel(BuildContext anchorContext) async {
-    final provider = context.read<RoundProvider>();
     final panelWidth = math.min(280.0, MediaQuery.sizeOf(context).width - 32);
     await showAnchoredPopup(
       context: context,
       anchorContext: anchorContext,
       barrierLabel: '关闭分支列表',
-      builder: (popupContext) => BranchPanel(
-        branches: provider.branches,
-        workingBranchUuid: provider.workingBranchUuid,
-        width: panelWidth,
-        onSwitch: (uuid) async {
-          final ok = await provider.switchBranch(uuid);
-          if (!mounted || !popupContext.mounted) return;
-          if (!ok) {
-            context.notices.warning(provider.error ?? '切换分支失败');
-            return;
-          }
-          Navigator.of(popupContext).pop();
-        },
-        onRename: (branch) async {
-          final title = await _askBranchTitle(branch.branchName);
-          if (title == null) return null;
-          final ok = await provider.renameBranch(branch.branchUuid, title);
-          if (!ok) {
-            if (mounted) {
-              context.notices.warning(provider.error ?? '重命名失败');
+      builder: (popupContext) => Consumer<RoundProvider>(
+        builder: (_, provider, _) => BranchPanel(
+          branches: provider.branches,
+          workingBranchUuid: provider.workingBranchUuid,
+          width: panelWidth,
+          onSwitch: (uuid) async {
+            final ok = await provider.switchBranch(uuid);
+            if (!mounted || !popupContext.mounted) return;
+            if (!ok) {
+              context.notices.warning(provider.error ?? '切换分支失败');
+              return;
             }
-            return null;
-          }
-          return title;
-        },
-        onDelete: (branch) async {
-          final ok = await provider.deleteBranch(branch.branchUuid);
-          if (!mounted || !popupContext.mounted) return;
-          if (!ok) {
-            context.notices.warning(provider.error ?? '删除分支失败');
-            return;
-          }
-          Navigator.of(popupContext).pop();
-        },
+            Navigator.of(popupContext).pop();
+          },
+          onRename: (branch) async {
+            final title = await _askBranchTitle(branch.branchName);
+            if (title == null) return null;
+            final ok = await provider.renameBranch(branch.branchUuid, title);
+            if (!ok) {
+              if (mounted) {
+                context.notices.warning(provider.error ?? '重命名失败');
+              }
+              return null;
+            }
+            return title;
+          },
+          onDelete: (branch) async {
+            final ok = await provider.deleteBranch(branch.branchUuid);
+            if (!mounted || !popupContext.mounted) return;
+            if (!ok) {
+              context.notices.warning(provider.error ?? '删除分支失败');
+              return;
+            }
+            Navigator.of(popupContext).pop();
+          },
+        ),
       ),
     );
   }
