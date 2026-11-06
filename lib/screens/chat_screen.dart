@@ -25,6 +25,7 @@ import '../models/agent_mode_level.dart';
 import '../models/ai_platform.dart';
 import '../models/app_notice.dart';
 import '../models/book.dart';
+import '../models/branch.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../models/round_send_intent.dart';
@@ -37,6 +38,7 @@ import '../providers/sidebar_provider.dart';
 import '../providers/ui_settings_provider.dart';
 import '../providers/world_book_provider.dart';
 import '../services/app_repositories.dart';
+import '../services/branch_rules.dart';
 import '../services/clipboard_paste_service.dart';
 import '../services/html_search_service.dart';
 import '../services/image_import_service.dart';
@@ -47,6 +49,7 @@ import '../utils/focus_utils.dart';
 import '../utils/text_insert_utils.dart';
 import '../utils/thinking_window.dart';
 import '../widgets/ai_bubble_actions.dart';
+import '../widgets/anchored_popup.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
@@ -54,6 +57,7 @@ import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/composer_input_mode.dart';
 
+import '../widgets/git_branch_icon.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/island_bar.dart';
 import '../widgets/markdown_editing_controller.dart';
@@ -1808,6 +1812,8 @@ class _ChatScreenState extends State<ChatScreen>
           _copyBubbleText(round, isAi);
         case 'refresh':
           _handleRefreshRound(round);
+        case 'fork':
+          _forkFromRound(round);
         case 'sidebar':
           _onViewSidebar(round);
         case 'raw':
@@ -1824,7 +1830,12 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// RAW 入口**恒在**（AI 气泡）：无数据时点击弹出说明，而不是把入口藏起来
   /// （历史教训：入口曾按数据显隐，代次切换 / 投影重载后整块消失）。
+  ///
+  /// 「从此新建分支」只给 AI 气泡（分叉点是该轮 AI 代），且失败代 / 生成中
+  /// 不出现——与 provider 的拒绝口径一致。
   List<PopupMenuEntry<String>> _buildMenuItems(Round round, bool isAi) {
+    final canFork =
+        isAi && !round.isError && !context.read<RoundProvider>().isSending;
     return <PopupMenuEntry<String>>[
       if (isAi) ...[
         const PopupMenuItem(
@@ -1857,6 +1868,14 @@ class _ChatScreenState extends State<ChatScreen>
           value: 'modify',
           child: AppMenuAction(icon: Icons.edit_note, label: '按意见修改'),
         ),
+        if (canFork)
+          const PopupMenuItem(
+            value: 'fork',
+            child: AppMenuAction(
+              iconWidget: GitBranchIcon(size: 18),
+              label: '从此新建分支',
+            ),
+          ),
         const PopupMenuItem(
           value: 'sidebar',
           child: AppMenuAction(
@@ -2062,41 +2081,92 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 对话页顶栏：返回书籍列表 + 书名 + 书籍设置 / 全局设置。
-  /// 链首的分支头卡片：分支名 + 「从第 N 轮分叉」+「回到主线」。
+  /// 链首的分支头卡片：分支名 + 起始点（第几轮第几代，可跳转）+ 父 UUID
+  /// + 「回到主线」。
+  ///
+  /// 「点击跳转」把视图带回分叉点（切到父分支并定位到那一轮）；父代已删除 /
+  /// 父分支不存在时只提示原因，不做「跳到别处」的半截跳转。
   Widget _buildBranchHeaderCard(RoundProvider provider) {
     final branch = provider.currentBranch;
     if (branch == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
+    final fork = provider.forkPointOf(branch);
+    final serial = fork?.generationSerial;
+    final origin = serial == null
+        ? '起始自第 ${branch.fatherRowIndex} 轮'
+        : '起始自第 ${branch.fatherRowIndex} 轮第 $serial 代';
+    final fatherUuid = branch.fatherRow.isEmpty ? '—' : branch.fatherRow;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Container(
         key: const ValueKey('chat-branch-header-card'),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: scheme.outlineVariant),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.call_split, size: 16, color: scheme.primary),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: GitBranchIcon(size: 16, color: scheme.primary),
+            ),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                branch.branchName.isEmpty ? '分支' : branch.branchName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurface,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    branch.branchName.isEmpty ? '分支' : branch.branchName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 2,
+                    children: [
+                      Text(
+                        origin,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      TextButton(
+                        key: const ValueKey('chat-branch-father-jump'),
+                        onPressed: () => _jumpToBranchFork(branch, fork),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text(
+                          '点击跳转',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    '父 UUID：$fatherUuid',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      // 父 UUID 是排查用的次要信息，但必须能看清：
+                      // outline 在白底上太浅，改用次级正文色。
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-            ),
-            Text(
-              '从第 ${branch.fatherRowIndex} 轮分叉',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
             ),
             const SizedBox(width: 8),
             TextButton(
@@ -2114,7 +2184,49 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 「从这里分叉」：以该轮为父代建一条新分支并切过去。
+  /// 跳到当前分支的分叉点：切到父分支，再把对话区定位到父代所在轮。
+  ///
+  /// - 父代已删除（[fork] 不存在或 `alive` 为 false）→ 只提示，不切分支；
+  /// - 父分支本身已被删除（允许：删分支会保留子分支）→ 同样只提示；
+  /// - 切分支会整链换血：等新链落到界面（几何 / 窗口重建）后再定位，
+  ///   否则跳转落点会按旧链算。
+  Future<void> _jumpToBranchFork(Branch branch, BranchForkPoint? fork) async {
+    if (fork == null || !fork.alive) {
+      context.notices.warning('父代已被删除，无法跳转');
+      return;
+    }
+    final provider = context.read<RoundProvider>();
+    if (provider.isSending) {
+      context.notices.warning('正在生成中，暂不可跳转');
+      return;
+    }
+    final fatherBranchExists = provider.branches.any(
+      (item) => item.branchUuid == branch.fatherBranch,
+    );
+    if (!fatherBranchExists) {
+      context.notices.warning('父分支已被删除，无法跳转');
+      return;
+    }
+    if (branch.fatherBranch != provider.workingBranchUuid) {
+      final ok = await provider.switchBranch(branch.fatherBranch);
+      if (!mounted) return;
+      if (!ok) {
+        context.notices.warning(provider.error ?? '切换到父分支失败');
+        return;
+      }
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
+    // 跳到历史位置 = 用户主动离开底部，后续新内容不再自动跟随。
+    _userScrolledAway = true;
+    final moved = await _chatLocator.jumpToRound(fork.roundIndex);
+    if (!mounted) return;
+    if (!moved) {
+      context.notices.warning('第 ${fork.roundIndex} 轮不在对话中，无法跳转');
+    }
+  }
+
+  /// 「从此新建分支」：以该轮为父代建一条新分支并切过去。
   ///
   /// provider 返回 null 表示被拒（错误代 / 生成中 / 写库失败），把原因报给用户。
   Future<void> _forkFromRound(Round round) async {
@@ -2122,7 +2234,7 @@ class _ChatScreenState extends State<ChatScreen>
     final branchUuid = await provider.forkBranch(round: round);
     if (!mounted) return;
     if (branchUuid == null) {
-      context.notices.warning(provider.error ?? '分叉失败');
+      context.notices.warning(provider.error ?? '新建分支失败');
     }
   }
 
@@ -2136,51 +2248,51 @@ class _ChatScreenState extends State<ChatScreen>
     return name.isEmpty ? '主线' : name;
   }
 
-  /// 打开分支面板（悬浮对话框，不占整页）。
-  Future<void> _openBranchPanel() async {
+  /// 打开分支列表：贴着顶栏分支入口弹出的小窗（不居中、不暗化背景）。
+  ///
+  /// 关闭方式统一交给 [showAnchoredPopup]：点窗外任意位置——包括入口按钮
+  /// 本身——都会先关闭遮罩，因此不会出现「关了又立刻重开」。
+  Future<void> _openBranchPanel(BuildContext anchorContext) async {
     final provider = context.read<RoundProvider>();
-    await showDialog<void>(
+    final panelWidth = math.min(280.0, MediaQuery.sizeOf(context).width - 32);
+    await showAnchoredPopup(
       context: context,
-      barrierColor: Colors.black26,
-      builder: (dialogContext) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        child: BranchPanel(
-          branches: provider.branches,
-          workingBranchUuid: provider.workingBranchUuid,
-          width: 280,
-          onClose: () => Navigator.of(dialogContext).pop(),
-          onSwitch: (uuid) async {
-            final ok = await provider.switchBranch(uuid);
-            if (!mounted || !dialogContext.mounted) return;
-            if (!ok) {
-              context.notices.warning(provider.error ?? '切换分支失败');
-              return;
+      anchorContext: anchorContext,
+      barrierLabel: '关闭分支列表',
+      builder: (popupContext) => BranchPanel(
+        branches: provider.branches,
+        workingBranchUuid: provider.workingBranchUuid,
+        width: panelWidth,
+        onSwitch: (uuid) async {
+          final ok = await provider.switchBranch(uuid);
+          if (!mounted || !popupContext.mounted) return;
+          if (!ok) {
+            context.notices.warning(provider.error ?? '切换分支失败');
+            return;
+          }
+          Navigator.of(popupContext).pop();
+        },
+        onRename: (branch) async {
+          final title = await _askBranchTitle(branch.branchName);
+          if (title == null) return null;
+          final ok = await provider.renameBranch(branch.branchUuid, title);
+          if (!ok) {
+            if (mounted) {
+              context.notices.warning(provider.error ?? '重命名失败');
             }
-            Navigator.of(dialogContext).pop();
-          },
-          onRename: (branch) async {
-            final title = await _askBranchTitle(branch.branchName);
-            if (title == null) return null;
-            final ok = await provider.renameBranch(branch.branchUuid, title);
-            if (!ok) {
-              if (mounted) {
-                context.notices.warning(provider.error ?? '重命名失败');
-              }
-              return null;
-            }
-            return title;
-          },
-          onDelete: (branch) async {
-            final ok = await provider.deleteBranch(branch.branchUuid);
-            if (!mounted || !dialogContext.mounted) return;
-            if (!ok) {
-              context.notices.warning(provider.error ?? '删除分支失败');
-              return;
-            }
-            Navigator.of(dialogContext).pop();
-          },
-        ),
+            return null;
+          }
+          return title;
+        },
+        onDelete: (branch) async {
+          final ok = await provider.deleteBranch(branch.branchUuid);
+          if (!mounted || !popupContext.mounted) return;
+          if (!ok) {
+            context.notices.warning(provider.error ?? '删除分支失败');
+            return;
+          }
+          Navigator.of(popupContext).pop();
+        },
       ),
     );
   }
@@ -2231,14 +2343,18 @@ class _ChatScreenState extends State<ChatScreen>
           ? null
           : () => BookSettingsScreen.open(context, book: book),
       actions: [
-        // 分支入口：显示当前分支名（默认分支显示「主线」），点开分支面板。
-        TextButton.icon(
-          key: const ValueKey('chat-branch-entry'),
-          onPressed: book == null ? null : _openBranchPanel,
-          icon: const Icon(Icons.account_tree_outlined, size: 18),
-          label: Consumer<RoundProvider>(
-            builder: (context, provider, _) =>
-                Text(_branchLabelOf(provider)),
+        // 分支入口：显示当前分支名（默认分支显示「主线」），点开分支列表小窗。
+        // Builder 只为拿按钮自身的 context：小窗按它的矩形定位在右上角。
+        Builder(
+          builder: (entryContext) => TextButton.icon(
+            key: const ValueKey('chat-branch-entry'),
+            onPressed: book == null
+                ? null
+                : () => _openBranchPanel(entryContext),
+            icon: const GitBranchIcon(size: 18),
+            label: Consumer<RoundProvider>(
+              builder: (context, provider, _) => Text(_branchLabelOf(provider)),
+            ),
           ),
         ),
         if (book != null)
@@ -2637,10 +2753,6 @@ class _ChatScreenState extends State<ChatScreen>
                         onDelete: () => _handleDelete(round),
                         onRefresh: () => _handleRefreshRound(round),
                         onModifyByOpinion: () => _startModifyByOpinion(round),
-                        // 错误代 / 生成中不给分叉入口（provider 也会拒）。
-                        onFork: round.isError || roundProvider.isSending
-                            ? null
-                            : () => _forkFromRound(round),
                         versionStepper: _versionStepperFor(round.roundIndex),
                         // RAW 入口恒在（无数据时由提示说明原因，不隐藏入口）。
                         onViewRaw: () => _showRawDialog(round),

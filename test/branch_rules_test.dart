@@ -53,6 +53,66 @@ void main() {
     });
   });
 
+  group('forkPointOf', () {
+    Branch branch({
+      String fatherRow = 'm2',
+      int fatherRowIndex = 2,
+      String shot = '',
+    }) {
+      return Branch(
+        branchUuid: 'br1',
+        fatherRow: fatherRow,
+        fatherRowIndex: fatherRowIndex,
+        branchName: '如果',
+        fatherRowShot: shot,
+        createdAt: epoch,
+        updatedAt: epoch,
+      );
+    }
+
+    test('父代还在：序号取库里的 round_serial_num', () {
+      final point = BranchRules.forkPointOf(
+        branch(),
+        [meta('m2', index: 2, serial: 3, using: false)],
+      );
+      expect(point, isNotNull);
+      expect(point!.fatherUuid, 'm2');
+      expect(point.roundIndex, 2);
+      expect(point.generationSerial, 3);
+      expect(point.alive, isTrue);
+    });
+
+    test('父代已删：序号回落到 father_row_shot 快照', () {
+      final from = RoundGeneration(
+        meta: meta('m2', index: 2, serial: 5),
+        userInput: '问',
+        aiNarrative: '答',
+      );
+      final point = BranchRules.forkPointOf(
+        branch(shot: BranchFatherSnapshot.encode(from)),
+        const [],
+      );
+      expect(point, isNotNull);
+      expect(point!.fatherUuid, 'm2');
+      expect(point.roundIndex, 2);
+      expect(point.generationSerial, 5);
+      expect(point.alive, isFalse);
+    });
+
+    test('父代已删且快照无效：仍给出轮号与 uuid，序号为 null', () {
+      final point = BranchRules.forkPointOf(branch(shot: 'not-json'), const []);
+      expect(point, isNotNull);
+      expect(point!.alive, isFalse);
+      expect(point.generationSerial, isNull);
+      expect(point.roundIndex, 2);
+    });
+
+    test('默认分支 / 缺父代数据返回 null', () {
+      expect(BranchRules.forkPointOf(Branch.defaultBranch(), const []), isNull);
+      expect(BranchRules.forkPointOf(branch(fatherRow: ''), const []), isNull);
+    });
+  });
+
   group('planFork', () {
     test('记录分叉点与父代快照，快照可还原一轮', () {
       final from = RoundGeneration(

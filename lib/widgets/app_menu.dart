@@ -10,16 +10,25 @@ import '../theme/app_theme.dart';
 /// - [showAppMenu]：以统一方式展示右键/长按上下文菜单；
 /// - [AppDropdown]：统一样式的下拉选择字段。
 class AppMenuAction extends StatelessWidget {
-  final IconData icon;
+  /// 图标字体图标；与 [iconWidget] 二选一。
+  final IconData? icon;
+
+  /// 自绘 / 自定义图标（如 `GitBranchIcon`）；与 [icon] 二选一。
+  ///
+  /// 挂在菜单项里时统一按 18px、[color] 着色（外层套 [IconTheme]），
+  /// 自定义组件只需读取 `IconTheme` 即可与字体图标同款。
+  final Widget? iconWidget;
+
   final String label;
   final Color? color;
 
   const AppMenuAction({
     super.key,
-    required this.icon,
+    this.icon,
+    this.iconWidget,
     required this.label,
     this.color,
-  });
+  }) : assert(icon != null || iconWidget != null, '菜单项必须有图标');
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +36,13 @@ class AppMenuAction extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 18, color: fg),
+        if (iconWidget != null)
+          IconTheme(
+            data: IconThemeData(color: fg, size: 18),
+            child: iconWidget!,
+          )
+        else
+          Icon(icon!, size: 18, color: fg),
         const SizedBox(width: 10),
         Text(
           label,

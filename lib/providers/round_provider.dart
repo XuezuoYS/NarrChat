@@ -29,6 +29,7 @@ import '../services/agent/wire_adapters.dart';
 import '../services/ai_request_body_builder.dart';
 import '../services/ai_response_parser.dart';
 import '../services/ai_service.dart';
+import '../services/branch_rules.dart';
 import '../services/html_search_service.dart';
 import '../services/wire_messages.dart';
 import '../services/image_store.dart';
@@ -609,6 +610,12 @@ class RoundProvider extends ChangeNotifier {
 
   /// 当前分支行（默认分支返回 null）。
   Branch? get currentBranch => _chain.currentBranch;
+
+  /// [branch] 的分叉点信息（父代序号 / 父代是否还在库里）。
+  ///
+  /// 纯查询：只读本次 `loadRounds` 已带回的元信息，不碰库；默认分支返回 null。
+  BranchForkPoint? forkPointOf(Branch branch) =>
+      BranchRules.forkPointOf(branch, _chain.allMeta);
 
   /// 切换分支：重建活动链并刷新（不触发云备份、不动 `updated_at`）。
   Future<bool> switchBranch(String branchUuid) async {

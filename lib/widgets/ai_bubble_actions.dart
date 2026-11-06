@@ -13,6 +13,9 @@ import 'token_usage_pill.dart';
 /// - 按意见修改（紧邻「刷新本轮」右侧）
 /// - 删除本轮
 ///
+/// 「从此新建分支」在气泡右键菜单里（见对话页 `_buildMenuItems`），
+/// 不放这条底部操作栏：分支是低频结构操作，不该和逐轮按钮混在一起。
+///
 /// RAW 入口**不按数据有无显隐**：历史上它被数据门控，结果「代次切换 / 投影重载」
 /// 之后入口整块消失（用户观感就是「RAW 没了」）。数据有无交由 [onViewRaw] 的
 /// 实现提示，入口本身永远可见。
@@ -28,9 +31,6 @@ class AiBubbleActions extends StatelessWidget {
   /// RAW 查看回调（必传）：有数据即打开 RAW 对话框，无数据由实现给出提示。
   final VoidCallback onViewRaw;
 
-  /// 「从这里分叉」回调（null = 不显示该入口：错误代 / 生成中都不可分叉）。
-  final VoidCallback? onFork;
-
   /// 代次控件（null = 不显示）；恒占 `Wrap` 首位（控件自身不换行）。
   final Widget? versionStepper;
 
@@ -42,7 +42,6 @@ class AiBubbleActions extends StatelessWidget {
     required this.onRefresh,
     required this.onModifyByOpinion,
     required this.onViewRaw,
-    this.onFork,
     this.versionStepper,
   });
 
@@ -81,12 +80,6 @@ class AiBubbleActions extends StatelessWidget {
               label: '按意见修改',
               onPressed: onModifyByOpinion,
             ),
-            if (onFork != null)
-              ActionButton(
-                icon: Icons.call_split,
-                label: '从这里分叉',
-                onPressed: onFork!,
-              ),
             ActionButton(
               icon: Icons.delete_outline,
               label: '删除本轮',

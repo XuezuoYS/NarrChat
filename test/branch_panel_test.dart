@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/chat/branch_panel.dart';
 import 'package:narrchat/models/branch.dart';
+import 'package:narrchat/widgets/git_branch_icon.dart';
 
 Branch _defaultBranch() => Branch(
       branchUuid: Branch.defaultBranchUuid,
@@ -85,6 +86,39 @@ void main() {
     testWidgets('没有分支时给出空态文案', (tester) async {
       await pumpPanel(tester, branches: const []);
       expect(find.text('还没有分支'), findsOneWidget);
+    });
+
+    testWidgets('面板头统一用 Git 分支图标，且没有右上角关闭按钮', (tester) async {
+      await pumpPanel(tester);
+      expect(find.byType(GitBranchIcon), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsNothing, reason: '关闭统一走「点外面」');
+    });
+
+    testWidgets('面板用内容面色（浅色为白），说明文字用可读的次级正文色', (tester) async {
+      await pumpPanel(tester);
+      final context = tester.element(find.byType(BranchPanel));
+      final scheme = Theme.of(context).colorScheme;
+
+      final root = tester.widget<Container>(
+        find
+            .descendant(
+              of: find.byType(BranchPanel),
+              matching: find.byType(Container),
+            )
+            .first,
+      );
+      expect(
+        (root.decoration as BoxDecoration?)?.color,
+        scheme.surface,
+        reason: '小窗底色应是内容面（浅色主题为纯白），不是灰调容器色',
+      );
+
+      final subtitle = tester.widget<Text>(find.text('默认分支（不可删除）'));
+      expect(
+        subtitle.style?.color,
+        scheme.onSurfaceVariant,
+        reason: '灰字要用次级正文色，outline 在白底上几乎看不清',
+      );
     });
   });
 

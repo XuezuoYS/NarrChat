@@ -59,8 +59,8 @@ void main() {
         .toList();
 
     // 整行顺序固定（RAW 入口恒在，不随后续增删而丢）。
-    // 分叉入口（D1）插在「按意见修改」之后、「删除本轮」之前。
-    expect(labels, ['查看侧边栏', 'RAW', '刷新本轮', '按意见修改', '从这里分叉', '删除本轮']);
+    // 分支入口（D1）已移到气泡右键菜单，底部操作栏不再有它。
+    expect(labels, ['查看侧边栏', 'RAW', '刷新本轮', '按意见修改', '删除本轮']);
     // 位置口径：就在「刷新本轮」右侧一位（删除本轮仍在最后）。
     expect(labels.indexOf('按意见修改'), labels.indexOf('刷新本轮') + 1);
     expect(labels.indexOf('删除本轮'), greaterThan(labels.indexOf('按意见修改')));

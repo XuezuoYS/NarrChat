@@ -23,11 +23,59 @@ class DeleteGenerationPlan {
   bool get isRefused => refusal != null;
 }
 
+/// 分支分叉点（父代）的展示信息。
+///
+/// 父代可能已经删除：此时 [alive] 为 false，代序号从 `branches.father_row_shot`
+/// 快照里取（快照是建分支时抓下的一代内容，含 `round_serial_num`）。
+class BranchForkPoint {
+  const BranchForkPoint({
+    required this.fatherUuid,
+    required this.roundIndex,
+    required this.alive,
+    this.generationSerial,
+  });
+
+  /// 父代 uuid（= `branches.father_row`）。
+  final String fatherUuid;
+
+  /// 父代的轮号（= `branches.father_row_index`）。
+  final int roundIndex;
+
+  /// 父代是否仍在库里；false = 已被删除，只能按快照展示。
+  final bool alive;
+
+  /// 父代的版本序号（`round_serial_num`）；连快照都没有时是 null。
+  final int? generationSerial;
+}
+
 /// 分支的创建 / 删除 / 改名规则（纯函数）。
 ///
 /// 只算"该写什么"，不碰数据库；真正落库由 `BranchService` 调用 store 完成。
 class BranchRules {
   BranchRules._();
+
+  /// 解析 [branch] 的分叉点；默认分支 / 缺父代数据返回 null。
+  ///
+  /// 序号优先取**库里还活着的父代**；父代已删时退回快照里的序号，
+  /// 这样链首卡片仍能说清「起始自第几轮第几代」。
+  static BranchForkPoint? forkPointOf(Branch branch, List<RoundMeta> all) {
+    if (branch.isDefault || branch.fatherRow.isEmpty) return null;
+    RoundMeta? father;
+    for (final meta in all) {
+      if (meta.uuid == branch.fatherRow) {
+        father = meta;
+        break;
+      }
+    }
+    final serial = father?.roundSerialNum ??
+        BranchFatherSnapshot.decode(branch.fatherRowShot)?.roundSerialNum;
+    return BranchForkPoint(
+      fatherUuid: branch.fatherRow,
+      roundIndex: branch.fatherRowIndex,
+      alive: father != null,
+      generationSerial: serial,
+    );
+  }
 
   /// 同一组的成员（分支 + 轮号 + 父代）。
   static List<RoundMeta> groupOf(List<RoundMeta> all, RoundMeta target) {

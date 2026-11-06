@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 
 import '../models/branch.dart';
+import '../widgets/git_branch_icon.dart';
 
 /// 分支面板：列出一条 IF 线里的所有分支，可切换 / 改名 / 删除。
 ///
 /// 为什么单独一个 widget：分支是"整条链的上文"，切换它会换掉整屏内容，
 /// 所以入口必须显眼但不能误触 —— 放独立面板里，点行切换、长菜单才动结构。
+///
+/// 面板**没有关闭按钮**：它由对话页以小窗形式贴着顶栏分支入口弹出
+/// （见 `showAnchoredPopup`），点窗外任意位置即关闭；右上角的 X 会与
+/// 「点外面关闭」重复，反而多一个视觉噪音。
 ///
 /// 默认分支（`branchUuid == ''`，显示为「主线」）不可改名、不可删除，
 /// 它是这本书的地板：删掉它就没有"从哪来"的锚点了。
@@ -17,7 +22,6 @@ class BranchPanel extends StatelessWidget {
     required this.onSwitch,
     required this.onRename,
     required this.onDelete,
-    this.onClose,
     this.width = 280,
   });
 
@@ -35,8 +39,6 @@ class BranchPanel extends StatelessWidget {
   /// 删除回调：已确认后才会被调用。
   final Future<void> Function(Branch branch) onDelete;
 
-  final VoidCallback? onClose;
-
   final double width;
 
   @override
@@ -45,13 +47,17 @@ class BranchPanel extends StatelessWidget {
     return Container(
       width: width,
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHigh,
+        // 面板用内容面（浅色 = 纯白、深色 = 深灰），而不是带灰调的
+        // surfaceContainerHigh：白底让文字对比更干净，也符合应用其它浮层的口径。
+        color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
+        // 没有遮罩压暗背景，靠这一圈投影说明「浮在上面」；深色主题下
+        // 黑投影不明显，面板与页面背景的明度差是主要区分。
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.12),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
@@ -85,20 +91,12 @@ class BranchPanel extends StatelessWidget {
 
   Widget _buildHeader(BuildContext context, ThemeData theme) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       child: Row(
         children: [
-          Icon(Icons.alt_route, size: 16, color: theme.colorScheme.primary),
+          GitBranchIcon(size: 16, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
           Text('分支', style: theme.textTheme.titleSmall),
-          const Spacer(),
-          if (onClose != null)
-            IconButton(
-              onPressed: onClose,
-              icon: const Icon(Icons.close, size: 18),
-              tooltip: '关闭',
-              visualDensity: VisualDensity.compact,
-            ),
         ],
       ),
     );
@@ -137,8 +135,11 @@ class BranchPanel extends StatelessWidget {
                   ),
                   Text(
                     subtitle,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.outline,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      // 说明文字要读得清：用次级正文色（onSurfaceVariant），
+                      // 不用极浅的 outline（在白底上几乎看不见）。
+                      color: theme.colorScheme.onSurfaceVariant,
+                      height: 1.3,
                     ),
                   ),
                 ],
