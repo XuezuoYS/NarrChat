@@ -217,6 +217,26 @@ void main() {
       );
       expect(provider.describeSnapshot('whatever.db'), '未知备份');
     });
+
+    test('debugSetBackups：按库分组且书名生效', () {
+      final provider = CloudSyncProvider();
+      provider.debugSetBackups(
+        [
+          const WebDavFile(name: 'narrbook_b1_shot-g1.db'),
+          const WebDavFile(name: 'narrchat_library_shot-g1.db'),
+          const WebDavFile(name: 'narrbook_b1_shot-g2.db'),
+          const WebDavFile(name: 'manifest_narrbook_b1.json'),
+        ],
+        bookTitles: const {'b1': '书一'},
+      );
+
+      expect(
+        provider.backupUnits.map((entry) => entry.displayName).toList(),
+        ['Library 库', '书籍《书一》库'],
+      );
+      expect(provider.backupUnits.last.totalCount, 2);
+      expect(provider.backupUnits.last.latestGeneration, 2);
+    });
   });
 
   group('整本二选一（冲突状态）', () {

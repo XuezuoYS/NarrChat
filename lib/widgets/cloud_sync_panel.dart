@@ -3,12 +3,13 @@ import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
-import '../services/cloud_backup/backup_unit.dart';
+import '../screens/backup_unit_page.dart';
+import '../services/cloud_backup/backup_catalog.dart';
 import '../services/sync/sync_models.dart';
-import '../services/webdav_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
+import 'backup_unit_badge.dart';
 import 'keep_versions_dialog.dart';
 import 'settings_form_state.dart';
 
@@ -93,7 +94,11 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
 
   Future<void> _sync() async {
     // 结果提示（完成 / 失败 / 取消）统一由驻场岛结果段展示。
-    await context.read<CloudSyncProvider>().sync();
+    final provider = context.read<CloudSyncProvider>();
+    await provider.sync();
+    if (!mounted) return;
+    // 同步会新增代数：刷一次列表，回到面板就能看到最新代次。
+    await provider.refreshBackups();
   }
 
   Future<void> _refresh() async {
@@ -133,90 +138,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     }
   }
 
-  Future<void> _restore(WebDavFile file) async {
-    final provider = context.read<CloudSyncProvider>();
-    final unit = CloudSyncProvider.unitOfSnapshot(file.name);
-    if (unit == null) {
-      _showSnack('无法识别的备份文件', kind: NoticeKind.warning);
-      return;
-    }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('用这个备份覆盖本地？'),
-        content: Text(
-          '将用云端快照「${file.name}」整份替换本地的 ${unit.unitKey}，'
-          '本机这一部分还没备份的改动会丢失。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('替换'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
-    final error = await provider.restoreSnapshot(file.name);
-    if (!mounted) return;
-    _showSnack(
-      error == null ? '已用所选备份替换本地数据' : '处理失败：$error',
-      kind: error == null ? NoticeKind.success : NoticeKind.error,
-    );
-  }
-
   void _showSnack(String message, {NoticeKind kind = NoticeKind.info}) {
     context.notices.show(message, kind: kind);
   }
-
-  /// 快照列表标题：归属库 + 代数。
-  String snapshotLabelOf(WebDavFile file) {
-    final unit = CloudSyncProvider.unitOfSnapshot(file.name);
-    final generation = CloudSyncProvider.generationOfSnapshot(file.name);
-    final label = switch (unit?.kind) {
-      BackupUnitKind.library => '目录库',
-      BackupUnitKind.mods => 'Mod 库',
-      BackupUnitKind.book => '书籍 ${_shortUuid(unit!.refUuid)}',
-      null => file.name,
-    };
-    return '$label · 第 $generation 代';
-  }
-
-  /// 快照列表副标题：时间 + 大小。
-  String snapshotMetaOf(WebDavFile file) {
-    final buffer = StringBuffer();
-    final time = file.lastModified?.toLocal();
-    if (time == null) {
-      buffer.write('时间未知');
-    } else {
-      String two(int value) => value.toString().padLeft(2, '0');
-      buffer
-        ..write(time.year)
-        ..write('-')
-        ..write(two(time.month))
-        ..write('-')
-        ..write(two(time.day))
-        ..write(' ')
-        ..write(two(time.hour))
-        ..write(':')
-        ..write(two(time.minute));
-    }
-    if (file.size > 0) {
-      buffer
-        ..write(' · ')
-        ..write((file.size / 1024).toStringAsFixed(1))
-        ..write(' KB');
-    }
-    return buffer.toString();
-  }
-
-  static String _shortUuid(String uuid) =>
-      uuid.length <= 8 ? uuid : uuid.substring(0, 8);
 
   @override
   Widget build(BuildContext context) {
@@ -625,7 +549,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.cloud_outlined,
       title: '云端备份',
-      subtitle: '一键同步本地与云端；也可从某个历史版本（云端记录 #N）整份还原某个库。',
+      subtitle: '一键同步本地与云端；点开任意一个库，可查看它的历史版本并整份还原。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -659,9 +583,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
   }
 
+  /// 顶层列表：一个库一行（Library / Mod / 每本书），点进去才看代次。
   Widget _buildBackupList(BuildContext context, CloudSyncProvider provider) {
     final colors = context.narrColors;
-    if (provider.backups.isEmpty) {
+    if (provider.backupUnits.isEmpty) {
       return Container(
         width: double.infinity,
         padding: const EdgeInsets.all(16),
@@ -679,49 +604,83 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     }
     return Column(
       children: [
-        for (final file in provider.backups)
-          Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: colors.background,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: colors.divider),
-            ),
+        for (final entry in provider.backupUnits)
+          _buildUnitTile(context, colors, entry),
+      ],
+    );
+  }
+
+  /// 一个库的条目卡：库名 + 最新一代概况 + 进入箭头。
+  Widget _buildUnitTile(
+    BuildContext context,
+    NarrChatColors colors,
+    BackupUnitEntry entry,
+  ) {
+    final latest = entry.latest;
+    final sizeText = BackupCatalog.formatSize(latest.size);
+    final meta = StringBuffer()
+      ..write('第 ${entry.latestGeneration} 代 · ')
+      ..write(BackupCatalog.formatTime(latest.lastModified));
+    if (sizeText.isNotEmpty) meta.write(' · $sizeText');
+    meta.write(' · 共 ${entry.totalCount} 份');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.divider),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => BackupUnitPage.open(context, entry),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
-                Icon(Icons.insert_drive_file_outlined, size: 20, color: colors.textSecondary),
+                BackupUnitBadge(kind: entry.unit.kind),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        snapshotLabelOf(file),
+                        entry.displayName,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 13,
-                          fontWeight: FontWeight.w500,
+                          fontWeight: FontWeight.w600,
                           color: colors.textPrimary,
                         ),
                       ),
+                      const SizedBox(height: 2),
                       Text(
-                        snapshotMetaOf(file),
-                        style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                        meta.toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.textSecondary,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                IconButton(
-                  tooltip: '下载并恢复此版本',
-                  icon: const Icon(Icons.cloud_download_outlined, size: 20),
-                  color: NarrChatTheme.primary,
-                  onPressed: provider.isBusy ? null : () => _restore(file),
+                Icon(
+                  Icons.chevron_right,
+                  size: 20,
+                  color: colors.textSecondary,
                 ),
               ],
             ),
           ),
-      ],
+        ),
+      ),
     );
   }
 

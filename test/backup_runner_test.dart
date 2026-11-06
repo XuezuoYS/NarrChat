@@ -199,6 +199,9 @@ void main() {
     expect(first.pushed, 3);
     final writesAfterFirst = remote.writeCount;
 
+    // 隔一秒以上再同步：摘要里若混进秒级墙上时间，这一轮会把每个单元又推一遍。
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+
     final second = await runner().run(context: context());
     final detail = second.plans
         .map((plan) => '${plan.unit.unitKey}=${plan.action.name}')

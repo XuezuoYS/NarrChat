@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/app_notice.dart';
 import '../services/app_repositories.dart';
+import '../services/cloud_backup/backup_catalog.dart';
 import '../services/cloud_backup/backup_image_plane.dart';
 import '../services/cloud_backup/backup_planner.dart';
 import '../services/cloud_backup/backup_remote.dart';
@@ -100,6 +101,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _error;
 
   List<WebDavFile> _backups = [];
+  List<BackupUnitEntry> _backupUnits = const [];
   bool _backupsLoaded = false;
 
   bool _opsBusy = false;
@@ -154,6 +156,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get error => _error ?? _dataError ?? _imageError;
   bool get isBusy => _opsBusy || _running;
   List<WebDavFile> get backups => List.unmodifiable(_backups);
+
+  /// 云端备份的「库」列表（Library / Mod / 每本书，顺序固定）。
+  List<BackupUnitEntry> get backupUnits => List.unmodifiable(_backupUnits);
   bool get backupsLoaded => _backupsLoaded;
   DateTime? get lastSyncRequestAt => _lastSyncRequestAt;
 
@@ -514,6 +519,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _folder = defaultFolder;
     _autoUpload = false;
     _backups = [];
+    _backupUnits = const [];
     _backupsLoaded = false;
     _dataState = SyncState.idle;
     _imageState = SyncState.idle;
@@ -626,44 +632,51 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     final files = await dav.list('');
     _backups = [
       for (final file in files)
-        if (RegExp(r'_shot-g\d+\.db$').hasMatch(file.name)) file,
+        if (BackupUnit.fromSnapshotName(file.name) != null) file,
     ]..sort(compareSnapshots);
+    _backupUnits = BackupCatalog.build(
+      files: _backups,
+      bookTitles: await _bookTitles(),
+    );
     _backupsLoaded = true;
   }
 
-  /// 快照从新到旧排序：先按代数降序，再按名字。
-  static int compareSnapshots(WebDavFile a, WebDavFile b) {
-    final ga = generationOfSnapshot(a.name);
-    final gb = generationOfSnapshot(b.name);
-    if (ga != gb) return gb.compareTo(ga);
-    return b.name.compareTo(a.name);
+  /// 云端各本书的书名（列表展示用）。
+  ///
+  /// 读本地缓存索引：一次查询拿到全部书名，不用为每本云书开书库。
+  /// 读不出来（未初始化 / 缓存损坏）就当没有书名，展示时用 uuid 前 8 位兜底。
+  Future<Map<String, String>> _bookTitles() async {
+    try {
+      final rows = await _repos.stores.cache.allIndex(includeDeleted: true);
+      return {
+        for (final row in rows)
+          if (row.title.trim().isNotEmpty) row.bookUuid: row.title,
+      };
+    } catch (_) {
+      return const {};
+    }
   }
+
+  /// 快照从新到旧排序：先按代数降序，再按名字。
+  static int compareSnapshots(WebDavFile a, WebDavFile b) =>
+      BackupCatalog.compareSnapshots(a, b);
 
   /// 快照名里的代数（认不出返回 -1）。
-  static int generationOfSnapshot(String name) {
-    final match = RegExp(r'_shot-g(\d+)\.db$').firstMatch(name);
-    return match == null ? -1 : int.parse(match.group(1)!);
-  }
+  static int generationOfSnapshot(String name) =>
+      BackupUnit.generationOfSnapshotName(name);
 
   /// 快照名 → 同步单元（认不出返回 null）。
-  static BackupUnit? unitOfSnapshot(String snapshotName) {
-    final match = RegExp(r'^(.+)_shot-g\d+\.db$').firstMatch(snapshotName);
-    if (match == null) return null;
-    final base = match.group(1)!;
-    if (base == 'narrchat_library') return BackupUnit.library;
-    if (base == 'narrchat_mods') return BackupUnit.mods;
-    if (base.startsWith('narrbook_')) {
-      final uuid = base.substring('narrbook_'.length);
-      return uuid.isEmpty ? null : BackupUnit.book(uuid);
-    }
-    return null;
-  }
+  static BackupUnit? unitOfSnapshot(String snapshotName) =>
+      BackupUnit.fromSnapshotName(snapshotName);
 
   /// 用指定快照覆盖本地对应的库。
   ///
   /// 只换**一个单元**：库文件替换后由各 store 懒重开。整本二选一的语义在这里
   /// 落到"用户明确挑了一个快照"。
-  Future<String?> restoreSnapshot(String snapshotName) async {
+  ///
+  /// [label] 只影响结果提示里的名字（二级页传「书籍《书名》库」这种友好名），
+  /// 不传就退回 `unitKey`。
+  Future<String?> restoreSnapshot(String snapshotName, {String? label}) async {
     final unit = unitOfSnapshot(snapshotName);
     if (unit == null) return '无法识别的备份文件';
     if (!isConfigured) return '尚未配置云备份';
@@ -684,7 +697,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       await tmp.rename(target.path);
 
       await onDataRestored?.call();
-      showSyncResult('已还原 ${unit.unitKey}', NoticeKind.success);
+      showSyncResult('已还原 ${label ?? unit.unitKey}', NoticeKind.success);
       return null;
     } catch (error) {
       return error.toString();
@@ -781,8 +794,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void debugSetBackups(List<WebDavFile> backups) {
+  /// 直接塞入备份列表（测试用）。[bookTitles] 是「书 uuid → 书名」，
+  /// 用来验证分组列表的书名与兜底。
+  void debugSetBackups(
+    List<WebDavFile> backups, {
+    Map<String, String> bookTitles = const {},
+  }) {
     _backups = List.of(backups);
+    _backupUnits = BackupCatalog.build(files: _backups, bookTitles: bookTitles);
     _backupsLoaded = true;
     notifyListeners();
   }

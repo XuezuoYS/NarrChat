@@ -91,18 +91,21 @@ void main() {
     expect(form.syncMode, SyncMode.auto);
   });
 
-  testWidgets('备份列表：按「归属库 · 第 N 代」展示，认不出的文件原样显示名字', (tester) async {
+  testWidgets('备份列表：按 Library / Mod / 书籍 分组，书名来自本地索引', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
-    provider.debugSetBackups([
-      const WebDavFile(
-        name: 'narrchat_library_shot-g3.db',
-        size: 2048,
-        lastModified: null,
-      ),
-      const WebDavFile(name: 'narrbook_abcdef12-3456-7890-abcd-ef1234567890_shot-g7.db'),
-      const WebDavFile(name: 'manifest_narrchat_library.json'),
-    ]);
+    provider.debugSetBackups(
+      [
+        const WebDavFile(name: 'narrbook_b1_shot-g1.db'),
+        const WebDavFile(
+          name: 'narrchat_library_shot-g3.db',
+          size: 2048,
+          lastModified: null,
+        ),
+        const WebDavFile(name: 'manifest_narrchat_library.json'),
+      ],
+      bookTitles: const {'b1': '深海余烬'},
+    );
     await pumpPanel(
       tester,
       theme: NarrChatTheme.light,
@@ -110,15 +113,76 @@ void main() {
       provider: provider,
     );
 
-    expect(find.text('目录库 · 第 3 代'), findsOneWidget);
-    expect(find.textContaining('书籍 '), findsWidgets);
-    expect(find.textContaining('第 7 代'), findsOneWidget);
+    expect(find.text('Library 库'), findsOneWidget);
+    expect(find.text('书籍《深海余烬》库'), findsOneWidget);
+    expect(find.text('Mod 库'), findsNothing, reason: '云端没有 mods 快照就不占位置');
+    expect(find.text('第 3 代 · 时间未知 · 2.0 KB · 共 1 份'), findsOneWidget);
     // 清单文件不是快照，不展示成条目。
     expect(find.text('manifest_narrchat_library.json'), findsNothing);
-    expect(find.textContaining('2.0 KB'), findsOneWidget);
+
+    // 固定顺序：Library 在书籍上面。
+    expect(
+      tester.getTopLeft(find.text('Library 库')).dy,
+      lessThan(tester.getTopLeft(find.text('书籍《深海余烬》库')).dy),
+    );
   });
 
-  testWidgets('备份列表：多代快照按代际新 → 旧排列', (tester) async {
+  testWidgets('备份列表：书籍按最新备份时间新 → 旧', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups(
+      [
+        WebDavFile(
+          name: 'narrbook_old_shot-g1.db',
+          lastModified: DateTime.utc(2026, 11, 1, 10),
+        ),
+        WebDavFile(
+          name: 'narrbook_new_shot-g1.db',
+          lastModified: DateTime.utc(2026, 11, 5, 10),
+        ),
+      ],
+      bookTitles: const {'old': '旧书', 'new': '新书'},
+    );
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    expect(
+      tester.getTopLeft(find.text('书籍《新书》库')).dy,
+      lessThan(tester.getTopLeft(find.text('书籍《旧书》库')).dy),
+      reason: '最近备份的排前面',
+    );
+  });
+
+  testWidgets('窄屏(261)：分组条目渲染且不溢出', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups(
+      [
+        const WebDavFile(name: 'narrchat_library_shot-g3.db', size: 446464),
+        const WebDavFile(
+          name: 'narrbook_abcdef12-3456-7890-abcd-ef1234567890_shot-g1.db',
+          size: 1024,
+        ),
+      ],
+      bookTitles: const {'abcdef12-3456-7890-abcd-ef1234567890': '一个特别特别特别特别特别长的书名'},
+    );
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+      width: 261,
+    );
+
+    expect(find.text('书籍《一个特别特别特别特别特别长的书名》库'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
+  testWidgets('点击库条目：进入二级页才看到该库全部代次', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
     provider.debugSetBackups([
@@ -126,79 +190,32 @@ void main() {
       const WebDavFile(name: 'narrchat_library_shot-g7.db'),
       const WebDavFile(name: 'narrchat_library_shot-g5.db'),
     ]);
-    final sorted = [...provider.backups]..sort(CloudSyncProvider.compareSnapshots);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    // 顶层只有一条「Library 库」，不铺代次列表。
+    expect(find.text('Library 库'), findsOneWidget);
+    expect(find.text('第 7 代'), findsNothing);
+    expect(find.text('第 5 代'), findsNothing);
+
+    final tile = find.text('Library 库');
+    await tester.ensureVisible(tile);
+    await tester.pumpAndSettle();
+    await tester.tap(tile);
+    await tester.pumpAndSettle();
+
+    expect(find.text('共 3 代 · 最新第 7 代'), findsOneWidget);
+    expect(find.text('第 7 代'), findsOneWidget);
+    expect(find.text('第 5 代'), findsOneWidget);
+    expect(find.text('第 2 代'), findsOneWidget);
     expect(
-      sorted.map((f) => f.name).toList(),
-      [
-        'narrchat_library_shot-g7.db',
-        'narrchat_library_shot-g5.db',
-        'narrchat_library_shot-g2.db',
-      ],
+      tester.getTopLeft(find.text('第 7 代')).dy,
+      lessThan(tester.getTopLeft(find.text('第 5 代')).dy),
     );
-
-    await pumpPanel(
-      tester,
-      theme: NarrChatTheme.light,
-      form: form,
-      provider: provider,
-    );
-    expect(find.text('目录库 · 第 7 代'), findsOneWidget);
-    expect(find.text('目录库 · 第 5 代'), findsOneWidget);
-    expect(find.text('目录库 · 第 2 代'), findsOneWidget);
-  });
-
-  testWidgets('点击快照：弹「整份替换」确认，确认后走 restoreSnapshot', (tester) async {
-    final provider = CloudSyncProvider(); // 未配置：restoreSnapshot 直接拒绝
-    final form = makeForm(provider: provider);
-    provider.debugSetBackups([
-      const WebDavFile(name: 'narrchat_library_shot-g1.db'),
-    ]);
-    await pumpPanel(
-      tester,
-      theme: NarrChatTheme.light,
-      form: form,
-      provider: provider,
-    );
-
-    final button = find.byTooltip('下载并恢复此版本');
-    await tester.ensureVisible(button);
-    await tester.pumpAndSettle();
-    await tester.tap(button);
-    await tester.pumpAndSettle();
-
-    expect(find.text('用这个备份覆盖本地？'), findsOneWidget);
-    expect(find.textContaining('整份替换本地'), findsOneWidget);
-
-    await tester.tap(find.text('替换'));
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('处理失败'), findsOneWidget);
-    await flushNotices(tester);
-  });
-
-  testWidgets('点击快照后取消：不调用还原', (tester) async {
-    final provider = CloudSyncProvider();
-    final form = makeForm(provider: provider);
-    provider.debugSetBackups([
-      const WebDavFile(name: 'narrchat_mods_shot-g1.db'),
-    ]);
-    await pumpPanel(
-      tester,
-      theme: NarrChatTheme.light,
-      form: form,
-      provider: provider,
-    );
-
-    final button = find.byTooltip('下载并恢复此版本');
-    await tester.ensureVisible(button);
-    await tester.pumpAndSettle();
-    await tester.tap(button);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('用这个备份覆盖本地？'), findsNothing);
-    expect(find.textContaining('处理失败'), findsNothing);
   });
 
   // ---------------------------------------------------------------------------

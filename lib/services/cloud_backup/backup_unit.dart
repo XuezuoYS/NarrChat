@@ -71,6 +71,39 @@ class BackupUnit {
     return null;
   }
 
+  /// 云端快照名：`<基名>_shot-g<N>.db`。
+  static final RegExp _snapshotNamePattern = RegExp(r'^(.+)_shot-g(\d+)\.db$');
+
+  /// 云端书名基名前缀（与 `AppPaths.bookDbFileName` 一致）。
+  static const String _bookBasePrefix = 'narrbook_';
+
+  /// 从云端快照名反推同步单元；认不出返回 `null`。
+  ///
+  /// 只认 R3 命名（清单 / 图片 / R2 旧快照都返回 `null`）；与 [snapshotName]
+  /// 互为逆运算，备份列表分组与「整份还原」共用这一份解析。
+  static BackupUnit? fromSnapshotName(String snapshotName) {
+    final match = _snapshotNamePattern.firstMatch(snapshotName);
+    if (match == null) return null;
+    final base = match.group(1)!;
+    if (base == library.baseName) return library;
+    if (base == mods.baseName) return mods;
+    if (!base.startsWith(_bookBasePrefix)) return null;
+    final uuid = base.substring(_bookBasePrefix.length);
+    if (uuid.isEmpty) return null;
+    try {
+      AppPaths.bookDbFileName(uuid);
+    } on ArgumentError {
+      return null;
+    }
+    return book(uuid);
+  }
+
+  /// 从云端快照名取代数；认不出返回 -1。
+  static int generationOfSnapshotName(String snapshotName) {
+    final match = _snapshotNamePattern.firstMatch(snapshotName);
+    return match == null ? -1 : int.parse(match.group(2)!);
+  }
+
   /// 从清单文件名反推单元键不可靠（基名与 unitKey 不同），因此解析走清单内容。
   bool get isBook => kind == BackupUnitKind.book;
 

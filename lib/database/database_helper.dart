@@ -368,6 +368,9 @@ class DatabaseHelper {
 
     await _createRoundsTable(db, suffix: '_new');
     // 子表保留原自增 id（仅本地行标识，同步从不引用）；父表引用仍是 books.uuid。
+    //
+    // SELECT 里的 `current_time` 必须加引号：裸写会被 SQLite 解析成 CURRENT_TIME
+    // 关键字，整列剧情时间会被写成「迁移那一刻的墙上时间」（数据损坏）。
     await db.execute('''
       INSERT INTO rounds_new (
         id, book_uuid, round_index, user_input, ai_narrative, world_state,
@@ -377,7 +380,7 @@ class DatabaseHelper {
       )
       SELECT
         id, book_uuid, round_index, user_input, ai_narrative, world_state,
-        character_state, memory_summary, current_time, recommended_action,
+        character_state, memory_summary, "current_time", recommended_action,
         tokens_in, tokens_out, model_name, user_images, ai_images, created_at,
         updated_at
       FROM rounds
@@ -673,6 +676,7 @@ class DatabaseHelper {
         FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
       )
     ''');
+    // SELECT 的 `current_time` 同样必须加引号，否则会写成迁移时刻（见 v17 重建处注释）。
     await db.execute('''
       INSERT INTO rounds_new (
         id, book_id, round_index, user_input, ai_narrative, world_state,
@@ -681,7 +685,7 @@ class DatabaseHelper {
       )
       SELECT
         id, book_id, round_index, user_input, ai_narrative, world_state,
-        character_state, memory_summary, current_time, recommended_action,
+        character_state, memory_summary, "current_time", recommended_action,
         tokens_in, tokens_out, created_at
       FROM rounds
     ''');

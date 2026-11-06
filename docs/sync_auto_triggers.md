@@ -53,10 +53,14 @@
 摘要只按 **DB 文件内容**算，并且排除这些列：
 
 - 所有时间戳（`created_at` / `updated_at` / `operated_at` / `last_round_at`）；
-- `book_meta.branch_working`（当前分支是视图状态）；
+- `branches.branch_working`（当前分支是视图状态）；
 - `book_meta` 的身份列（`book_uuid` / `master_uuid` / `database_version`）。
 
 不排除的话，"只是打开看了一下"也会被当成变更，云上会一直出新代。
+
+摘要 SQL 里的**列名一律加引号**：SQLite 会把裸写的 `current_time` 当成
+`CURRENT_TIME` 关键字（查询那一刻的墙上时间），摘要每秒都变，于是"没改也每次
++1 代"（v3.0 修过的 bug）。`order` / `key` / `group` 这类保留字同理。
 
 ## 失败与重试
 

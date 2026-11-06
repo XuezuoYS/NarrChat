@@ -202,6 +202,52 @@ void main() {
     expect(after, isNot(before), reason: '看哪一代决定了后续轮次，是内容');
   });
 
+  test('round_stack.current_time 按存储值参与摘要', () async {
+    final dir = newTempDir('digest_clock_col_');
+    final path = p.join(dir, 'narrbook_b1.db');
+    final book = await BookDb.create(meta: meta('b1'), pathOverride: path);
+    await book.rounds.insert(gen('g1', 1, using: true));
+    await book.close();
+
+    final db = await openDb(path);
+    final before = await BackupDigest.ofBook(BackupUnit.book('b1'), db);
+    await db.close();
+
+    final again = await BookDb.open(bookUuid: 'b1', pathOverride: path);
+    await again.rounds.updateContent('g1', {'current_time': '第 3 天 09:00'});
+    await again.close();
+
+    final db2 = await openDb(path);
+    final after = await BackupDigest.ofBook(BackupUnit.book('b1'), db2);
+    await db2.close();
+    expect(
+      after,
+      isNot(before),
+      reason: 'current_time 是剧情内容。列名裸写会被 SQLite 当成 CURRENT_TIME '
+          '关键字，于是读到的是查询时刻而不是存下来的值',
+    );
+  });
+
+  test('摘要不含墙上时间：隔 1.1 秒重算结果一致', () async {
+    final dir = newTempDir('digest_clock_drift_');
+    final path = p.join(dir, 'narrbook_b1.db');
+    final book = await BookDb.create(meta: meta('b1'), pathOverride: path);
+    await book.rounds.insert(gen('g1', 1, using: true));
+    await book.close();
+
+    final db = await openDb(path);
+    final first = await BackupDigest.ofBook(BackupUnit.book('b1'), db);
+    // 秒级时间函数：跨一秒必变；命中 bug 时两次摘要必然不同。
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+    final second = await BackupDigest.ofBook(BackupUnit.book('b1'), db);
+    await db.close();
+    expect(
+      second,
+      first,
+      reason: '摘要里混进 CURRENT_TIME，会让每次同步都判定「本地改了」→ 空推 +1 代',
+    );
+  });
+
   group('library 单元', () {
     test('改名 / 墓碑都改变摘要，且墓碑只取布尔（时间不同不影响）', () async {
       final dir = newTempDir('digest_library_');
