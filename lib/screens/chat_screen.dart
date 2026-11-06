@@ -317,6 +317,8 @@ class _ChatScreenState extends State<ChatScreen>
     viewport: ScrollViewport(_scrollController),
     geometry: _chatGeometry,
     window: this,
+    // 滑块推到行程尽头时是最快档（轨道默认 motion 的上限也是同一量级）。
+    maxVelocity: 3.0,
     postFrame: (callback) => WidgetsBinding.instance.addPostFrameCallback(
       (_) => callback(),
     ),
@@ -2491,14 +2493,6 @@ class _ChatScreenState extends State<ChatScreen>
     // 流式输出期间贴底跟随（增量路径由 provider 监听驱动，见 [_onRoundTick]）。
     _autoFollowIfNeeded();
 
-    // 定位轨的命中带贴在聊天区右缘。内容区居中且左右有富余时按钮本来就不在
-    // 命中带里；内容贴到右缘（窄窗口 / 右侧栏占走宽度）时最右那枚方形按钮会落进
-    // 命中带，触控端实测整个按钮右半都收不到点击 —— 让开这段。
-    final railInset = chatWidth <
-            _kContentMaxWidth + ChatRail.reservedFromRight + 40
-        ? ChatRail.reservedFromRight
-        : 0.0;
-
     // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
     // 左右留 20px 边距，避免内容在窄窗口下贴边（滚动条在最右，不计入边距）。
@@ -2749,7 +2743,7 @@ class _ChatScreenState extends State<ChatScreen>
               return false;
             },
             child: SizeChangedLayoutNotifier(
-              child: _buildComposer(context, railInset: railInset),
+              child: _buildComposer(context),
             ),
           ),
         ),
@@ -2761,7 +2755,9 @@ class _ChatScreenState extends State<ChatScreen>
           Positioned(
             key: const Key('chat_rail_area'),
             top: 0,
-            bottom: 0,
+            // 只占**输入面板以上**的可读区域：面板与滑块都以这段居中，
+            // 命中带也不会盖住输入面板右上那排方形按钮（不需要给按钮行让位）。
+            bottom: _composerHeight + 8,
             right: 0,
             child: SizedBox(
               // 轨道占用的右侧宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）：
@@ -2875,7 +2871,7 @@ class _ChatScreenState extends State<ChatScreen>
   /// 输入卡上方的方形按钮行**不落入底色面板**——视觉上真悬浮于消息区之上；
   /// 宽屏右侧栏常驻（展开）时隐藏「打开右侧栏」按钮，仅保留滚动到底部按钮；
   /// 按钮行始终右对齐（自动贴右，避免观感奇怪）。
-  Widget _buildComposer(BuildContext context, {required double railInset}) {
+  Widget _buildComposer(BuildContext context) {
     // 只订阅低频信号：流式增量不重建输入面板（生成中/是否有轮次只在起止与
     // 轮次增删时变化）。
     final (isSending, hasRounds) = context.select<RoundProvider, (bool, bool)>(
@@ -2896,43 +2892,37 @@ class _ChatScreenState extends State<ChatScreen>
             children: [
               // 输入框外部上方右侧：1:1 方形按钮（从右往左 = 打开侧栏、滚动到底部、
               // 预览请求体）。真悬浮：直接浮于消息区之上，不被底色面板框住。
-              // 定位轨渲染在对话区 Stack 中（见 _buildChatArea），
-              // 不参与本行布局——四个按钮的结构与位置始终不受影响。
-              //
-              // [railInset]：定位轨的命中带贴在同一个右缘上，内容区不居中（窄窗口 /
-              // 窄聊天区）时最右侧按钮正好落到命中带里 —— 点下去被轨道吃掉。让开它。
-              Padding(
-                padding: EdgeInsets.only(right: railInset),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 预览请求体：构建「此刻若发送将发出的请求」JSON（不发送）；
-                    // 生成期间输入框与附件已被清空，预览失去意义，故停用。
-                    _ComposerSquareButton(
-                      icon: Icons.data_object,
-                      tooltip: '预览请求体',
-                      onPressed: (isSending || _isPreviewing)
-                          ? null
-                          : _previewRequestBody,
-                    ),
+              // 定位轨只占"输入面板以上"的那段右缘（见 _buildChatArea），所以这一行
+              // 可以照常右对齐，不需要为它让位。
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 预览请求体：构建「此刻若发送将发出的请求」JSON（不发送）；
+                  // 生成期间输入框与附件已被清空，预览失去意义，故停用。
+                  _ComposerSquareButton(
+                    icon: Icons.data_object,
+                    tooltip: '预览请求体',
+                    onPressed: (isSending || _isPreviewing)
+                        ? null
+                        : _previewRequestBody,
+                  ),
+                  const SizedBox(width: 8),
+                  _ComposerSquareButton(
+                    icon: Icons.vertical_align_bottom,
+                    tooltip: '滚动到底部',
+                    dotVisible: _newContentDot,
+                    // 走定位层：窗口不在末端时先补窗口，回的是**全书底部**。
+                    onPressed: () => _scrollToBottom(animated: false),
+                  ),
+                  if (showSidebarButton) ...[
                     const SizedBox(width: 8),
                     _ComposerSquareButton(
-                      icon: Icons.vertical_align_bottom,
-                      tooltip: '滚动到底部',
-                      dotVisible: _newContentDot,
-                      // 走定位层：窗口不在末端时先补窗口，回的是**全书底部**。
-                      onPressed: () => _scrollToBottom(animated: false),
+                      icon: Icons.view_sidebar_outlined,
+                      tooltip: '打开右侧边栏',
+                      onPressed: _onToggleSidebar,
                     ),
-                    if (showSidebarButton) ...[
-                      const SizedBox(width: 8),
-                      _ComposerSquareButton(
-                        icon: Icons.view_sidebar_outlined,
-                        tooltip: '打开右侧边栏',
-                        onPressed: _onToggleSidebar,
-                      ),
-                    ],
                   ],
-                ),
+                ],
               ),
               const SizedBox(height: 8),
               // 底色面板：仅遮挡输入卡的下方与左右两侧（不含按钮行）。

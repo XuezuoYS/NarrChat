@@ -26,7 +26,7 @@ class ChatRail extends StatefulWidget {
     required this.locator,
     this.handle,
     this.isTouchPlatform,
-    this.motion = const ChatRailMotion(),
+    this.motion = const ChatRailMotion(maxVelocity: 2.6),
   });
 
   /// 定位门面（跳转 / 速度 / 最大轮号 / 可见比例）。所有数字都向它要。
@@ -40,21 +40,21 @@ class ChatRail extends StatefulWidget {
 
   final ChatRailMotion motion;
 
-  /// 滑块视觉宽度（拖动时用 [knobDraggingWidth]）：比滚动条拇指粗得多，
-  /// 一眼能看出"这是个可以抓住的把手"。
-  static const double knobWidth = 14;
-  static const double knobDraggingWidth = 16;
+  /// 滑块视觉宽度（拖动时用 [knobDraggingWidth]）：像一根细手柄，不是滚动条。
+  static const double knobWidth = 10;
+  static const double knobDraggingWidth = 12;
 
   /// 滑块高度（圆角胶囊）。
-  static const double knobHeight = 48;
+  static const double knobHeight = 44;
 
-  /// 滑块相对中央的上下行程；也是速度模型的满量程。
-  static const double knobMaxTravel = 120;
+  /// 滑块行程的下限 / 上限（实际行程按轨道高度自适应，见 `_knobTravel`）。
+  static const double knobMinTravel = 120;
+  static const double knobMaxTravelLimit = 420;
 
   /// 拖动的死区（像素）：手抖这几像素不该让内容动。
   static const double knobDeadZone = 6;
 
-  /// 交互命中带宽（透明）：滑块在中央，所以整条右缘都能按下开始拖。
+  /// 交互命中带宽（透明）：滑块在中央，所以整条可读区右缘都能按下开始拖。
   static const double hitWidth = 32;
 
   /// 轨道右侧内缩：桌面避开窗口边缘、触控避开系统返回手势。
@@ -72,7 +72,6 @@ class ChatRail extends StatefulWidget {
   static const double capsuleHeight = 44;
 
   /// 运行时占用的右侧总宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）。
-  static const double reservedFromRight = gutterTouch + hitWidth;
   static const double reservedWidth =
       gutterTouch + hitWidth + panelGap + capsuleWidth;
 
@@ -85,10 +84,12 @@ class ChatRail extends StatefulWidget {
   /// 滑块本体（测试用它量位置 / 位移）。
   static const Key knobKey = ValueKey('chat-rail-knob');
 
-  /// 面板划出 / 收起的时长、松手回中的时长。
+  /// 面板划出 / 收起的时长、松手回中的时长、拖动中胶囊的淡入淡出。
   static const Duration expandDuration = Duration(milliseconds: 200);
   static const Duration collapseDuration = Duration(milliseconds: 160);
-  static const Duration snapBackDuration = Duration(milliseconds: 180);
+  static const Duration snapBackDuration = Duration(milliseconds: 420);
+  static const Duration capsuleInDuration = Duration(milliseconds: 140);
+  static const Duration capsuleOutDuration = Duration(milliseconds: 220);
 
   /// 静止淡出的延迟与时长（仅触控）。
   static const Duration dimDelay = Duration(seconds: 2);
@@ -111,10 +112,17 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     reverseDuration: ChatRail.collapseDuration,
   );
 
-  /// 松手后滑块回中。
+  /// 松手后滑块回中（缓出，慢慢收回去）。
   late final AnimationController _snapController = AnimationController(
     vsync: this,
     duration: ChatRail.snapBackDuration,
+  );
+
+  /// 拖动中浮动胶囊的淡入淡出。
+  late final AnimationController _capsuleController = AnimationController(
+    vsync: this,
+    duration: ChatRail.capsuleInDuration,
+    reverseDuration: ChatRail.capsuleOutDuration,
   );
 
   /// 滑块相对中央的位移（正值 = 往下）。
@@ -126,7 +134,10 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
   bool _active = false;
   bool _editing = false;
 
-  /// 拖动中显示的浮动胶囊。
+  /// 当前行程（按轨道高度自适应；拖动中被夹在这个范围内）。
+  double _knobTravel = ChatRail.knobMinTravel;
+
+  /// 拖动中显示的浮动胶囊（淡入淡出由 [_capsuleController] 驱动）。
   bool _floatingCapsule = false;
 
   Timer? _dimTimer;
@@ -193,6 +204,7 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     _snapController.removeListener(_onSnapTick);
     _panelController.dispose();
     _snapController.dispose();
+    _capsuleController.dispose();
     _jumpController.dispose();
     _jumpFocus.dispose();
     super.dispose();
@@ -200,7 +212,9 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
 
   void _onSnapTick() {
     if (!mounted) return;
-    setState(() => _knobOffset = (_snapController.value - 1) * _snapFrom);
+    // 缓出：一开始回得快、越靠近中央越慢，观感比线性"弹"温和。
+    final t = Curves.easeOutCubic.transform(_snapController.value);
+    setState(() => _knobOffset = (t - 1) * _snapFrom);
   }
 
   /// 回中动画的起点位移。
@@ -210,6 +224,12 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     if (!mounted) return;
     if (_expanded) {
       _panelController.forward();
+      // 展开时把"拖动中"的胶囊收掉，避免两套页码同时出现。
+      _floatTimer?.cancel();
+      if (_floatingCapsule) {
+        setState(() => _floatingCapsule = false);
+        _capsuleController.reverse();
+      }
     } else {
       _cancelEditing();
       _panelController.reverse();
@@ -255,6 +275,7 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
       _dragging = true;
       if (!_expanded) _floatingCapsule = true;
     });
+    if (!_expanded) _capsuleController.forward(from: 0);
     _scheduleDim();
   }
 
@@ -266,19 +287,18 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
   void _onDragUpdate(DragUpdateDetails details) {
     final raw =
         _dragStartOffset + (details.globalPosition.dy - _dragStartY);
-    final offset = raw
-        .clamp(-ChatRail.knobMaxTravel, ChatRail.knobMaxTravel)
-        .toDouble();
+    final offset = raw.clamp(-_knobTravel, _knobTravel).toDouble();
     if (offset != _knobOffset) {
       setState(() => _knobOffset = offset);
     }
-    // 速度只跟"离中央多远"有关：满量程 = 一颗滑块的行程。
+    // 速度只跟"离中央多远"有关：满量程 = 滑块行程。
+    // 曲线是 |Δ|^1.3：越往外每像素换来的速度越高（"扩展的部分滚得更快"）。
     final velocity = offset.abs() < ChatRail.knobDeadZone
         ? 0.0
         : widget.motion.velocityFor(
             originY: 0,
             pointerY: offset,
-            viewportHeight: ChatRail.knobMaxTravel,
+            viewportHeight: _knobTravel,
           );
     widget.locator.scrollByVelocity(velocity);
     _scheduleDim();
@@ -288,20 +308,19 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     widget.locator.stopVelocity();
     setState(() => _dragging = false);
     _snapBack();
-    if (!_expanded) {
-      if (_floatingCapsule) {
-        // 胶囊停留 1.2 秒再淡出。
-        _floatTimer?.cancel();
-        _floatTimer = Timer(const Duration(milliseconds: 1200), () {
-          if (!mounted) return;
-          setState(() => _floatingCapsule = false);
-        });
-      }
+    if (!_expanded && _floatingCapsule) {
+      // 胶囊停留 1.2 秒再淡出（带出场动画）。
+      _floatTimer?.cancel();
+      _floatTimer = Timer(const Duration(milliseconds: 1200), () {
+        if (!mounted) return;
+        setState(() => _floatingCapsule = false);
+        _capsuleController.reverse();
+      });
     }
     _scheduleDim();
   }
 
-  /// 松手回中（180ms easeOutCubic）。
+  /// 松手回中（[ChatRail.snapBackDuration]）。
   void _snapBack() {
     if (_knobOffset == 0) return;
     _snapFrom = _knobOffset;
@@ -384,6 +403,10 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     final theme = Theme.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
+        // 行程按轨道高度自适应：能拖到上下边缘附近（越长的屏幕拖得越远）。
+        _knobTravel = ((constraints.maxHeight - ChatRail.knobHeight) / 2 - 12)
+            .clamp(ChatRail.knobMinTravel, ChatRail.knobMaxTravelLimit)
+            .toDouble();
         final centerY = constraints.maxHeight / 2;
         final knobCenterY = centerY + _knobOffset;
         return Stack(
@@ -424,8 +447,8 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
                 ),
               ),
             ),
-            // 收起态拖动：胶囊跟着滑块走，松开 1.2s 后淡出。
-            if (!_expanded && _floatingCapsule)
+            // 收起态拖动：胶囊跟着滑块走（淡入淡出 + 从滑块侧滑出）。
+            if (!_expanded && (_floatingCapsule || _capsuleController.value > 0))
               _buildFloatingCapsule(theme, constraints, centerY),
           ],
         );
@@ -433,7 +456,7 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     );
   }
 
-  /// 滑块本体：品牌色的圆角小胶囊，拖动 / 悬停时更实。
+  /// 滑块本体：品牌色的细手柄，拖动 / 悬停时更实一点。
   Widget _buildKnob(ThemeData theme) {
     final primary = theme.colorScheme.primary;
     final emphasized = _dragging || _hovering;
@@ -448,12 +471,12 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
           width: width,
           height: ChatRail.knobHeight,
           decoration: BoxDecoration(
-            color: primary.withValues(alpha: emphasized ? 0.95 : 0.6),
+            color: primary.withValues(alpha: emphasized ? 1 : 0.88),
             borderRadius: BorderRadius.circular(width / 2),
             boxShadow: [
               BoxShadow(
-                color: primary.withValues(alpha: emphasized ? 0.38 : 0.2),
-                blurRadius: emphasized ? 10 : 6,
+                color: primary.withValues(alpha: emphasized ? 0.34 : 0.16),
+                blurRadius: emphasized ? 8 : 5,
                 offset: const Offset(0, 1),
               ),
             ],
@@ -463,11 +486,11 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     );
   }
 
-  /// 轨道 / 滑块的透明度：桌面常显，触控静置淡出、交互回亮。
+  /// 轨道 / 滑块的透明度：桌面常显（几乎不透明），触控静置才淡一些。
   double get _railOpacity {
-    if (!_isTouch) return _hovering || _dragging || _expanded ? 1 : 0.82;
+    if (!_isTouch) return _hovering || _dragging || _expanded ? 1 : 0.94;
     if (_hovering || _dragging || _expanded || _active) return 1;
-    return 0.35;
+    return 0.55;
   }
 
   /// 展开后的五个部件（各自有背景和形状，互不包裹）。
@@ -537,6 +560,9 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
   }
 
   /// 收起态拖动时跟在滑块旁边的胶囊（只读，不挡手势）。
+  ///
+  /// 出/入场都有动画：淡入 [ChatRail.capsuleInDuration]、淡出
+  /// [ChatRail.capsuleOutDuration]，并从滑块那一侧滑出来一点。
   Widget _buildFloatingCapsule(
     ThemeData theme,
     BoxConstraints constraints,
@@ -550,9 +576,19 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
       right: _gutter + ChatRail.hitWidth + ChatRail.panelGap,
       top: center - half,
       child: IgnorePointer(
-        child: AnimatedOpacity(
-          opacity: 1,
-          duration: const Duration(milliseconds: 120),
+        child: AnimatedBuilder(
+          animation: _capsuleController,
+          builder: (context, child) {
+            final value = _capsuleController.value;
+            if (value == 0) return const SizedBox.shrink();
+            return Opacity(
+              opacity: Curves.easeOut.transform(value),
+              child: Transform.translate(
+                offset: Offset(14 * (1 - value), 0),
+                child: child,
+              ),
+            );
+          },
           child: _buildCapsule(theme),
         ),
       ),

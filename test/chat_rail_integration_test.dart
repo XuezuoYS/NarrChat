@@ -115,10 +115,17 @@ void main() {
     expect(rail, findsOneWidget);
     final band = tester.getRect(rail);
     final sidebarButton = tester.getRect(find.byTooltip('打开右侧边栏'));
+    final composerArea = tester.getRect(find.byKey(const Key('chat_composer_area')));
+    // 命中带只占"输入面板以上"那段右缘：不与按钮行纵向相交，按钮行照常右对齐。
     expect(
-      sidebarButton.right,
-      lessThanOrEqualTo(band.left + 0.5),
-      reason: '轨道命中带在触控端贴右缘 20..44dp，按钮行必须让开它',
+      band.bottom,
+      lessThanOrEqualTo(sidebarButton.top),
+      reason: '轨道命中带不能伸进输入面板区域',
+    );
+    expect(
+      composerArea.right - sidebarButton.right,
+      closeTo(20, 0.5),
+      reason: '按钮行贴右对齐（只有输入卡自身 20dp 边距），不再为轨道让位',
     );
   });
 

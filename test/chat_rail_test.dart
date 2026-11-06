@@ -290,32 +290,35 @@ void main() {
       await _pumpRail(tester);
       final knob = find.byKey(ChatRail.knobKey);
       final start = tester.getCenter(knob);
+      // 行程按轨道高度自适应：(600 - 44)/2 - 12 = 266。
+      final travel = (600 - ChatRail.knobHeight) / 2 - 12;
 
       final gesture = await tester.startGesture(start);
-      await gesture.moveBy(const Offset(0, -300));
+      await gesture.moveBy(const Offset(0, -400));
       await tester.pump();
-      await gesture.moveBy(const Offset(0, -300));
+      await gesture.moveBy(const Offset(0, -400));
       await tester.pump();
 
       expect(
         tester.getRect(knob).center.dy,
-        closeTo(start.dy - ChatRail.knobMaxTravel, 0.5),
+        closeTo(start.dy - travel, 0.5),
       );
 
       await gesture.up();
       await tester.pumpAndSettle();
     });
 
-    testWidgets('收起态拖动弹出跟随滑块的页码胶囊', (tester) async {
+    testWidgets('收起态拖动弹出跟随滑块的页码胶囊（带淡入）', (tester) async {
       await _pumpRail(tester);
       expect(find.textContaining('3 / 10', findRichText: true), findsNothing);
 
       final gesture =
           await tester.startGesture(tester.getCenter(find.byKey(ChatRail.knobKey)));
       await gesture.moveBy(const Offset(0, -30));
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
       await gesture.moveBy(const Offset(0, -30));
-      await tester.pump();
+      // 入场动画是 140ms：给够时间。
+      await tester.pump(const Duration(milliseconds: 160));
 
       expect(
         find.textContaining('3 / 10', findRichText: true),
@@ -325,8 +328,9 @@ void main() {
       expect(find.byTooltip('顶部'), findsNothing, reason: '不展开五个部件');
 
       await gesture.up();
-      // 胶囊停留 1.2s 后淡出（计时器收敛，避免测试结束残留）。
-      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump(const Duration(milliseconds: 100));
+      // 胶囊停留 1.2s 后淡出（计时器 + 出场动画一起收敛）。
+      await tester.pump(const Duration(milliseconds: 1300));
       await tester.pumpAndSettle();
       expect(find.textContaining('3 / 10', findRichText: true), findsNothing);
     });
