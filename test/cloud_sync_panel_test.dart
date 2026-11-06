@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
@@ -9,6 +11,7 @@ import 'package:narrchat/widgets/cloud_sync_panel.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/backup_fakes.dart';
 import 'helpers/notice_harness.dart';
 
 /// 云备份面板 widget 测试（R3：一库一单元一代）。
@@ -89,6 +92,27 @@ void main() {
     await tester.tap(find.text('全自动'));
     await tester.pump();
     expect(form.syncMode, SyncMode.auto);
+  });
+
+  testWidgets('进入面板即自动拉取云端「保留历史版本」，无需点开弹窗', (tester) async {
+    final dav = FakeWebDavService(files: {
+      'narrchat_library_shot-g3.db': [1, 2, 3, 4],
+      'sync_config.json': utf8.encode('{"keepVersions":9}'),
+    });
+    final provider = CloudSyncProvider(webDavFactory: () => dav)
+      ..debugSetConfigured();
+    final form = makeForm(provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+    await tester.pumpAndSettle();
+
+    expect(provider.keepVersionsLoaded, isTrue);
+    expect(find.text('9'), findsWidgets, reason: '状态卡与展示框都显示云端值');
+    expect(find.text('Library 库'), findsOneWidget);
   });
 
   testWidgets('备份列表：按 Library / Mod / 书籍 分组，书名来自本地索引', (tester) async {

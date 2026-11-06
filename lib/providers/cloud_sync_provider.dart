@@ -38,22 +38,27 @@ import '../utils/timestamp_format.dart';
 class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// - [repositories]：注入仓储（测试传 `TestStack.repos`；生产不传，懒取全局单例）。
   /// - [backupRemoteFactory]：注入云端读写实现（测试传内存替身，不碰真实 WebDAV）。
+  /// - [webDavFactory]：注入云端目录读写（备份列表 / `sync_config.json` 用；
+  ///   测试传内存替身，不碰网络）。
   /// - [tombstoneStore]：注入图片墓碑工作副本（测试传内存替身，不写真实 local_config）。
   ///
-  /// 三者都**构造注入**而不是 `debugSetXxx`：显式依赖一目了然，也不会出现
+  /// 全都**构造注入**而不是 `debugSetXxx`：显式依赖一目了然，也不会出现
   /// 「测试之间互相串味」的可变全局状态。
   CloudSyncProvider({
     AppRepositories? repositories,
     BackupRemote Function()? backupRemoteFactory,
+    WebDavService Function()? webDavFactory,
     SyncTombstoneStore? tombstoneStore,
   })  : _injectedRepositories = repositories,
         _remoteFactory = backupRemoteFactory,
+        _davFactory = webDavFactory,
         _injectedTombstoneStore = tombstoneStore {
     _now = DateTime.now;
   }
 
   final AppRepositories? _injectedRepositories;
   final BackupRemote Function()? _remoteFactory;
+  final WebDavService Function()? _davFactory;
   final SyncTombstoneStore? _injectedTombstoneStore;
 
   /// 懒取：裸构造（未注入、且全局未初始化）时只有真正用到才会抛，
@@ -136,6 +141,11 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   String get webdavUsername => _webdavUsername;
   String get webdavPassword => _webdavPassword;
   String get folder => _folder;
+
+  /// 「保留历史版本」份数（云端 `sync_config.json` 唯一权威）。
+  ///
+  /// 进入云同步面板 / 点刷新 / 每次数据面同步前都会自动读一次；
+  /// 从未读到过时保持默认 5，但 [keepVersionsLoaded] 为 false（面板显示「—」）。
   int get keepVersions => _keepVersions;
   bool get keepVersionsLoaded => _keepVersionsLoaded;
   bool get autoUpload => _autoUpload;
@@ -289,12 +299,15 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final stores = _repos.stores;
       final remote = _newRemote();
+      // 修剪份数以云端 sync_config.json 为唯一权威：冷启动的自动同步若直接用
+      // 内存默认值，会把用户要求的更早快照误删（R2 同款保证）。
+      final keepVersions = await _readKeepVersionsForSync(remote);
       final runner = BackupRunner(
         remote: remote,
         locator: BackupLocator(userDataDir: stores.paths.userDataDir),
         store: stores.sync,
         deviceId: _deviceId,
-        keepVersions: _keepVersions,
+        keepVersions: keepVersions,
         onProgress: _onDataProgress,
         isCancelled: () => _cancelRequested,
       );
@@ -536,15 +549,26 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // --- 保留份数（云端 sync_config.json） ---------------------------------------
 
+  /// 强制从云端读一次「保留历史版本」。
+  ///
+  /// - 成功 / 云端本来没有该文件 → 返回 null 并刷新展示缓存；
+  /// - 读取失败 → 返回**原生异常文本**（「保留历史版本」弹窗内联展示后可重试）。
   Future<String?> refreshKeepVersions() async {
     if (!isConfigured) return '尚未配置云备份';
+    final dav = _createDav();
     try {
-      final dav = _createDav();
-      await _syncKeepVersionsFromCloud(dav);
+      _applyCloudSyncConfig(await dav.get('', SyncConfig.remoteFileName));
       return null;
+    } on WebDavException catch (error) {
+      if (error.statusCode == 404) {
+        _applyMissingCloudSyncConfig();
+        return null;
+      }
+      return error.toString();
     } catch (error) {
       return error.toString();
     } finally {
+      dav.close();
       notifyListeners();
     }
   }
@@ -555,8 +579,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       SyncConfig.minKeepVersions,
       SyncConfig.maxKeepVersions,
     );
+    final dav = _createDav();
     try {
-      final dav = _createDav();
       await dav.ensureCollection('');
       await dav.put(
         '',
@@ -569,22 +593,61 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (error) {
       return error.toString();
     } finally {
+      dav.close();
       notifyListeners();
     }
   }
 
+  /// 展示缓存：读云端 `sync_config.json` 更新「保留历史版本」。
+  ///
+  /// 顺带刷新（面板打开 / 手动刷新 / 同步后）用：失败**静默保留上一次缓存**
+  /// （从未读到过就继续显示「—」），错误框只归因备份列表；云端没有该文件
+  /// 按默认值处理。
   Future<void> _syncKeepVersionsFromCloud(WebDavService dav) async {
     try {
-      final bytes = await dav.get('', SyncConfig.remoteFileName);
-      final config = SyncConfig.tryParse(utf8.decode(bytes));
-      if (config != null) {
-        _keepVersions = config.keepVersions;
-      }
-      _keepVersionsLoaded = true;
+      _applyCloudSyncConfig(await dav.get('', SyncConfig.remoteFileName));
+    } on WebDavException catch (error) {
+      if (error.statusCode == 404) _applyMissingCloudSyncConfig();
     } catch (_) {
-      // 云端还没有配置：用默认值，不算失败。
-      _keepVersionsLoaded = true;
+      // 静默：保留旧值（见 doc）。
     }
+  }
+
+  /// 数据面开始前解析本轮修剪份数（云端 `sync_config.json` 唯一权威）。
+  ///
+  /// - 读到 → 更新展示缓存并返回云端值；
+  /// - 云端还没有该文件（404）→ 默认值（并标记已加载）；
+  /// - 其它失败 → 0 = **本轮不修剪**（宁可多留，绝不误删）。
+  Future<int> _readKeepVersionsForSync(BackupRemote remote) async {
+    try {
+      return _applyCloudSyncConfig(
+        await remote.read(SyncConfig.remoteFileName),
+      );
+    } on BackupRemoteException catch (error) {
+      if (error.statusCode == 404) return _applyMissingCloudSyncConfig();
+      return 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// 解析云端 `sync_config.json` 字节并更新展示缓存；返回生效的份数。
+  ///
+  /// 内容是空白 / 非法 JSON → 与「云端没配置」同义，按默认值处理。
+  int _applyCloudSyncConfig(List<int> bytes) {
+    final config = SyncConfig.tryParse(utf8.decode(bytes));
+    final value = config?.keepVersions ?? SyncConfig.defaultKeepVersions;
+    _keepVersions = value;
+    _keepVersionsLoaded = true;
+    return value;
+  }
+
+  /// 云端还没有 `sync_config.json`：默认值 + 标记已加载。
+  int _applyMissingCloudSyncConfig() {
+    const value = SyncConfig.defaultKeepVersions;
+    _keepVersions = value;
+    _keepVersionsLoaded = true;
+    return value;
   }
 
   // --- 连接测试 / 备份列表 -----------------------------------------------------
@@ -616,14 +679,20 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// 刷新云端备份列表（**顺带**拉一次 `sync_config.json` 更新「保留历史版本」）。
+  ///
+  /// 面板打开 / 点「刷新」/ 同步完成后都会走到这里，因此保留份数无需先点开
+  /// 弹窗就能显示云端真值（R2 同款行为，v3 重写时漏掉了）。
   Future<void> refreshBackups() async {
     if (!isConfigured) return;
+    final dav = _createDav();
     try {
-      final dav = _createDav();
       await _loadBackups(dav);
+      await _syncKeepVersionsFromCloud(dav);
     } catch (error) {
       _error = error.toString();
     } finally {
+      dav.close();
       notifyListeners();
     }
   }
@@ -726,13 +795,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         await tmp.rename(target.path);
         await onDataRestored?.call();
       } else {
-        // 保留本地：直接推一代上去。
+        // 保留本地：直接推一代上去（修剪份数同样以云端配置为准）。
+        final keepVersions = await _readKeepVersionsForSync(remote);
         final runner = BackupRunner(
           remote: remote,
           locator: locator,
           store: stores.sync,
           deviceId: _deviceId,
-          keepVersions: _keepVersions,
+          keepVersions: keepVersions,
         );
         await runner.run(
           context: BackupContext(
@@ -756,7 +826,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // --- 内部工具 ---------------------------------------------------------------
 
-  WebDavService _createDav() => WebDavService(
+  WebDavService _createDav() =>
+      _davFactory?.call() ??
+      WebDavService(
         baseUrl: _webdavUrl,
         username: _webdavUsername,
         password: _webdavPassword,

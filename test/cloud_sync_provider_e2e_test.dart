@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -141,6 +142,55 @@ void main() {
     expect(ok, isTrue);
     expect(provider.dataSyncState, SyncState.success);
     expect(remote.writeCount, writesAfterFirst, reason: '内容一致不该再上传');
+  });
+
+  test('数据面修剪份数取自云端 sync_config.json（不是内存默认值）', () async {
+    final bookUuid = await stack.seedBook();
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '一');
+    remote.put(SyncConfig.remoteFileName, utf8.encode('{"keepVersions":2}'));
+
+    await provider.sync();
+    for (var i = 2; i <= 4; i++) {
+      await stack.seedRound(bookUuid, roundIndex: i, aiNarrative: '第 $i 轮');
+      await provider.sync();
+    }
+
+    final names = remote.files.keys.toSet();
+    expect(names, contains('narrbook_${bookUuid}_shot-g3.db'));
+    expect(names, contains('narrbook_${bookUuid}_shot-g4.db'));
+    expect(
+      names,
+      isNot(contains('narrbook_${bookUuid}_shot-g2.db')),
+      reason: '按云端 keep=2 修剪，不能退回内存默认值',
+    );
+    expect(names, isNot(contains('narrbook_${bookUuid}_shot-g1.db')));
+  });
+
+  test('读不到 sync_config.json：本轮不修剪（宁可多留，绝不误删）', () async {
+    final bookUuid = await stack.seedBook();
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '一');
+    remote.put(SyncConfig.remoteFileName, utf8.encode('{"keepVersions":1}'));
+    remote.failReadsFor.add(SyncConfig.remoteFileName);
+
+    await provider.sync();
+    for (var i = 2; i <= 3; i++) {
+      await stack.seedRound(bookUuid, roundIndex: i, aiNarrative: '第 $i 轮');
+      await provider.sync();
+    }
+
+    expect(remote.files.keys, contains('narrbook_${bookUuid}_shot-g1.db'));
+    expect(remote.files.keys, contains('narrbook_${bookUuid}_shot-g2.db'));
+    expect(remote.files.keys, contains('narrbook_${bookUuid}_shot-g3.db'));
+
+    // 恢复正常后再推一代：按云端 keep=1 把更旧的代清掉。
+    remote.failReadsFor.clear();
+    await stack.seedRound(bookUuid, roundIndex: 4, aiNarrative: '第 4 轮');
+    await provider.sync();
+    expect(remote.files.keys, contains('narrbook_${bookUuid}_shot-g4.db'));
+    expect(
+      remote.files.keys,
+      isNot(contains('narrbook_${bookUuid}_shot-g3.db')),
+    );
   });
 
   test('云端前进、本地未改：拉取覆盖本地，之后 store 能懒重开', () async {

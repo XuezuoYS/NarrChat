@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/app_notice.dart';
@@ -8,6 +10,8 @@ import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
+
+import 'helpers/backup_fakes.dart';
 
 /// `CloudSyncProvider`：触发门控、快照命名解析、整本冲突状态、结果提示队列。
 ///
@@ -236,6 +240,69 @@ void main() {
       );
       expect(provider.backupUnits.last.totalCount, 2);
       expect(provider.backupUnits.last.latestGeneration, 2);
+    });
+  });
+
+  group('刷新备份列表时顺带拉取保留代数', () {
+    CloudSyncProvider providerWith(FakeWebDavService dav) =>
+        CloudSyncProvider(webDavFactory: () => dav)..debugSetConfigured();
+
+    test('读到云端值：列表与展示缓存一起更新，临时客户端关闭', () async {
+      final dav = FakeWebDavService(files: {
+        'narrchat_library_shot-g2.db': [1, 2, 3],
+        'sync_config.json': utf8.encode('{"keepVersions":12}'),
+      });
+      final provider = providerWith(dav);
+
+      await provider.refreshBackups();
+
+      expect(provider.error, isNull);
+      expect(provider.backupUnits.single.displayName, 'Library 库');
+      expect(provider.keepVersions, 12);
+      expect(provider.keepVersionsLoaded, isTrue);
+      expect(dav.closed, isTrue, reason: '临时客户端必须关掉');
+    });
+
+    test('云端还没有 sync_config.json：默认值 + 标记已加载', () async {
+      final dav = FakeWebDavService(files: {
+        'narrchat_library_shot-g1.db': [1],
+      });
+      final provider = providerWith(dav);
+
+      await provider.refreshBackups();
+
+      expect(provider.keepVersionsLoaded, isTrue);
+      expect(provider.keepVersions, SyncConfig.defaultKeepVersions);
+    });
+
+    test('sync_config 读取失败：不把默认值伪装成云端真值', () async {
+      final dav = FakeWebDavService(
+        files: {'narrchat_library_shot-g1.db': [1]},
+        getError: '连接超时',
+      );
+      final provider = providerWith(dav);
+
+      await provider.refreshBackups();
+
+      expect(provider.error, isNull, reason: '顺带刷新失败不占错误框');
+      expect(provider.backupUnits, isNotEmpty, reason: '备份列表本身照常刷新');
+      expect(provider.keepVersionsLoaded, isFalse, reason: '没读到过就保持「—」');
+      expect(provider.keepVersions, SyncConfig.defaultKeepVersions);
+    });
+
+    test('refreshKeepVersions：失败返回原生异常文本，成功返回 null', () async {
+      final failing = FakeWebDavService(getError: '连接超时');
+      final provider1 = providerWith(failing);
+      expect(await provider1.refreshKeepVersions(), contains('连接超时'));
+      expect(provider1.keepVersionsLoaded, isFalse);
+
+      final ok = FakeWebDavService(files: {
+        'sync_config.json': utf8.encode('{"keepVersions":7}'),
+      });
+      final provider2 = providerWith(ok);
+      expect(await provider2.refreshKeepVersions(), isNull);
+      expect(provider2.keepVersions, 7);
+      expect(provider2.keepVersionsLoaded, isTrue);
     });
   });
 
