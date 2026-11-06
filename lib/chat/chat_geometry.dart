@@ -22,6 +22,9 @@ class ChatGeometry {
     ChatItemKind.user: 96,
     ChatItemKind.ai: 320,
     ChatItemKind.failed: 160,
+    // 占位条目另有 fixedHeight，这里的值只在没给固定高度时兜底。
+    ChatItemKind.leadingSpacer: 0,
+    ChatItemKind.trailingSpacer: 0,
   };
 
   /// 带图片条目的额外估算高度（图片加载前先把空间留够，避免滚动跳变）。
@@ -89,6 +92,8 @@ class ChatGeometry {
   bool updateHeight(ChatItemKey key, double height) {
     final index = _indexOf[key];
     if (index == null || height <= 0) return false;
+    // 占位条目的高度就是它的语义，不接受实测覆盖。
+    if (_items[index].isSpacer) return false;
     final previous = _heights[key];
     _measured.add(key);
     if (previous != null && (previous - height).abs() < 0.5) return false;
@@ -154,6 +159,9 @@ class ChatGeometry {
       };
 
   double _estimateOf(ChatItem item) {
+    // 占位条目：高度由调用方给定（底部避让 / 顶部收尾），估算值只兜底。
+    final fixed = item.fixedHeight;
+    if (fixed != null) return fixed;
     final base = _estimates[item.kind] ?? 200;
     return item.hasImages ? base + imageExtraHeight : base;
   }

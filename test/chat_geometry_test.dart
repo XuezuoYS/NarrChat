@@ -176,4 +176,40 @@ void main() {
       ChatGeometry.defaultEstimates[ChatItemKind.failed],
     );
   });
+
+  test('占位条目：fixedHeight 就是高度，测量值不得覆盖', () {
+    final geometry = ChatGeometry();
+    geometry.rebuild([
+      const ChatItem(
+        roundUuid: 'spacer-tail',
+        roundIndex: 1,
+        kind: ChatItemKind.trailingSpacer,
+        fixedHeight: 24,
+      ),
+      item('r1', 1, ChatItemKind.user),
+      const ChatItem(
+        roundUuid: 'spacer-lead',
+        roundIndex: 1,
+        kind: ChatItemKind.leadingSpacer,
+        fixedHeight: 128,
+      ),
+    ]);
+
+    expect(geometry.heightOf(0), 24, reason: '顶部占位固定 24');
+    expect(geometry.heightOf(2), 128, reason: '底部占位 = 输入面板高 + 8');
+    expect(geometry.total, closeTo(24 + 96 + 128, 1e-9));
+
+    // 列表自上报的实测值不得改写占位高度。
+    expect(geometry.updateHeight(
+      const ChatItemKey('spacer-lead', ChatItemKind.leadingSpacer),
+      999,
+    ), isFalse);
+    expect(geometry.heightOf(2), 128);
+    expect(geometry.total, closeTo(24 + 96 + 128, 1e-9));
+    expect(
+      geometry.dumpMeasuredHeights().keys
+          .where((k) => k.kind == ChatItemKind.leadingSpacer),
+      isEmpty,
+    );
+  });
 }
