@@ -28,6 +28,9 @@ class AiBubbleActions extends StatelessWidget {
   /// RAW 查看回调（必传）：有数据即打开 RAW 对话框，无数据由实现给出提示。
   final VoidCallback onViewRaw;
 
+  /// 「从这里分叉」回调（null = 不显示该入口：错误代 / 生成中都不可分叉）。
+  final VoidCallback? onFork;
+
   /// 代次控件（null = 不显示）；恒占 `Wrap` 首位（控件自身不换行）。
   final Widget? versionStepper;
 
@@ -39,6 +42,7 @@ class AiBubbleActions extends StatelessWidget {
     required this.onRefresh,
     required this.onModifyByOpinion,
     required this.onViewRaw,
+    this.onFork,
     this.versionStepper,
   });
 
@@ -77,6 +81,12 @@ class AiBubbleActions extends StatelessWidget {
               label: '按意见修改',
               onPressed: onModifyByOpinion,
             ),
+            if (onFork != null)
+              ActionButton(
+                icon: Icons.call_split,
+                label: '从这里分叉',
+                onPressed: onFork!,
+              ),
             ActionButton(
               icon: Icons.delete_outline,
               label: '删除本轮',

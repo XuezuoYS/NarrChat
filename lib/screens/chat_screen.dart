@@ -14,6 +14,7 @@ import 'package:flutter/rendering.dart'
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../chat/branch_panel.dart';
 import '../chat/chat_geometry.dart';
 import '../chat/chat_item.dart';
 import '../chat/chat_locator.dart';
@@ -310,6 +311,12 @@ class _ChatScreenState extends State<ChatScreen>
   /// 当前构建里：列表顶部有没有占位条目（窗口含首轮时才有）。
   bool _chatHasTopSpacer = false;
 
+  /// 当前构建里：链首有没有分支头卡片（非默认分支时才有）。
+  bool _chatHasBranchHeader = false;
+
+  /// 列表逻辑最前端的非气泡条目数（分支头 + 顶部占位）。
+  int get _chatHeadCount => (_chatHasTopSpacer ? 1 : 0) + (_chatHasBranchHeader ? 1 : 0);
+
   /// 顶部收尾留白（顶替旧的 `padding.top`）。
   static const double _kTrailingSpacerHeight = 24;
 
@@ -358,6 +365,7 @@ class _ChatScreenState extends State<ChatScreen>
   /// 注意用「聊天区实际宽度」而非窗口宽度：拖拽调整右侧栏时窗口宽度不变，
   /// 但消息行高会随列宽变化，旧的实测高度应失效（供楼层跳转估算）。
   List<Round> _lastRoundsSource = const [];
+  String _lastBranchUuid = '';
   int _lastRoundsCount = 0;
   double _lastChatLayoutWidth = 0;
 
@@ -551,6 +559,7 @@ class _ChatScreenState extends State<ChatScreen>
     required bool showPendingUser,
     required bool showPending,
   }) => [
+    if (_chatHasBranchHeader) const ValueKey('chat-branch-header'),
     if (_chatHasTopSpacer) const ValueKey('chat-spacer-top'),
     for (final round in chatRounds) ...[
       ValueKey('chat-round${round.roundIndex}-user'),
@@ -866,7 +875,7 @@ class _ChatScreenState extends State<ChatScreen>
     // 同时喂给几何模型：轨道读它算进度 / 拇指 / 跳转落点。
     // 逻辑序 = 顶部占位（可选）+ 窗口内气泡 + 待定气泡 + 底部占位（可选），
     // 只有气泡参与实测回填。
-    final head = _chatHasTopSpacer ? 1 : 0;
+    final head = _chatHeadCount;
     final bubbleIndex = itemIndex - head;
     if (bubbleIndex >= 0 && bubbleIndex < _chatBubbleCount) {
       _chatGeometry.updateHeight(_chatItems[head + bubbleIndex].key, height);
@@ -948,6 +957,21 @@ class _ChatScreenState extends State<ChatScreen>
     // 顶部 24dp 暂时仍用 padding 表达：侧栏「跳转至条目」用的分帧跳转引擎（第②步保留）
     // 假设逻辑 0 是气泡，加前沿占位会让它整体错位；那套引擎在第④步才拆。
     _chatHasTopSpacer = false;
+    // 非默认分支：链首插一张分支头卡片（进几何，参与偏移）。
+    final branch = context.read<RoundProvider>().currentBranch;
+    _chatHasBranchHeader =
+        branch != null && branch.branchUuid.isNotEmpty;
+    if (branch != null && _chatHasBranchHeader) {
+      _chatItems = [
+        ChatItem(
+          roundUuid: branch.branchUuid,
+          roundIndex: branch.fatherRowIndex,
+          kind: ChatItemKind.branchHeader,
+          branchUuid: branch.branchUuid,
+        ),
+        ..._chatItems,
+      ];
+    }
     if (_chatHasTopSpacer) {
       _chatItems = [
         ChatItem(
@@ -1129,7 +1153,7 @@ class _ChatScreenState extends State<ChatScreen>
     _closeDrawer();
     _userScrolledAway = true;
     // 逻辑序里顶部占位在最前，气泡起点要整体后移一位。
-    _jumpToItem((_chatHasTopSpacer ? 1 : 0) + 2 * position);
+    _jumpToItem(_chatHeadCount + 2 * position);
   }
 
   /// 跳转到指定列表项（参数为**逻辑序号**：`2 × 轮次位置 + (AI ? 1 : 0)`）。
@@ -2236,6 +2260,158 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// 对话页顶栏：返回书籍列表 + 书名 + 书籍设置 / 全局设置。
+  /// 链首的分支头卡片：分支名 + 「从第 N 轮分叉」+「回到主线」。
+  Widget _buildBranchHeaderCard(RoundProvider provider) {
+    final branch = provider.currentBranch;
+    if (branch == null) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Container(
+        key: const ValueKey('chat-branch-header-card'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.call_split, size: 16, color: scheme.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                branch.branchName.isEmpty ? '分支' : branch.branchName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface,
+                ),
+              ),
+            ),
+            Text(
+              '从第 ${branch.fatherRowIndex} 轮分叉',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              key: const ValueKey('chat-branch-header-back'),
+              onPressed: () async {
+                final ok = await provider.switchBranch('');
+                if (!mounted || ok) return;
+                context.notices.warning(provider.error ?? '回到主线失败');
+              },
+              child: const Text('回到主线'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 「从这里分叉」：以该轮为父代建一条新分支并切过去。
+  ///
+  /// provider 返回 null 表示被拒（错误代 / 生成中 / 写库失败），把原因报给用户。
+  Future<void> _forkFromRound(Round round) async {
+    final provider = context.read<RoundProvider>();
+    final branchUuid = await provider.forkBranch(round: round);
+    if (!mounted) return;
+    if (branchUuid == null) {
+      context.notices.warning(provider.error ?? '分叉失败');
+    }
+  }
+
+  /// 分支显示名（默认分支固定叫「主线」）。
+  ///
+  /// 刻意**不**在 _buildAppBar 里 context.watch：那会把整个对话页订阅到
+  /// RoundProvider，流式每个增量都重建全部气泡（实测破坏重建范围）。
+  /// 顶栏只在入口处用一个 Consumer 局部订阅。
+  static String _branchLabelOf(RoundProvider provider) {
+    final name = provider.currentBranch?.branchName.trim() ?? '';
+    return name.isEmpty ? '主线' : name;
+  }
+
+  /// 打开分支面板（悬浮对话框，不占整页）。
+  Future<void> _openBranchPanel() async {
+    final provider = context.read<RoundProvider>();
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black26,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        child: BranchPanel(
+          branches: provider.branches,
+          workingBranchUuid: provider.workingBranchUuid,
+          width: 280,
+          onClose: () => Navigator.of(dialogContext).pop(),
+          onSwitch: (uuid) async {
+            final ok = await provider.switchBranch(uuid);
+            if (!mounted || !dialogContext.mounted) return;
+            if (!ok) {
+              context.notices.warning(provider.error ?? '切换分支失败');
+              return;
+            }
+            Navigator.of(dialogContext).pop();
+          },
+          onRename: (branch) async {
+            final title = await _askBranchTitle(branch.branchName);
+            if (title == null) return null;
+            final ok = await provider.renameBranch(branch.branchUuid, title);
+            if (!ok) {
+              if (mounted) {
+                context.notices.warning(provider.error ?? '重命名失败');
+              }
+              return null;
+            }
+            return title;
+          },
+          onDelete: (branch) async {
+            final ok = await provider.deleteBranch(branch.branchUuid);
+            if (!mounted || !dialogContext.mounted) return;
+            if (!ok) {
+              context.notices.warning(provider.error ?? '删除分支失败');
+              return;
+            }
+            Navigator.of(dialogContext).pop();
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 改名对话框：返回 trim 后的新名；取消 / 空名 / 没改都返回 null。
+  Future<String?> _askBranchTitle(String current) async {
+    final controller = TextEditingController(text: current);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重命名分支'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '分支名'),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    final title = result?.trim() ?? '';
+    if (title.isEmpty || title == current) return null;
+    return title;
+  }
+
   PreferredSizeWidget _buildAppBar(BuildContext context, double extraRow) {
     final book = context.watch<BookProvider>().currentBook;
     return NarrChatAppBar(
@@ -2252,6 +2428,16 @@ class _ChatScreenState extends State<ChatScreen>
           ? null
           : () => BookSettingsScreen.open(context, book: book),
       actions: [
+        // 分支入口：显示当前分支名（默认分支显示「主线」），点开分支面板。
+        TextButton.icon(
+          key: const ValueKey('chat-branch-entry'),
+          onPressed: book == null ? null : _openBranchPanel,
+          icon: const Icon(Icons.account_tree_outlined, size: 18),
+          label: Consumer<RoundProvider>(
+            builder: (context, provider, _) =>
+                Text(_branchLabelOf(provider)),
+          ),
+        ),
         if (book != null)
           IconButton(
             icon: const Icon(Icons.book_outlined),
@@ -2448,12 +2634,15 @@ class _ChatScreenState extends State<ChatScreen>
         rounds.length != _lastRoundsCount ||
         warningsVersion != _lastWarningsVersion ||
         versionsRevision != _lastVersionsRevision ||
+        // 切分支会改「链首有没有分支头卡片」：必须跟着重建。
+        roundProvider.workingBranchUuid != _lastBranchUuid ||
         (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
       _itemHeights.clear();
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
       _lastWarningsVersion = warningsVersion;
       _lastVersionsRevision = versionsRevision;
+      _lastBranchUuid = roundProvider.workingBranchUuid;
       _lastChatLayoutWidth = chatWidth;
       // 条目顺序 / 实测缓存都变了：几何模型跟着重建。
       _rebuildGeometry(chatRounds);
@@ -2518,7 +2707,7 @@ class _ChatScreenState extends State<ChatScreen>
           final logicalIndex = itemKeys.length - 1 - index;
           Widget item;
           // 虚拟条目起点：历史轮次之后（待定用户气泡 → 流式气泡）。
-          final head = _chatHasTopSpacer ? 1 : 0;
+          final head = _chatHeadCount;
           final virtualBase = head + _chatBubbleCount;
 
           if (logicalIndex == 0 && _chatHasTopSpacer) {
@@ -2527,6 +2716,8 @@ class _ChatScreenState extends State<ChatScreen>
               height: _kTrailingSpacerHeight,
               key: ValueKey('chat-spacer-top-box'),
             );
+          } else if (logicalIndex == 0 && _chatHasBranchHeader) {
+            item = _buildBranchHeaderCard(roundProvider);
           } else if (showPendingUser && logicalIndex == virtualBase) {
             // 生成中的用户气泡（未落库，紧跟历史消息之后）。
             item = Padding(
@@ -2609,6 +2800,10 @@ class _ChatScreenState extends State<ChatScreen>
                         onDelete: () => _handleDelete(round),
                         onRefresh: () => _handleRefreshRound(round),
                         onModifyByOpinion: () => _startModifyByOpinion(round),
+                        // 错误代 / 生成中不给分叉入口（provider 也会拒）。
+                        onFork: round.isError || roundProvider.isSending
+                            ? null
+                            : () => _forkFromRound(round),
                         versionStepper: _versionStepperFor(round.roundIndex),
                         // RAW 入口恒在（无数据时由提示说明原因，不隐藏入口）。
                         onViewRaw: () => _showRawDialog(round),
@@ -2676,7 +2871,8 @@ class _ChatScreenState extends State<ChatScreen>
             child: Container(
               // 与各边栏一致的内容表面背景。
               color: context.narrColors.surface,
-              child: chatRounds.isEmpty && !showPending
+              // 刚分叉出来的空分支也要显示列表（否则看不到链首的分支头卡片）。
+            child: chatRounds.isEmpty && !showPending && !_chatHasBranchHeader
                   ? _buildEmptyState(context, bookProvider.currentBook)
                   // 原生滚动条（主题已统一为常显细圆角拇指），流式/滚动自动跟随。
                   : messagesList,
