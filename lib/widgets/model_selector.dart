@@ -115,11 +115,7 @@ class _ModelSelectorState extends State<ModelSelector> {
     final target = _target;
     return MenuAnchor(
       animated: true,
-      style: MenuStyle(
-        shape: WidgetStatePropertyAll(
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      ),
+      // 菜单圆角/背景继承主题 menuTheme（与设置页下拉、右键菜单一致）。
       // 关闭动画结束后清掉二级目标：下次打开永远从模型列表开始，
       // 既不会在淡出过程中闪回列表，也不会让菜单停在上次的强度面板。
       onAnimationStatusChanged: (status) {

@@ -6,6 +6,7 @@ import '../services/branch_rules.dart';
 import '../theme/app_theme.dart';
 import 'app_notice_overlay.dart';
 import 'round_action_dialogs.dart';
+import 'settings/settings_kit.dart';
 
 /// 面板订阅的变更信号：当前加载的是哪本书 / 数据版本 / 是否生成中。
 ///
@@ -81,8 +82,6 @@ class _BookOtherSettingsPanelState extends State<BookOtherSettingsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.narrColors;
-
     final bookUuid = widget.bookUuid;
     // 只订阅会影响计划 / 按钮状态的信号：流式正文 chunk 不触发重算。
     final _CleanupSignals signals = context.select<RoundProvider, _CleanupSignals>(
@@ -100,20 +99,10 @@ class _BookOtherSettingsPanelState extends State<BookOtherSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          '其它设置',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: colors.textPrimary,
-          ),
+        const SettingsPageHeader(
+          title: '其它设置',
+          description: '书籍的维护与清理操作，不会改动设定与正文。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          '书籍的维护与清理操作，不会改动设定与正文。',
-          style: TextStyle(fontSize: 12, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 20),
         _buildCleanupCard(
           context,
           plan: plan,
@@ -140,13 +129,8 @@ class _BookOtherSettingsPanelState extends State<BookOtherSettingsPanel> {
         !generating &&
         !_deleting;
 
-    return Container(
+    return SettingsCard(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.divider),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

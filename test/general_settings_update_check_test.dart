@@ -122,6 +122,20 @@ void main() {
     expect(config![UpdateCheckFlow.keyUpdateCheckEnabled], isTrue);
   });
 
+  testWidgets('点副标题整行切换并落盘', (tester) async {
+    await openGeneralSettings(tester);
+    expect(switchWidget(tester).value, isTrue);
+
+    // 点击副标题（远离右侧开关）也能切换整行，并同步持久化。
+    await tester.tap(find.text('启动时检查新版本（每天最多一次）'));
+    await tester.pump();
+    expect(switchWidget(tester).value, isFalse);
+
+    await flushConfig(tester);
+    final config = await tester.runAsync(LocalConfigService.read);
+    expect(config![UpdateCheckFlow.keyUpdateCheckEnabled], isFalse);
+  });
+
   testWidgets('设置页首页即「通用设置」（无需切换面板）', (tester) async {
     await openGeneralSettings(tester);
 

@@ -3722,12 +3722,8 @@ class _ChatModeDropdown extends StatelessWidget {
     return MenuAnchor(
       // 开启 Material 菜单开合动画（打开 500ms / 关闭 150ms，含高度/透明度/
       // 菜单项错落淡入淡出），与右键/长按菜单、下拉字段的动画观感一致。
+      // 菜单圆角/背景继承主题 menuTheme（与设置页下拉菜单一致）。
       animated: true,
-      style: MenuStyle(
-        shape: WidgetStatePropertyAll(
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      ),
       menuChildren: [
         if (agentOn) ...[
           MenuItemButton(

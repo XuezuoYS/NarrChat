@@ -8,6 +8,7 @@ import '../widgets/app_notice_overlay.dart';
 import '../widgets/font_picker_dialog.dart';
 import '../widgets/island_bar.dart';
 import '../widgets/narr_chat_app_bar.dart';
+import '../widgets/settings/settings_kit.dart';
 
 /// 「字体设置」二级页（由「通用设置 → UI 设置 → 字体设置」进入）。
 ///
@@ -244,15 +245,14 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
   /// 预览块：按**草稿**字体与档位实时渲染样例文本。
   Widget _buildPreview(NarrChatColors colors) {
     final fontFamily = _draftFamily.isEmpty ? null : _draftFamily;
-    return _SectionCard(
-      colors: colors,
+    return SettingsCard(
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _SectionHeader(
+          SettingsCardHeader(
             icon: Icons.visibility_outlined,
             title: '预览',
-            colors: colors,
             trailing: Text(
               _draftLabel,
               style: TextStyle(
@@ -302,50 +302,26 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
 
   /// 字体选择区：点按整行弹出字体对话框（与预览块同一套头部样式）。
   Widget _buildFontSection(NarrChatColors colors) {
-    return _SectionCard(
-      colors: colors,
-      padding: EdgeInsets.zero,
-      child: Stack(
-        children: [
-          // 整行可点：点击热区覆盖标题与当前字体值。
-          Positioned.fill(
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: const ValueKey('font_settings_font_tile'),
-                onTap: _pickFont,
-              ),
-            ),
+    return SettingsCard(
+      child: SettingsRow(
+        rowKey: const ValueKey('font_settings_font_tile'),
+        icon: Icons.font_download_outlined,
+        title: '字体样式',
+        // 当前值用所选字体渲染，便于直接比对（与预览块同款）。
+        subtitleWidget: Text(
+          _draftFontDisplay,
+          style: TextStyle(
+            fontSize: 13,
+            fontFamily: _draftFamily.isEmpty ? null : _draftFamily,
+            color: colors.textPrimary,
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _SectionHeader(
-                  icon: Icons.font_download_outlined,
-                  title: '字体样式',
-                  colors: colors,
-                  trailing: Icon(
-                    Icons.chevron_right,
-                    size: 20,
-                    color: colors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  _draftFontDisplay,
-                  style: TextStyle(
-                    // 与预览一致：以所选字体渲染当前值，便于直接比对。
-                    fontSize: 13,
-                    fontFamily: _draftFamily.isEmpty ? null : _draftFamily,
-                    color: colors.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
+        trailing: Icon(
+          Icons.chevron_right,
+          size: 20,
+          color: colors.textSecondary,
+        ),
+        onTap: _pickFont,
       ),
     );
   }
@@ -355,15 +331,14 @@ class _FontSettingsScreenState extends State<FontSettingsScreen> {
     // 滑杆按 0..5 的序号取值，偏移量与序号的换算集中在此（避免散落魔法数）。
     const levelCount = FontScaleLevel.maxOffset - FontScaleLevel.minOffset + 1;
     final sliderValue = (_draftScaleIndex - FontScaleLevel.minOffset).toDouble();
-    return _SectionCard(
-      colors: colors,
+    return SettingsCard(
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _SectionHeader(
+          SettingsCardHeader(
             icon: Icons.format_size_outlined,
             title: '字体大小',
-            colors: colors,
             trailing: Text(
               _draftLabel,
               key: const ValueKey('font_settings_scale_label'),
@@ -447,79 +422,5 @@ const String _previewEn =
     'pounded her twice. "No way!" she pouted.\n'
     '0123456789';
 
-/// 分区头部：图标 + 标题（+ 右侧当前值），三个分区共用同一套样式。
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final NarrChatColors colors;
-  final Widget? trailing;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    required this.colors,
-    this.trailing,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: colors.textSecondary),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            title,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: colors.textPrimary,
-            ),
-          ),
-        ),
-        ?trailing,
-      ],
-    );
-  }
-}
-
 /// 未保存改动的处理选择。
 enum _UnsavedChoice { save, discard, cancel }
-
-/// 卡片式分区容器（背景 + 圆角 + 细边框）。
-///
-/// 背景色由不透明 [Material] 承载（而非 [Container] 的 DecoratedBox）：
-/// 容器内可能出现 ListTile 等依赖最近 Material 绘制墨迹的组件，
-/// 用带背景色的 DecoratedBox 包裹会触发
-/// 「ListTile background color or ink splashes may be invisible」断言
-/// （与 `settings_shell.dart` 的同类处理一致）。
-class _SectionCard extends StatelessWidget {
-  final NarrChatColors colors;
-  final Widget child;
-  final EdgeInsetsGeometry padding;
-
-  const _SectionCard({
-    required this.colors,
-    required this.child,
-    this.padding = const EdgeInsets.all(16),
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.divider),
-      ),
-      // 圆角裁剪，避免 Material 的不透明背景溢出圆角。
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: Material(
-          color: colors.surface,
-          child: Padding(padding: padding, child: child),
-        ),
-      ),
-    );
-  }
-}

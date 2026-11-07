@@ -9,9 +9,7 @@ import '../providers/book_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../providers/mod_provider.dart';
 import '../providers/world_book_provider.dart';
-import '../theme/app_theme.dart';
 import '../utils/constants.dart';
-import '../utils/focus_utils.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_mod_panel.dart';
 import '../widgets/book_other_settings_panel.dart';
@@ -20,6 +18,7 @@ import '../widgets/history_round_stepper.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/memory_summary_round_selector.dart';
 import '../widgets/prompt_input_hint.dart';
+import '../widgets/settings/settings_kit.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/uuid_display.dart';
 import '../widgets/world_book_panel.dart';
@@ -374,24 +373,10 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   }
 
   Widget _sectionHeader(String title, String subtitle) {
-    final colors = context.narrColors;
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          title,
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: colors.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          subtitle,
-          style: TextStyle(fontSize: 12, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 6),
+        SettingsPageHeader(title: title, description: subtitle),
         // 各页统一提示：本页填写的内容会注入提示词，避免使用 #/##。
         const PromptInputHint(),
         const SizedBox(height: 20),
@@ -399,21 +384,18 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     );
   }
 
-  Widget _multiline(TextEditingController controller, String label,
-      {String hint = ''}) {
-    return TextField(
+  /// 多行文本输入（统一使用 SettingsTextField，支持 MarkdownEditingController）。
+  Widget _multiline(
+    TextEditingController controller,
+    String label, {
+    String hint = '',
+  }) {
+    return SettingsTextField(
       controller: controller,
-      onTapOutside: unfocusOnTapOutside,
-      maxLines: null,
+      label: label,
+      hint: hint.isEmpty ? null : hint,
       minLines: 4,
-      keyboardType: TextInputType.multiline,
-      style: const TextStyle(fontSize: 13, height: 1.4),
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        border: const OutlineInputBorder(),
-        isDense: true,
-      ),
+      maxLines: null,
     );
   }
 
@@ -426,26 +408,16 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           '书籍概览',
           '书籍基本信息与对话行为配置。',
         ),
-        TextField(
+        SettingsTextField(
           controller: _title,
-          onTapOutside: unfocusOnTapOutside,
-          decoration: const InputDecoration(
-            labelText: '书籍标题 *',
-            hintText: '如：玄幻后宫',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
+          label: '书籍标题 *',
+          hint: '如：玄幻后宫',
         ),
         const SizedBox(height: 12),
-        TextField(
+        SettingsTextField(
           controller: _category,
-          onTapOutside: unfocusOnTapOutside,
-          decoration: const InputDecoration(
-            labelText: '书籍总类别',
-            hintText: '如：玄幻、都市、悬疑',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
+          label: '书籍总类别',
+          hint: '如：玄幻、都市、悬疑',
         ),
         const SizedBox(height: 8),
         UuidDisplay(label: '书籍 UUID', uuid: _book?.uuid ?? ''),

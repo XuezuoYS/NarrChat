@@ -185,6 +185,28 @@ void main() {
     expect(provider.reduceReasoningReplay, isFalse);
   });
 
+  testWidgets('精简思考回传：点副标题整行切换（不必点开关）', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final provider = ExperimentalSettingsProvider();
+    await tester.pumpWidget(buildApp(1000, experimental: provider));
+    await tester.pump();
+
+    final toggle =
+        find.byKey(const ValueKey('experimental_reduce_reasoning_switch'));
+    await tester.ensureVisible(find.text('精简思考回传'));
+    await tester.pumpAndSettle();
+    expect(provider.reduceReasoningReplay, isFalse);
+
+    // 点击说明文字（离右侧开关很远）也能切换整行。
+    await tester.tap(find.textContaining('只保留首段与末段'));
+    await tester.pumpAndSettle();
+
+    expect(provider.reduceReasoningReplay, isTrue);
+    expect(tester.widget<Switch>(toggle).value, isTrue);
+  });
+
   testWidgets('Agent 模式简介简要概括：托管范围、指示器限制与破坏性变更声明', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));

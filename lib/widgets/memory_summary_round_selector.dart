@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/book.dart';
+import 'settings/settings_kit.dart';
 
 /// 「记忆总结轮次合并」档位选择器：0（不开启）/ 5 / 10。
 ///
@@ -38,17 +39,16 @@ class MemorySummaryRoundSelector extends StatelessWidget {
       children: [
         const Text(label, style: TextStyle(fontSize: 14)),
         const SizedBox(height: 6),
-        SegmentedButton<int>(
-          segments: [
+        SettingsSegmented<int>(
+          value: Book.normalizeMemorySummaryRounds(value),
+          options: [
             for (final tier in Book.memorySummaryRoundTiers)
-              ButtonSegment<int>(
+              SettingsSegment<int>(
                 value: tier,
-                label: Text(tierText(tier)),
+                label: tierText(tier),
               ),
           ],
-          selected: {Book.normalizeMemorySummaryRounds(value)},
-          showSelectedIcon: false,
-          onSelectionChanged: (selection) => onChanged(selection.first),
+          onChanged: onChanged,
         ),
         const SizedBox(height: 6),
         Text(

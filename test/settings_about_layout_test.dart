@@ -5,6 +5,7 @@ import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/settings_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/brand_logo.dart';
+import 'package:narrchat/widgets/settings/settings_kit.dart';
 import 'package:provider/provider.dart';
 
 /// 宽屏下「关于」面板的排版回归测试。
@@ -51,31 +52,25 @@ void main() {
     expect(logo.center.dx, closeTo(scroll.center.dx, 0.5));
 
     // 纵向不做垂直居中：信息卡顶边落在滚动区顶部 + 24 内边距处。
-    final cardTop = tester
-        .getRect(
-          find
-              .ancestor(
-                of: find.byType(BrandLogo),
-                matching: find.byType(Container),
-              )
-              .first,
-        )
-        .top;
+    final infoCard = find.ancestor(
+      of: find.byType(BrandLogo),
+      matching: find.byType(SettingsCard),
+    );
+    expect(infoCard, findsOneWidget, reason: '信息卡已迁移到统一 SettingsCard');
+    final cardTop = tester.getRect(infoCard).top;
     expect(cardTop, closeTo(scroll.top + 24, 0.5));
   });
 
   testWidgets('宽屏：关于面板信息卡限宽 400（不撑满靠左骨架的 860）', (tester) async {
     await openAboutWide(tester);
 
-    // 品牌图标所在的信息卡容器（width: double.infinity）撑满内容列，
-    // 其实测宽度即内容列限宽 400（而非靠左面板的 860）。
+    // 品牌图标所在的信息卡撑满内容列，其实测宽度即内容列限宽 400
+    // （而非靠左面板的 860）。
     final card = tester.getRect(
-      find
-          .ancestor(
-            of: find.byType(BrandLogo),
-            matching: find.byType(Container),
-          )
-          .first,
+      find.ancestor(
+        of: find.byType(BrandLogo),
+        matching: find.byType(SettingsCard),
+      ),
     );
     expect(card.width, closeTo(400, 0.5));
   });

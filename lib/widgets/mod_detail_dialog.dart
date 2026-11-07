@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../models/mod.dart';
 import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
 import 'prompt_input_hint.dart';
+import 'settings/settings_kit.dart';
 import 'uuid_display.dart';
 
 /// 打开 Mod 详情对话框（新建 / 编辑 / 只读查看共用）。
@@ -112,19 +112,13 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
   }
 
   Widget _multiline(TextEditingController controller, String hint) {
-    return TextField(
+    return SettingsTextField(
       controller: controller,
-      onTapOutside: unfocusOnTapOutside,
+      hint: hint,
       readOnly: _readOnly,
-      maxLines: null,
       minLines: 6,
-      keyboardType: TextInputType.multiline,
+      maxLines: null,
       style: const TextStyle(fontSize: 13, height: 1.5),
-      decoration: InputDecoration(
-        hintText: hint,
-        border: const OutlineInputBorder(),
-        isDense: true,
-      ),
     );
   }
 
@@ -188,30 +182,20 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                TextField(
+                                SettingsTextField(
                                   controller: _name,
-                                  onTapOutside: unfocusOnTapOutside,
+                                  label: '名称 *（仅用于辨识，不发送给 AI）',
+                                  hint: '如：文笔润色',
                                   readOnly: _readOnly,
-                                  decoration: const InputDecoration(
-                                    labelText: '名称 *（仅用于辨识，不发送给 AI）',
-                                    hintText: '如：文笔润色',
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                  ),
                                 ),
                                 const SizedBox(height: 12),
-                                TextField(
+                                SettingsTextField(
                                   controller: _description,
-                                  onTapOutside: unfocusOnTapOutside,
+                                  label: '简介（仅用于辨识，不发送给 AI）',
+                                  hint: '简要说明这个 Mod 的作用',
                                   readOnly: _readOnly,
-                                  maxLines: 3,
                                   minLines: 2,
-                                  decoration: const InputDecoration(
-                                    labelText: '简介（仅用于辨识，不发送给 AI）',
-                                    hintText: '简要说明这个 Mod 的作用',
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                  ),
+                                  maxLines: 3,
                                 ),
                                 const SizedBox(height: 8),
                                 UuidDisplay(
@@ -468,30 +452,20 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _keyword,
-              onTapOutside: unfocusOnTapOutside,
+              label: '触发关键词',
+              hint: '多个关键词用逗号/顿号分隔；留空则恒定生效',
               readOnly: widget.readOnly,
-              decoration: const InputDecoration(
-                labelText: '触发关键词',
-                hintText: '多个关键词用逗号/顿号分隔；留空则恒定生效',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _content,
-              onTapOutside: unfocusOnTapOutside,
+              label: '注入内容',
+              hint: '命中关键词后写入 System Prompt',
               readOnly: widget.readOnly,
               minLines: 4,
               maxLines: 8,
-              decoration: const InputDecoration(
-                labelText: '注入内容',
-                hintText: '命中关键词后写入 System Prompt',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
           ],
         ),

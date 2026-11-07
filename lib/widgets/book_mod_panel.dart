@@ -4,13 +4,13 @@ import 'package:provider/provider.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import '../utils/pinyin_sort.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
+import 'settings/settings_kit.dart';
 import 'type_badge.dart';
 
 /// 书籍设置页的「Mod 管理」面板。
@@ -225,65 +225,43 @@ class _BookModPanelState extends State<BookModPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Mod 管理',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: context.narrColors.textPrimary,
-          ),
+        const SettingsPageHeader(
+          title: 'Mod 管理',
+          description:
+              '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。',
-          style: TextStyle(
-            fontSize: 12,
-            color: context.narrColors.textSecondary,
-            height: 1.5,
-          ),
-        ),
-        const SizedBox(height: 12),
-        SegmentedButton<_BookModsTab>(
-          segments: [
-            ButtonSegment(
-              value: _BookModsTab.enabled,
-              icon: const Icon(Icons.check_circle_outline, size: 16),
-              label: Text('已启用（${_enabled.length}）'),
-            ),
-            ButtonSegment(
-              value: _BookModsTab.disabled,
-              icon: const Icon(Icons.remove_circle_outline, size: 16),
-              label: Text('未启用（${_disabled.length}）'),
-            ),
-          ],
-          selected: {_tab},
-          onSelectionChanged: (s) => setState(() => _tab = s.first),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _searchController,
-          onChanged: (v) => setState(() => _searchQuery = v),
-          onTapOutside: unfocusOnTapOutside,
-          decoration: InputDecoration(
-            hintText: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
-            prefixIcon: const Icon(Icons.search, size: 18),
-            suffixIcon: _searchQuery.isEmpty
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    tooltip: '清空搜索',
-                    onPressed: () {
-                      _searchController.clear();
-                      setState(() => _searchQuery = '');
-                    },
+        SettingsCard(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SettingsSegmented<_BookModsTab>(
+                value: _tab,
+                options: [
+                  SettingsSegment(
+                    value: _BookModsTab.enabled,
+                    label: '已启用（${_enabled.length}）',
+                    icon: Icons.check_circle_outline,
                   ),
-            isDense: true,
-            filled: true,
-            fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide.none,
-            ),
+                  SettingsSegment(
+                    value: _BookModsTab.disabled,
+                    label: '未启用（${_disabled.length}）',
+                    icon: Icons.remove_circle_outline,
+                  ),
+                ],
+                onChanged: (tab) => setState(() => _tab = tab),
+              ),
+              const SizedBox(height: 12),
+              SettingsSearchField(
+                controller: _searchController,
+                hint: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
+                onChanged: (v) => setState(() => _searchQuery = v),
+                onClear: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
+                },
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
@@ -466,7 +444,7 @@ class _BookModTile extends StatelessWidget {
         color: config.isEnabled
             ? theme.colorScheme.surfaceContainerLow
             : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
         border: Border.all(
           color: config.isEnabled
               ? theme.colorScheme.outlineVariant
@@ -476,7 +454,7 @@ class _BookModTile extends StatelessWidget {
       // 条目主体可点击预览；开关与拖动柄各自处理手势，不会误触预览。
       child: Material(
         type: MaterialType.transparency,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onPreview,

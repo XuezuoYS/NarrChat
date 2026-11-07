@@ -5,9 +5,9 @@ import '../config/ai_platforms.dart';
 import '../models/ai_platform.dart';
 import '../models/api_type.dart';
 import '../services/model_discovery_service.dart';
-import '../utils/focus_utils.dart';
-import 'app_menu.dart';
+import '../theme/app_theme.dart';
 import 'app_notice_overlay.dart';
+import 'settings/settings_kit.dart';
 import 'settings_form_state.dart';
 
 /// 「API 设置」设置面板。
@@ -120,131 +120,100 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'API 设置',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              const SettingsPageHeader(
+                title: 'API 设置',
+                description:
+                    '按「平台 → 模型」组织：展开平台查看其连接设置与模型列表；'
+                    '软件内置预置的平台标注「内置默认」，可整平台重置为预置'
+                    '（自定义平台不受影响）。本页不选择对话所用的模型。',
               ),
-              const SizedBox(height: 4),
-              Text(
-                '按「平台 → 模型」组织：展开平台查看其连接设置与模型列表；'
-                '软件内置预置的平台标注「内置默认」，可整平台重置为预置'
-                '（自定义平台不受影响）。本页不选择对话所用的模型。',
-                style: TextStyle(fontSize: 12, color: onSurfaceVariant),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '图片设置',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '单张图片大小上限（超过将提示文件过大）',
-                      style: TextStyle(fontSize: 14),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 96,
-                    child: TextFormField(
-                      initialValue: '${_form.maxImageSizeMB}',
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                      ],
-                      onChanged: (v) {
-                        final n = int.tryParse(v);
-                        if (n != null) _form.setMaxImageSizeMB(n);
-                      },
-                      decoration: const InputDecoration(
-                        hintText: '16',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                        suffixText: 'MB',
-                        counterText: '',
+              SettingsSection(
+                icon: Icons.image_outlined,
+                title: '图片设置',
+                child: SettingsCard(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SettingsRow(
+                        title: '单张图片大小上限（超过将提示文件过大）',
+                        trailing: SizedBox(
+                          width: 96,
+                          child: _MaxImageSizeField(form: _form),
+                        ),
                       ),
+                      SettingsSwitchRow(
+                        title: '自动将 .jpg 转换为 .jpeg',
+                        subtitle: '部分识图模型不支持 jpg，因此提供此选项进行格式转换',
+                        value: _form.convertJpgToJpeg,
+                        switchKey: const ValueKey(
+                          'ai_settings_convert_jpg_switch',
+                        ),
+                        onChanged: _form.setConvertJpgToJpeg,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SettingsSection(
+                icon: Icons.smart_toy_outlined,
+                title: '模型设置',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // 预置分层状态：默认态明确提示"当前为内置预置"，自定义态提示可重置。
+                    Row(
+                      children: [
+                        Icon(
+                          _form.usesBuiltinPlatforms
+                              ? Icons.verified_outlined
+                              : Icons.edit_outlined,
+                          size: 15,
+                          color: onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            _form.usesBuiltinPlatforms
+                                ? '当前为软件内置预置配置（未自定义模型）'
+                                : '已自定义模型配置：内置预置平台可整平台重置为预置',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                title: const Text(
-                  '自动将 .jpg 转换为 .jpeg',
-                  style: TextStyle(fontSize: 14),
-                ),
-                subtitle: Text(
-                  '部分识图模型不支持 jpg，因此提供此选项进行格式转换',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                value: _form.convertJpgToJpeg,
-                onChanged: _form.setConvertJpgToJpeg,
-              ),
-              const SizedBox(height: 20),
-              Text(
-                '模型设置',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
-              const SizedBox(height: 6),
-              // 预置分层状态：默认态明确提示"当前为内置预置"，自定义态提示可重置。
-              Row(
-                children: [
-                  Icon(
-                    _form.usesBuiltinPlatforms
-                        ? Icons.verified_outlined
-                        : Icons.edit_outlined,
-                    size: 15,
-                    color: onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _form.usesBuiltinPlatforms
-                          ? '当前为软件内置预置配置（未自定义模型）'
-                          : '已自定义模型配置：内置预置平台可整平台重置为预置',
-                      style: TextStyle(fontSize: 12, color: onSurfaceVariant),
+                    const SizedBox(height: 8),
+                    for (var i = 0; i < platforms.length; i++)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _PlatformExpandableItem(
+                          key: ValueKey('platform-${platforms[i].id}'),
+                          form: _form,
+                          platform: platforms[i],
+                          discoveryService: widget.discoveryService,
+                          // 默认展开第一个平台（通常为内置预置），便于直接看到其设置。
+                          initiallyExpanded: i == 0,
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+                    // 被删除的内置预置平台：一键恢复（二次确认）。
+                    for (final preset in missingPresets) ...[
+                      OutlinedButton.icon(
+                        onPressed: () => _confirmRestorePresetPlatform(preset),
+                        icon: const Icon(Icons.restore, size: 18),
+                        label: Text('恢复内置平台「${preset.displayName}」'),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    OutlinedButton.icon(
+                      onPressed: _addPlatform,
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('添加自定义平台'),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              for (var i = 0; i < platforms.length; i++)
-                _PlatformExpandableItem(
-                  key: ValueKey('platform-${platforms[i].id}'),
-                  form: _form,
-                  platform: platforms[i],
-                  discoveryService: widget.discoveryService,
-                  // 默认展开第一个平台（通常为内置预置），便于直接看到其设置。
-                  initiallyExpanded: i == 0,
+                  ],
                 ),
-              const SizedBox(height: 12),
-              // 被删除的内置预置平台：一键恢复（二次确认）。
-              for (final preset in missingPresets) ...[
-                OutlinedButton.icon(
-                  onPressed: () => _confirmRestorePresetPlatform(preset),
-                  icon: const Icon(Icons.restore, size: 18),
-                  label: Text('恢复内置平台「${preset.displayName}」'),
-                ),
-                const SizedBox(height: 8),
-              ],
-              OutlinedButton.icon(
-                onPressed: _addPlatform,
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('添加自定义平台'),
               ),
             ],
           ),
@@ -255,73 +224,47 @@ class _AiSettingsFormState extends State<AiSettingsForm> {
 }
 
 // ---------------------------------------------------------------------------
-// 通用可展开卡片：模型名/平台名 header + 展开箭头 + 可展开内容（带左侧竖线引导）
+// 图片大小上限输入：行尾 96 宽的数字框（自带控制器，避免面板重建时丢输入）
 // ---------------------------------------------------------------------------
-class ExpandableCard extends StatefulWidget {
-  final Widget title;
+class _MaxImageSizeField extends StatefulWidget {
+  final SettingsFormState form;
 
-  /// 展开后显示的内容。
-  final Widget child;
-
-  /// 是否默认展开。
-  final bool initiallyExpanded;
-
-  const ExpandableCard({
-    super.key,
-    required this.title,
-    required this.child,
-    this.initiallyExpanded = false,
-  });
+  const _MaxImageSizeField({required this.form});
 
   @override
-  State<ExpandableCard> createState() => _ExpandableCardState();
+  State<_MaxImageSizeField> createState() => _MaxImageSizeFieldState();
 }
 
-class _ExpandableCardState extends State<ExpandableCard> {
-  late bool _expanded = widget.initiallyExpanded;
+class _MaxImageSizeFieldState extends State<_MaxImageSizeField> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(
+      text: '${widget.form.maxImageSizeMB}',
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final outlineVariant = Theme.of(context).colorScheme.outlineVariant;
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      elevation: 0,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: outlineVariant),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-              child: Row(
-                children: [
-                  Expanded(child: widget.title),
-                  Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_expanded)
-            Container(
-              // 左侧竖线引导，模拟「| 设置项……」的缩进层级。
-              decoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(color: outlineVariant, width: 2),
-                ),
-              ),
-              padding: const EdgeInsets.fromLTRB(16, 8, 12, 12),
-              child: widget.child,
-            ),
-        ],
-      ),
+    return SettingsTextField(
+      controller: _controller,
+      hint: '16',
+      keyboardType: TextInputType.number,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      counterText: '',
+      suffixText: 'MB',
+      onChanged: (v) {
+        final n = int.tryParse(v);
+        if (n != null) widget.form.setMaxImageSizeMB(n);
+      },
     );
   }
 }
@@ -365,7 +308,9 @@ class _PlatformExpandableItem extends StatelessWidget {
     final onSurfaceVariant = Theme.of(context).colorScheme.onSurfaceVariant;
     // 仅「预置平台且已被改动」时才提供重置入口（其余情况无可重置内容）。
     final canReset = _isPreset && !form.platformUnchanged(platform);
-    return ExpandableCard(
+    return SettingsExpandableCard(
+      radius: NarrChatTheme.cardRadius,
+      showGuideLine: true,
       initiallyExpanded: initiallyExpanded,
       title: Row(
         children: [
@@ -406,11 +351,14 @@ class _PlatformExpandableItem extends StatelessWidget {
             )
           else
             for (final m in platform.models)
-              _ModelExpandableItem(
-                key: ValueKey('model-${platform.id}-${m.id}'),
-                form: form,
-                platform: platform,
-                model: m,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _ModelExpandableItem(
+                  key: ValueKey('model-${platform.id}-${m.id}'),
+                  form: form,
+                  platform: platform,
+                  model: m,
+                ),
               ),
           const SizedBox(height: 8),
           // 自定义平台且协议支持查询模型列表时，「获取可用模型」与「添加模型」并列；
@@ -551,19 +499,14 @@ class _PlatformSettings extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TextField(
+        SettingsTextField(
           controller: form.nameCtrlFor(platform.id),
-          onTapOutside: unfocusOnTapOutside,
+          label: '平台名称',
+          hint: '如 我的网关',
           onChanged: (v) => form.setPlatformName(platform.id, v),
-          decoration: const InputDecoration(
-            labelText: '平台名称',
-            hintText: '如 我的网关',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
         ),
         const SizedBox(height: 12),
-        AppDropdown<String>(
+        SettingsDropdownField<String>(
           label: 'API 类型',
           value: platform.apiType.id,
           items: [
@@ -577,58 +520,19 @@ class _PlatformSettings extends StatelessWidget {
           },
         ),
         const SizedBox(height: 12),
-        TextField(
+        SettingsTextField(
           controller: form.baseUrlCtrlFor(platform.id),
-          onTapOutside: unfocusOnTapOutside,
+          label: 'Base URL',
+          hint: 'https://api.deepseek.com',
           onChanged: (v) => form.setPlatformBaseUrl(platform.id, v),
-          decoration: const InputDecoration(
-            labelText: 'Base URL',
-            hintText: 'https://api.deepseek.com',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
         ),
         const SizedBox(height: 12),
-        _ApiKeyField(controller: form.apiKeyCtrlFor(platform.id)),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// API Key 输入框（自行管理明文/隐藏，独立可复用）
-// ---------------------------------------------------------------------------
-class _ApiKeyField extends StatefulWidget {
-  final TextEditingController controller;
-
-  const _ApiKeyField({required this.controller});
-
-  @override
-  State<_ApiKeyField> createState() => _ApiKeyFieldState();
-}
-
-class _ApiKeyFieldState extends State<_ApiKeyField> {
-  bool _obscured = true;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: widget.controller,
-      onTapOutside: unfocusOnTapOutside,
-      obscureText: _obscured,
-      enableSuggestions: false,
-      autocorrect: false,
-      decoration: InputDecoration(
-        labelText: 'API Key',
-        hintText: 'sk-…（保存至系统安全存储）',
-        border: const OutlineInputBorder(),
-        isDense: true,
-        suffixIcon: IconButton(
-          icon: Icon(_obscured ? Icons.visibility_off : Icons.visibility),
-          tooltip: _obscured ? '显示' : '隐藏',
-          onPressed: () => setState(() => _obscured = !_obscured),
+        SettingsSecretField(
+          controller: form.apiKeyCtrlFor(platform.id),
+          label: 'API Key',
+          hint: 'sk-…（保存至系统安全存储）',
         ),
-      ),
+      ],
     );
   }
 }
@@ -652,7 +556,8 @@ class _ModelExpandableItem extends StatelessWidget {
   Widget build(BuildContext context) {
     // 每个平台至少保留一个模型；预置平台上用户自建的模型同样可删。
     final canDelete = platform.models.length > 1;
-    return ExpandableCard(
+    return SettingsExpandableCard(
+      showGuideLine: true,
       title: Row(
         children: [
           Expanded(
@@ -700,7 +605,7 @@ class _ModelExpandableItem extends StatelessWidget {
       ),
       child: _ModelSettingsEditor(
         // 平台重置后按 key 重建：模型编辑器自带文本控制器，需重建以丢弃旧文本
-        // （卡片自身的展开状态由 ExpandableCard 持有，不受影响）。
+        // （卡片自身的展开状态由 SettingsExpandableCard 持有，不受影响）。
         key: ValueKey(
           'model-editor-${platform.id}-${model.id}-${form.resetRevision}',
         ),
@@ -872,40 +777,14 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
   ];
 
   /// 一个可调配功能的标签：已启用为主色浅底勾选态，未启用为描边空心态；
-  /// 点击即在「已启用 / 未启用」两栏之间移动。
+  /// 点击即在「已启用 / 未启用」两栏之间移动（内部仍为 [ChoiceChip]）。
   Widget _capabilityChip(AiModel model, _Capability capability) {
     final enabled = capability.isOn(model);
-    final scheme = Theme.of(context).colorScheme;
-    return Tooltip(
-      message: enabled ? '点击禁用' : '点击启用',
-      child: ChoiceChip(
-        selected: enabled,
-        showCheckmark: false,
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        avatar: Icon(
-          enabled ? Icons.check : Icons.add,
-          size: 16,
-          color: enabled ? scheme.primary : scheme.outline,
-        ),
-        label: Text(
-          capability.label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: enabled ? FontWeight.w600 : FontWeight.w400,
-            color: enabled ? scheme.primary : scheme.onSurfaceVariant,
-          ),
-        ),
-        selectedColor: scheme.primary.withValues(alpha: 0.12),
-        backgroundColor: Colors.transparent,
-        side: BorderSide(
-          color: enabled
-              ? scheme.primary.withValues(alpha: 0.4)
-              : scheme.outlineVariant,
-        ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-        onSelected: (_) => _update((m) => capability.setEnabled(m, !enabled)),
-      ),
+    return SettingsToggleChip(
+      label: capability.label,
+      selected: enabled,
+      tooltip: enabled ? '点击禁用' : '点击启用',
+      onTap: () => _update((m) => capability.setEnabled(m, !enabled)),
     );
   }
 
@@ -967,16 +846,11 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TextField(
+        SettingsTextField(
           controller: _shortLabelCtrl,
-          onTapOutside: unfocusOnTapOutside,
+          label: '简写标识（对话框显示，留空用模型名）',
+          hint: '如 V4F',
           onChanged: (v) => _update((m) => m.copyWith(shortLabel: v)),
-          decoration: const InputDecoration(
-            labelText: '简写标识（对话框显示，留空用模型名）',
-            hintText: '如 V4F',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
         ),
         const SizedBox(height: 4),
         Text(
@@ -1041,18 +915,13 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
                 style: TextStyle(fontSize: 11, color: outline),
               )
             else
-              TextField(
+              SettingsTextField(
                 controller: _optionsCtrl,
-                onTapOutside: unfocusOnTapOutside,
+                label: '可选强度值（逗号分隔，留空用默认）',
+                hint: 'low, high, max',
                 onChanged: _onOptionsChanged,
                 // 中文逗号即时转英文逗号，避免用户误用全角分隔符。
                 inputFormatters: [_commaToHalfWidth],
-                decoration: const InputDecoration(
-                  labelText: '可选强度值（逗号分隔，留空用默认）',
-                  hintText: 'low, high, max',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
               ),
             Padding(
               padding: const EdgeInsets.only(top: 4, left: 4),
@@ -1073,18 +942,13 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _maxTokensCtrl,
-              onTapOutside: unfocusOnTapOutside,
+              label: '最大输出 Tokens（留空自动）',
+              hint: '如 4096',
               keyboardType: TextInputType.number,
               onChanged: (v) => _update(
                 (m) => m.copyWith(maxTokens: int.tryParse(v.trim())),
-              ),
-              decoration: const InputDecoration(
-                labelText: '最大输出 Tokens（留空自动）',
-                hintText: '如 4096',
-                border: OutlineInputBorder(),
-                isDense: true,
               ),
             ),
             if (apiType.maxTokensNote != null)
@@ -1163,19 +1027,15 @@ class _AddPlatformDialogState extends State<_AddPlatformDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _nameCtrl,
+              label: '平台名称',
+              hint: '如 我的网关',
               autofocus: true,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: '平台名称',
-                hintText: '如 我的网关',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 12),
-            AppDropdown<String>(
+            SettingsDropdownField<String>(
               label: 'API 类型',
               value: _apiType,
               items: [
@@ -1186,28 +1046,18 @@ class _AddPlatformDialogState extends State<_AddPlatformDialog> {
                   setState(() => _apiType = v ?? ApiType.openAiCompatibleId),
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _baseUrlCtrl,
+              label: 'Base URL',
+              hint: 'https://…/v1',
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: 'Base URL',
-                hintText: 'https://…/v1',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _apiKeyCtrl,
+              label: 'API Key',
+              hint: 'sk-…（保存至系统安全存储）',
               obscureText: true,
-              enableSuggestions: false,
-              autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'API Key',
-                hintText: 'sk-…（保存至系统安全存储）',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
           ],
         ),
@@ -1271,27 +1121,19 @@ class _AddModelDialogState extends State<_AddModelDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _idCtrl,
+              label: '模型名（发往 API）',
+              hint: '如 gpt-4o-mini',
               autofocus: true,
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: '模型名（发往 API）',
-                hintText: '如 gpt-4o-mini',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _labelCtrl,
+              label: '简写标识（可选）',
+              hint: '留空用模型名',
               onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: '简写标识（可选）',
-                hintText: '留空用模型名',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
           ],
         ),
@@ -1537,23 +1379,13 @@ class _ImportCandidateTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final details = _details();
-    return CheckboxListTile(
+    return SettingsCheckboxRow(
+      title: model.id,
+      subtitle: details,
       value: picked,
-      onChanged: (value) => onChanged(value ?? false),
-      dense: true,
-      controlAffinity: ListTileControlAffinity.leading,
-      contentPadding: EdgeInsets.zero,
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              model.id,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (overwrite)
-            Container(
+      onChanged: onChanged,
+      trailing: overwrite
+          ? Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: scheme.error.withValues(alpha: 0.1),
@@ -1563,15 +1395,8 @@ class _ImportCandidateTile extends StatelessWidget {
                 '将覆盖',
                 style: TextStyle(fontSize: 10, color: scheme.error),
               ),
-            ),
-        ],
-      ),
-      subtitle: details == null
-          ? null
-          : Text(
-              details,
-              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-            ),
+            )
+          : null,
     );
   }
 

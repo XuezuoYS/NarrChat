@@ -8,13 +8,13 @@ import '../models/app_notice.dart';
 import '../models/mod.dart';
 import '../providers/mod_provider.dart';
 import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
 import 'markdown_preview.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
+import 'settings/settings_kit.dart';
 import 'type_badge.dart';
 
 /// 全局设置页的「Mod 管理」面板。
@@ -157,7 +157,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: ctx.narrColors.background,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
                   border: Border.all(color: ctx.narrColors.divider),
                 ),
                 child: SingleChildScrollView(
@@ -206,16 +206,12 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
         title: const Text('导入 Mod'),
         content: SizedBox(
           width: 520,
-          child: TextField(
+          child: SettingsTextField(
             controller: controller,
-            onTapOutside: unfocusOnTapOutside,
-            maxLines: 10,
+            hint: '粘贴导出的 JSON 文本（支持单个对象或多个对象的数组）',
             minLines: 6,
+            maxLines: 10,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            decoration: const InputDecoration(
-              hintText: '粘贴导出的 JSON 文本（支持单个对象或多个对象的数组）',
-              border: OutlineInputBorder(),
-            ),
           ),
         ),
         actions: [
@@ -301,65 +297,43 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Mod 管理',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: context.narrColors.textPrimary,
-          ),
+        const SettingsPageHeader(
+          title: 'Mod 管理',
+          description:
+              'Mod 是对前置词、后置词、系统提示词与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          'Mod 是对前置词、后置词、系统提示词与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
-          style: TextStyle(
-            fontSize: 12,
-            color: context.narrColors.textSecondary,
-            height: 1.5,
-          ),
-        ),
-        const SizedBox(height: 16),
-        SegmentedButton<_ModsTab>(
-          segments: [
-            ButtonSegment(
-              value: _ModsTab.preset,
-              icon: const Icon(Icons.extension_outlined, size: 16),
-              label: Text('预置 Mod（${provider.presetMods.length}）'),
-            ),
-            ButtonSegment(
-              value: _ModsTab.mine,
-              icon: const Icon(Icons.person_outline, size: 16),
-              label: Text('我的 Mod（${provider.userMods.length}）'),
-            ),
-          ],
-          selected: {_tab},
-          onSelectionChanged: (s) => setState(() => _tab = s.first),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _searchController,
-          onChanged: (v) => setState(() => _searchQuery = v),
-          onTapOutside: unfocusOnTapOutside,
-          decoration: InputDecoration(
-            hintText: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
-            prefixIcon: const Icon(Icons.search, size: 18),
-            suffixIcon: _searchQuery.isEmpty
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    tooltip: '清空搜索',
-                    onPressed: () {
-                      _searchController.clear();
-                      setState(() => _searchQuery = '');
-                    },
+        SettingsCard(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SettingsSegmented<_ModsTab>(
+                value: _tab,
+                options: [
+                  SettingsSegment(
+                    value: _ModsTab.preset,
+                    label: '预置 Mod（${provider.presetMods.length}）',
+                    icon: Icons.extension_outlined,
                   ),
-            isDense: true,
-            filled: true,
-            fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide.none,
-            ),
+                  SettingsSegment(
+                    value: _ModsTab.mine,
+                    label: '我的 Mod（${provider.userMods.length}）',
+                    icon: Icons.person_outline,
+                  ),
+                ],
+                onChanged: (tab) => setState(() => _tab = tab),
+              ),
+              const SizedBox(height: 12),
+              SettingsSearchField(
+                controller: _searchController,
+                hint: '搜索 Mod（名称 / 简介，空格分隔多关键词）',
+                onChanged: (v) => setState(() => _searchQuery = v),
+                onClear: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
+                },
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
@@ -491,7 +465,7 @@ class _ModTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
       // 窄屏（竖版）时操作按钮独立成行，标题与简介独占整行，避免被挤压。

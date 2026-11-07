@@ -7,9 +7,9 @@ import '../models/app_notice.dart';
 import '../screens/image_gallery_page.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import '../utils/formats.dart';
 import 'app_notice_overlay.dart';
+import 'settings/settings_kit.dart';
 
 /// 设置页「存储管理」面板（R3 多库视角）。
 ///
@@ -302,41 +302,34 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.narrColors;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          '存储管理',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        const SettingsPageHeader(
+          title: '存储管理',
+          description:
+              '3.0 起数据按「一个库一个文件」存放：书籍目录、Mod、每本书各一个库，'
+              '图片单独存放。导出会把整组打成 zip，导入会整组替换并先备份。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          '3.0 起数据按「一个库一个文件」存放：书籍目录、Mod、每本书各一个库，'
-          '图片单独存放。导出会把整组打成 zip，导入会整组替换并先备份。',
-          style: TextStyle(fontSize: 12, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 20),
-        _SectionHeader(
+        SettingsSection(
           icon: Icons.storage_outlined,
           title: '本地数据',
           subtitle: '逐库占用；导出/导入针对整组用户数据。',
+          child: SettingsCard(
+            padding: const EdgeInsets.all(14),
+            color: context.narrColors.background,
+            child: _overviewLoading
+                ? const LinearProgressIndicator(minHeight: 2)
+                : _buildOverview(context),
+          ),
         ),
-        const SizedBox(height: 12),
-        _Card(
-          child: _overviewLoading
-              ? const LinearProgressIndicator(minHeight: 2)
-              : _buildOverview(context),
-        ),
-        const SizedBox(height: 24),
-        _SectionHeader(
+        SettingsSection(
           icon: Icons.photo_library_outlined,
           title: '图片库',
           subtitle: '按修改时间浏览、查看与清理；删除会同步到云端与其它设备。',
+          child: _buildImageEntry(context),
         ),
-        const SizedBox(height: 12),
-        _buildImageEntry(context),
       ],
     );
   }
@@ -457,14 +450,14 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           width: 72,
           child: Text(
             label,
-            style: TextStyle(fontSize: 11, color: colors.textSecondary),
+            style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
           ),
         ),
         Expanded(
           child: Text(
             value,
             style: TextStyle(
-              fontSize: emphasize ? 12 : 11,
+              fontSize: 12,
               fontWeight: emphasize ? FontWeight.w600 : FontWeight.w400,
               color: colors.textPrimary,
             ),
@@ -484,98 +477,14 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
             ? '暂无图片'
             : '共 ${images.length} 张 · 合计 ${Formats.formatBytes(total)}';
 
-    return Material(
+    return SettingsCard(
+      radius: NarrChatTheme.controlRadius,
       color: colors.background,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: colors.divider),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+      child: SettingsLinkRow(
+        icon: Icons.photo_library_outlined,
+        title: summary,
         onTap: _openGallery,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-          child: Row(
-            children: [
-              Icon(
-                Icons.photo_library_outlined,
-                size: 20,
-                color: colors.textSecondary,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  summary,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13, color: colors.textPrimary),
-                ),
-              ),
-              Icon(Icons.chevron_right, size: 20, color: colors.textSecondary),
-            ],
-          ),
-        ),
       ),
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: NarrChatTheme.primary),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: colors.textPrimary,
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            subtitle,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11, color: colors.textSecondary),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// 通用卡片容器。
-class _Card extends StatelessWidget {
-  final Widget child;
-
-  const _Card({required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.divider),
-      ),
-      child: child,
     );
   }
 }
@@ -616,16 +525,11 @@ class _FileNameDialogState extends State<_FileNameDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextField(
+          SettingsTextField(
             controller: _controller,
-            onTapOutside: unfocusOnTapOutside,
+            label: '文件名',
+            hint: widget.hint,
             autofocus: true,
-            decoration: InputDecoration(
-              labelText: '文件名',
-              hintText: widget.hint,
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
           ),
           const SizedBox(height: 8),
           Text(

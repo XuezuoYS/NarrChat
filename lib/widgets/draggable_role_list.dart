@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../models/role_category.dart';
-import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
+import 'settings/settings_kit.dart';
 
 /// 可拖拽排序的角色类别列表。
 ///
@@ -220,28 +220,18 @@ class _RoleCategoryDialogState extends State<_RoleCategoryDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _name,
-              onTapOutside: unfocusOnTapOutside,
-              decoration: const InputDecoration(
-                labelText: '类别名称',
-                hintText: '如：女主角',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
+              label: '类别名称',
+              hint: '如：女主角',
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _format,
-              onTapOutside: unfocusOnTapOutside,
+              label: '详细描述格式（每行一个属性项）',
+              hint: '如：\n- 姓名：\n- 当前状态：',
               minLines: 5,
               maxLines: 10,
-              decoration: const InputDecoration(
-                labelText: '详细描述格式（每行一个属性项）',
-                hintText: '如：\n- 姓名：\n- 当前状态：',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 8),
             Text(

@@ -43,11 +43,28 @@ class NarrChatTheme {
     colors: [Color(0xFF4D6BFE), Color(0xFF6E5BEF)],
   );
 
+  /// 设置页卡片圆角（页面级容器 / 分区卡片）。
+  static const double cardRadius = 16;
+
+  /// 设置控件圆角（设置行 / 输入框 / 菜单 / 分段轨道 / 小卡）。
+  static const double controlRadius = 12;
+
   /// 弹出菜单圆角半径（右键/长按菜单与下拉菜单共用，便于统一调整）。
-  static const double menuRadius = 12;
+  ///
+  /// 与 [controlRadius] 同值：设置页下拉、右键菜单、模型选择器共用一个圆角。
+  static const double menuRadius = controlRadius;
 
   /// 下拉菜单固定宽度（宽屏下避免菜单与输入框同宽）。
   static const double dropdownMenuWidth = 220;
+
+  /// 快速过渡时长（悬停 / 选中高亮 / 当前值切换）。
+  static const Duration motionFast = Duration(milliseconds: 140);
+
+  /// 常规过渡时长（分段滑动 / 展开收起 / 菜单箭头）。
+  static const Duration motionNormal = Duration(milliseconds: 220);
+
+  /// 全局动效缓动（设置页统一使用，避免各处曲线不一致）。
+  static const Curve motionCurve = Curves.easeOutCubic;
 
   /// 默认浅色主题（跟随系统默认字体）。
   static ThemeData get light => lightWithFont(null);
@@ -122,6 +139,23 @@ class NarrChatTheme {
           borderRadius: BorderRadius.circular(NarrChatTheme.menuRadius),
         ),
       ),
+      // —— MenuAnchor 菜单（设置页下拉行 / 模型选择器 / Agent 档位） ——
+      // 与 popupMenuTheme 同款圆角、背景与留白，避免同页出现两种菜单观感。
+      menuTheme: MenuThemeData(
+        style: MenuStyle(
+          backgroundColor: WidgetStatePropertyAll(colors.surface),
+          surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+          elevation: const WidgetStatePropertyAll(3),
+          padding: const WidgetStatePropertyAll(
+            EdgeInsets.symmetric(vertical: 6),
+          ),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(NarrChatTheme.menuRadius),
+            ),
+          ),
+        ),
+      ),
       // —— 卡片 ——
       cardTheme: CardThemeData(
         color: colors.surface,
@@ -132,7 +166,9 @@ class NarrChatTheme {
       dividerTheme: DividerThemeData(thickness: 1, color: colors.divider),
       // —— 列表 ——
       listTileTheme: ListTileThemeData(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+        ),
         titleTextStyle: TextStyle(fontSize: 14, color: colors.textPrimary),
         subtitleTextStyle: TextStyle(
           fontSize: 12,
@@ -160,6 +196,32 @@ class NarrChatTheme {
               ? primary
               : scheme.surfaceContainerHighest,
         ),
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.transparent
+              : scheme.outlineVariant,
+        ),
+      ),
+      // —— Checkbox：设置页多选行统一 5 圆角（Material 默认太方） ——
+      checkboxTheme: CheckboxThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+        side: BorderSide(color: scheme.outline, width: 1.4),
+        fillColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? primary
+              : Colors.transparent,
+        ),
+        checkColor: const WidgetStatePropertyAll(Colors.white),
+      ),
+      // —— Slider：设置页温度 / 字体大小滑杆统一圆角轨道与圆形手柄 ——
+      sliderTheme: SliderThemeData(
+        trackHeight: 4,
+        activeTrackColor: primary,
+        inactiveTrackColor: scheme.surfaceContainerHighest,
+        thumbColor: primary,
+        overlayColor: primary.withValues(alpha: 0.12),
+        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+        overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
       ),
       scrollbarTheme: _scrollbarTheme(isDark),
     );
@@ -227,28 +289,39 @@ class NarrChatTheme {
   ///
   /// 填充色直接引用既有配色（浅色 = background，深色 = surfaceContainerLow），
   /// 避免与配色中的十六进制值重复硬编码。
+  ///
+  /// 圆角统一由本主题提供：设置页输入框**不要**再手写
+  /// `border: OutlineInputBorder()`（那会把圆角覆盖成默认的 4）。
   static InputDecorationTheme _inputDecorationTheme(
     bool isDark,
     ColorScheme scheme,
     NarrChatColors colors,
   ) {
+    final outline = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+      borderSide: BorderSide(color: colors.divider),
+    );
+    final focused = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+      borderSide: const BorderSide(color: primary, width: 1.4),
+    );
+    final error = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+      borderSide: BorderSide(color: scheme.error),
+    );
     return InputDecorationTheme(
       filled: true,
       fillColor: isDark ? scheme.surfaceContainerLow : colors.background,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       hintStyle: TextStyle(color: colors.placeholder),
       labelStyle: TextStyle(color: colors.textSecondary),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: colors.divider),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: colors.divider),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: primary, width: 1.4),
+      border: outline,
+      enabledBorder: outline,
+      disabledBorder: outline,
+      focusedBorder: focused,
+      errorBorder: error,
+      focusedErrorBorder: error.copyWith(
+        borderSide: BorderSide(color: scheme.error, width: 1.4),
       ),
     );
   }

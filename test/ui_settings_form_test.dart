@@ -47,6 +47,8 @@ void main() {
     // 字体设置入口行：显示当前字体与缩放档位（默认系统默认 / 0%）。
     expect(find.text('字体设置'), findsOneWidget);
     expect(find.text('系统默认（0%）'), findsOneWidget);
+    // 主题不再用旧的分段按钮（已迁移到统一分段控件）。
+    expect(find.byType(SegmentedButton<AppThemeMode>), findsNothing);
   });
 
   testWidgets('宽屏下主题设置保持横向布局', (tester) async {
@@ -80,14 +82,49 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('无插画'), findsOneWidget);
-
-    await tester.tap(
-      find.widgetWithText(CheckedPopupMenuItem<DefaultCoverStyle>, '无插画'),
+    expect(
+      find.byType(MenuItemButton),
+      findsNWidgets(DefaultCoverStyle.values.length),
     );
+
+    await tester.tap(find.widgetWithText(MenuItemButton, '无插画'));
     await tester.pumpAndSettle();
 
     expect(ui.defaultCoverStyle, DefaultCoverStyle.noIllustration);
     expect(find.text('无插画'), findsOneWidget);
     expect(find.text('插画1'), findsNothing);
+  });
+
+  testWidgets('默认封面：点标题行任意位置展开菜单（不必对准行尾）', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final ui = UiSettingsProvider(persist: (_) async {});
+    await tester.pumpWidget(buildApp(1000, ui: ui));
+    await tester.pump();
+
+    // 菜单默认关闭：只有行尾当前值。
+    expect(find.text('插画1'), findsOneWidget);
+    expect(find.byType(MenuItemButton), findsNothing);
+
+    // 点击标题文字（远离右侧当前值与箭头）也能展开菜单。
+    await tester.tap(find.text('默认封面'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(MenuItemButton),
+      findsNWidgets(DefaultCoverStyle.values.length),
+    );
+    expect(
+      find.text('插画1'),
+      findsNWidgets(2),
+      reason: '行尾当前值 + 菜单里的当前选中项',
+    );
+    expect(find.text('无插画'), findsOneWidget);
+    expect(
+      ui.defaultCoverStyle,
+      DefaultCoverStyle.illustration1,
+      reason: '仅展开菜单，不改变当前值',
+    );
   });
 }

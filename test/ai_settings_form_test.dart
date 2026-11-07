@@ -15,6 +15,7 @@ import 'package:narrchat/services/app_notice_center.dart';
 import 'package:narrchat/services/model_discovery_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/ai_settings_form.dart';
+import 'package:narrchat/widgets/settings/settings_kit.dart';
 import 'package:narrchat/widgets/settings_form_state.dart';
 
 import 'helpers/notice_harness.dart';
@@ -295,7 +296,8 @@ void main() {
     expect(find.text('已启用'), findsOneWidget);
     expect(find.text('未启用'), findsOneWidget);
     expect(find.text('预设模型的能力由平台固定，用户不可更改。'), findsNothing);
-    expect(find.byType(SwitchListTile), findsOneWidget, reason: '仅剩图片设置的 jpg 开关');
+    expect(find.byType(SwitchListTile), findsNothing);
+    expect(find.byType(SettingsSwitchRow), findsOneWidget, reason: '仅剩图片设置的 jpg 开关');
 
     // 默认值不变：v4 Pro 预置为 流式 / 思考 / 联网搜索 开、识图关。
     for (final label in const ['流式', '思考', '联网搜索', '识图']) {
@@ -348,7 +350,7 @@ void main() {
     await tester.tap(
       find.descendant(
         of: dialog,
-        matching: find.byWidgetPredicate((w) => w is DropdownButton),
+        matching: find.byType(SettingsDropdownField<String>),
       ),
     );
     await tester.pumpAndSettle();
@@ -455,14 +457,16 @@ void main() {
     await tester.pump();
 
     expect(form.convertJpgToJpeg, isFalse);
-    final toggleFinder = find.widgetWithText(SwitchListTile, '自动将 .jpg 转换为 .jpeg');
-    expect(tester.widget<SwitchListTile>(toggleFinder).value, isFalse);
+    final toggleFinder = find.byKey(
+      const ValueKey('ai_settings_convert_jpg_switch'),
+    );
+    expect(tester.widget<Switch>(toggleFinder).value, isFalse);
 
     await tester.tap(toggleFinder);
     await tester.pump();
 
     expect(form.convertJpgToJpeg, isTrue);
-    expect(tester.widget<SwitchListTile>(toggleFinder).value, isTrue);
+    expect(tester.widget<Switch>(toggleFinder).value, isTrue);
     expect(tester.takeException(), isNull);
   });
 
@@ -720,12 +724,14 @@ void main() {
 
       // 多选对话框：按钮 + 标题各一处「获取可用模型」，两行候选。
       expect(find.text('获取可用模型'), findsNWidgets(2));
-      expect(find.byType(CheckboxListTile), findsNWidgets(2));
+      expect(find.byType(SettingsCheckboxRow), findsNWidgets(2));
       expect(find.text('将覆盖'), findsOneWidget);
       // 默认只勾「新模型」：冲突的 gw-a 不勾，避免误覆盖。
       expect(
         tester
-            .widgetList<CheckboxListTile>(find.byType(CheckboxListTile))
+            .widgetList<SettingsCheckboxRow>(
+              find.byType(SettingsCheckboxRow),
+            )
             .map((tile) => tile.value),
         [false, true],
       );
@@ -800,7 +806,7 @@ void main() {
       await tester.tap(find.text('获取可用模型'));
       await tester.pumpAndSettle();
 
-      expect(find.byType(CheckboxListTile), findsNothing);
+      expect(find.byType(SettingsCheckboxRow), findsNothing);
       final notice = center.current;
       expect(notice, isNotNull);
       expect(notice!.kind, NoticeKind.error);

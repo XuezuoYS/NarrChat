@@ -3,8 +3,8 @@ import 'package:flutter/services.dart';
 
 import '../providers/cloud_sync_provider.dart';
 import '../services/sync/sync_models.dart';
-import '../utils/focus_utils.dart';
 import 'markdown_preview.dart';
+import 'settings/settings_kit.dart';
 
 /// 「保留历史版本」设置弹窗：打开时拉取云端真值 → 编辑 → 保存到云端。
 ///
@@ -116,25 +116,22 @@ class _KeepVersionsDialogState extends State<_KeepVersionsDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _controller,
+              label: '份数',
               enabled: !_saving && !_loading,
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               maxLength: 3,
+              counterText: '',
+              helperText:
+                  '范围 ${SyncConfig.minKeepVersions} ~ '
+                  '${SyncConfig.maxKeepVersions}，保存在云端（sync_config.json），'
+                  '下次同步推送时按此值修剪。',
+              errorText: _validateError,
               autofocus: true,
-              onTapOutside: unfocusOnTapOutside,
               onChanged: (_) => setState(() => _validateError = null),
               onSubmitted: (_) => _save(),
-              decoration: InputDecoration(
-                labelText: '份数',
-                counterText: '',
-                helperText:
-                    '范围 ${SyncConfig.minKeepVersions} ~ '
-                    '${SyncConfig.maxKeepVersions}，保存在云端（sync_config.json），'
-                    '下次同步推送时按此值修剪。',
-                errorText: _validateError,
-              ),
             ),
             if (_loading) ...[
               const SizedBox(height: 12),

@@ -8,10 +8,10 @@ import '../screens/book_recycle_bin_page.dart';
 import '../services/cloud_backup/backup_catalog.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import 'app_notice_overlay.dart';
 import 'backup_unit_badge.dart';
 import 'keep_versions_dialog.dart';
+import 'settings/settings_kit.dart';
 import 'settings_form_state.dart';
 
 /// 云同步（WebDAV）设置面板 —— 重新设计版。
@@ -146,21 +146,14 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<CloudSyncProvider>();
-    final colors = context.narrColors;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          '云同步',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+        const SettingsPageHeader(
+          title: '云同步',
+          description: '把书籍、角色设定与剧情进度备份到 WebDAV，多设备自动同步。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          '把书籍、角色设定与剧情进度备份到 WebDAV，多设备自动同步。',
-          style: TextStyle(fontSize: 13, color: colors.textSecondary),
-        ),
-        const SizedBox(height: 20),
         _buildStatusHero(context, provider),
         const SizedBox(height: 16),
         _buildSyncModeCard(context),
@@ -182,102 +175,97 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     final configured = provider.isConfigured;
     final (icon, title, subtitle) = _statusHint(configured, provider);
 
-    return Material(
-      color: colors.surface,
-      borderRadius: BorderRadius.circular(18),
-      clipBehavior: Clip.antiAlias,
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border.all(color: colors.divider),
-          borderRadius: BorderRadius.circular(18),
-        ),
-        child: IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // 左侧品牌渐变竖向色块。
-              Container(
-                width: 6,
-                decoration: const BoxDecoration(
-                  gradient: NarrChatTheme.brandGradient,
-                ),
+    // 保留特色卡辨识度：左侧品牌渐变竖条 + 品牌图标块 + 统计条 + 状态徽章，
+    // 只把外圆角统一为 cardRadius（16）、内圆角统一为 controlRadius（12）。
+    return SettingsCard(
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 左侧品牌渐变竖向色块。
+            Container(
+              width: 6,
+              decoration: const BoxDecoration(
+                gradient: NarrChatTheme.brandGradient,
               ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              gradient: NarrChatTheme.brandGradient,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Icon(icon, color: Colors.white, size: 22),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  title,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w700,
-                                    color: colors.textPrimary,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  subtitle,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: colors.textSecondary,
-                                  ),
-                                ),
-                              ],
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            gradient: NarrChatTheme.brandGradient,
+                            borderRadius: BorderRadius.circular(
+                              NarrChatTheme.controlRadius,
                             ),
                           ),
-                          _statusBadges(context, provider, configured),
+                          child: Icon(icon, color: Colors.white, size: 22),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                title,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: colors.textPrimary,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                subtitle,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: colors.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        _statusBadges(context, provider, configured),
+                      ],
+                    ),
+                    if (configured) ...[
+                      const SizedBox(height: 16),
+                      _StatStrip(
+                        stats: [
+                          _Stat(
+                            icon: Icons.folder_outlined,
+                            label: '文件夹',
+                            value: provider.folder.isEmpty
+                                ? '—'
+                                : provider.folder,
+                          ),
+                          _Stat(
+                            icon: Icons.storage_outlined,
+                            label: '保留版本',
+                            value: provider.keepVersionsLoaded
+                                ? '${provider.keepVersions}'
+                                : '—',
+                          ),
+                          _Stat(
+                            icon: Icons.devices_outlined,
+                            label: '设备标识',
+                            value: _shortDevice(provider.deviceId),
+                          ),
                         ],
                       ),
-                      if (configured) ...[
-                        const SizedBox(height: 16),
-                        _StatStrip(
-                          stats: [
-                            _Stat(
-                              icon: Icons.folder_outlined,
-                              label: '文件夹',
-                              value: provider.folder.isEmpty
-                                  ? '—'
-                                  : provider.folder,
-                            ),
-                            _Stat(
-                              icon: Icons.storage_outlined,
-                              label: '保留版本',
-                              value: provider.keepVersionsLoaded
-                                  ? '${provider.keepVersions}'
-                                  : '—',
-                            ),
-                            _Stat(
-                              icon: Icons.devices_outlined,
-                              label: '设备标识',
-                              value: _shortDevice(provider.deviceId),
-                            ),
-                          ],
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -397,23 +385,23 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _Segmented(
-            value: _form.syncMode == SyncMode.auto ? 0 : 1,
+          SettingsSegmented<SyncMode>(
+            value: _form.syncMode,
             options: const [
-              _SegOption(
+              SettingsSegment(
+                value: SyncMode.auto,
                 icon: Icons.sync,
                 label: '全自动',
-                desc: '在你操作时自动同步，无需手动点击',
+                description: '在你操作时自动同步，无需手动点击',
               ),
-              _SegOption(
+              SettingsSegment(
+                value: SyncMode.manual,
                 icon: Icons.touch_app_outlined,
                 label: '手动',
-                desc: '仅在你点击「同步」时同步',
+                description: '仅在你点击「同步」时同步',
               ),
             ],
-            onChanged: (i) => setState(
-              () => _form.syncMode = i == 0 ? SyncMode.auto : SyncMode.manual,
-            ),
+            onChanged: (mode) => setState(() => _form.syncMode = mode),
           ),
           const SizedBox(height: 12),
           Text(
@@ -442,45 +430,36 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
+          SettingsTextField(
             controller: _form.webdavUrl,
-            onTapOutside: unfocusOnTapOutside,
-            decoration: const InputDecoration(
-              labelText: 'WebDAV 服务器地址',
-              hintText: 'https://dav.example.com/dav/',
-            ),
+            label: 'WebDAV 服务器地址',
+            hint: 'https://dav.example.com/dav/',
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: SettingsTextField(
                   controller: _form.webdavUsername,
-                  onTapOutside: unfocusOnTapOutside,
-                  decoration: const InputDecoration(labelText: '登录用户名'),
+                  label: '登录用户名',
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: TextField(
+                child: SettingsTextField(
                   controller: _form.webdavPassword,
-                  onTapOutside: unfocusOnTapOutside,
+                  label: '登录密码',
+                  hint: '安全存储',
                   obscureText: _form.obscurePassword,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  decoration: InputDecoration(
-                    labelText: '登录密码',
-                    hintText: '安全存储',
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _form.obscurePassword
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                      ),
-                      tooltip: _form.obscurePassword ? '显示' : '隐藏',
-                      onPressed: () => setState(
-                        () => _form.obscurePassword = !_form.obscurePassword,
-                      ),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _form.obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    tooltip: _form.obscurePassword ? '显示' : '隐藏',
+                    onPressed: () => setState(
+                      () => _form.obscurePassword = !_form.obscurePassword,
                     ),
                   ),
                 ),
@@ -491,18 +470,15 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: SettingsTextField(
                   controller: _form.webdavFolder,
-                  onTapOutside: unfocusOnTapOutside,
-                  decoration: const InputDecoration(
-                    labelText: '存储文件夹',
-                    hintText: 'narrchat',
-                  ),
+                  label: '存储文件夹',
+                  hint: 'narrchat',
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _DisplayField(
+                child: SettingsReadonlyField(
                   label: '保留历史版本',
                   value: provider.isConfigured && provider.keepVersionsLoaded
                       ? '${provider.keepVersions}'
@@ -601,7 +577,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: colors.background,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
           border: Border.all(color: colors.divider),
         ),
         child: Text(
@@ -635,60 +611,21 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     if (sizeText.isNotEmpty) meta.write(' · $sizeText');
     meta.write(' · 共 ${entry.totalCount} 份');
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: SettingsCard(
+        // 嵌套小卡用 controlRadius，与外层 cardRadius 形成层级。
+        radius: NarrChatTheme.controlRadius,
         color: colors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.divider),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
+        child: SettingsRow(
+          leading: BackupUnitBadge(kind: entry.unit.kind),
+          title: entry.displayName,
+          subtitle: meta.toString(),
           onTap: () => BackupUnitPage.open(context, entry),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                BackupUnitBadge(kind: entry.unit.kind),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        entry.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: colors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        meta.toString(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right,
-                  size: 20,
-                  color: colors.textSecondary,
-                ),
-              ],
-            ),
+          trailing: Icon(
+            Icons.chevron_right,
+            size: 20,
+            color: colors.textSecondary,
           ),
         ),
       ),
@@ -702,72 +639,34 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     int count,
   ) {
     final errorColor = Theme.of(context).colorScheme.error;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: SettingsCard(
+        radius: NarrChatTheme.controlRadius,
         color: colors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.divider),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => BookRecycleBinPage.open(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: errorColor.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: Icon(
-                    Icons.delete_outline,
-                    size: 18,
-                    color: errorColor,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '已删除',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: colors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '$count 本书 · 点进去还原或彻底删除',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right,
-                  size: 20,
-                  color: colors.textSecondary,
-                ),
-              ],
+        child: SettingsRow(
+          leading: Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: errorColor.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(
+                NarrChatTheme.controlRadius - 3,
+              ),
             ),
+            child: Icon(
+              Icons.delete_outline,
+              size: 18,
+              color: errorColor,
+            ),
+          ),
+          title: '已删除',
+          subtitle: '$count 本书 · 点进去还原或彻底删除',
+          onTap: () => BookRecycleBinPage.open(context),
+          trailing: Icon(
+            Icons.chevron_right,
+            size: 20,
+            color: colors.textSecondary,
           ),
         ),
       ),
@@ -779,13 +678,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   // ---------------------------------------------------------------------------
   Widget _buildImageNote(BuildContext context) {
     final colors = context.narrColors;
-    return Container(
+    return SettingsCard(
+      radius: NarrChatTheme.controlRadius,
+      color: colors.background,
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: colors.divider),
-      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -826,60 +722,15 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     required String subtitle,
     required Widget child,
   }) {
-    final colors = context.narrColors;
-    return Material(
-      color: colors.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border.all(color: colors.divider),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: NarrChatTheme.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: Icon(icon, size: 18, color: NarrChatTheme.primary),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: colors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            child,
-          ],
-        ),
+    return SettingsCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SettingsCardHeader(icon: icon, title: title, subtitle: subtitle),
+          const SizedBox(height: 16),
+          child,
+        ],
       ),
     );
   }
@@ -910,7 +761,7 @@ class _StatStrip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
       decoration: BoxDecoration(
         color: colors.background,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
         border: Border.all(color: colors.divider),
       ),
       child: Row(
@@ -920,60 +771,6 @@ class _StatStrip extends StatelessWidget {
             Expanded(child: _StatCell(item: stats[i])),
           ],
         ],
-      ),
-    );
-  }
-}
-
-/// 只读「展示框」：视觉与相邻 TextField 一致的只读字段，点击触发 [onTap]。
-///
-/// 用于「保留历史版本」：值只展示数字（未连接 / 未读到云端值时显示「—」），
-/// 修改必须点击后在弹窗内完成（见 keep_versions_dialog.dart）。
-class _DisplayField extends StatelessWidget {
-  final String label;
-  final String value;
-  final VoidCallback onTap;
-
-  const _DisplayField({
-    required this.label,
-    required this.value,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final inputTheme = Theme.of(context).inputDecorationTheme;
-    final border =
-        inputTheme.enabledBorder ??
-        inputTheme.border ??
-        const OutlineInputBorder();
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        mouseCursor: SystemMouseCursors.click,
-        child: InputDecorator(
-          decoration: InputDecoration(
-            labelText: label,
-            suffixIcon: const Icon(Icons.edit_outlined, size: 16),
-            contentPadding: inputTheme.contentPadding,
-            filled: true,
-            fillColor: inputTheme.fillColor,
-            enabledBorder: border,
-            focusedBorder: border,
-            border: border,
-          ),
-          child: Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: context.narrColors.textPrimary,
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -1023,140 +820,6 @@ class _StatCell extends StatelessWidget {
   }
 }
 
-class _SegOption {
-  final IconData icon;
-  final String label;
-  final String desc;
-
-  const _SegOption({
-    required this.icon,
-    required this.label,
-    required this.desc,
-  });
-}
-
-/// 同步模式分段选择：用一块圆角高亮在左右选项间**弹性滑动**（底部高亮片动画），
-/// 选项只显示图标 + 短标签（单行），避免窄屏溢出；详细说明在控件下方单独展示。
-class _Segmented extends StatelessWidget {
-  final int value;
-  final List<_SegOption> options;
-  final ValueChanged<int> onChanged;
-
-  const _Segmented({
-    required this.value,
-    required this.options,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: colors.divider),
-      ),
-      child: SizedBox(
-        height: 92,
-        child: Stack(
-          children: [
-            // 弹性滑动的底部高亮片。
-            AnimatedAlign(
-              duration: const Duration(milliseconds: 240),
-              curve: Curves.easeOutCubic,
-              alignment: value == 0
-                  ? Alignment.centerLeft
-                  : Alignment.centerRight,
-              child: FractionallySizedBox(
-                widthFactor: 1 / options.length,
-                heightFactor: 1,
-                child: Padding(
-                  padding: const EdgeInsets.all(3),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: colors.surface,
-                      borderRadius: BorderRadius.circular(11),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.06),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            // 前景选项：整个单元都是可点区域（SizedBox.expand）。
-            Row(
-              children: [
-                for (var i = 0; i < options.length; i++)
-                  Expanded(
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(11),
-                      onTap: () => onChanged(i),
-                      child: SizedBox.expand(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 12,
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    options[i].icon,
-                                    size: 22,
-                                    color: i == value
-                                        ? NarrChatTheme.primary
-                                        : colors.textSecondary,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    options[i].label,
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700,
-                                      color: i == value
-                                          ? colors.textPrimary
-                                          : colors.textSecondary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                options[i].desc,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  height: 1.3,
-                                  color: colors.textSecondary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _ErrorBox extends StatelessWidget {
   final String message;
 
@@ -1170,7 +833,7 @@ class _ErrorBox extends StatelessWidget {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: colors.historyBackground,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
         border: Border.all(color: colors.historyHeader),
       ),
       child: Text(

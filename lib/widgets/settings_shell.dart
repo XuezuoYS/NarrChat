@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'island_bar.dart';
 import 'narr_chat_app_bar.dart';
+import 'settings/settings_layout.dart';
 
 /// 内容区滚动容器的四边内边距。
 const double _contentPadding = 24;
@@ -168,25 +169,44 @@ class _SettingsShellState extends State<SettingsShell> {
                     horizontal: 12,
                     vertical: 8,
                   ),
-                  child: Row(
-                    children: [
-                      for (var i = 0; i < widget.navItems.length; i++) ...[
-                        if (i > 0) const SizedBox(width: 8),
-                        ChoiceChip(
-                          selected: i == _index,
-                          showCheckmark: false,
-                          avatar: Icon(
-                            widget.navItems[i].icon,
-                            size: 16,
-                            color: i == _index
-                                ? NarrChatTheme.primary
-                                : colors.textSecondary,
-                          ),
-                          label: Text(widget.navItems[i].label),
-                          onSelected: (_) => _onNarrowNavTap(i),
+                  // 标签条统一胶囊外观与选中底色/文字色（控件本身仍是 ChoiceChip，
+                  // 保留 Material 自带的选中动画与既有测试定位）。
+                  child: ChipTheme(
+                    data: ChipThemeData(
+                      backgroundColor: Colors.transparent,
+                      selectedColor:
+                          NarrChatTheme.primary.withValues(alpha: 0.12),
+                      side: BorderSide(color: colors.divider),
+                      shape: const StadiumBorder(),
+                      labelStyle: TextStyle(
+                        fontSize: 12,
+                        color: WidgetStateColor.resolveWith(
+                          (states) => states.contains(WidgetState.selected)
+                              ? NarrChatTheme.primary
+                              : colors.textPrimary,
                         ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        for (var i = 0; i < widget.navItems.length; i++) ...[
+                          if (i > 0) const SizedBox(width: 8),
+                          ChoiceChip(
+                            selected: i == _index,
+                            showCheckmark: false,
+                            avatar: Icon(
+                              widget.navItems[i].icon,
+                              size: 16,
+                              color: i == _index
+                                  ? NarrChatTheme.primary
+                                  : colors.textSecondary,
+                            ),
+                            label: Text(widget.navItems[i].label),
+                            onSelected: (_) => _onNarrowNavTap(i),
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -268,11 +288,14 @@ class _NarrowPageSwipeBehavior extends MaterialScrollBehavior {
   }
 }
 
-/// 左侧导航项。
+/// 左侧导航项：整行墨迹 + 圆角 12，选中态背景/文字色平滑过渡（无 ListTile）。
 class _NavTile extends StatelessWidget {
   final SettingsNavItem item;
   final bool selected;
   final VoidCallback onTap;
+
+  /// 导航项选中/悬停过渡时长（比通用控件稍慢，让选中条移动感更明显）。
+  static const Duration _motion = Duration(milliseconds: 160);
 
   const _NavTile({
     required this.item,
@@ -285,34 +308,66 @@ class _NavTile extends StatelessWidget {
     final colors = context.narrColors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-      // 外层 Container 带背景色（ColoredBox）会遮挡 ListTile 的墨迹与选中高亮，
-      // 需用 Material 包裹，使选中背景 / 水波纹绘制在本层之上。
-      // Material 需为不透明背景色（与导航栏一致）；透明 Material 会触发
-      // 「ListTile background color or ink splashes may be invisible」断言。
-      child: Material(
-        color: colors.surface,
-        borderRadius: BorderRadius.circular(10),
-        child: ListTile(
-          dense: true,
-          selected: selected,
-          selectedTileColor: NarrChatTheme.primary.withValues(alpha: 0.12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-          leading: Icon(
-            item.icon,
-            size: 20,
-            color: selected ? NarrChatTheme.primary : colors.textSecondary,
-          ),
-          title: Text(
-            item.label,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-              color: selected ? NarrChatTheme.primary : colors.textPrimary,
+      child: AnimatedContainer(
+        duration: SettingsMotion.of(context, _motion),
+        curve: NarrChatTheme.motionCurve,
+        decoration: BoxDecoration(
+          color: selected
+              ? NarrChatTheme.primary.withValues(alpha: 0.12)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+        ),
+        // 透明 Material 承载水波纹：墨迹绘制在选中底色之上，不会被遮挡。
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+            hoverColor: NarrChatTheme.primary.withValues(alpha: 0.05),
+            splashColor: NarrChatTheme.primary.withValues(alpha: 0.08),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  // 图标与文字颜色随选中态平滑过渡（不使用 ListTile）。
+                  TweenAnimationBuilder<Color?>(
+                    tween: ColorTween(
+                      end: selected
+                          ? NarrChatTheme.primary
+                          : colors.textSecondary,
+                    ),
+                    duration: SettingsMotion.of(context, _motion),
+                    curve: NarrChatTheme.motionCurve,
+                    builder: (context, color, _) => Icon(
+                      item.icon,
+                      size: 20,
+                      color: color,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: AnimatedDefaultTextStyle(
+                      duration: SettingsMotion.of(context, _motion),
+                      curve: NarrChatTheme.motionCurve,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight:
+                            selected ? FontWeight.w600 : FontWeight.w400,
+                        color: selected
+                            ? NarrChatTheme.primary
+                            : colors.textPrimary,
+                      ),
+                      child: Text(
+                        item.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          onTap: onTap,
         ),
       ),
     );

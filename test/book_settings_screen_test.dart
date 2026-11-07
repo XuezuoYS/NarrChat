@@ -11,6 +11,7 @@ import 'package:narrchat/services/app_notice_center.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
+import 'package:narrchat/widgets/settings/settings_kit.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
@@ -164,11 +165,11 @@ void main() {
     expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
     expect(find.text(MemorySummaryRoundSelector.note), findsOneWidget);
 
-    final segmented = tester.widget<SegmentedButton<int>>(
-      find.byType(SegmentedButton<int>),
+    final segmented = tester.widget<SettingsSegmented<int>>(
+      find.byType(SettingsSegmented<int>),
     );
-    expect(segmented.segments.map((s) => s.value).toList(), [0, 5, 10]);
-    expect(segmented.selected, {0}, reason: '默认不开启');
+    expect(segmented.options.map((s) => s.value).toList(), [0, 5, 10]);
+    expect(segmented.value, 0, reason: '默认不开启');
 
     // 位置：控件顶部在历史轮次数下方。
     expect(
@@ -181,15 +182,15 @@ void main() {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     await tester.tap(find.descendant(
-      of: find.byType(SegmentedButton<int>),
+      of: find.byType(SettingsSegmented<int>),
       matching: find.text('5'),
     ));
     await tester.pump();
     expect(
       tester
-          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
-          .selected,
-      {5},
+          .widget<SettingsSegmented<int>>(find.byType(SettingsSegmented<int>))
+          .value,
+      5,
       reason: '选中态即时跟随',
     );
 
@@ -213,9 +214,9 @@ void main() {
 
     expect(
       tester
-          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
-          .selected,
-      {0},
+          .widget<SettingsSegmented<int>>(find.byType(SettingsSegmented<int>))
+          .value,
+      0,
       reason: '越界档位读取即按 0 执行',
     );
 
@@ -236,15 +237,15 @@ void main() {
     expect(tester.takeException(), isNull, reason: '窄屏布局不得溢出');
 
     await tester.tap(find.descendant(
-      of: find.byType(SegmentedButton<int>),
+      of: find.byType(SettingsSegmented<int>),
       matching: find.text('10'),
     ));
     await tester.pump();
     expect(
       tester
-          .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
-          .selected,
-      {10},
+          .widget<SettingsSegmented<int>>(find.byType(SettingsSegmented<int>))
+          .value,
+      10,
     );
     expect(tester.takeException(), isNull);
   });

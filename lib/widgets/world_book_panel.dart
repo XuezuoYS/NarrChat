@@ -4,11 +4,10 @@ import 'package:provider/provider.dart';
 import '../models/app_notice.dart';
 import '../models/world_book_entry.dart';
 import '../providers/world_book_provider.dart';
-import '../theme/app_theme.dart';
-import '../utils/focus_utils.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
+import 'settings/settings_kit.dart';
 
 /// 世界书管理面板（作为书籍设置的一个子模块）。
 ///
@@ -195,45 +194,22 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          '世界书',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: context.narrColors.textPrimary,
-          ),
+        const SettingsPageHeader(
+          title: '世界书',
+          description: '关键词命中后自动注入 System Prompt。',
         ),
-        const SizedBox(height: 4),
-        Text(
-          '关键词命中后自动注入 System Prompt。',
-          style: TextStyle(
-            fontSize: 12,
-            color: context.narrColors.textSecondary,
-          ),
-        ),
-        const SizedBox(height: 20),
         // 新增条目表单
-        TextField(
+        SettingsTextField(
           controller: _keywordController,
-          onTapOutside: unfocusOnTapOutside,
-          decoration: const InputDecoration(
-            labelText: '触发关键词',
-            hintText: '多个关键词用逗号/顿号分隔，如：青云宗, 苏清月',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
+          label: '触发关键词',
+          hint: '多个关键词用逗号/顿号分隔，如：青云宗, 苏清月',
         ),
         const SizedBox(height: 8),
-        TextField(
+        SettingsTextField(
           controller: _contentController,
-          onTapOutside: unfocusOnTapOutside,
+          label: '注入内容（命中后写入 System Prompt）',
           minLines: 2,
           maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: '注入内容（命中后写入 System Prompt）',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
         ),
         const SizedBox(height: 8),
         Align(
@@ -270,9 +246,14 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
           ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(vertical: 4),
+            padding: EdgeInsets.zero,
             itemCount: entries.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
+            separatorBuilder: (_, _) => Divider(
+              height: 1,
+              indent: 14,
+              endIndent: 14,
+              color: theme.colorScheme.outlineVariant,
+            ),
             itemBuilder: (context, index) {
               final entry = entries[index];
               return _EntryTile(
@@ -304,26 +285,18 @@ class _EntryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final inactive = !entry.isActive;
     return Opacity(
       opacity: inactive ? 0.55 : 1,
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
+      // 整行点击 = 切换启用；开关本体、编辑/删除按钮各自处理手势，不误触。
+      child: SettingsRow(
         leading: Switch(
           value: entry.isActive,
           onChanged: onToggle,
         ),
-        title: Text(
-          entry.keyword,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(
-          entry.content,
-          maxLines: 3,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 12, color: theme.colorScheme.outline),
-        ),
+        title: entry.keyword,
+        subtitle: entry.content,
+        onTap: () => onToggle(!entry.isActive),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -413,32 +386,21 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            SettingsTextField(
               controller: _keyword,
-              onTapOutside: unfocusOnTapOutside,
-              decoration: const InputDecoration(
-                labelText: '触发关键词',
-                hintText: '多个关键词用逗号/顿号分隔',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
+              label: '触发关键词',
+              hint: '多个关键词用逗号/顿号分隔',
             ),
             const SizedBox(height: 12),
-            TextField(
+            SettingsTextField(
               controller: _content,
-              onTapOutside: unfocusOnTapOutside,
+              label: '注入内容',
               minLines: 4,
               maxLines: 8,
-              decoration: const InputDecoration(
-                labelText: '注入内容',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
             ),
             const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('启用该条目'),
+            SettingsSwitchRow(
+              title: '启用该条目',
               value: _isActive,
               onChanged: (v) => setState(() => _isActive = v),
             ),

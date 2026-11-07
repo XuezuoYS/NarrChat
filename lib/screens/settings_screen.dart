@@ -15,6 +15,7 @@ import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/general_settings_form.dart';
 import '../widgets/mod_management_panel.dart';
+import '../widgets/settings/settings_kit.dart';
 import '../widgets/settings_form_state.dart';
 import '../widgets/settings_shell.dart';
 import '../widgets/storage_management_panel.dart';
@@ -192,16 +193,12 @@ class _AboutPanelState extends State<_AboutPanel> {
     // 标记负责（限宽 400），本面板只输出纵向卡片内容。
     return Column(
       mainAxisSize: MainAxisSize.min,
+      // 卡片撑满内容列（居中面板限宽 400），契合「与入口卡同级别」的观感。
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // 顶部块：关于本软件信息。
-        Container(
-          width: double.infinity,
+        SettingsCard(
           padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 36),
-          decoration: BoxDecoration(
-            color: context.narrColors.background,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: context.narrColors.divider),
-          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -317,7 +314,7 @@ class _AboutRow extends StatelessWidget {
 }
 
 /// 「关于」面板入口块：图标 + 文案 + 尾箭头，可点击跳转
-/// （与上方「关于本软件」信息块同级别的独立卡片）。
+/// （统一卡片 + 入口行，与上方「关于本软件」信息块同级别的独立卡片）。
 class _AboutEntry extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -331,42 +328,8 @@ class _AboutEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.narrColors;
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.divider),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: colors.textSecondary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(fontSize: 14, color: colors.textPrimary),
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right,
-                  size: 18,
-                  color: colors.textSecondary,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    return SettingsCard(
+      child: SettingsLinkRow(icon: icon, title: label, onTap: onTap),
     );
   }
 }
