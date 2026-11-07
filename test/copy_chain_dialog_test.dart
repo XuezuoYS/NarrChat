@@ -84,9 +84,9 @@ void main() {
     expect(find.byKey(const ValueKey('copy-chain-dialog')), findsOneWidget);
     expect(find.byKey(const ValueKey('copy-chain-progress')), findsOneWidget);
     expect(
-      find.text('正在拷贝第 3 轮第 2 代及其全部子代…'),
+      find.text('正在拷贝第 3 轮第 2 代及后续各轮的全部代…'),
       findsOneWidget,
-      reason: '文案要说清拷贝的是哪一代',
+      reason: '文案要说清拷贝范围是目标代及后续各轮',
     );
     expect(find.text('已拷贝 0 / 4 代'), findsOneWidget);
     expect(find.byKey(const ValueKey('copy-chain-jump')), findsNothing);

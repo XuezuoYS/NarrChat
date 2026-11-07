@@ -494,8 +494,11 @@ void main() {
   });
 
   group('拷贝链至新分支', () {
-    /// 第 2 轮有一对兄弟代（g2a 选中）、第 3 轮有两个版本（g3a 选中），
-    /// 以及一条只挂在 g2b 下面的 g3b —— 用来证明「只拷目标子树」。
+    /// 第 2 轮有一对兄弟代（g2a 选中 / g2b 未启用）；第 3 轮在 g2a 下有两个
+    /// 版本（g3a 选中 / g3a2 未启用），另有一条只挂在 g2b 下面的 g3b→g4b。
+    /// 用来证明：拷贝范围 = **目标代 + 同分支后续各轮的全部代**；
+    /// 目标代的兄弟代不复制，但兄弟代的后代（后续轮的未激活部分）要完整
+    /// 挂到新分支活动链上。
     Future<void> seedCopyTree() async {
       await book.rounds.insert(gen('g1', 1, using: true));
       await book.rounds.insert(
@@ -508,9 +511,10 @@ void main() {
       );
       await book.rounds.insert(gen('g3b', 3, father: 'g2b', using: true));
       await book.rounds.insert(gen('g4a', 4, father: 'g3a', using: true));
+      await book.rounds.insert(gen('g4b', 4, father: 'g3b', using: true));
     }
 
-    test('整棵子代树：新 uuid / 父指针重映射 / 源分支不变 / 新分支不激活', () async {
+    test('目标代 + 后续各轮全部代：兄弟代不拷、孤儿挂回活动链、新分支不激活', () async {
       await seedCopyTree();
       final sourceMetaCount = (await book.rounds.listMeta()).length;
       // 把 updated_at 拨回过去，才能证明拷贝确实刷新了它。
@@ -524,7 +528,11 @@ void main() {
         onProgress: (done, total) => progress.add((done, total)),
       );
 
-      expect(result.generationCount, 4, reason: 'g2a + g3a/g3a2 + g4a');
+      expect(
+        result.generationCount,
+        6,
+        reason: 'g2a + g3a/g3a2 + g3b + g4a + g4b；g2b 不拷',
+      );
       expect(result.firstRoundIndex, 2);
       expect(result.lastRoundIndex, 4);
       expect(result.branchName, '分支 2');
@@ -537,48 +545,90 @@ void main() {
       final shot = BranchFatherSnapshot.decode(result.branch.fatherRowShot)!;
       expect(shot.uuid, 'g1');
 
-      // 源分支一行不改，新分支只有 4 行。
+      // 源分支一行不改，新分支多出 6 行。
       final metas = await book.rounds.listMeta();
-      expect(metas.length, sourceMetaCount + 4);
+      expect(metas.length, sourceMetaCount + 6);
       final copied =
           metas.where((m) => m.branchUuid == result.branch.branchUuid).toList();
-      expect(copied.length, 4);
+      expect(copied.length, 6);
+      final pairs = [
+        for (final m in copied) '${m.roundIndex}-${m.roundSerialNum}',
+      ]..sort();
       expect(
-        copied.map((m) => (m.roundIndex, m.roundSerialNum)).toSet(),
-        {(2, 1), (3, 1), (3, 2), (4, 1)},
-        reason: '轮号 / 代序号原样保留',
+        pairs,
+        ['2-1', '3-1', '3-2', '3-3', '4-1', '4-1'],
+        reason: 'g3b 是孤儿，序号追加到第 3 轮组末尾（3-3）',
       );
-      RoundMeta copyOf(int index, int serial) => copied.firstWhere(
-        (m) => m.roundIndex == index && m.roundSerialNum == serial,
+
+      // 目标代是新分支唯一的根代；同轮兄弟代 g2b 没有被复制。
+      final roots = copied.where((m) => m.fatherUuid == null).toList();
+      expect(roots, hasLength(1));
+      final root = roots.single;
+      expect(root.roundIndex, 2);
+      expect(root.roundSerialNum, 1);
+      expect(root.isUsing, isTrue);
+      expect(
+        copied.where((m) => m.roundIndex == 2),
+        hasLength(1),
+        reason: '目标代的兄弟代不该进新分支',
       );
-      final c2 = copyOf(2, 1);
-      final c3 = copyOf(3, 1);
-      final c3old = copyOf(3, 2);
-      final c4 = copyOf(4, 1);
-      expect(c2.fatherUuid, isNull, reason: '链首副本的 father_uuid 为 NULL');
-      expect(c3.fatherUuid, c2.uuid);
-      expect(c3old.fatherUuid, c2.uuid, reason: '同轮兄弟代也重映射到同一个父副本');
-      expect(c4.fatherUuid, c3.uuid);
-      expect(c3.isUsing, isTrue);
-      expect(c3old.isUsing, isFalse, reason: 'is_using 原样保留');
+
+      // 目标代的直系后代：组内序号原样保留。
+      final c3a = copied.firstWhere(
+        (m) =>
+            m.roundIndex == 3 &&
+            m.roundSerialNum == 1 &&
+            m.fatherUuid == root.uuid,
+      );
+      final c3old = copied.firstWhere(
+        (m) =>
+            m.roundIndex == 3 &&
+            m.roundSerialNum == 2 &&
+            m.fatherUuid == root.uuid,
+      );
+      expect(c3a.isUsing, isTrue);
+      expect(c3old.isUsing, isFalse);
       expect(c3old.message, '另一版本');
+
+      // 兄弟代的后代：失去原父代（g2b 未拷）→ 挂到活动链最近前一代，
+      // 成为同组的未激活版本，而不是变成悬空行。
+      final c3b = copied.firstWhere(
+        (m) =>
+            m.roundIndex == 3 &&
+            m.roundSerialNum == 3 &&
+            m.fatherUuid == root.uuid,
+      );
+      expect(c3b.isUsing, isFalse, reason: '挂回来的孤儿必须未激活');
+      final copiedG3b = (await book.rounds.generation(c3b.uuid))!;
+      expect(copiedG3b.userInput, '问-g3b');
+
+      // 更深一层：挂在孤儿下面的后代保持原父代 / 原选中关系。
+      final c4a = copied.firstWhere(
+        (m) => m.roundIndex == 4 && m.fatherUuid == c3a.uuid,
+      );
+      final c4b = copied.firstWhere(
+        (m) => m.roundIndex == 4 && m.fatherUuid == c3b.uuid,
+      );
+      expect(c4a.isUsing, isTrue);
+      expect(c4b.isUsing, isTrue, reason: '隐藏版本线内部保留原选中关系');
+      final copiedG4b = (await book.rounds.generation(c4b.uuid))!;
+      expect(copiedG4b.userInput, '问-g4b');
 
       // 内容原样：新代 uuid 与源代不重叠，正文 / 输入完整带过来。
       final sourceUuids = {
-        'g1', 'g2a', 'g2b', 'g3a', 'g3a2', 'g3b', 'g4a',
+        'g1', 'g2a', 'g2b', 'g3a', 'g3a2', 'g3b', 'g4a', 'g4b',
       };
       for (final meta in copied) {
         expect(sourceUuids.contains(meta.uuid), isFalse);
       }
-      final copiedG2 = (await book.rounds.generation(c2.uuid))!;
+      final copiedG2 = (await book.rounds.generation(root.uuid))!;
       expect(copiedG2.userInput, '问-g2a');
       expect(copiedG2.aiNarrative, '正文-g2a');
-      final copiedG3 = (await book.rounds.generation(c3.uuid))!;
-      expect(copiedG3.userInput, '问-g3a');
 
-      // 不在目标子树里的 g2b / g3b 一个都没被带走（用源代仍在证明没删源）。
+      // 源数据一行没删（g2b / g3b / g4b 仍在源分支）。
       expect((await book.rounds.generation('g2b')), isNotNull);
       expect((await book.rounds.generation('g3b')), isNotNull);
+      expect((await book.rounds.generation('g4b')), isNotNull);
 
       // 内容变更：updated_at 被刷新；工作分支仍是默认分支。
       final updatedAt = (await book.meta.read()).updatedAt;
@@ -588,11 +638,11 @@ void main() {
       expect(working.branches.single.branchWorking, isFalse);
 
       // 进度：开始 0/N，结束 N/N。
-      expect(progress.first, (0, 4));
-      expect(progress.last, (4, 4));
+      expect(progress.first, (0, 6));
+      expect(progress.last, (6, 6));
       for (final (done, total) in progress) {
-        expect(total, 4);
-        expect(done, inInclusiveRange(0, 4));
+        expect(total, 6);
+        expect(done, inInclusiveRange(0, 6));
       }
     });
 
@@ -629,6 +679,11 @@ void main() {
         1,
         reason: '目标代只以副本形式出现一次',
       );
+      expect(
+        context.rounds.where((r) => r.userInput == '问-g3b'),
+        isEmpty,
+        reason: '隐藏版本线（挂回来的未激活代）不在活动链上文里',
+      );
 
       final upstream = await repository.loadUpstreamContext(
         bookUuid: 'b1',
@@ -639,19 +694,26 @@ void main() {
       expect(upstream.fallbackRound, isNull);
     });
 
-    test('目标是链首：沿用源分支的父级四列', () async {
+    test('目标是链首：兄弟代不拷，兄弟代的后续挂回活动链', () async {
       await seedChain();
       final source = await repository.forkBranch(
         bookUuid: 'b1',
         generationUuid: 'g2',
         branchName: '源分支',
       );
-      // fork 后工作分支已是源分支；补两轮链首 / 后续。
+      // fork 后工作分支已是源分支；链首两个版本（b3 选中 / b3b 未启用），
+      // 以及各自的后续。b3b 不该被复制，但它的孩子 b4b 要挂到 b3 的活动链上。
       await book.rounds.insert(
         gen('b3', 3, branch: source.branchUuid, using: true),
       );
       await book.rounds.insert(
+        gen('b3b', 3, branch: source.branchUuid, serial: 2),
+      );
+      await book.rounds.insert(
         gen('b4', 4, father: 'b3', branch: source.branchUuid, using: true),
+      );
+      await book.rounds.insert(
+        gen('b4b', 4, father: 'b3b', branch: source.branchUuid, using: true),
       );
 
       final result = await repository.copyChainToNewBranch(
@@ -663,18 +725,45 @@ void main() {
       expect(result.branch.fatherRow, 'g2', reason: '链首的父级 = 源分支的分叉点');
       expect(result.branch.fatherRowIndex, 2);
       expect(result.branch.fatherBranch, '');
-      expect(result.generationCount, 2);
+      expect(
+        result.generationCount,
+        3,
+        reason: 'b3 + b4 + b4b；b3b 不拷',
+      );
       final copied = (await book.rounds.listMeta())
           .where((m) => m.branchUuid == result.branch.branchUuid)
           .toList();
-      final root = copied.firstWhere((m) => m.fatherUuid == null);
+      final roots = copied.where((m) => m.fatherUuid == null).toList();
+      expect(roots, hasLength(1));
+      final root = roots.single;
       expect(root.roundIndex, 3);
+      expect(root.isUsing, isTrue);
       expect(
-        copied.firstWhere((m) => m.fatherUuid == root.uuid).roundIndex,
-        4,
+        copied.where((m) => m.roundIndex == 3),
+        hasLength(1),
+        reason: '未启用的同轮版本 b3b 不该进新分支',
       );
 
-      // 工作分支仍是源分支；切过去后上文从 g1 / g2 接回来。
+      // b4 是目标代的直系后续；b4b 失去原父代 b3b，挂到活动链第 3 轮，
+      // 成为第 4 轮组里的未激活版本（序号追加到 b4 之后）。
+      final c4 = copied.firstWhere(
+        (m) => m.roundIndex == 4 && m.roundSerialNum == 1,
+      );
+      final c4b = copied.firstWhere(
+        (m) => m.roundIndex == 4 && m.roundSerialNum == 2,
+      );
+      expect(c4.fatherUuid, root.uuid);
+      expect(c4b.fatherUuid, root.uuid);
+      expect(c4.isUsing, isTrue);
+      expect(c4b.isUsing, isFalse, reason: '挂回来的孤儿必须未激活');
+      final copiedG4b = (await book.rounds.generation(c4b.uuid))!;
+      expect(copiedG4b.userInput, '问-b4b');
+
+      // 源分支的数据一行没删。
+      expect((await book.rounds.generation('b3b')), isNotNull);
+      expect((await book.rounds.generation('b4b')), isNotNull);
+
+      // 工作分支仍是源分支；切过去后上文从 g1 / g2 接回来，活动链仍是 b3→b4。
       expect((await repository.loadChain('b1')).workingBranch,
           source.branchUuid);
       await repository.switchBranch(
@@ -682,6 +771,9 @@ void main() {
         branchUuid: result.branch.branchUuid,
       );
       final chain = await repository.loadChain('b1');
+      expect(chain.rounds.map((r) => r.roundIndex), [3, 4]);
+      expect(chain.rounds.first.uuid, root.uuid);
+      expect(chain.rounds.last.uuid, c4.uuid);
       final context = await repository.buildPromptContext(
         bookUuid: 'b1',
         chain: chain,
@@ -689,6 +781,11 @@ void main() {
       );
       expect(context.rounds.map((r) => r.roundIndex), [1, 2, 3, 4]);
       expect(context.rounds[1].uuid, 'g2');
+      expect(
+        context.rounds.where((r) => r.userInput == '问-b4b'),
+        isEmpty,
+        reason: '挂回来的未激活代不参与活动链上文',
+      );
     });
 
     test('默认分支第 1 轮：根分支（无父级），整链拷走', () async {

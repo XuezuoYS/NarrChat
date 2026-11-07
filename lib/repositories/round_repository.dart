@@ -318,14 +318,20 @@ class RoundRepository {
     return branch;
   }
 
-  /// 从某一代「拷贝链」到一条新分支：拷贝**目标代及其整棵子代树**。
+  /// 从某一代「拷贝链」到一条新分支：拷贝**目标代 + 同一分支里轮号更大的
+  /// 全部代**（含各轮未激活代与隐藏版本线）。
   ///
   /// 规则（与界面口径一致，详见 `docs/database.md`）：
-  /// - 只认当前分支（`branch_working`）活动链上的目标代；同轮兄弟代不参与；
+  /// - 只认当前分支（`branch_working`）活动链上的目标代；
+  ///   **目标代同轮的兄弟代不复制**，更早的轮次靠 branch father 继承；
   /// - 目标代的**父代**记为新分支的 father（`branches.father_row` 四列）；
   ///   目标代是链首时沿用源分支的父级信息，没有父级则成为根分支；
-  /// - 副本使用全新 uuid，`father_uuid` 按树重映射（链首为 NULL），
-  ///   `round_index` / `round_serial_num` / `is_using` / 内容原样保留；
+  /// - 目标代在新分支里是唯一根代（`father_uuid = NULL`）；后续轮的代按原
+  ///   父代重映射；原父代不在拷贝集合里的代（典型：目标代兄弟代的孩子）挂到
+  ///   新分支活动链上轮号更小的最近一代，作为该轮的一个未激活版本，代序号
+  ///   追加到该组末尾，避免出现悬空行；
+  /// - 新分支活动链与源分支从目标代起完全一致：活动链成员强制选中，其它代
+  ///   未激活；隐藏版本线内部保留原来的选中关系，切过去后还能按原样续上；
   /// - 新分支**不激活**；源分支一行不改；`book_meta.updated_at` 刷新一次。
   ///
   /// 分批写入，[onProgress] 依次给出 `(0, total)` 与每批后的已写入数。
@@ -361,9 +367,13 @@ class RoundRepository {
       throw StateError('失败代不能拷贝');
     }
     final chain = RoundTree.planChain(metas, workingBranch);
-    if (!chain.any((meta) => meta.uuid == target.uuid)) {
+    final targetIndex = chain.indexWhere((meta) => meta.uuid == target.uuid);
+    if (targetIndex < 0) {
       throw StateError('这一代已不在当前活动链上，无法拷贝');
     }
+    // 新分支的活动链要与源分支「从目标代开始」的那一段完全一致。
+    final activeFromTarget = chain.sublist(targetIndex);
+    final activeUuids = {for (final meta in activeFromTarget) meta.uuid};
 
     // 直接父代 = 同一分支里上一轮的选中代；目标代是链首时没有这一行。
     RoundGeneration? father;
@@ -375,20 +385,33 @@ class RoundRepository {
       }
     }
 
-    // 整棵子代树（同分支内，父先子后）；只读完成后再写，校验失败不留脏数据。
-    final subtree = RoundTree.subtreeMetas(
-      all: metas,
-      root: target,
-      branchUuid: target.branchUuid,
-    );
+    // 复制集合 = 目标代 + 同一分支里轮号更大的**全部代**：
+    // - 目标代同轮的其它代（兄弟代）不复制，避免把目标代这一轮撑成一组；
+    // - 更早的轮次靠 branches.father_row 继承；
+    // - 后续轮次的隐藏版本线也一起带走，保证每轮 ←/→ 的未激活代不缺口。
+    final picked = <RoundMeta>[
+      target,
+      for (final meta in metas)
+        if (meta.uuid != target.uuid &&
+            meta.branchUuid == target.branchUuid &&
+            meta.roundIndex > target.roundIndex)
+          meta,
+    ];
+    picked.sort((a, b) {
+      final byRound = a.roundIndex.compareTo(b.roundIndex);
+      if (byRound != 0) return byRound;
+      final bySerial = a.roundSerialNum.compareTo(b.roundSerialNum);
+      if (bySerial != 0) return bySerial;
+      return a.uuid.compareTo(b.uuid);
+    });
     final loaded = await db.rounds.generations(
-      subtree.map((meta) => meta.uuid),
+      picked.map((meta) => meta.uuid),
     );
     final byUuid = {
       for (final generation in loaded) generation.uuid: generation,
     };
     final sources = <RoundGeneration>[];
-    for (final meta in subtree) {
+    for (final meta in picked) {
       final generation = byUuid[meta.uuid];
       if (generation == null) {
         throw StateError('数据缺失：找不到要拷贝的代 ${meta.uuid}');
@@ -404,34 +427,93 @@ class RoundRepository {
       now: DateTime.now().toUtc(),
     );
 
-    final newUuidByOld = <String, String>{};
-    final copies = <RoundGeneration>[];
+    final newUuidByOld = {
+      for (final source in sources) source.uuid: UuidUtils.generateUuidV4(),
+    };
+    final nodes = <_CopyNode>[];
     for (final source in sources) {
-      final newUuid = UuidUtils.generateUuidV4();
-      String? newFather;
-      if (source.uuid != target.uuid) {
-        newFather = newUuidByOld[source.fatherUuid ?? ''];
-        if (newFather == null) {
-          throw StateError('拷贝链数据缺口：找不到 ${source.uuid} 的父代');
+      final oldFather = source.fatherUuid;
+      final fatherCopy = oldFather == null || oldFather.isEmpty
+          ? null
+          : newUuidByOld[oldFather];
+      // 目标代永远是新分支的根；其它代的原父代不在拷贝集合里 = 孤儿。
+      final orphan = source.uuid != target.uuid && fatherCopy == null;
+      String? newFather = fatherCopy;
+      if (orphan) {
+        // 挂到新分支活动链上、轮号更小的最近一代（正常数据就是上一轮）。
+        // 这样它仍能在对应轮次里作为未激活版本切换，不会变成悬空行。
+        RoundMeta? anchor;
+        for (final active in activeFromTarget) {
+          if (active.roundIndex >= source.roundIndex) break;
+          anchor = active;
         }
+        newFather = newUuidByOld[anchor?.uuid ?? target.uuid];
       }
-      newUuidByOld[source.uuid] = newUuid;
-      copies.add(
-        source.copyWith(
-          meta: RoundMeta(
-            uuid: newUuid,
-            fatherUuid: newFather,
-            branchUuid: branch.branchUuid,
-            roundIndex: source.roundIndex,
-            roundSerialNum: source.roundSerialNum,
-            isUsing: source.isUsing,
-            operatedAt: source.operatedAt,
-            messageStatus: source.meta.messageStatus,
-            message: source.meta.message,
-          ),
+      nodes.add(
+        _CopyNode(
+          source: source,
+          uuid: newUuidByOld[source.uuid]!,
+          fatherUuid: newFather,
+          orphan: orphan,
+          onActiveChain: activeUuids.contains(source.uuid),
         ),
       );
     }
+
+    // 按「新组」（轮号 + 父副本）统一收尾：
+    // - 孤儿代序号追加到组内最大序号之后，且一律未激活；
+    // - 含活动链成员的组只让活动链那一代选中，保证新分支活动链不变；
+    // - 其余组保留源数据的选中关系（隐藏版本线切过去后还能按原样续上）。
+    final groups = <String, List<_CopyNode>>{};
+    for (final node in nodes) {
+      final key = '${node.source.roundIndex}\u0000${node.fatherUuid ?? ''}';
+      (groups[key] ??= <_CopyNode>[]).add(node);
+    }
+    for (final group in groups.values) {
+      var maxSerial = 0;
+      for (final node in group) {
+        if (!node.orphan && node.source.roundSerialNum > maxSerial) {
+          maxSerial = node.source.roundSerialNum;
+        }
+      }
+      final orphans = group.where((node) => node.orphan).toList()
+        ..sort((a, b) {
+          final bySerial =
+              a.source.roundSerialNum.compareTo(b.source.roundSerialNum);
+          if (bySerial != 0) return bySerial;
+          return a.source.uuid.compareTo(b.source.uuid);
+        });
+      var next = maxSerial + 1;
+      for (final node in orphans) {
+        node.serial = next++;
+        node.isUsing = false;
+      }
+      final active = group.where((node) => node.onActiveChain).firstOrNull;
+      for (final node in group) {
+        if (active != null) {
+          node.isUsing = identical(node, active);
+        } else {
+          node.isUsing = node.orphan ? false : node.source.isUsing;
+        }
+      }
+    }
+
+    final copies = <RoundGeneration>[
+      for (final node in nodes)
+        node.source.copyWith(
+          meta: RoundMeta(
+            uuid: node.uuid,
+            fatherUuid: node.fatherUuid,
+            branchUuid: branch.branchUuid,
+            roundIndex: node.source.roundIndex,
+            roundSerialNum: node.serial,
+            isUsing: node.isUsing,
+            operatedAt: node.source.operatedAt,
+            messageStatus: node.source.meta.messageStatus,
+            message: node.source.meta.message,
+          ),
+        ),
+    ];
 
     await db.insertBranchCopy(
       branch: branch,
@@ -596,4 +678,30 @@ class RoundRepository {
     }
     return Branch.defaultBranchUuid;
   }
+}
+
+/// 拷贝链内部用的一代：先备好新 uuid / 新父代 / 是否孤儿，
+/// 再按「新组」统一分配代序号与选中标记。
+class _CopyNode {
+  _CopyNode({
+    required this.source,
+    required this.uuid,
+    required this.fatherUuid,
+    required this.orphan,
+    required this.onActiveChain,
+  })  : serial = source.roundSerialNum,
+        isUsing = source.isUsing;
+
+  final RoundGeneration source;
+  final String uuid;
+  final String? fatherUuid;
+
+  /// 原父代不在拷贝集合里：已改挂到新分支活动链的最近前一代。
+  final bool orphan;
+
+  /// 源代是否在新分支要保持的活动链上。
+  final bool onActiveChain;
+
+  int serial;
+  bool isUsing;
 }

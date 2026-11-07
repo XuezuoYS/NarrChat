@@ -139,7 +139,7 @@ class _CopyChainDialogState extends State<_CopyChainDialog> {
       children: [
         Text(
           '正在拷贝第 ${widget.round.roundIndex} 轮'
-          '第 ${widget.round.roundSerialNum} 代及其全部子代…',
+          '第 ${widget.round.roundSerialNum} 代及后续各轮的全部代…',
           style: TextStyle(
             fontSize: 13,
             height: 1.5,

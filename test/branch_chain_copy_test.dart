@@ -154,4 +154,95 @@ void main() {
     expect(provider.error ?? '', isNot(contains('Bad state')));
     expect(provider.branches.length, 1);
   });
+
+  test('复制后后续轮未激活代完整、目标代兄弟代不拷', () async {
+    // 第 2 轮：选中 g2a / 未启用 g2b；第 3 轮在 g2a 下选中 g3a，另有一条
+    // 挂在 g2b 下的隐藏线 g3b→g4c；第 4 轮在 g3a 下有两个版本。
+    // 拷贝 g2a 后：
+    // - 第 2 轮不应出现 g2b（兄弟代不拷）；
+    // - 第 3 轮应出现 g3a + 挂回来的 g3b（未激活）；
+    // - 切到 g3b 后，它的隐藏后续 g4c 必须完整存在。
+    await stack.seedRound(book.uuid, roundIndex: 1, userInput: '第一轮');
+    final g2a = await stack.seedRound(
+      book.uuid,
+      roundIndex: 2,
+      userInput: '第二轮·选中',
+      aiNarrative: '正文 2a',
+    );
+    final g2b = await stack.seedRound(
+      book.uuid,
+      roundIndex: 2,
+      fatherUuid: g2a.fatherUuid,
+      userInput: '第二轮·未启用',
+      aiNarrative: '正文 2b',
+      isUsing: false,
+    );
+    final g3a = await stack.seedRound(
+      book.uuid,
+      roundIndex: 3,
+      userInput: '第三轮·选中',
+      aiNarrative: '正文 3a',
+    );
+    final g3b = await stack.seedRound(
+      book.uuid,
+      roundIndex: 3,
+      fatherUuid: g2b.uuid,
+      userInput: '隐藏线的根',
+      aiNarrative: '正文 3b',
+    );
+    await stack.seedRound(
+      book.uuid,
+      roundIndex: 4,
+      fatherUuid: g3a.uuid,
+      userInput: '第四轮·选中',
+      aiNarrative: '正文 4a',
+    );
+    await stack.seedRound(
+      book.uuid,
+      roundIndex: 4,
+      fatherUuid: g3a.uuid,
+      userInput: '第四轮·未启用',
+      aiNarrative: '正文 4b',
+      serialNum: 2,
+      isUsing: false,
+    );
+    await stack.seedRound(
+      book.uuid,
+      roundIndex: 4,
+      fatherUuid: g3b.uuid,
+      userInput: '隐藏线的后续',
+      aiNarrative: '正文 4c',
+    );
+    final provider = await makeProvider();
+
+    final result = await provider.copyChainToNewBranch(
+      round: provider.rounds[1],
+    );
+    expect(result, isNotNull);
+    await provider.switchBranch(result!.branch.branchUuid);
+
+    // 第 2 轮：只有被点的 g2a，兄弟代不带。
+    final round2 = provider.versionInfoFor(2);
+    expect(round2, isNotNull);
+    expect(round2!.aliveCount, 1, reason: '目标代的兄弟代不该拷过来');
+    expect(round2.nextUuid, isNull);
+
+    // 第 3 轮：g3a + 从隐藏线挂回来的 g3b（未激活）。
+    final round3 = provider.versionInfoFor(3);
+    expect(round3, isNotNull);
+    expect(round3!.aliveCount, 2, reason: '隐藏线的根也要作为未激活代在');
+    expect(round3.nextUuid, isNotNull, reason: '能切到挂回来的 g3b');
+
+    // 第 4 轮：活动链上（g3a 下）的两代都在。
+    final round4 = provider.versionInfoFor(4);
+    expect(round4, isNotNull);
+    expect(round4!.aliveCount, 2, reason: '第 4 轮的两个版本都要在');
+    expect(round4.nextUuid, isNotNull);
+
+    // 切到 g3b 的副本：它的隐藏后续 g4c 必须完整存在。
+    final switched = await provider.switchRoundVersion(3, forward: true);
+    expect(switched, isTrue);
+    expect(provider.rounds.map((r) => r.roundIndex), [2, 3, 4]);
+    expect(provider.rounds.last.userInput, '隐藏线的后续');
+  });
 }
