@@ -66,10 +66,6 @@ class BookGridCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
-    final scaler = MediaQuery.textScalerOf(context);
-    final titleLine = scaler.scale(_kTitleFontSize) * _kTitleLineHeight;
-    final categoryLine =
-        scaler.scale(_kCategoryFontSize) * _kCategoryLineHeight;
 
     final content = LayoutBuilder(
       builder: (context, constraints) {
@@ -79,32 +75,28 @@ class BookGridCard extends StatelessWidget {
           children: [
             BookCover(width: width, radius: _kCoverRadius),
             const SizedBox(height: _kCoverTextGap),
-            SizedBox(
-              height: titleLine * _kTitleMaxLines,
-              child: Text(
-                book.title,
-                maxLines: _kTitleMaxLines,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: _kTitleFontSize,
-                  height: _kTitleLineHeight,
-                  fontWeight: FontWeight.w600,
-                  color: colors.textPrimary,
-                ),
+            Text(
+              book.title,
+              maxLines: _kTitleMaxLines,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: _kTitleFontSize,
+                height: _kTitleLineHeight,
+                fontWeight: FontWeight.w600,
+                color: colors.textPrimary,
               ),
             ),
             const SizedBox(height: _kTitleCategoryGap),
-            SizedBox(
-              height: categoryLine,
-              child: Text(
-                book.category.isEmpty ? '未设置类别' : book.category,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: _kCategoryFontSize,
-                  height: _kCategoryLineHeight,
-                  color: colors.textSecondary,
-                ),
+            // 分类紧贴标题实际占用的行数，不强行推到“三行标题”的底部；
+            // 卡片外框高度仍按 3 行预留，保证同一行卡片底边对齐。
+            Text(
+              book.category.isEmpty ? '未设置类别' : book.category,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: _kCategoryFontSize,
+                height: _kCategoryLineHeight,
+                color: colors.textSecondary,
               ),
             ),
           ],

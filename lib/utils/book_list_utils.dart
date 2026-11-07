@@ -5,48 +5,78 @@ import 'search_utils.dart';
 /// 书籍列表排列方式（首页方格 / 列表切换）。
 enum BookLayoutMode {
   /// 方格排列（首页默认）。
-  grid('方格排列'),
+  grid('方格排列', 'grid'),
 
   /// 列表排列（沿用原书籍列表样式）。
-  list('列表排列');
+  list('列表排列', 'list');
 
-  const BookLayoutMode(this.label);
+  const BookLayoutMode(this.label, this.storageValue);
 
   /// 界面展示 / tooltip 文案。
   final String label;
+
+  /// 本地配置文件中存储的值。
+  final String storageValue;
+
+  /// 从本地配置解析；未知值回退 [grid]。
+  static BookLayoutMode fromStorageValue(String? value) =>
+      value == 'list' ? list : grid;
 }
 
 /// 书籍列表排序模式。
 enum BookSortMode {
   /// 更新时间（`book_meta.updated_at`，新 → 旧；首页默认）。
-  time('更新时间'),
+  time('更新时间', 'time'),
 
   /// 标题 A-Z（按拼音）。
-  az('A-Z');
+  az('A-Z', 'az');
 
-  const BookSortMode(this.label);
+  const BookSortMode(this.label, this.storageValue);
 
+  /// 界面展示文案。
   final String label;
+
+  /// 本地配置文件中存储的值。
+  final String storageValue;
+
+  /// 从本地配置解析；未知值回退 [time]。
+  static BookSortMode fromStorageValue(String? value) =>
+      value == 'az' ? az : time;
 }
 
 /// 首页方格排列的目标最小卡片宽度（px）。
-const double kBookGridMinCardWidth = 160;
+///
+/// 窄屏按可用宽度把卡片均分；宽屏不再拉伸，改用 [kBookGridWideCardWidth]
+/// 作为固定宽度。
+const double kBookGridMinCardWidth = 112;
 
-/// 首页方格排列的横向 / 纵向间距（px）。
+/// 宽屏方格的固定卡片宽度（px）。
+///
+/// 宽屏下始终保持这个宽度，右侧允许留白，直到能再放下一列才增加列数。
+const double kBookGridWideCardWidth = 112;
+
+/// 首页方格排列的横向 / 纵向间距（px；窄屏默认）。
 const double kBookGridSpacing = 16;
+
+/// 宽屏首页方格的间距（px）：比窄屏更舒展。
+const double kBookGridWideSpacing = 24;
 
 /// 按可用宽度计算首页方格的每行书籍数。
 ///
-/// 目标是让卡片宽度尽量接近 [kBookGridMinCardWidth]：
+/// 目标是让卡片宽度尽量接近 [cardWidth]：
 /// - 手机窄屏至少 2 列（卡片略缩小，而不是单列巨卡）；
-/// - 宽屏按 `floor((可用宽 + 间距) / (最小宽 + 间距))` 扩展。
+/// - 宽屏按 `floor((可用宽 + 间距) / (卡片宽 + 间距))` 扩展。
+///
+/// [spacing] 是行列间距；宽屏传 [kBookGridWideSpacing]，窄屏用默认值。
+/// [cardWidth] 是目标卡片宽度；宽屏固定宽度时传 [kBookGridWideCardWidth]。
 /// 非有限宽度 / 0 宽返回 1，交给布局层自行处理。
-int bookGridColumns(double availableWidth) {
+int bookGridColumns(
+  double availableWidth, {
+  double spacing = kBookGridSpacing,
+  double cardWidth = kBookGridMinCardWidth,
+}) {
   if (!availableWidth.isFinite || availableWidth <= 0) return 1;
-  final count =
-      ((availableWidth + kBookGridSpacing) /
-              (kBookGridMinCardWidth + kBookGridSpacing))
-          .floor();
+  final count = ((availableWidth + spacing) / (cardWidth + spacing)).floor();
   return count < 2 ? 2 : count;
 }
 

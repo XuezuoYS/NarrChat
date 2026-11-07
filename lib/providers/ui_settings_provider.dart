@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../services/local_config_service.dart';
 import '../services/system_fonts_service.dart';
+import '../utils/book_list_utils.dart';
 
 /// 应用主题模式。
 enum AppThemeMode {
@@ -109,8 +110,18 @@ const double kChatSidebarDefaultWidth = 380;
 /// - 主题模式（[themeMode]：跟随系统 / 亮色 / 暗色，默认跟随系统）；
 /// - 全局字体（[fontFamily]，空字符串表示跟随系统默认）；
 /// - 全局字体大小档位（[fontScaleIndex]：6 档，0 为默认 0%，可为负；全局文字缩放）；
-/// - 宽屏 Chat 页右侧栏宽度（[chatSidebarWidth]，默认 [kChatSidebarDefaultWidth]）。
+/// - 宽屏 Chat 页右侧栏宽度（[chatSidebarWidth]，默认 [kChatSidebarDefaultWidth]）；
+/// - 首页书籍排序模式（[homeSortMode]）/ 排列方式（[homeLayoutMode]）。
 class UiSettingsProvider extends ChangeNotifier {
+  /// [persist] 注入本地配置写入实现；默认写 [LocalConfigService.update]。
+  ///
+  /// 测试可传空实现，避免 UI 用例触发真实文件 I/O。
+  UiSettingsProvider({
+    Future<void> Function(Map<String, dynamic> patch)? persist,
+  }) : _persist = persist ?? LocalConfigService.update;
+
+  final Future<void> Function(Map<String, dynamic> patch) _persist;
+
   /// 本地 JSON 配置文件中的键名。
   static const String keyFontFamily = 'fontFamily';
 
@@ -125,10 +136,18 @@ class UiSettingsProvider extends ChangeNotifier {
   /// 本地 JSON 配置文件中的宽屏侧栏宽度键名。
   static const String keyChatSidebarWidth = 'chatSidebarWidth';
 
+  /// 本地 JSON 配置文件中的首页书籍排序模式键名。
+  static const String keyHomeSortMode = 'homeSortMode';
+
+  /// 本地 JSON 配置文件中的首页书籍排列方式键名。
+  static const String keyHomeLayoutMode = 'homeLayoutMode';
+
   String _fontFamily = '';
   int _fontScaleIndex = FontScaleLevel.defaultLevel.offset;
   AppThemeMode _themeMode = AppThemeMode.system;
   double _chatSidebarWidth = kChatSidebarDefaultWidth;
+  BookSortMode _homeSortMode = BookSortMode.time;
+  BookLayoutMode _homeLayoutMode = BookLayoutMode.grid;
   bool _isLoading = false;
   String? _error;
 
@@ -164,6 +183,12 @@ class UiSettingsProvider extends ChangeNotifier {
   bool get hasCustomSidebarWidth =>
       _chatSidebarWidth > kChatSidebarDefaultWidth;
 
+  /// 首页书籍排序模式（默认更新时间）。
+  BookSortMode get homeSortMode => _homeSortMode;
+
+  /// 首页书籍排列方式（默认方格）。
+  BookLayoutMode get homeLayoutMode => _homeLayoutMode;
+
   bool get isLoading => _isLoading;
   String? get error => _error;
 
@@ -190,6 +215,15 @@ class UiSettingsProvider extends ChangeNotifier {
               stored < kChatSidebarDefaultWidth
           ? kChatSidebarDefaultWidth
           : stored;
+      // 首页排序 / 排列：只接受已知字符串，类型不符或未知值回退默认。
+      final rawSort = cfg[keyHomeSortMode];
+      _homeSortMode = BookSortMode.fromStorageValue(
+        rawSort is String ? rawSort : null,
+      );
+      final rawLayout = cfg[keyHomeLayoutMode];
+      _homeLayoutMode = BookLayoutMode.fromStorageValue(
+        rawLayout is String ? rawLayout : null,
+      );
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -204,7 +238,7 @@ class UiSettingsProvider extends ChangeNotifier {
     _themeMode = mode;
     notifyListeners();
     try {
-      await LocalConfigService.update({keyThemeMode: mode.storageValue});
+      await _persist({keyThemeMode: mode.storageValue});
     } catch (e) {
       _error = e.toString();
     }
@@ -222,7 +256,31 @@ class UiSettingsProvider extends ChangeNotifier {
     _chatSidebarWidth = normalized;
     notifyListeners();
     try {
-      await LocalConfigService.update({keyChatSidebarWidth: normalized});
+      await _persist({keyChatSidebarWidth: normalized});
+    } catch (e) {
+      _error = e.toString();
+    }
+  }
+
+  /// 设置首页书籍排序模式并写入本地配置。
+  Future<void> setHomeSortMode(BookSortMode mode) async {
+    if (mode == _homeSortMode) return;
+    _homeSortMode = mode;
+    notifyListeners();
+    try {
+      await _persist({keyHomeSortMode: mode.storageValue});
+    } catch (e) {
+      _error = e.toString();
+    }
+  }
+
+  /// 设置首页书籍排列方式并写入本地配置。
+  Future<void> setHomeLayoutMode(BookLayoutMode mode) async {
+    if (mode == _homeLayoutMode) return;
+    _homeLayoutMode = mode;
+    notifyListeners();
+    try {
+      await _persist({keyHomeLayoutMode: mode.storageValue});
     } catch (e) {
       _error = e.toString();
     }
@@ -237,7 +295,7 @@ class UiSettingsProvider extends ChangeNotifier {
     _fontScaleIndex = normalized;
     notifyListeners();
     try {
-      await LocalConfigService.update({keyFontScaleIndex: normalized});
+      await _persist({keyFontScaleIndex: normalized});
     } catch (e) {
       _error = e.toString();
     }
@@ -256,7 +314,7 @@ class UiSettingsProvider extends ChangeNotifier {
     _fontFamily = normalized;
     notifyListeners();
     try {
-      await LocalConfigService.update({keyFontFamily: normalized});
+      await _persist({keyFontFamily: normalized});
     } catch (e) {
       _error = e.toString();
     }

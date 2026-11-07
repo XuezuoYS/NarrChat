@@ -105,14 +105,38 @@ void main() {
   });
 
   group('bookGridColumns', () {
-    test('手机窄屏至少 2 列', () {
-      expect(bookGridColumns(368), 2);
+    test('手机窄屏保持舒适列数', () {
+      expect(bookGridColumns(368), 3);
       expect(bookGridColumns(288), 2);
     });
 
     test('随可用宽度增加列数', () {
-      expect(bookGridColumns(568), 3);
-      expect(bookGridColumns(1124), 6);
+      expect(bookGridColumns(568), 4);
+      expect(bookGridColumns(1124), 8);
+    });
+
+    test('宽屏使用更大间距时按新间距计算列数', () {
+      expect(bookGridColumns(368, spacing: kBookGridWideSpacing), 2);
+      expect(bookGridColumns(1124, spacing: kBookGridWideSpacing), 8);
+    });
+
+    test('宽屏固定卡宽：不够一格时留白，够了才增列', () {
+      expect(
+        bookGridColumns(
+          1124,
+          spacing: kBookGridWideSpacing,
+          cardWidth: kBookGridWideCardWidth,
+        ),
+        8,
+      );
+      expect(
+        bookGridColumns(
+          1200,
+          spacing: kBookGridWideSpacing,
+          cardWidth: kBookGridWideCardWidth,
+        ),
+        9,
+      );
     });
 
     test('非法 / 零宽度返回 1，交给布局层兜底', () {

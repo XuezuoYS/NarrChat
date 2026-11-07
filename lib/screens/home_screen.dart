@@ -66,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.narrColors;
+    final railColor = _homeRailColor(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= kHomeWideBreakpoint;
@@ -83,12 +84,15 @@ class _HomeScreenState extends State<HomeScreen> {
             appBarBuilder: (context, extraRow) => NarrChatAppBar(
               extraRowHeight: extraRow,
               showBorder: false,
+              // 宽屏把左栏底色延伸进顶栏，形成顶到窗口最上沿的整块左栏。
+              leadingBackgroundColor: wide ? railColor : null,
+              leadingBackgroundWidth: wide ? kHomeRailWidth : 0,
               titleWidget: wide
                   ? const SizedBox.shrink()
                   : const BrandLogo(size: 28, title: 'NarrChat'),
               actions: [
-                IconButton.filled(
-                  icon: const Icon(Icons.add_rounded, size: 20),
+                IconButton(
+                  icon: const Icon(Icons.add),
                   tooltip: '新建书籍',
                   onPressed: () => createHomeBook(context),
                 ),
@@ -104,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const _HomeBrandRail(),
+                      _HomeBrandRail(background: railColor),
                       Expanded(child: BookListScreen(wide: true)),
                     ],
                   )
@@ -116,20 +120,33 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+/// 宽屏左栏底色。
+///
+/// - 浅色：沿用页面背景灰，和白色内容面形成轻分隔；
+/// - 深色：内容面是较暗的 `surface`，左栏改用更浅一档的 `surfaceContainerLow`，
+///   避免左栏反而比右边更黑。
+Color _homeRailColor(BuildContext context) {
+  if (Theme.of(context).brightness == Brightness.dark) {
+    return Theme.of(context).colorScheme.surfaceContainerLow;
+  }
+  return context.narrColors.background;
+}
+
 /// 宽屏左侧品牌栏：垂直排列 Logo 与品牌名。
 ///
-/// 顶栏仍保持全宽（通知岛需要顶栏槽位），左栏因此从顶栏下方开始；
-/// 顶栏与内容同色、无边框，视觉上仍是一体。
+/// 顶栏左侧已经铺了同色条，左栏因此从窗口最上沿一直连到页面底部；
+/// 顶栏与内容同色、无边框，视觉上是一体。
 class _HomeBrandRail extends StatelessWidget {
-  const _HomeBrandRail();
+  const _HomeBrandRail({required this.background});
+
+  final Color background;
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.narrColors;
     return Container(
       key: kHomeRailKey,
       width: kHomeRailWidth,
-      color: colors.background,
+      color: background,
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 20),
       child: const Align(
         alignment: Alignment.topLeft,

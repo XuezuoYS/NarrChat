@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/services/local_config_service.dart';
+import 'package:narrchat/utils/book_list_utils.dart';
 
 /// UiSettingsProvider 宽屏侧栏宽度：默认值 / 持久化 / 非法值消毒。
 void main() {
@@ -162,6 +163,67 @@ void main() {
       expect(reloaded.fontScaleIndex, 2);
       expect(reloaded.themeMode, AppThemeMode.dark);
       expect(reloaded.chatSidebarWidth, 520);
+    });
+  });
+
+  group('首页排序 / 排列设置', () {
+    test('未配置时默认更新时间 + 方格', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      expect(p.homeSortMode, BookSortMode.time);
+      expect(p.homeLayoutMode, BookLayoutMode.grid);
+    });
+
+    test('设置后写入本地配置且可重新加载', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      await p.setHomeSortMode(BookSortMode.az);
+      await p.setHomeLayoutMode(BookLayoutMode.list);
+
+      expect(
+        await LocalConfigService.readValue<String>(
+          UiSettingsProvider.keyHomeSortMode,
+        ),
+        'az',
+      );
+      expect(
+        await LocalConfigService.readValue<String>(
+          UiSettingsProvider.keyHomeLayoutMode,
+        ),
+        'list',
+      );
+
+      final reloaded = UiSettingsProvider();
+      await reloaded.load();
+      expect(reloaded.homeSortMode, BookSortMode.az);
+      expect(reloaded.homeLayoutMode, BookLayoutMode.list);
+    });
+
+    test('配置中的非法值（未知字符串 / 类型不符）加载时回退默认', () async {
+      await LocalConfigService.write({
+        UiSettingsProvider.keyHomeSortMode: 'bad',
+        UiSettingsProvider.keyHomeLayoutMode: 123,
+      });
+      final p = UiSettingsProvider();
+      await p.load();
+      expect(p.homeSortMode, BookSortMode.time);
+      expect(p.homeLayoutMode, BookLayoutMode.grid);
+      // 消毒只针对这两个键，不影响其它键。
+      expect(p.themeMode, AppThemeMode.system);
+    });
+
+    test('写入排序 / 排列不冲掉其它键', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      await p.setThemeMode(AppThemeMode.dark);
+      await p.setHomeSortMode(BookSortMode.az);
+      await p.setHomeLayoutMode(BookLayoutMode.list);
+
+      final reloaded = UiSettingsProvider();
+      await reloaded.load();
+      expect(reloaded.themeMode, AppThemeMode.dark);
+      expect(reloaded.homeSortMode, BookSortMode.az);
+      expect(reloaded.homeLayoutMode, BookLayoutMode.list);
     });
   });
 }

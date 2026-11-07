@@ -153,6 +153,21 @@ void main() {
     expect(category.style?.color, cardContext.narrColors.textSecondary);
   });
 
+  testWidgets('方格卡片：短标题的灰色分类紧贴标题，不平移到三行外', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '剑来', category: '玄幻')],
+    );
+
+    final title = tester.getRect(find.text('剑来'));
+    final category = tester.getRect(find.text('玄幻'));
+    expect(
+      category.top - title.bottom,
+      lessThan(10),
+      reason: '分类必须紧跟实际标题行数，不能按三行槽位下移',
+    );
+  });
+
   testWidgets('点击书籍进入对话页，返回按钮回到首页', (tester) async {
     await pumpHomeScreen(
       tester,

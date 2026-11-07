@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../providers/notification_settings_provider.dart';
+import '../providers/ui_settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/book_list_utils.dart';
 import '../widgets/app_menu.dart';
@@ -36,8 +38,6 @@ class BookListScreen extends StatefulWidget {
 
 class _BookListScreenState extends State<BookListScreen> {
   final TextEditingController _searchController = TextEditingController();
-  BookSortMode _sortMode = BookSortMode.time;
-  BookLayoutMode _layoutMode = BookLayoutMode.grid;
 
   @override
   void initState() {
@@ -58,8 +58,11 @@ class _BookListScreenState extends State<BookListScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<BookProvider>();
+    final ui = context.watch<UiSettingsProvider>();
+    final sortMode = ui.homeSortMode;
+    final layoutMode = ui.homeLayoutMode;
     final filtered = filterBooks(provider.books, _searchController.text);
-    final books = sortBooks(filtered, _sortMode, provider.updatedTimes);
+    final books = sortBooks(filtered, sortMode, provider.updatedTimes);
     final horizontal = widget.wide ? 28.0 : 16.0;
 
     return Column(
@@ -68,10 +71,10 @@ class _BookListScreenState extends State<BookListScreen> {
         BookListToolbar(
           searchController: _searchController,
           onSearchChanged: (_) => setState(() {}),
-          sortMode: _sortMode,
-          onSortChanged: (mode) => setState(() => _sortMode = mode),
-          layoutMode: _layoutMode,
-          onLayoutChanged: (mode) => setState(() => _layoutMode = mode),
+          sortMode: sortMode,
+          onSortChanged: (mode) => ui.setHomeSortMode(mode),
+          layoutMode: layoutMode,
+          onLayoutChanged: (mode) => ui.setHomeLayoutMode(mode),
           bookCount: provider.books.length,
           onOpenSyncSettings: () => SettingsScreen.open(
             context,
@@ -92,7 +95,15 @@ class _BookListScreenState extends State<BookListScreen> {
             );
           },
         ),
-        Expanded(child: _buildBody(context, provider, books, horizontal)),
+        Expanded(
+          child: _buildBody(
+            context,
+            provider,
+            books,
+            horizontal,
+            layoutMode,
+          ),
+        ),
       ],
     );
   }
@@ -118,18 +129,21 @@ class _BookListScreenState extends State<BookListScreen> {
     BookProvider provider,
     List<Book> books,
     double horizontal,
+    BookLayoutMode layoutMode,
   ) {
     if (provider.isLoading && provider.books.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
     if (provider.books.isEmpty) return _buildWelcomeEmpty(context);
     if (books.isEmpty) return _buildNoMatch(context);
-    return _layoutMode == BookLayoutMode.grid
+    return layoutMode == BookLayoutMode.grid
         ? _buildGrid(context, books, horizontal)
         : _buildList(context, provider, books, horizontal);
   }
 
-  /// 方格排列：列数随视口宽度动态计算，封面固定 2:3。
+  /// 方格排列：封面固定 2:3。
+  ///
+  /// 窄屏按列数均分可用宽度；宽屏固定卡片宽度，右侧留白，直到能再放下一列。
   Widget _buildGrid(
     BuildContext context,
     List<Book> books,
@@ -139,21 +153,31 @@ class _BookListScreenState extends State<BookListScreen> {
       builder: (context, constraints) {
         final contentWidth = constraints.maxWidth - horizontal * 2;
         if (contentWidth <= 0) return const SizedBox.shrink();
-        final columns = bookGridColumns(contentWidth);
-        final cardWidth =
-            (contentWidth - (columns - 1) * kBookGridSpacing) / columns;
-        final extent = bookGridItemExtent(
-          cardWidth,
-          MediaQuery.textScalerOf(context),
-        );
-        return GridView.builder(
-          padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 24),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        final scaler = MediaQuery.textScalerOf(context);
+        final SliverGridDelegate gridDelegate;
+        if (widget.wide) {
+          gridDelegate = _FixedWidthGridDelegate(
+            cardWidth: kBookGridWideCardWidth,
+            spacing: kBookGridWideSpacing,
+            mainAxisExtent: bookGridItemExtent(
+              kBookGridWideCardWidth,
+              scaler,
+            ),
+          );
+        } else {
+          final columns = bookGridColumns(contentWidth);
+          final cardWidth =
+              (contentWidth - (columns - 1) * kBookGridSpacing) / columns;
+          gridDelegate = SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
             crossAxisSpacing: kBookGridSpacing,
             mainAxisSpacing: kBookGridSpacing,
-            mainAxisExtent: extent,
-          ),
+            mainAxisExtent: bookGridItemExtent(cardWidth, scaler),
+          );
+        }
+        return GridView.builder(
+          padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 24),
+          gridDelegate: gridDelegate,
           itemCount: books.length,
           itemBuilder: (context, index) {
             final book = books[index];
@@ -364,4 +388,46 @@ class _BookListScreenState extends State<BookListScreen> {
       ),
     );
   }
+}
+
+/// 固定卡片宽度的方格委托：卡片不拉伸，右侧允许留白。
+///
+/// 与 `SliverGridDelegateWithFixedCrossAxisCount` 的区别：后者会把卡片宽度
+/// 均分到整个可用宽度；本委托始终保持 [cardWidth]，只有真的能再放下一列时
+/// 才增加列数，剩余空间留在右侧。
+class _FixedWidthGridDelegate extends SliverGridDelegate {
+  const _FixedWidthGridDelegate({
+    required this.cardWidth,
+    required this.spacing,
+    required this.mainAxisExtent,
+  });
+
+  final double cardWidth;
+  final double spacing;
+  final double mainAxisExtent;
+
+  @override
+  SliverGridLayout getLayout(SliverConstraints constraints) {
+    final columns = bookGridColumns(
+      constraints.crossAxisExtent,
+      spacing: spacing,
+      cardWidth: cardWidth,
+    );
+    return SliverGridRegularTileLayout(
+      crossAxisCount: columns,
+      mainAxisStride: mainAxisExtent + spacing,
+      crossAxisStride: cardWidth + spacing,
+      childMainAxisExtent: mainAxisExtent,
+      childCrossAxisExtent: cardWidth,
+      reverseCrossAxis: axisDirectionIsReversed(
+        constraints.crossAxisDirection,
+      ),
+    );
+  }
+
+  @override
+  bool shouldRelayout(covariant _FixedWidthGridDelegate oldDelegate) =>
+      cardWidth != oldDelegate.cardWidth ||
+      spacing != oldDelegate.spacing ||
+      mainAxisExtent != oldDelegate.mainAxisExtent;
 }

@@ -35,6 +35,8 @@ class NarrChatAppBar extends StatefulWidget implements PreferredSizeWidget {
     this.onTitleTap,
     this.islandEnabled = true,
     this.extraRowHeight = 0,
+    this.leadingBackgroundColor,
+    this.leadingBackgroundWidth = 0,
   }) : assert(
          title != null || titleWidget != null,
          '标题与自定义标题至少提供一个',
@@ -75,6 +77,15 @@ class NarrChatAppBar extends StatefulWidget implements PreferredSizeWidget {
 
   /// 顶栏附加行当前高度（由 [IslandAwareScaffold] 注入，0 表示单行形态）。
   final double extraRowHeight;
+
+  /// 顶栏左侧附加底色；null 时不绘制（普通页面保持原样）。
+  ///
+  /// 首页宽屏用它把左侧品牌栏的底色延伸到顶栏，形成「左栏顶到窗口最上沿」的
+  /// 整块区域；不影响标题、页面按键与驻场岛槽位。
+  final Color? leadingBackgroundColor;
+
+  /// 顶栏左侧附加底色宽度（逻辑像素）；≤0 时不绘制。
+  final double leadingBackgroundWidth;
 
   @override
   Size get preferredSize => Size.fromHeight(kToolbarHeight + extraRowHeight);
@@ -264,33 +275,52 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
                   ? Border(bottom: BorderSide(color: colors.divider))
                   : null,
             ),
-            child: AppBar(
-              backgroundColor: widget.backgroundColor ?? colors.surface,
-              foregroundColor: widget.foregroundColor,
-              elevation: 0,
-              scrolledUnderElevation: 0,
-              titleSpacing: titleSpacing,
-              leadingWidth: widget.leadingWidth,
-              // 自动返回按钮交给 `AppBar` 自己决定（`impliesAppBarDismissal`）：
-              // 该判断挂在 `ModalRoute` 上，路由栈变化时会自动重建；自己判
-              // `canPop()` 会在「返回动画途中恰好重建」时留下一个永不消失的返回键。
-              leading: widget.leading,
-              title: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: titleMaxWidth),
-                child: _buildTitleContent(context),
-              ),
-              actions: [
-                if (widget.actions.isNotEmpty)
-                  Row(
-                    key: _actionsKey,
-                    mainAxisSize: MainAxisSize.min,
-                    children: widget.actions,
+            child: Stack(
+              children: [
+                // 左侧附加底色（首页宽屏把左栏延伸到顶栏）。
+                if (widget.leadingBackgroundColor != null &&
+                    widget.leadingBackgroundWidth > 0)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: widget.leadingBackgroundWidth,
+                    child: ColoredBox(
+                      color: widget.leadingBackgroundColor!,
+                    ),
                   ),
+                AppBar(
+                  // 底色由外层 Container 提供；顶栏本身透明，才能露出左侧
+                  // 附加色条，同时不改变其它页面的原有观感。
+                  backgroundColor: Colors.transparent,
+                  surfaceTintColor: Colors.transparent,
+                  foregroundColor: widget.foregroundColor,
+                  elevation: 0,
+                  scrolledUnderElevation: 0,
+                  titleSpacing: titleSpacing,
+                  leadingWidth: widget.leadingWidth,
+                  // 自动返回按钮交给 `AppBar` 自己决定（`impliesAppBarDismissal`）：
+                  // 该判断挂在 `ModalRoute` 上，路由栈变化时会自动重建；自己判
+                  // `canPop()` 会在「返回动画途中恰好重建」时留下一个永不消失的返回键。
+                  leading: widget.leading,
+                  title: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: titleMaxWidth),
+                    child: _buildTitleContent(context),
+                  ),
+                  actions: [
+                    if (widget.actions.isNotEmpty)
+                      Row(
+                        key: _actionsKey,
+                        mainAxisSize: MainAxisSize.min,
+                        children: widget.actions,
+                      ),
+                  ],
+                  // 单行形态：不可见槽位居中占位（岛由 overlay 画在同一矩形）。
+                  flexibleSpace: twoRow ? null : Center(child: slot),
+                  // 附加行形态：向下多出一行放岛（高度随动画逐帧变化）。
+                  bottom: twoRow ? islandRow : null,
+                ),
               ],
-              // 单行形态：不可见槽位居中占位（岛由 overlay 画在同一矩形）。
-              flexibleSpace: twoRow ? null : Center(child: slot),
-              // 附加行形态：向下多出一行放岛（高度随动画逐帧变化）。
-              bottom: twoRow ? islandRow : null,
             ),
           ),
         );
