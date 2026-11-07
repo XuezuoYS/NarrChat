@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/default_cover_style.dart';
 import '../providers/ui_settings_provider.dart';
 import '../screens/font_settings_screen.dart';
 import '../services/system_fonts_service.dart';
 import '../theme/app_theme.dart';
 
-/// UI 设置子模块内容（通用设置面板内）：主题模式 + 字体设置入口。
+/// UI 设置子模块内容（通用设置面板内）：主题模式 + 默认封面 + 字体设置入口。
 ///
 /// 「字体设置」行本身不再承载字体/大小的具体交互，点按进入
 /// [FontSettingsScreen] 二级页（字体样式选择 + 字体大小 6 档缩放）。
@@ -23,6 +24,8 @@ class UiSettingsForm extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildThemeSetting(context, ui),
+        const SizedBox(height: 4),
+        _buildDefaultCoverSetting(context, ui),
         const SizedBox(height: 4),
         _buildFontEntry(context, ui),
       ],
@@ -113,6 +116,52 @@ class UiSettingsForm extends StatelessWidget {
           trailing: segmented,
         );
       },
+    );
+  }
+
+  /// 默认封面设置：书籍未设置封面时，首页展示插画 1 / 程序生成的灰底书名封面。
+  Widget _buildDefaultCoverSetting(
+    BuildContext context,
+    UiSettingsProvider ui,
+  ) {
+    final colors = context.narrColors;
+    return ListTile(
+      key: const ValueKey('ui_settings_default_cover'),
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.image_outlined),
+      title: const Text('默认封面'),
+      subtitle: const Text('当未设置书籍封面时，首页展示的封面内容'),
+      trailing: PopupMenuButton<DefaultCoverStyle>(
+        key: const ValueKey('ui_settings_default_cover_menu'),
+        tooltip: '选择默认封面',
+        initialValue: ui.defaultCoverStyle,
+        onSelected: (style) => ui.setDefaultCoverStyle(style),
+        itemBuilder: (context) => [
+          for (final style in DefaultCoverStyle.values)
+            CheckedPopupMenuItem<DefaultCoverStyle>(
+              value: style,
+              checked: style == ui.defaultCoverStyle,
+              child: Text(style.label),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                ui.defaultCoverStyle.label,
+                style: TextStyle(fontSize: 13, color: colors.textPrimary),
+              ),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 20,
+                color: colors.textSecondary,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

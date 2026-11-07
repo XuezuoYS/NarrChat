@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/book.dart';
+import '../models/default_cover_style.dart';
 import '../theme/app_theme.dart';
 import 'book_cover.dart';
 
@@ -56,11 +57,15 @@ class BookGridCard extends StatelessWidget {
   /// 上下文菜单回调，参数为全局坐标（触屏长按取卡片中心）。
   final void Function(Offset globalPosition)? onContextMenu;
 
+  /// 书籍未设置封面时使用的默认封面样式。
+  final DefaultCoverStyle coverStyle;
+
   const BookGridCard({
     super.key,
     required this.book,
     required this.onTap,
     this.onContextMenu,
+    this.coverStyle = DefaultCoverStyle.illustration1,
   });
 
   @override
@@ -73,7 +78,12 @@ class BookGridCard extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            BookCover(width: width, radius: _kCoverRadius),
+            BookCover(
+              width: width,
+              radius: _kCoverRadius,
+              title: book.title,
+              style: coverStyle,
+            ),
             const SizedBox(height: _kCoverTextGap),
             Text(
               book.title,

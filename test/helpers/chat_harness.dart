@@ -175,6 +175,7 @@ Future<RoundProvider> pumpChatScreen(
 /// （缺省 [FakeNotificationBackend]，避免走真实插件通道）；
 /// [notificationSettings] 注入预先 refresh 过的设置；
 /// [theme]：页面主题（默认浅色；深色用例可传 dark）；
+/// [uiSettings]：注入 UI 设置（默认新建不写盘实例，可预设默认封面等）；
 /// [textScale]：全局文字缩放倍率；[onOpenBook]：驻场岛展开区回调。
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
@@ -185,6 +186,7 @@ Future<BookProvider> pumpHomeScreen(
   NotificationSettingsProvider? notificationSettings,
   Size size = const Size(1400, 900),
   ThemeData? theme,
+  UiSettingsProvider? uiSettings,
   double textScale = 1.0,
   void Function(String bookUuid)? onOpenBook,
 }) async {
@@ -215,7 +217,8 @@ Future<BookProvider> pumpHomeScreen(
         // 首页可进入书籍对话页（对话页布局读取 UI 设置）。
         // 排序 / 排列切换会写本地配置：测试注入空写入器，避免真实文件 I/O。
         ChangeNotifierProvider(
-          create: (_) => UiSettingsProvider(persist: (_) async {}),
+          create: (_) =>
+              uiSettings ?? UiSettingsProvider(persist: (_) async {}),
         ),
         // 云同步（SyncStatusChip 需读取其 syncState）。
         ChangeNotifierProvider(create: (_) => CloudSyncProvider()),

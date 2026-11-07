@@ -3,6 +3,7 @@ import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../models/book.dart';
+import '../models/default_cover_style.dart';
 import '../providers/book_provider.dart';
 import '../providers/notification_settings_provider.dart';
 import '../providers/ui_settings_provider.dart';
@@ -61,6 +62,7 @@ class _BookListScreenState extends State<BookListScreen> {
     final ui = context.watch<UiSettingsProvider>();
     final sortMode = ui.homeSortMode;
     final layoutMode = ui.homeLayoutMode;
+    final coverStyle = ui.defaultCoverStyle;
     final filtered = filterBooks(provider.books, _searchController.text);
     final books = sortBooks(filtered, sortMode, provider.updatedTimes);
     final horizontal = widget.wide ? 28.0 : 16.0;
@@ -102,6 +104,7 @@ class _BookListScreenState extends State<BookListScreen> {
             books,
             horizontal,
             layoutMode,
+            coverStyle,
           ),
         ),
       ],
@@ -130,6 +133,7 @@ class _BookListScreenState extends State<BookListScreen> {
     List<Book> books,
     double horizontal,
     BookLayoutMode layoutMode,
+    DefaultCoverStyle coverStyle,
   ) {
     if (provider.isLoading && provider.books.isEmpty) {
       return const Center(child: CircularProgressIndicator());
@@ -137,8 +141,8 @@ class _BookListScreenState extends State<BookListScreen> {
     if (provider.books.isEmpty) return _buildWelcomeEmpty(context);
     if (books.isEmpty) return _buildNoMatch(context);
     return layoutMode == BookLayoutMode.grid
-        ? _buildGrid(context, books, horizontal)
-        : _buildList(context, provider, books, horizontal);
+        ? _buildGrid(context, books, horizontal, coverStyle)
+        : _buildList(context, provider, books, horizontal, coverStyle);
   }
 
   /// 方格排列：封面固定 2:3。
@@ -148,6 +152,7 @@ class _BookListScreenState extends State<BookListScreen> {
     BuildContext context,
     List<Book> books,
     double horizontal,
+    DefaultCoverStyle coverStyle,
   ) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -184,6 +189,7 @@ class _BookListScreenState extends State<BookListScreen> {
             return BookGridCard(
               key: ValueKey('book_card_${book.uuid}'),
               book: book,
+              coverStyle: coverStyle,
               onTap: () => openHomeChat(context, book),
               onContextMenu: (position) => _showBookMenu(book, position),
             );
@@ -199,13 +205,14 @@ class _BookListScreenState extends State<BookListScreen> {
     BookProvider provider,
     List<Book> books,
     double horizontal,
+    DefaultCoverStyle coverStyle,
   ) {
     return ListView.separated(
       padding: EdgeInsets.fromLTRB(horizontal, 12, horizontal, 16),
       itemCount: books.length,
       separatorBuilder: (_, _) => const SizedBox(height: 6),
       itemBuilder: (context, index) =>
-          _buildBookTile(context, provider, books[index]),
+          _buildBookTile(context, provider, books[index], coverStyle),
     );
   }
 
@@ -214,6 +221,7 @@ class _BookListScreenState extends State<BookListScreen> {
     BuildContext context,
     BookProvider provider,
     Book book,
+    DefaultCoverStyle coverStyle,
   ) {
     final theme = Theme.of(context);
     final updatedAt = provider.updatedTimes[book.uuid];
@@ -223,7 +231,12 @@ class _BookListScreenState extends State<BookListScreen> {
       contentPadding: const EdgeInsetsDirectional.only(start: 16, end: 8),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       tileColor: theme.colorScheme.surfaceContainerLow,
-      leading: BookCover(width: 36, radius: 8),
+      leading: BookCover(
+        width: 36,
+        radius: 8,
+        title: book.title,
+        style: coverStyle,
+      ),
       title: Text(
         book.title,
         maxLines: 2,

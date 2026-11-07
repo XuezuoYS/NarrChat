@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../models/default_cover_style.dart';
 import '../services/local_config_service.dart';
 import '../services/system_fonts_service.dart';
 import '../utils/book_list_utils.dart';
@@ -111,7 +112,8 @@ const double kChatSidebarDefaultWidth = 380;
 /// - 全局字体（[fontFamily]，空字符串表示跟随系统默认）；
 /// - 全局字体大小档位（[fontScaleIndex]：6 档，0 为默认 0%，可为负；全局文字缩放）；
 /// - 宽屏 Chat 页右侧栏宽度（[chatSidebarWidth]，默认 [kChatSidebarDefaultWidth]）；
-/// - 首页书籍排序模式（[homeSortMode]）/ 排列方式（[homeLayoutMode]）。
+/// - 首页书籍排序模式（[homeSortMode]）/ 排列方式（[homeLayoutMode]）；
+/// - 首页默认封面样式（[defaultCoverStyle]）。
 class UiSettingsProvider extends ChangeNotifier {
   /// [persist] 注入本地配置写入实现；默认写 [LocalConfigService.update]。
   ///
@@ -142,12 +144,16 @@ class UiSettingsProvider extends ChangeNotifier {
   /// 本地 JSON 配置文件中的首页书籍排列方式键名。
   static const String keyHomeLayoutMode = 'homeLayoutMode';
 
+  /// 本地 JSON 配置文件中的首页默认封面样式键名。
+  static const String keyDefaultCoverStyle = 'defaultCoverStyle';
+
   String _fontFamily = '';
   int _fontScaleIndex = FontScaleLevel.defaultLevel.offset;
   AppThemeMode _themeMode = AppThemeMode.system;
   double _chatSidebarWidth = kChatSidebarDefaultWidth;
   BookSortMode _homeSortMode = BookSortMode.time;
   BookLayoutMode _homeLayoutMode = BookLayoutMode.grid;
+  DefaultCoverStyle _defaultCoverStyle = DefaultCoverStyle.illustration1;
   bool _isLoading = false;
   String? _error;
 
@@ -189,6 +195,9 @@ class UiSettingsProvider extends ChangeNotifier {
   /// 首页书籍排列方式（默认方格）。
   BookLayoutMode get homeLayoutMode => _homeLayoutMode;
 
+  /// 首页默认封面样式（默认插画 1）。
+  DefaultCoverStyle get defaultCoverStyle => _defaultCoverStyle;
+
   bool get isLoading => _isLoading;
   String? get error => _error;
 
@@ -223,6 +232,10 @@ class UiSettingsProvider extends ChangeNotifier {
       final rawLayout = cfg[keyHomeLayoutMode];
       _homeLayoutMode = BookLayoutMode.fromStorageValue(
         rawLayout is String ? rawLayout : null,
+      );
+      final rawCover = cfg[keyDefaultCoverStyle];
+      _defaultCoverStyle = DefaultCoverStyle.fromStorageValue(
+        rawCover is String ? rawCover : null,
       );
     } catch (e) {
       _error = e.toString();
@@ -281,6 +294,18 @@ class UiSettingsProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await _persist({keyHomeLayoutMode: mode.storageValue});
+    } catch (e) {
+      _error = e.toString();
+    }
+  }
+
+  /// 设置首页默认封面样式并写入本地配置。
+  Future<void> setDefaultCoverStyle(DefaultCoverStyle style) async {
+    if (style == _defaultCoverStyle) return;
+    _defaultCoverStyle = style;
+    notifyListeners();
+    try {
+      await _persist({keyDefaultCoverStyle: style.storageValue});
     } catch (e) {
       _error = e.toString();
     }

@@ -63,6 +63,9 @@ void main() {
     // UI 设置内容：主题设置可见。
     expect(find.text('主题'), findsOneWidget);
     expect(find.text('跟随系统（默认）：随系统亮暗自动切换'), findsOneWidget);
+    // UI 设置内容：默认封面设置可见。
+    expect(find.text('默认封面'), findsOneWidget);
+    expect(find.text('当未设置书籍封面时，首页展示的封面内容'), findsOneWidget);
     // UI 设置内容：字体设置入口行可见（字体样式 + 大小缩放的二级页入口）。
     expect(find.text('字体设置'), findsOneWidget);
 

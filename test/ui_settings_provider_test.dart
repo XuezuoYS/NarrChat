@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/models/default_cover_style.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/services/local_config_service.dart';
 import 'package:narrchat/utils/book_list_utils.dart';
@@ -224,6 +225,60 @@ void main() {
       expect(reloaded.themeMode, AppThemeMode.dark);
       expect(reloaded.homeSortMode, BookSortMode.az);
       expect(reloaded.homeLayoutMode, BookLayoutMode.list);
+    });
+  });
+
+  group('首页默认封面设置', () {
+    test('未配置时默认插画1', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      expect(p.defaultCoverStyle, DefaultCoverStyle.illustration1);
+    });
+
+    test('设置为无插画后写入本地并重新加载', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      await p.setDefaultCoverStyle(DefaultCoverStyle.noIllustration);
+
+      expect(
+        await LocalConfigService.readValue<String>(
+          UiSettingsProvider.keyDefaultCoverStyle,
+        ),
+        'none',
+      );
+
+      final reloaded = UiSettingsProvider();
+      await reloaded.load();
+      expect(reloaded.defaultCoverStyle, DefaultCoverStyle.noIllustration);
+    });
+
+    test('配置中的非法值（未知字符串 / 类型不符）加载时回退插画1', () async {
+      for (final invalid in <Object>['bad', 123, true]) {
+        await LocalConfigService.write({
+          UiSettingsProvider.keyDefaultCoverStyle: invalid,
+        });
+        final p = UiSettingsProvider();
+        await p.load();
+        expect(
+          p.defaultCoverStyle,
+          DefaultCoverStyle.illustration1,
+          reason: '非法值 $invalid 应回退插画1',
+        );
+      }
+    });
+
+    test('写入默认封面不冲掉排序 / 排列等其它键', () async {
+      final p = UiSettingsProvider();
+      await p.load();
+      await p.setHomeSortMode(BookSortMode.az);
+      await p.setHomeLayoutMode(BookLayoutMode.list);
+      await p.setDefaultCoverStyle(DefaultCoverStyle.noIllustration);
+
+      final reloaded = UiSettingsProvider();
+      await reloaded.load();
+      expect(reloaded.homeSortMode, BookSortMode.az);
+      expect(reloaded.homeLayoutMode, BookLayoutMode.list);
+      expect(reloaded.defaultCoverStyle, DefaultCoverStyle.noIllustration);
     });
   });
 }

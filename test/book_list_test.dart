@@ -2,9 +2,11 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/default_cover_style.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
+import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/notification_service.dart';
@@ -165,6 +167,43 @@ void main() {
       category.top - title.bottom,
       lessThan(10),
       reason: '分类必须紧跟实际标题行数，不能按三行槽位下移',
+    );
+  });
+
+  testWidgets('默认封面为插画1：首页加载默认插画', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '插画书')],
+    );
+
+    final cover = find.byType(BookCover);
+    expect(cover, findsOneWidget);
+    expect(
+      find.descendant(of: cover, matching: find.byType(Image)),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('默认封面设为无插画：首页显示含书名的生成封面', (tester) async {
+    final ui = UiSettingsProvider(persist: (_) async {});
+    await ui.setDefaultCoverStyle(DefaultCoverStyle.noIllustration);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '灰皮书')],
+      uiSettings: ui,
+    );
+
+    final cover = find.byType(BookCover);
+    expect(cover, findsOneWidget);
+    expect(
+      find.descendant(of: cover, matching: find.text('灰皮书')),
+      findsOneWidget,
+      reason: '生成封面必须包含书名',
+    );
+    expect(
+      find.descendant(of: cover, matching: find.byType(Image)),
+      findsNothing,
+      reason: '无插画模式不应再加载插画',
     );
   });
 
