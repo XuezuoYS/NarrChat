@@ -14,6 +14,7 @@ import '../utils/constants.dart';
 import '../utils/focus_utils.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/book_mod_panel.dart';
+import '../widgets/book_other_settings_panel.dart';
 import '../widgets/draggable_role_list.dart';
 import '../widgets/history_round_stepper.dart';
 import '../widgets/markdown_editing_controller.dart';
@@ -25,14 +26,15 @@ import '../widgets/world_book_panel.dart';
 
 /// 全窗口书籍设置界面（新建 / 编辑书籍）。
 ///
-/// 6 个子模块：
+/// 编辑态 7 个子模块（新建态 6 个）：
 /// - 书籍概览：书名、分类、文笔要求描述（区别于文笔参考段落）、历史轮次数、
 ///   记忆总结轮次合并、全局前后置词；
 /// - 角色类别与描述格式：可拖拽排序、增删、为每类设定描述格式；
 /// - 基础设定：世界观等不会变更的设定；
 /// - 世界书：关键词命中后自动注入 System Prompt；
 /// - 文笔参考段落：风格范例文本（仅注入 system）；
-/// - Mod 管理：启用/禁用 Mod 并调整置入顺序。
+/// - Mod 管理：启用/禁用 Mod 并调整置入顺序；
+/// - 其它设置（仅编辑态）：书籍维护操作，目前提供「删除未启用的代」。
 class BookSettingsScreen extends StatefulWidget {
   final Book? book;
 
@@ -303,13 +305,16 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     return SettingsShell(
       title: isEdit ? '书籍设置' : '新建书籍',
       icon: Icons.book_outlined,
-      navItems: const [
-        SettingsNavItem(icon: Icons.menu_book_outlined, label: '书籍概览'),
-        SettingsNavItem(icon: Icons.category_outlined, label: '角色类别与描述格式'),
-        SettingsNavItem(icon: Icons.public_outlined, label: '基础设定'),
-        SettingsNavItem(icon: Icons.menu_book_outlined, label: '世界书'),
-        SettingsNavItem(icon: Icons.format_quote_outlined, label: '文笔参考段落'),
-        SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
+      navItems: [
+        const SettingsNavItem(icon: Icons.menu_book_outlined, label: '书籍概览'),
+        const SettingsNavItem(icon: Icons.category_outlined, label: '角色类别与描述格式'),
+        const SettingsNavItem(icon: Icons.public_outlined, label: '基础设定'),
+        const SettingsNavItem(icon: Icons.menu_book_outlined, label: '世界书'),
+        const SettingsNavItem(icon: Icons.format_quote_outlined, label: '文笔参考段落'),
+        const SettingsNavItem(icon: Icons.extension_outlined, label: 'Mod 管理'),
+        // 新建态还没有任何代，不显示纯维护性质的「其它设置」。
+        if (isEdit)
+          const SettingsNavItem(icon: Icons.tune_outlined, label: '其它设置'),
       ],
       actions: [
         FilledButton.icon(
@@ -337,6 +342,11 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
             );
           case 4:
             return _buildWritingStyle(context);
+          case 6:
+            // 编辑态才有的维护页；新建态导航项不会出现（防御性兜底空 uuid）。
+            return BookOtherSettingsPanel(
+              bookUuid: widget.book?.uuid ?? '',
+            );
           default:
             return _panelPage(
               BookModPanel(

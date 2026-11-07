@@ -4,8 +4,10 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/mod_provider.dart';
+import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/book_settings_screen.dart';
+import 'package:narrchat/services/app_notice_center.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
@@ -13,6 +15,7 @@ import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
+import 'helpers/notice_harness.dart';
 
 void main() {
   late TestStack stack;
@@ -55,6 +58,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final navigatorKey = GlobalKey<NavigatorState>();
+    final noticeCenter = AppNoticeCenter();
+    addTearDown(noticeCenter.dispose);
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -66,10 +71,17 @@ void main() {
             create: (_) => ModProvider(repository: stack.repos.mod),
           ),
           ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
+          ChangeNotifierProvider(
+            create: (_) => RoundProvider(
+              rounds: stack.repos.rounds,
+              books: stack.repos.books,
+            ),
+          ),
         ],
         child: MaterialApp(
           theme: NarrChatTheme.light,
           navigatorKey: navigatorKey,
+          builder: floatingNoticeBuilder(center: noticeCenter),
           home: const Scaffold(),
         ),
       ),
@@ -241,9 +253,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('编辑态有「其它设置」栏，点开显示删除未启用代的入口', (tester) async {
+    await tester.runAsync(() async {
+      await stack.seedRound(
+        'b1',
+        roundIndex: 1,
+        uuid: 'g1',
+        isUsing: true,
+        aiNarrative: '当前代',
+      );
+      await stack.seedRound(
+        'b1',
+        roundIndex: 1,
+        uuid: 'g1-old',
+        isUsing: false,
+        aiNarrative: '旧代',
+      );
+    });
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(find.text('其它设置'), findsOneWidget, reason: '编辑态导航含其它设置');
+    await tester.tap(find.text('其它设置'));
+    await settle(tester);
+
+    expect(find.text('删除未启用的代'), findsWidgets, reason: '卡片标题 + 按钮');
+    expect(find.textContaining('全书共 2 代'), findsOneWidget);
+    expect(find.textContaining('其中 1 个未启用'), findsOneWidget);
+  });
+
   testWidgets('每个子页都带 #/## 输入提示（灰字小字，文案单一真源）', (tester) async {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
+    // 「其它设置」是维护页，没有文本输入，刻意不要求该提示，不在此列。
     const pages = [
       '书籍概览',
       '角色类别与描述格式',

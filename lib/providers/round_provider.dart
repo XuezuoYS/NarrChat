@@ -265,6 +265,11 @@ class RoundProvider extends ChangeNotifier {
   _BookGenState? get _curGen => _gens[_bookUuid];
 
   bool get isSending => _curGen?.isSending ?? false;
+
+  /// 指定书是否正在生成（支持多本书并发生成；与当前查看的是哪本书无关）。
+  bool isGeneratingBook(String bookUuid) =>
+      bookUuid.isNotEmpty && (_gens[bookUuid]?.isSending ?? false);
+
   bool get isStreaming => _curGen?.isStreaming ?? false;
   String get streamingContent => _curGen?.streamingContent ?? '';
 
@@ -2633,6 +2638,49 @@ class RoundProvider extends ChangeNotifier {
       _error = e.toString();
       notifyListeners();
       return false;
+    }
+  }
+
+  /// 当前已加载书的「删除未启用的代」计划；未加载该书 / uuid 为空时返回 null。
+  ///
+  /// 同步读本机缓存的元信息，不碰数据库（供书籍设置面板展示计数）。
+  DeleteUnusedGenerationsPlan? unusedGenerationsPlanFor(String bookUuid) {
+    if (bookUuid.isEmpty || _bookUuid != bookUuid) return null;
+    return BranchRules.planDeleteUnusedGenerations(all: _chain.allMeta);
+  }
+
+  /// 删除指定书**未启用**的代（每组保留当前选中代）。
+  ///
+  /// - 正在生成中 / uuid 为空 → 返回带 `refusal` 的结果，不写库；
+  /// - 成功删除 > 0 时重载当前书的活动链、清掉已删代的 RAW 记录，并触发云备份；
+  /// - 异常收进 [error] 并以 `refusal` 返回，供界面直接提示。
+  Future<RoundMutation> deleteUnusedGenerations(String bookUuid) async {
+    if (bookUuid.isEmpty) {
+      return const RoundMutation(refusal: '书籍信息缺失');
+    }
+    if (isGeneratingBook(bookUuid)) {
+      return const RoundMutation(refusal: '正在生成中，暂不可删除未启用的代');
+    }
+    try {
+      final result = await _roundsRepo.deleteUnusedGenerations(
+        bookUuid: bookUuid,
+      );
+      if (result.deleted <= 0) return result;
+
+      _bumpVersions();
+      if (_bookUuid == bookUuid) {
+        await loadRounds(bookUuid);
+        // RAW 按代 uuid 归属：被删代的记录随代消失，其余代不受影响。
+        final alive = {for (final meta in _chain.allMeta) meta.uuid};
+        _rawByGeneration.removeWhere((uuid, _) => !alive.contains(uuid));
+        notifyListeners();
+      }
+      _cloudSyncProvider?.triggerSync();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return RoundMutation(refusal: _error);
     }
   }
 

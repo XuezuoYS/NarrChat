@@ -248,6 +248,22 @@ class RoundRepository {
     return RoundMutation(deleted: plan.uuidsToDelete.length);
   }
 
+  /// 删除整本书里**未启用**的代（每组保留当前选中代）。
+  ///
+  /// 规则见 [BranchRules.planDeleteUnusedGenerations]：活动链与各分支行不受影响；
+  /// 因父代被删而不可达的后代一并物理删除。删除会刷新 `book_meta.updated_at`。
+  Future<RoundMutation> deleteUnusedGenerations({
+    required String bookUuid,
+  }) async {
+    if (bookUuid.isEmpty) return const RoundMutation();
+    final db = await books.open(bookUuid);
+    final metas = await db.rounds.listMeta();
+    final plan = BranchRules.planDeleteUnusedGenerations(all: metas);
+    if (plan.uuidsToDelete.isEmpty) return const RoundMutation();
+    await db.rounds.delete(plan.uuidsToDelete);
+    return RoundMutation(deleted: plan.uuidsToDelete.length);
+  }
+
   /// 删除本轮及之后（本分支全部代 + 因此不可达的行）。
   Future<RoundMutation> deleteRoundAndFollowing({
     required String bookUuid,

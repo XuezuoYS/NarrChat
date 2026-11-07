@@ -23,6 +23,48 @@ class DeleteGenerationPlan {
   bool get isRefused => refusal != null;
 }
 
+/// 「删除未启用的代」的计划。
+///
+/// 分组口径与 [RoundTree] 一致：`(branch_uuid, round_index, father_uuid)`。
+/// 每组保留 `is_using = 1` 的全部代；一组一个都没有时保留 [RoundTree.pickWinner]
+/// 选出的胜出者（与读取口径一致，避免脏数据把整组删空）。
+///
+/// 父代被删后后代不可达（见 `docs/database.md` 的 `father_uuid` 说明），
+/// 因此被删代的整棵子树一并进 [cascaded]。
+///
+/// **不变式**：活动链永远不在删除集合里——活动链每一步取的都是组内胜出者，
+/// 而胜出者一定被保留；链首是根，更不会被级联带走。
+class DeleteUnusedGenerationsPlan {
+  const DeleteUnusedGenerationsPlan({
+    required this.totalGenerations,
+    this.unused = const [],
+    this.cascaded = const [],
+  });
+
+  /// 清理前全书代数（含所有分支）。
+  final int totalGenerations;
+
+  /// 未启用的代（每组保留当前选中代；组内无选中时保留胜出者）。
+  final List<String> unused;
+
+  /// 仅因父代在删除集合里而不可达的后代。
+  final List<String> cascaded;
+
+  /// 需要物理删除的全部代 uuid（先未启用，后级联）。
+  List<String> get uuidsToDelete => [...unused, ...cascaded];
+
+  int get unusedCount => unused.length;
+
+  int get cascadedCount => cascaded.length;
+
+  int get total => unused.length + cascaded.length;
+
+  bool get isEmpty => total == 0;
+
+  static const DeleteUnusedGenerationsPlan empty =
+      DeleteUnusedGenerationsPlan(totalGenerations: 0);
+}
+
 /// 分支分叉点（父代）的展示信息。
 ///
 /// 父代可能已经删除：此时 [alive] 为 false，代序号从 `branches.father_row_shot`
@@ -216,6 +258,67 @@ class BranchRules {
     return DeleteGenerationPlan(
       uuidsToDelete: subtreeOf(target, all),
       fallbackUuid: fallback?.uuid,
+    );
+  }
+
+  /// 「删除未启用的代」：按组保留当前选中的代，其余旧代连同因此不可达的
+  /// 后代一起删除。
+  ///
+  /// 纯函数，不碰数据库；规则细节见 [DeleteUnusedGenerationsPlan]。
+  static DeleteUnusedGenerationsPlan planDeleteUnusedGenerations({
+    required List<RoundMeta> all,
+  }) {
+    if (all.isEmpty) return DeleteUnusedGenerationsPlan.empty;
+
+    // 1) 按组求保底存活代。
+    final groups = <String, List<RoundMeta>>{};
+    for (final row in all) {
+      final key =
+          '${row.branchUuid}\u0000${row.roundIndex}\u0000${row.fatherUuid ?? ''}';
+      (groups[key] ??= <RoundMeta>[]).add(row);
+    }
+    final keep = <String>{};
+    for (final group in groups.values) {
+      final using = group.where((row) => row.isUsing).toList(growable: false);
+      if (using.isEmpty) {
+        final winner = RoundTree.pickWinner(group);
+        if (winner != null) keep.add(winner.uuid);
+      } else {
+        keep.addAll(using.map((row) => row.uuid));
+      }
+    }
+
+    // 2) 组内非存活者都是未启用代。
+    final unused = <String>[
+      for (final row in all)
+        if (!keep.contains(row.uuid)) row.uuid,
+    ];
+    final unusedSet = unused.toSet();
+    if (unusedSet.isEmpty) {
+      return DeleteUnusedGenerationsPlan(totalGenerations: all.length);
+    }
+
+    // 3) 父代被删 → 后代不可达：一次 BFS 收全子树，避免 O(n²) 扫表。
+    final children = RoundTree.childrenIndex(all);
+    final doomed = <String>{...unusedSet};
+    final queue = <String>[...unusedSet];
+    while (queue.isNotEmpty) {
+      final kids = children[queue.removeLast()];
+      if (kids == null) continue;
+      for (final kid in kids) {
+        if (doomed.add(kid.uuid)) queue.add(kid.uuid);
+      }
+    }
+    // 输入顺序稳定，便于测试与调试（未启用在前，级联在后）。
+    final cascaded = <String>[
+      for (final row in all)
+        if (doomed.contains(row.uuid) && !unusedSet.contains(row.uuid))
+          row.uuid,
+    ];
+    return DeleteUnusedGenerationsPlan(
+      totalGenerations: all.length,
+      unused: unused,
+      cascaded: cascaded,
     );
   }
 

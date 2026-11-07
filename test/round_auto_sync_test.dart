@@ -166,6 +166,45 @@ void main() {
       expect(rp.rounds, isEmpty, reason: '该轮被物理删除');
       expect(cloud.triggers, 1, reason: '删除照旧触发');
     });
+
+    test('删除未启用的代 → 触发一次（内容真实减少）', () async {
+      final (rp, cloud) = await buildLoaded();
+      expect(await rp.sendRound(userInput: '第一轮', book: book), isTrue);
+      await stack.seedRound(
+        'b1',
+        roundIndex: 1,
+        uuid: 'gen-old',
+        isUsing: false,
+        aiNarrative: '旧代正文',
+      );
+      await rp.loadRounds('b1');
+      await (await stack.repos.stores.books.open('b1'))
+          .meta
+          .setUpdatedAt(DateTime.utc(2020));
+      cloud.triggers = 0;
+
+      final result = await rp.deleteUnusedGenerations('b1');
+
+      expect(result.deleted, 1);
+      expect(rp.versionInfoFor(1)!.aliveCount, 1, reason: '只留下当前选中代');
+      expect(cloud.triggers, 1, reason: '删除旧代属内容变更');
+      expect(
+        (await metaUpdatedAt()).isAfter(DateTime.utc(2020)),
+        isTrue,
+        reason: '删除代应刷新 book_meta.updated_at',
+      );
+    });
+
+    test('没有未启用的代可删 → 不触发同步', () async {
+      final (rp, cloud) = await buildLoaded();
+      expect(await rp.sendRound(userInput: '第一轮', book: book), isTrue);
+      cloud.triggers = 0;
+
+      final result = await rp.deleteUnusedGenerations('b1');
+
+      expect(result.deleted, 0);
+      expect(cloud.triggers, 0, reason: '没写库就不该触发同步');
+    });
   });
 
   group('只改"看哪一代 / 哪条分支" → 不触发、不动 updated_at', () {

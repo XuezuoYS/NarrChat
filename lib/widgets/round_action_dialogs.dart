@@ -79,6 +79,49 @@ Future<bool> showDeleteGenerationConfirmDialog(
   return result ?? false;
 }
 
+/// 「删除未启用的代」确认对话框（书籍设置 → 其它设置）。
+///
+/// 文案如实交代删除范围（未启用 + 因此不可达的后续代）与代价
+/// （无法恢复、不进回收站；分支保留，分叉来源被删时上文退化为快照）。
+/// 返回是否确认删除。
+Future<bool> showDeleteUnusedGenerationsConfirmDialog(
+  BuildContext context, {
+  required int unusedCount,
+  required int cascadedCount,
+}) async {
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (ctx) {
+      final scope = cascadedCount > 0
+          ? '将删除本书 $unusedCount 个未启用的代，'
+                '另有 $cascadedCount 个只能从这些代到达的后续代一并删除。'
+          : '将删除本书 $unusedCount 个未启用的代。';
+      return AlertDialog(
+        title: const Text('删除未启用的代'),
+        content: Text(
+          '$scope\n\n'
+          '删除后无法恢复，也不会进入回收站。当前活动链与各分支会保留；'
+          '若某条分支的分叉来源代被清理，该分支更早的上文会改用分叉时的快照兜底。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      );
+    },
+  );
+  return result ?? false;
+}
+
 /// 「刷新本轮」二次确认对话框（**唯一入口的确认框**）。
 ///
 /// 「刷新本轮」= 以该轮的用户输入在**同轮号**重新请求 AI（新增一代，旧代留在

@@ -165,6 +165,39 @@ void main() {
     expect(chain.rounds.single.uuid, 'g1', reason: '回落到前一代');
   });
 
+  test('删除未启用的代：保留选中代与活动链，连带删除不可达后代', () async {
+    await book.rounds.insert(gen('g1', 1, using: true));
+    await book.rounds.insert(gen('old1', 1, serial: 2));
+    await book.rounds.insert(gen('g2', 2, father: 'g1', using: true));
+    await book.rounds.insert(gen('ghost1', 2, father: 'old1', using: true));
+    await book.rounds.insert(gen('ghost2', 3, father: 'ghost1', using: true));
+    // 用一个远古时间戳做锚点，确认删除会刷新 updated_at（内容变更）。
+    await book.meta.setUpdatedAt(epoch);
+
+    final result = await repository.deleteUnusedGenerations(bookUuid: 'b1');
+
+    expect(result.deleted, 3, reason: '未启用的 old1 + 只能从它到达的 ghost1/ghost2');
+    final metas = await book.rounds.listMeta();
+    expect(metas.map((m) => m.uuid).toSet(), {'g1', 'g2'});
+    final chain = await repository.loadChain('b1');
+    expect(chain.rounds.map((r) => r.uuid), ['g1', 'g2'],
+        reason: '活动链原样保留');
+    expect((await book.meta.read()).updatedAt.isAfter(epoch), isTrue,
+        reason: '删除代属内容变更');
+  });
+
+  test('删除未启用的代：没有可删项时返回 0 且不动 updated_at', () async {
+    await seedChain();
+    await book.meta.setUpdatedAt(epoch);
+
+    final result = await repository.deleteUnusedGenerations(bookUuid: 'b1');
+
+    expect(result.deleted, 0);
+    expect((await book.rounds.listMeta()).length, 3);
+    expect((await book.meta.read()).updatedAt, epoch,
+        reason: '没删东西就不刷新时间戳');
+  });
+
   test('删除本轮及之后：本分支后续清空，前面保留', () async {
     await seedChain();
     final result = await repository.deleteRoundAndFollowing(

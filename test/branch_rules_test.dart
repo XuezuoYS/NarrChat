@@ -306,6 +306,66 @@ void main() {
     });
   });
 
+  group('planDeleteUnusedGenerations', () {
+    test('每组只留选中代，别的组与分支不受影响', () {
+      final all = [
+        meta('g1', index: 1, using: true),
+        meta('g1b', index: 1, serial: 2),
+        meta('g2', father: 'g1', index: 2, using: true),
+        meta('other', branch: 'br1', index: 1, using: true),
+        meta('otherOld', branch: 'br1', index: 1, serial: 2),
+      ];
+      final plan = BranchRules.planDeleteUnusedGenerations(all: all);
+      expect(plan.totalGenerations, 5);
+      expect(plan.unused, ['g1b', 'otherOld']);
+      expect(plan.cascaded, isEmpty);
+      expect(plan.total, 2);
+      expect(plan.isEmpty, isFalse);
+    });
+
+    test('一组没有任何 is_using：保留胜出者，不把整组删空', () {
+      final all = [
+        meta('a', index: 1, serial: 1),
+        meta('b', index: 1, serial: 2),
+        meta('c', index: 1, serial: 3),
+      ];
+      final plan = BranchRules.planDeleteUnusedGenerations(all: all);
+      expect(plan.unused.toSet(), {'a', 'b'}, reason: '胜出者是序号最大的 c');
+      expect(plan.cascaded, isEmpty);
+    });
+
+    test('删未启用父代 → 只能从它到达的后代一并删除（含仍标选中的后代）', () {
+      final all = [
+        meta('g1', index: 1, using: true),
+        meta('old', index: 1, serial: 2),
+        meta('g2', father: 'g1', index: 2, using: true),
+        meta('ghost1', father: 'old', index: 2, using: true),
+        meta('ghost2', father: 'ghost1', index: 3, using: true),
+        meta('other', branch: 'br1', index: 2, using: true),
+      ];
+      final plan = BranchRules.planDeleteUnusedGenerations(all: all);
+      expect(plan.unused, ['old']);
+      expect(plan.cascaded, ['ghost1', 'ghost2']);
+      expect(plan.uuidsToDelete, ['old', 'ghost1', 'ghost2']);
+      expect(plan.unusedCount, 1);
+      expect(plan.cascadedCount, 2);
+      expect(plan.total, 3);
+    });
+
+    test('全部启用 / 空书：空计划；已存在的孤儿不被顺手删', () {
+      final all = [
+        meta('g1', index: 1, using: true),
+        meta('g2', father: 'g1', index: 2, using: true),
+        meta('lost', father: 'ghost', index: 9, using: true),
+      ];
+      final plan = BranchRules.planDeleteUnusedGenerations(all: all);
+      expect(plan.isEmpty, isTrue);
+      expect(plan.totalGenerations, 3);
+      expect(BranchRules.planDeleteUnusedGenerations(all: const []).isEmpty,
+          isTrue);
+    });
+  });
+
   group('subtreeOf', () {
     test('包含自身与全部后代', () {
       final all = [
