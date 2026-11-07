@@ -18,9 +18,13 @@ const GitHubRelease _release = GitHubRelease(
 /// 打开按钮脚手架：弹出对话框并把 future 交回给用例断言。
 class _DialogHarness {
   Future<UpdateDialogChoice?>? future;
+  final List<Uri> openedUrls = [];
 }
 
-Future<_DialogHarness> _pumpOpenDialog(WidgetTester tester) async {
+Future<_DialogHarness> _pumpOpenDialog(
+  WidgetTester tester, {
+  Future<bool> Function(Uri url)? openLink,
+}) async {
   final harness = _DialogHarness();
   await tester.pumpWidget(
     MaterialApp(
@@ -34,6 +38,10 @@ Future<_DialogHarness> _pumpOpenDialog(WidgetTester tester) async {
                   context,
                   release: _release,
                   currentVersion: '1.3.1',
+                  openLink: (url) async {
+                    harness.openedUrls.add(url);
+                    return openLink == null ? true : await openLink(url);
+                  },
                 );
               },
               child: const Text('打开'),
@@ -68,6 +76,111 @@ void main() {
     expect(find.text('复制链接'), findsOneWidget);
     expect(find.text('跳过此版本'), findsOneWidget);
     expect(find.text('以后再说'), findsOneWidget);
+    expect(find.text('在浏览器打开'), findsOneWidget);
+
+    // 主按钮 = 在浏览器打开（FilledButton）；其余为辅助按钮（TextButton）。
+    final openButton = find.byKey(
+      const ValueKey('update_dialog_open_browser'),
+    );
+    expect(tester.widget(openButton), isA<FilledButton>());
+    expect(
+      find.descendant(of: openButton, matching: find.text('在浏览器打开')),
+      findsOneWidget,
+    );
+    final copyButton = find.byKey(const ValueKey('update_dialog_copy'));
+    expect(tester.widget(copyButton), isA<TextButton>());
+    expect(find.descendant(of: copyButton, matching: find.text('复制链接')),
+        findsOneWidget);
+    expect(
+      tester.widget(find.byKey(const ValueKey('update_dialog_skip'))),
+      isA<TextButton>(),
+    );
+    expect(
+      tester.widget(find.byKey(const ValueKey('update_dialog_later'))),
+      isA<TextButton>(),
+    );
+
+    // 宽屏：主操作与辅操作同一行，且主操作在最右。
+    final copyTopLeft =
+        tester.getTopLeft(find.byKey(const ValueKey('update_dialog_copy')));
+    final openTopLeft = tester.getTopLeft(openButton);
+    expect(openTopLeft.dy, closeTo(copyTopLeft.dy, 0.5));
+    expect(openTopLeft.dx, greaterThan(copyTopLeft.dx));
+  });
+
+  testWidgets('窄屏：四个动作按钮都在，主操作换到下一行', (tester) async {
+    tester.view.physicalSize = const Size(420, 820);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await _pumpOpenDialog(tester);
+
+    // 换行布局不应产生溢出异常（此前 OverflowBar 会把四个按钮叠成四层）。
+    expect(tester.takeException(), isNull);
+    final openButton = find.byKey(
+      const ValueKey('update_dialog_open_browser'),
+    );
+    for (final key in const [
+      'update_dialog_later',
+      'update_dialog_skip',
+      'update_dialog_copy',
+      'update_dialog_open_browser',
+    ]) {
+      expect(find.byKey(ValueKey(key)), findsOneWidget);
+    }
+    // 主操作独占下一行（右对齐），辅操作在上方一排。
+    expect(
+      tester.getTopLeft(openButton).dy,
+      greaterThan(
+        tester.getTopLeft(find.byKey(const ValueKey('update_dialog_copy'))).dy,
+      ),
+    );
+  });
+
+  testWidgets('在浏览器打开：用系统浏览器打开 Release 页面并返回 openInBrowser',
+      (tester) async {
+    final harness = await _pumpOpenDialog(tester);
+
+    await tester.tap(find.byKey(const ValueKey('update_dialog_open_browser')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('发现新版本'), findsNothing);
+    expect(await harness.future, UpdateDialogChoice.openInBrowser);
+    expect(harness.openedUrls, [Uri.parse(_release.pageUrl)]);
+  });
+
+  testWidgets('在浏览器打开失败：复制链接并提示', (tester) async {
+    final log = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        log.add(call);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    final harness = await _pumpOpenDialog(
+      tester,
+      openLink: (_) async => false,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('update_dialog_open_browser')));
+    await tester.pumpAndSettle();
+    await settleNoticeEnter(tester);
+
+    expect(await harness.future, UpdateDialogChoice.openInBrowser);
+    final copied = log.where((c) => c.method == 'Clipboard.setData').toList();
+    expect(copied, hasLength(1));
+    expect(
+      (copied.single.arguments as Map<Object?, Object?>)['text'],
+      _release.pageUrl,
+    );
+    expect(find.text('无法打开浏览器，下载链接已复制'), findsOneWidget);
+    await flushNotices(tester);
   });
 
   testWidgets('复制链接：写入剪贴板、关闭对话框并提示', (tester) async {
@@ -90,6 +203,7 @@ void main() {
 
     expect(find.text('发现新版本'), findsNothing);
     expect(await harness.future, UpdateDialogChoice.copyLink);
+    expect(harness.openedUrls, isEmpty);
     final copied = log.where((c) => c.method == 'Clipboard.setData').toList();
     expect(copied, hasLength(1));
     expect(
