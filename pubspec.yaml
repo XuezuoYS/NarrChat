@@ -68,6 +68,8 @@ dependencies:
   photo_view: ^0.15.0
   # 桌面端（Windows）多窗口：图片查看器打开为独立系统窗口。
   desktop_multi_window: ^0.3.0
+  # 外部链接：设置页「关于」→ GitHub 仓库用系统默认浏览器打开。
+  url_launcher: ^6.3.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -101,6 +103,8 @@ flutter:
     - release.yaml
     # UI 品牌 Logo（左上角 / AI 头像等，由 icon/generate_icons.dart 生成）。
     - assets/app_icon_rounded.png
+    # GitHub 徽章（「关于」页 GitHub 入口；primer/octicons 官方 mark）。
+    - assets/github_mark.png
     # 首页书籍封面默认图（2:3；书籍还没有自定义封面字段，先统一兜底）。
     - assets/girl1.png
     # 手动补充的开放源代码许可证清单（开发者维护，「开放源代码许可」页读取）。
