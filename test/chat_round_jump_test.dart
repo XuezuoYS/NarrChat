@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/chat/chat_rail.dart';
+import 'package:narrchat/chat/chat_row.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -64,6 +65,36 @@ Future<void> _jumpToRoundByCapsule(
   await settle(tester);
 }
 
+/// 独立按真实渲染行算出「视口顶部是哪一轮」（不经过生产页面的登记查询）。
+int _actualTopRound(WidgetTester tester) {
+  final listTop = tester.getTopLeft(find.byType(ListView)).dy;
+  int? aboveRound;
+  int? belowRound;
+  var aboveBottom = double.negativeInfinity;
+  var belowTop = double.infinity;
+  for (final element in find.byType(ChatRowMeasure).evaluate()) {
+    final widget = element.widget as ChatRowMeasure;
+    final box = element.renderObject as RenderBox;
+    if (!box.attached || !box.hasSize) continue;
+    final top = box.localToGlobal(Offset.zero).dy;
+    final bottom = top + box.size.height;
+    if (top <= listTop && listTop < bottom) {
+      return widget.roundIndex;
+    }
+    if (bottom <= listTop && bottom > aboveBottom) {
+      aboveRound = widget.roundIndex;
+      aboveBottom = bottom;
+    }
+    if (top > listTop && top < belowTop) {
+      belowRound = widget.roundIndex;
+      belowTop = top;
+    }
+  }
+  final resolved = belowRound ?? aboveRound;
+  expect(resolved, isNotNull, reason: '至少应有一行真实渲染行');
+  return resolved!;
+}
+
 /// 目标轮用户气泡顶边应贴住消息列表视口顶（允许气泡内边距的十几像素）。
 void _expectRoundAtTop(WidgetTester tester, int roundIndex) {
   final target = find.text('第 $roundIndex 轮的用户输入');
@@ -116,5 +147,30 @@ void main() {
       findsOneWidget,
       reason: '最新轮较短时应保留贴尾窗口，上方历史不能被目标首行窗口裁掉',
     );
+  });
+
+  testWidgets('长页滚动后页码读真实顶部行，且静置不抖动', (tester) async {
+    await _pumpLongThread(tester);
+
+    // 向下拖 = 揭示更旧内容，让视口顶部落在某个 AI 气泡中间。
+    await tester.drag(find.byType(ListView), const Offset(0, 700));
+    await settle(tester);
+
+    if (find.byTooltip('顶部').evaluate().isEmpty) {
+      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.pumpAndSettle();
+    }
+    final expected = _actualTopRound(tester);
+    expect(expected, inInclusiveRange(1, _roundCount));
+
+    Finder displayed() =>
+        find.textContaining('$expected / $_roundCount', findRichText: true);
+    expect(displayed(), findsOneWidget, reason: '页码必须等于真实顶部行轮号');
+
+    // 没有滚动、没有新内容时，懒加载边界的估算变化也不该让页码自己跳。
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 32));
+      expect(displayed(), findsOneWidget, reason: '静置第 $i 帧页码不得变化');
+    }
   });
 }

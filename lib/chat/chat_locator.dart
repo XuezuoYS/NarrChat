@@ -39,6 +39,11 @@ abstract class ChatWindowHost {
   /// 列表前导留白（`reverse` 下是贴底一侧；没有留白时返回 0）。
   double get windowLeadingInset;
 
+  /// 视口顶部**真实渲染行**所属的轮号；首帧 / 尚未布局时为 null。
+  ///
+  /// 页码优先读这个值：它不受懒加载估算高度、`maxScrollExtent` 漂移影响。
+  int? get visibleRoundIndex;
+
   /// 把窗口重建到目标轮附近并等它落地（顶部 / 底部跳转用）。
   Future<void> rebuildWindowAround(int roundIndex);
 
@@ -59,6 +64,9 @@ abstract class ChatWindowHost {
 /// 继承 [Listenable]：轨道要跟着进度刷新拇指，但不关心是谁在动。
 abstract class ChatLocator implements Listenable {
   /// 视口**顶部**所在轮号（规格 §6.4）；几何为空时返回 null。
+  ///
+  /// 页面有真实渲染行时读真实行（见 [ChatWindowHost.visibleRoundIndex]），
+  /// 只有首帧尚未布局才回退几何估算。
   int? get currentRoundIndex;
 
   /// 全书进度：0 = 贴底（最新），1 = 顶部（最早）；未挂上滚动位置时为 null。
@@ -96,10 +104,11 @@ abstract class ChatLocator implements Listenable {
   void notifyGeometryChanged();
 }
 
-/// 用几何模型当唯一坐标系的定位器实现。
+/// 用几何模型做滚动 / 跳转坐标，用真实渲染行报当前轮号的定位器实现。
 ///
 /// 为什么不用 `ScrollController.animateTo`：窗口化之后列表里只有一窗内容，
 /// 「第 N 轮在哪」只能由几何模型算出来，滚动容器自己的 extent 不再等于全书。
+/// 但**页码相反**：几何和懒加载 extent 都会漂，当前轮必须问真实可见行。
 class ChatViewportController extends ChangeNotifier implements ChatLocator {
   ChatViewportController({
     required this.viewport,
@@ -177,7 +186,11 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
   int? get currentRoundIndex {
     if (_geometry.itemCount == 0) return null;
     if (!viewport.hasClients) return _geometry.maxRoundIndex;
-    // 视口顶边在全书坐标里的位置（规格 §6.4：当前轮 = 视口顶部那一轮）。
+    // 优先问真实渲染行：几何 / 懒加载边界只适合“知道大概在哪”，页面顶部的
+    // 当前轮必须由真的摆在顶部的那一行决定，否则长轮次滚动时页码会来回跳。
+    final visible = window?.visibleRoundIndex;
+    if (visible != null) return visible;
+    // 首帧 / 该行尚未布局：按全书坐标兜底（规格 §6.4：当前轮 = 视口顶部那一轮）。
     final topOffset =
         _bookBase + viewport.pixels + viewport.viewportDimension;
     return _geometry.roundIndexAtOffset(topOffset);

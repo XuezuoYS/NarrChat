@@ -53,9 +53,12 @@ class _FakeViewport implements ChatViewport {
 
 /// 可控窗口宿主：记录「准备定点跳转窗口」的调用，并可按需卡住重建。
 class _FakeWindowHost implements ChatWindowHost {
-  _FakeWindowHost({this.contains = true});
+  _FakeWindowHost({this.contains = true, this.visibleRound});
 
   bool contains;
+
+  /// `visibleRoundIndex` 的替身值；null = 交给几何兜底。
+  int? visibleRound;
 
   final List<int> jumpRequests = [];
 
@@ -73,6 +76,9 @@ class _FakeWindowHost implements ChatWindowHost {
 
   @override
   double get windowLeadingInset => 0;
+
+  @override
+  int? get visibleRoundIndex => visibleRound;
 
   @override
   Future<void> rebuildWindowAround(int roundIndex) async {}
@@ -149,6 +155,26 @@ void main() {
     test('几何为空时 currentRoundIndex 为 null', () {
       controller.geometry = ChatGeometry();
       expect(controller.currentRoundIndex, isNull);
+    });
+
+    test('当前轮优先读真实渲染行，不被几何估算带偏', () {
+      final host = _FakeWindowHost(visibleRound: 2);
+      final precise = ChatViewportController(
+        viewport: viewport,
+        geometry: geometry,
+        window: host,
+      );
+      addTearDown(precise.dispose);
+
+      expect(controller.currentRoundIndex, 3, reason: '无宿主的几何口径仍是 3');
+      expect(
+        precise.currentRoundIndex,
+        2,
+        reason: '页面顶部真实压着第 2 轮时，页码不得按估算高度报 3',
+      );
+
+      host.visibleRound = null;
+      expect(precise.currentRoundIndex, 3, reason: '首帧未布局时回退几何');
     });
   });
 

@@ -47,11 +47,18 @@
 base      = geometry.offsetOf(b)                        // 默认：窗口最新端距书底
 bookOff   = base - leadingInset + pixels                // 视口底边在全书里的位置
 progress  = bookOff / max(1, total - viewport)          // 0=贴底 1=顶部
-currentRound = geometry.roundIndexAtOffset(bookOff + viewport)   // 视口**顶部**那一轮
+currentRound = 视口顶部命中的**真实渲染行**（找不到时才用
+               geometry.roundIndexAtOffset(bookOff + viewport) 兜底）
 跳转落点   = geometry.topEdgeOf(index) - base + leadingInset - viewport
 ```
 
 `leadingInset` 是"贴在最后一行底部的那段避让留白"（下面会讲为什么在那儿）。
+
+**页码为什么不读几何**：几何里没构建的行只有估算高度，`maxScrollExtent` 也会随
+懒加载构建进度变化；拿它们反推“视口顶是哪一轮”，长轮次滚动时数字就会随机跳，
+甚至出现不存在的轮号。现在每个 `ChatRowMeasure` 挂载时登记真实渲染对象，帧末读
+它们的全局矩形：视口顶部压着哪一行，页码就是哪一轮。坐标变换只在帧末做，长度
+变化时再通知轨道刷新——不在布局阶段读坐标，也不会整页重建。
 
 **显式轮次跳转用另一套 base**：页面把目标轮变成窗口第一行 `a`，再用当前列表的
 **真实本地边界**反推：

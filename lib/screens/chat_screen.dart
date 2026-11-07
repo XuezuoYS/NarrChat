@@ -174,6 +174,21 @@ class _ChatScreenState extends State<ChatScreen>
 
   final ScrollController _scrollController = ScrollController();
 
+  /// 当前轮号读的是**真实渲染行**：每行挂载时登记、卸载时注销。
+  final ChatRowRegistry _chatRowRegistry = ChatRowRegistry();
+
+  /// 消息列表本体（取视口顶边的全局坐标，供可见轮号查询）。
+  final GlobalKey _chatListKey = GlobalKey();
+
+  /// 帧末算出的视口顶部真实轮号；null = 还没完成第一轮布局。
+  ///
+  /// 坐标变换只能在布局结束后读，轨道又可能在 build / layout 里要页码，
+  /// 所以这里缓存一次，变化时才通知轨道重绘。
+  int? _visibleRoundIndex;
+
+  /// 本帧是否已经安排过可见轮号刷新。
+  bool _visibleRoundSyncScheduled = false;
+
   /// 阅读锚点：离底阅读期间「视口下方条目长高」的实高测量去向
   /// （见 [ReadingAnchor] 的说明与 [ReadingAnchorScrollPhysics]）。
   final ReadingAnchor _readingAnchor = ReadingAnchor();
@@ -606,6 +621,8 @@ class _ChatScreenState extends State<ChatScreen>
   /// 「底部」判据随 `reverse: true` 变为 `pixels <= minScrollExtent + 阈值`
   /// （见 [_isNearBottom]）。
   bool _onChatScrollNotification(ScrollNotification notification) {
+    // 滚动会改变视口顶压着哪一行：帧末再读真实位置，避免布局阶段读坐标。
+    _scheduleVisibleRoundSync();
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
       // 用户按下并开始拖动：立刻放弃进行中的定点跳转复核。
@@ -840,6 +857,8 @@ class _ChatScreenState extends State<ChatScreen>
       _scheduleHeightFlush();
     }
     _chatLocator.notifyGeometryChanged();
+    // 高度变化可能让某一行跨过视口顶边；本方法本来就在帧末回调里，直接刷新。
+    _syncVisibleRound();
   }
 
   // ---------------------------------------------------------------------------
@@ -901,6 +920,33 @@ class _ChatScreenState extends State<ChatScreen>
 
   @override
   double get windowLeadingInset => _composerHeight + 8;
+
+  @override
+  int? get visibleRoundIndex => _visibleRoundIndex;
+
+  /// 帧末从真实渲染行刷新「视口顶部是哪一轮」。
+  void _syncVisibleRound() {
+    if (!mounted) return;
+    final listBox =
+        _chatListKey.currentContext?.findRenderObject() as RenderBox?;
+    if (listBox == null || !listBox.attached || !listBox.hasSize) return;
+    final next = _chatRowRegistry.roundIndexAt(
+      listBox.localToGlobal(Offset.zero).dy,
+    );
+    if (next == _visibleRoundIndex) return;
+    _visibleRoundIndex = next;
+    // 只通知定位层（轨道 / 胶囊跟随刷新），不重建整页。
+    _chatLocator.notifyGeometryChanged();
+  }
+
+  void _scheduleVisibleRoundSync() {
+    if (_visibleRoundSyncScheduled) return;
+    _visibleRoundSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _visibleRoundSyncScheduled = false;
+      _syncVisibleRound();
+    });
+  }
 
   @override
   Future<void> rebuildWindowAround(int roundIndex) async {
@@ -2751,6 +2797,7 @@ class _ChatScreenState extends State<ChatScreen>
       if (chainChanged) {
         _chatWindow.reset();
         _windowBaseFromHead = false;
+        _visibleRoundIndex = null;
       }
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
@@ -2776,6 +2823,8 @@ class _ChatScreenState extends State<ChatScreen>
 
     // 流式输出期间贴底跟随（增量路径由 provider 监听驱动，见 [_onRoundTick]）。
     _autoFollowIfNeeded();
+    // 窗口 / 行集合变化后，帧末重新确认视口顶部的真实轮号。
+    _scheduleVisibleRoundSync();
 
     // 消息列：ListView 铺满整个对话主屏（全屏可滚动、鼠标任意位置可滚），
     // 每条消息在内部居中限宽（视觉上限制在 760 内）；
@@ -2813,6 +2862,7 @@ class _ChatScreenState extends State<ChatScreen>
       child: ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: ListView.builder(
+          key: _chatListKey,
           controller: _scrollController,
           reverse: true,
         // 纵向留白全部是**几何条目 / 条目内边距**，不用 padding：
@@ -2956,7 +3006,9 @@ class _ChatScreenState extends State<ChatScreen>
                     // 测量包在 Padding 里面：量到的是内容高度，留白不进几何 / 缓存。
                     child: ChatRowMeasure(
                       itemKey: row.key,
+                      roundIndex: row.roundIndex,
                       onMeasured: _onItemMeasured,
+                      registry: _chatRowRegistry,
                       child: item,
                     ),
                   ),

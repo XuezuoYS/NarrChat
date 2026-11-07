@@ -3,6 +3,51 @@ import 'package:flutter/widgets.dart';
 
 import 'chat_item.dart';
 
+/// 当前已经真正挂到渲染树上的聊天行。
+///
+/// 几何模型只有“估算 / 实测高度”，它不知道懒加载列表此刻到底把哪一行放在
+/// 视口顶部；`maxScrollExtent` 又只是估算值，会随构建进度漂移。页码若直接拿
+/// 这两个数反推，长轮次滚动时就会随机跳。这里登记真实渲染对象，查询时现场读
+/// 全局坐标——视口顶部压着哪一行，就返回哪一行的轮号。
+class ChatRowRegistry {
+  final Set<ChatRowMeasureBox> _rows = {};
+
+  /// 当前挂载的行数（测试用来确认登记 / 注销是否成对）。
+  int get attachedCount => _rows.length;
+
+  void attach(ChatRowMeasureBox row) => _rows.add(row);
+
+  void detach(ChatRowMeasureBox row) => _rows.remove(row);
+
+  /// 全局纵坐标 [viewportTop] 落在哪一轮。
+  ///
+  /// 优先取矩形真正包含该坐标的行；若落在行间空隙 / 内容上下方，就取最近的
+  /// 下方行，没有下方行再取上方最后一行。首帧还没布局时返回 null。
+  int? roundIndexAt(double viewportTop) {
+    ChatRowMeasureBox? above;
+    ChatRowMeasureBox? below;
+    var aboveBottom = double.negativeInfinity;
+    var belowTop = double.infinity;
+    for (final row in _rows) {
+      if (!row.attached || !row.hasSize) continue;
+      final top = row.localToGlobal(Offset.zero).dy;
+      final bottom = top + row.size.height;
+      if (top <= viewportTop && viewportTop < bottom) {
+        return row.roundIndex;
+      }
+      if (bottom <= viewportTop && bottom > aboveBottom) {
+        above = row;
+        aboveBottom = bottom;
+      }
+      if (top > viewportTop && top < belowTop) {
+        below = row;
+        belowTop = top;
+      }
+    }
+    return (below ?? above)?.roundIndex;
+  }
+}
+
 /// 列表条目**高度**自上报部件（纯代理，不改变布局）。
 ///
 /// 高度变化时在帧末把实测高度交给 [onMeasured]，几何模型据此更新前缀和
@@ -21,19 +66,31 @@ class ChatRowMeasure extends SingleChildRenderObjectWidget {
   const ChatRowMeasure({
     super.key,
     required this.itemKey,
+    required this.roundIndex,
     required this.onMeasured,
+    this.registry,
     required super.child,
   });
 
   /// 这一行的稳定身份（`轮uuid:类型`）。
   final ChatItemKey itemKey;
 
+  /// 这一行所属轮号（页码登记处直接返回它，不按 Key / 几何反查）。
+  final int roundIndex;
+
   /// 高度回传（帧末调用；只在这一行高度变化时调用）。
   final void Function(ChatItemKey key, double height) onMeasured;
 
+  /// 已挂载行登记处（页码判断当前真实可见轮号用）；纯高度测试可不传。
+  final ChatRowRegistry? registry;
+
   @override
-  RenderObject createRenderObject(BuildContext context) =>
-      ChatRowMeasureBox(itemKey: itemKey, onMeasured: onMeasured);
+  RenderObject createRenderObject(BuildContext context) => ChatRowMeasureBox(
+        itemKey: itemKey,
+        roundIndex: roundIndex,
+        onMeasured: onMeasured,
+        registry: registry,
+      );
 
   @override
   void updateRenderObject(
@@ -42,7 +99,9 @@ class ChatRowMeasure extends SingleChildRenderObjectWidget {
   ) {
     renderObject
       ..itemKey = itemKey
-      ..onMeasured = onMeasured;
+      ..roundIndex = roundIndex
+      ..onMeasured = onMeasured
+      ..registry = registry;
   }
 }
 
@@ -50,14 +109,45 @@ class ChatRowMeasure extends SingleChildRenderObjectWidget {
 class ChatRowMeasureBox extends RenderProxyBox {
   ChatRowMeasureBox({
     required ChatItemKey itemKey,
+    required this.roundIndex,
     required void Function(ChatItemKey key, double height) onMeasured,
+    ChatRowRegistry? registry,
   })  :
         // ignore: prefer_initializing_formals
         _itemKey = itemKey,
         // ignore: prefer_initializing_formals
-        _onMeasured = onMeasured;
+        _onMeasured = onMeasured,
+        // ignore: prefer_initializing_formals
+        _registry = registry;
 
   ChatItemKey _itemKey;
+
+  /// 当前行的身份（登记处查询轮号时读它，随换版本 / 换分支更新）。
+  ChatItemKey get itemKey => _itemKey;
+
+  /// 当前行所属轮号（登记处直接返回它）。
+  int roundIndex;
+
+  ChatRowRegistry? _registry;
+
+  set registry(ChatRowRegistry? value) {
+    if (identical(_registry, value)) return;
+    if (attached) _registry?.detach(this);
+    _registry = value;
+    if (attached) value?.attach(this);
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _registry?.attach(this);
+  }
+
+  @override
+  void detach() {
+    _registry?.detach(this);
+    super.detach();
+  }
 
   set itemKey(ChatItemKey value) {
     if (_itemKey == value) return;

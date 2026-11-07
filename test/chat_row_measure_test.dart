@@ -14,6 +14,7 @@ void main() {
         home: Center(
           child: ChatRowMeasure(
             itemKey: key,
+            roundIndex: 1,
             onMeasured: (k, h) => reports.add((k, h)),
             child: const SizedBox(width: 100, height: 120),
           ),
@@ -31,6 +32,7 @@ void main() {
           home: Center(
             child: ChatRowMeasure(
               itemKey: key,
+              roundIndex: 1,
               onMeasured: (_, h) => reports.add(h),
               child: SizedBox(width: 100, height: height),
             ),
@@ -58,6 +60,7 @@ void main() {
           home: Center(
             child: ChatRowMeasure(
               itemKey: itemKey,
+              roundIndex: 1,
               onMeasured: (k, _) => reports.add(k),
               child: const SizedBox(width: 100, height: 120),
             ),
@@ -74,5 +77,58 @@ void main() {
       const ChatItemKey('uuid-1', ChatItemKind.ai),
       const ChatItemKey('uuid-1', ChatItemKind.failed),
     ]);
+  });
+
+  group('真实渲染行登记', () {
+    Widget host(ChatRowRegistry registry, {bool showRows = true}) {
+      Widget row(int round, double height) => ChatRowMeasure(
+            key: ValueKey('row-$round'),
+            itemKey: ChatItemKey('uuid-$round', ChatItemKind.user),
+            roundIndex: round,
+            onMeasured: (_, _) {},
+            registry: registry,
+            child: SizedBox(width: 100, height: height),
+          );
+      return MaterialApp(
+        home: Scaffold(
+          body: showRows
+              ? Column(
+                  children: [row(1, 100), row(2, 150), row(3, 120)],
+                )
+              : const SizedBox.shrink(),
+        ),
+      );
+    }
+
+    testWidgets('按视口顶部命中的真实行返回轮号', (tester) async {
+      final registry = ChatRowRegistry();
+      await tester.pumpWidget(host(registry));
+      expect(registry.attachedCount, 3);
+
+      final firstTop = tester.getTopLeft(find.byKey(const ValueKey('row-1'))).dy;
+      expect(registry.roundIndexAt(firstTop + 5), 1);
+      expect(registry.roundIndexAt(firstTop + 99.9), 1, reason: '行内靠底边仍算本轮');
+      expect(registry.roundIndexAt(firstTop + 175), 2);
+      expect(registry.roundIndexAt(firstTop + 300), 3);
+    });
+
+    testWidgets('视口超出内容两端时取最近行，不返回空', (tester) async {
+      final registry = ChatRowRegistry();
+      await tester.pumpWidget(host(registry));
+
+      final firstTop = tester.getTopLeft(find.byKey(const ValueKey('row-1'))).dy;
+      expect(registry.roundIndexAt(firstTop - 50), 1, reason: '顶端留白取第一行');
+      expect(registry.roundIndexAt(firstTop + 1000), 3, reason: '底端留白取最后一行');
+    });
+
+    testWidgets('行卸载后注销登记，不再参与查询', (tester) async {
+      final registry = ChatRowRegistry();
+      await tester.pumpWidget(host(registry));
+      expect(registry.attachedCount, 3);
+
+      await tester.pumpWidget(host(registry, showRows: false));
+      expect(registry.attachedCount, 0);
+      expect(registry.roundIndexAt(0), isNull);
+    });
   });
 }
