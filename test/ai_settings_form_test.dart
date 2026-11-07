@@ -65,8 +65,10 @@ Future<void> _expandFirstModel(WidgetTester tester) async {
 /// 便于按「平台 + 模型」精确定位模型编辑器内的控件）。
 const String _customPlatformId = 'custom_test_gateway';
 
-/// 构造含一个自定义平台的工作副本（模型 `gw-a` = `medium` + 四项档位，
-/// `gw-b` = `high` + 仅 `['low']`），用于验证「推理强度可选值」按模型独立生效。
+/// 构造含一个自定义平台的工作副本（模型 `gw-a` 四项档位、`gw-b` 仅 `['low']`），
+/// 用于验证「可选强度值」按模型独立生效。
+///
+/// `reasoningEffort` 是模型默认值（当前强度已迁到对话页选择），本页不再展示它。
 SettingsFormState _formWithCustomPlatform() {
   final form = SettingsFormState(
     ai: AiSettingsProvider(),
@@ -125,87 +127,6 @@ int _enabledCapabilityCount(WidgetTester tester) => tester
     .widgetList<ChoiceChip>(find.byType(ChoiceChip))
     .where((chip) => chip.selected)
     .length;
-
-/// 「推理强度」下拉的按钮（按平台 / 模型唯一的稳定 key 限定，避免命中 API 类型下拉）。
-Finder _scopeFor(String modelId, {String platformId = _customPlatformId}) =>
-    find.descendant(
-      of: find.byKey(reasoningEffortDropdownKey(platformId, modelId)),
-      matching: find.byType(DropdownButton<String>),
-    );
-
-/// 展开「推理强度」菜单并校验其内容，返回期望档位（便于链式断言）。
-///
-/// 若上一步已把菜单展开，会先收起再重新展开——保证本函数总是「从收起态打开菜单」。
-Future<List<String>> _openReasoningEffortMenu(
-  WidgetTester tester,
-  String modelId, {
-  required List<String> expected,
-  List<String> forbidden = const [],
-  String platformId = _customPlatformId,
-}) async {
-  final navigator = tester.state<NavigatorState>(find.byType(Navigator));
-  // 根路由不可 pop；能 pop 说明有覆盖层（例如上一次留下的菜单）。
-  if (navigator.canPop()) {
-    navigator.pop();
-    await tester.pumpAndSettle();
-  }
-  final itemsBefore = find.byType(DropdownMenuItem<String>).evaluate().length;
-  await tester.tap(_scopeFor(modelId, platformId: platformId));
-  await tester.pumpAndSettle();
-  if (find.byType(DropdownMenuItem<String>).evaluate().length == itemsBefore) {
-    // 点击把已展开的菜单收起了，再点一次展开。
-    await tester.tap(_scopeFor(modelId, platformId: platformId));
-    await tester.pumpAndSettle();
-  }
-  return _reasoningEffortMenu(tester, expected, forbidden: forbidden);
-}
-
-/// 校验当前**已展开**的「推理强度」菜单内容，并回传 [expected]（便于链式断言）。
-///
-/// 菜单展开后，每个候选档位都会在页面上渲染出对应文本（按钮显示选中项、菜单逐项
-/// 显示全部候选）；而配置外的档位（如内置默认的 `max`）一次都不会出现。因此：
-/// - [expected] 每项至少出现 1 次 ⇒ 菜单确实把它们列出来了；
-/// - [forbidden] 每项出现 0 次 ⇒ 菜单没有混入未配置的档位
-///   （引擎默认档位 / 同页其它下拉的选项都不会混进来）。
-/// 调用方需先用 `tap(_scopeFor(...))` 展开菜单。
-List<String> _reasoningEffortMenu(
-  WidgetTester tester,
-  List<String> expected, {
-  List<String> forbidden = const [],
-}) {
-  final counts = _effortCounts(tester);
-  for (final effort in expected) {
-    expect(
-      counts[effort] ?? 0,
-      greaterThanOrEqualTo(1),
-      reason: '档位「$effort」应出现在展开的菜单中',
-    );
-  }
-  for (final effort in forbidden) {
-    expect(
-      counts[effort] ?? 0,
-      0,
-      reason: '未配置的档位「$effort」不得出现在菜单中',
-    );
-  }
-  return expected;
-}
-
-/// 页面上「像档位取值」的文本渲染计数（排除中文标签与说明文字）。
-Map<String, int> _effortCounts(WidgetTester tester) {
-  final counts = <String, int>{};
-  for (final element in find.byType(Text).evaluate()) {
-    final text = element.widget as Text;
-    final label = text.data ?? text.textSpan?.toPlainText() ?? '';
-    if (!_looksLikeEffortValue(label)) continue;
-    counts[label] = (counts[label] ?? 0) + 1;
-  }
-  return counts;
-}
-
-/// 是否为「像档位取值」的短小写单词（用于排除页面上的中文标签 / 说明文本）。
-bool _looksLikeEffortValue(String label) =>
-    label.length <= 12 && RegExp(r'^[a-z][a-z0-9_-]*$').hasMatch(label);
 
 void main() {
   testWidgets('窄列（261 宽）：平台与模型行展开后不溢出', (tester) async {
@@ -545,7 +466,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：按模型配置列出档位，编辑后规范化写回该模型', (tester) async {
+  testWidgets('可选强度值：按模型配置显示档位，编辑后规范化写回该模型', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = _formWithCustomPlatform();
@@ -555,15 +476,11 @@ void main() {
     await tester.pump();
     await _expandCustomModel(tester, 'gw-b');
 
-    // 只配了 ['low'] 的模型：输入框显示配置值（不显示内置默认档位），
-    // 菜单里补进当前值 high（不在列表，仅展示层补齐）。
+    // 只配了 ['low'] 的模型：输入框显示配置值（不显示内置默认档位）。
     final field = _optionsField();
     expect(field, findsOneWidget);
     expect(tester.widget<TextField>(field).controller!.text, 'low');
-    expect(
-      await _openReasoningEffortMenu(tester, 'gw-b', expected: ['high', 'low']),
-      ['high', 'low'],
-    );
+    expect(find.textContaining('当前生效：low'), findsOneWidget);
 
     // 编辑为 mixed 写法：中文逗号 + 空格 + 重复项 ⇒ 解析为三个档位写回该模型。
     await tester.enterText(field, 'low，high max, low');
@@ -577,19 +494,11 @@ void main() {
       tester.widget<TextField>(field).controller!.text,
       'low,high max, low',
     );
-    // 该模型的下拉随之变为规范化后的三项（重新展开菜单确认）。
-    expect(
-      await _openReasoningEffortMenu(
-        tester,
-        'gw-b',
-        expected: ['low', 'high', 'max'],
-      ),
-      ['low', 'high', 'max'],
-    );
+    expect(find.textContaining('当前生效：low / high / max'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：中文逗号即时转英文逗号，刚敲的分隔符不会被吞', (tester) async {
+  testWidgets('可选强度值：中文逗号即时转英文逗号，刚敲的分隔符不会被吞', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = _formWithCustomPlatform();
@@ -629,7 +538,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：自定义列表生效，内置默认档位不再出现', (tester) async {
+  testWidgets('可选强度值：自定义列表生效，内置默认档位不再出现', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = _formWithCustomPlatform();
@@ -642,67 +551,36 @@ void main() {
     expect(
       tester.widget<TextField>(_optionsField()).controller!.text,
       'minimal,low,medium,high',
-    );
-    // 当前值 medium 在列表内 ⇒ 四项齐全，且不混入内置默认的 max。
-    await tester.tap(_scopeFor('gw-a'));
-    await tester.pumpAndSettle();
-    final expected = ['minimal', 'low', 'medium', 'high'];
-    expect(
-      _reasoningEffortMenu(tester, expected, forbidden: ['max']),
-      expected,
     );
     expect(
       find.textContaining('当前生效：minimal / low / medium / high'),
       findsOneWidget,
     );
+    // 本页不再提供当前强度下拉（已迁到对话页选择）。
+    expect(find.textContaining('推理强度（reasoning_effort）'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：当前值不在列表中时补进首项，不崩溃也不改写', (tester) async {
+  testWidgets('思考强度：本页只配置档位，不提供当前强度值下拉', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = _formWithCustomPlatform();
     addTearDown(form.dispose);
-    final platformId = form.platforms.last.id;
 
     await tester.pumpWidget(_buildApp(form));
     await tester.pump();
     await _expandCustomModel(tester, 'gw-a');
 
-    // 手工把当前值改成不在列表里的档位（模拟旧配置 / 服务商改规则）。
-    form.updateModel(
-      platformId,
-      'gw-a',
-      form.platforms.last.modelById('gw-a')!.copyWith(reasoningEffort: 'turbo'),
-    );
-    await tester.pump();
-
+    expect(find.textContaining('推理强度（reasoning_effort）'), findsNothing);
+    expect(_optionsField(), findsOneWidget);
     expect(
-      find.text('当前值「turbo」不在可选值列表中（发送时仍按当前值）'),
+      find.textContaining('当前强度在对话页右下角的模型选择器中按模型选择'),
       findsOneWidget,
     );
-    await tester.tap(_scopeFor('gw-a'));
-    await tester.pumpAndSettle();
-    expect(
-      _reasoningEffortMenu(tester, [
-        'turbo',
-        'minimal',
-        'low',
-        'medium',
-        'high',
-      ]),
-      ['turbo', 'minimal', 'low', 'medium', 'high'],
-    );
-    expect(
-      tester.widget<TextField>(_optionsField()).controller!.text,
-      'minimal,low,medium,high',
-      reason: '仅展示层补项，模型的可选值列表不得被改写',
-    );
-    expect(form.platforms.last.modelById('gw-a')!.reasoningEffort, 'turbo');
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：留空回落内置默认档位（low/high/max）', (tester) async {
+  testWidgets('可选强度值：留空回落内置默认档位（low/high/max）', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = _formWithCustomPlatform();
@@ -719,17 +597,12 @@ void main() {
       form.platforms.last.modelById('gw-a')!.reasoningEffortOptions,
       isEmpty,
     );
-    await tester.tap(_scopeFor('gw-a'));
-    await tester.pumpAndSettle();
-    expect(
-      _reasoningEffortMenu(tester, ['low', 'high', 'max']),
-      ['low', 'high', 'max'],
-    );
     expect(find.textContaining('当前生效：low / high / max'), findsOneWidget);
+    expect(find.textContaining('推理强度（reasoning_effort）'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('推理强度可选值：内置预置平台不提供该入口，自定义平台才有', (tester) async {
+  testWidgets('可选强度值：内置预置平台不提供该入口，自定义平台才有', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 2600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final form = SettingsFormState(
@@ -749,27 +622,18 @@ void main() {
     await tester.pumpWidget(_buildApp(form));
     await tester.pump();
 
-    // 内置预置平台（默认展开）：模型编辑器不显示「可选强度值」入口与生效说明。
+    // 内置预置平台（默认展开）：模型编辑器不显示「可选强度值」入口，
+    // 只显示固定档位与「去对话页选择当前强度」的说明。
     await _expandFirstModel(tester);
     expect(_optionsField(), findsNothing);
-    expect(find.textContaining('当前生效'), findsNothing);
-    // 但「推理强度」下拉仍可用，候选固定为内置默认档位。
+    expect(find.textContaining('思考强度档位：low / high / max'), findsOneWidget);
     expect(
-      await _openReasoningEffortMenu(
-        tester,
-        'deepseek-flash',
-        platformId: AiPlatforms.defaultPlatformId,
-        expected: ['low', 'high', 'max'],
-      ),
-      ['low', 'high', 'max'],
+      find.textContaining('当前强度在对话页右下角的模型选择器中按模型选择'),
+      findsOneWidget,
     );
+    expect(find.textContaining('推理强度（reasoning_effort）'), findsNothing);
 
-    // 收起菜单后切到自定义平台：入口存在，且初始文本为内置默认档位。
-    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
-    if (navigator.canPop()) {
-      navigator.pop();
-      await tester.pumpAndSettle();
-    }
+    // 自定义平台：入口存在，且初始文本为内置默认档位。
     await _expandCustomModel(tester, 'gw-a');
     expect(_optionsField(), findsOneWidget);
     expect(

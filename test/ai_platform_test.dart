@@ -65,6 +65,13 @@ void main() {
       expect(plain.displayLabel, 'm2');
     });
 
+    test('effectiveReasoningEffort：空白回退内置默认强度', () {
+      const custom = AiModel(id: 'm1', reasoningEffort: 'low');
+      const blank = AiModel(id: 'm2', reasoningEffort: '   ');
+      expect(custom.effectiveReasoningEffort, 'low');
+      expect(blank.effectiveReasoningEffort, AppConfig.defaultReasoningEffort);
+    });
+
     test('toJson/fromJson 往返（maxTokens 为空不落盘，能力表一致）', () {
       final model = AiModel(
         id: 'm1',

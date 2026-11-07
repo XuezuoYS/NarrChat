@@ -146,6 +146,160 @@ void main() {
     });
   });
 
+  group('Chat 页思考强度记忆', () {
+    test('默认回退模型默认强度，且不写 selectedReasoningEfforts', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+
+      final platform = provider.selectedPlatform;
+      final model = provider.selectedModel;
+      expect(provider.reasoningEffort, model.effectiveReasoningEffort);
+      expect(
+        provider.reasoningEffortFor(platform, model),
+        model.effectiveReasoningEffort,
+      );
+      expect(
+        (await readAiSection()).containsKey('selectedReasoningEfforts'),
+        isFalse,
+      );
+    });
+
+    test('setSelectedModel 带强度：写入 ai 命名空间并在 reload 后保持', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+
+      final ok = await provider.setSelectedModel(
+        AiPlatforms.defaultPlatformId,
+        'deepseek-v4-pro',
+        reasoningEffort: 'low',
+      );
+      expect(ok, isTrue);
+      expect(provider.selectedModelId, 'deepseek-v4-pro');
+      expect(provider.reasoningEffort, 'low');
+
+      final ai = await readAiSection();
+      // 预置平台未被自定义，platforms 键仍不落盘；强度记忆独立写入。
+      expect(ai.containsKey('platforms'), isFalse);
+      expect(ai['selectedReasoningEfforts'], {
+        AiPlatforms.defaultPlatformId: {'deepseek-v4-pro': 'low'},
+      });
+
+      final reloaded = AiSettingsProvider();
+      await reloaded.load();
+      expect(reloaded.selectedModelId, 'deepseek-v4-pro');
+      expect(reloaded.reasoningEffort, 'low');
+    });
+
+    test('强度按平台 + 模型独立记忆；不带强度切模型不覆盖旧值', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+      final platformId = AiPlatforms.defaultPlatformId;
+
+      await provider.setSelectedModel(
+        platformId,
+        'deepseek-flash',
+        reasoningEffort: 'low',
+      );
+      await provider.setSelectedModel(
+        platformId,
+        'deepseek-v4-pro',
+        reasoningEffort: 'max',
+      );
+      expect(provider.reasoningEffort, 'max');
+
+      // 只切模型（例如不支持思考的模型）：flash 之前记住的 low 不能被清掉。
+      await provider.setSelectedModel(platformId, 'deepseek-flash');
+      expect(provider.selectedModelId, 'deepseek-flash');
+      expect(provider.reasoningEffort, 'low');
+
+      final ai = await readAiSection();
+      expect(ai['selectedReasoningEfforts'], {
+        platformId: {'deepseek-flash': 'low', 'deepseek-v4-pro': 'max'},
+      });
+    });
+
+    test('非法平台 / 模型：返回 false 且不变更', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+      final beforePlatform = provider.selectedPlatformId;
+      final beforeModel = provider.selectedModelId;
+
+      expect(
+        await provider.setSelectedModel('missing', 'x', reasoningEffort: 'low'),
+        isFalse,
+      );
+      expect(
+        await provider.setSelectedModel(
+          AiPlatforms.defaultPlatformId,
+          'missing',
+          reasoningEffort: 'low',
+        ),
+        isFalse,
+      );
+
+      expect(provider.selectedPlatformId, beforePlatform);
+      expect(provider.selectedModelId, beforeModel);
+      expect(provider.reasoningEffort, 'high');
+      expect(
+        (await readAiSection()).containsKey('selectedReasoningEfforts'),
+        isFalse,
+      );
+    });
+
+    test('加载解析宽松：脏数据忽略，合法条目生效', () async {
+      await writeRawConfig({
+        'ai': {
+          'selectedReasoningEfforts': {
+            'not-a-map': 'x',
+            AiPlatforms.defaultPlatformId: {
+              'deepseek-flash': 'low',
+              'deepseek-v4-pro': '',
+              'ghost': 42,
+              'bad': '   ',
+            },
+            'custom_gone': {'m': 'max'},
+          },
+        },
+      });
+
+      final provider = AiSettingsProvider();
+      await provider.load();
+      expect(provider.selectedModelId, 'deepseek-flash');
+      expect(provider.reasoningEffort, 'low');
+
+      // 未知平台 / 模型条目不影响选择，也不会抛错。
+      expect(provider.platforms.length, 1);
+      expect(provider.error, isNull);
+    });
+
+    test('save：清理已删除模型的强度记忆', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+      final platformId = AiPlatforms.defaultPlatformId;
+      await provider.setSelectedModel(
+        platformId,
+        'deepseek-flash',
+        reasoningEffort: 'low',
+      );
+
+      // 保存一份删除了 flash 的平台副本（只留 pro）。
+      final preset = AiPlatforms.defaultPlatform;
+      final trimmed = preset.copyWith(
+        models: [preset.modelById('deepseek-v4-pro')!],
+      );
+      final ok = await provider.save(
+        platforms: [trimmed],
+        selectedPlatformId: platformId,
+        selectedModelId: 'deepseek-v4-pro',
+        apiKeys: const {},
+      );
+      expect(ok, isTrue);
+      expect(provider.reasoningEffort, 'high');
+      final ai = await readAiSection();
+      expect(ai.containsKey('selectedReasoningEfforts'), isFalse);
+    });
+  });
+
   group('load：命名空间缺失 / 为空 / 不可读 ⇒ 遵循内置预置', () {
     test('无配置文件：预置平台 + 默认选中项 + 默认开关', () async {
       final provider = AiSettingsProvider();

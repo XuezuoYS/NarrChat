@@ -35,10 +35,11 @@ class AppConfig {
   ///
   /// 每个模型可在「设置 → API 设置」里自定义自己的档位列表
   /// （`AiModel.reasoningEffortOptions`），未配置时回落到这里，以兼容
-  /// 不同服务商对取值规则的要求。
+  /// 不同服务商对取值规则的要求。当前使用哪一档由对话页右下角模型选择器
+  /// 按模型选择并记住（见 `AiSettingsProvider.selectedReasoningEfforts`）。
   static const List<String> reasoningEffortOptions = ['low', 'high', 'max'];
 
-  /// 默认思考强度。
+  /// 默认思考强度（模型未配置 / 旧配置缺省时的初始值）。
   static const String defaultReasoningEffort = 'high';
 
   /// 默认最大输出 Tokens（null 表示不限制，由服务端决定）。

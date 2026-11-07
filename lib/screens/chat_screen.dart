@@ -22,7 +22,6 @@ import '../chat/chat_window.dart';
 import '../database/cache_store.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
-import '../models/ai_platform.dart';
 import '../models/app_notice.dart';
 import '../models/book.dart';
 import '../models/branch.dart';
@@ -53,7 +52,6 @@ import '../widgets/anchored_popup.dart';
 import '../widgets/app_menu.dart';
 import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
-import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/composer_input_mode.dart';
 import '../widgets/copy_chain_dialog.dart';
@@ -63,6 +61,8 @@ import '../widgets/image_preview.dart';
 import '../widgets/island_bar.dart';
 import '../widgets/markdown_editing_controller.dart';
 import '../widgets/markdown_preview.dart';
+import '../widgets/model_selector.dart';
+import '../widgets/model_status_caption.dart';
 import '../widgets/narr_chat_app_bar.dart';
 import '../widgets/raw_dialog.dart';
 import '../widgets/reading_anchor.dart';
@@ -3313,6 +3313,17 @@ class _ChatScreenState extends State<ChatScreen>
     // Agent 档位驱动左下角徽标与菜单（关 = 传统 Chat 摘要）。
     final agentLevel =
         context.watch<ExperimentalSettingsProvider>().agentModeLevel;
+    // 模型选择器第二行的思考强度文案：
+    // - 模型不支持思考 ⇒ 【无思考】；
+    // - 支持思考但本轮关闭（且 Agent 未强制开启）⇒ 【思考off】；
+    // - 否则显示当前记住的强度（Agent 期间思考强制开启，按实际发送状态显示）。
+    final effectiveThinking =
+        aiSettings.supportsThinking && (agentLevel.isOn || aiSettings.thinking);
+    final strengthLabel = !aiSettings.supportsThinking
+        ? ModelStatusCaption.noThinkingLabel
+        : effectiveThinking
+            ? aiSettings.reasoningEffort
+            : ModelStatusCaption.thinkingOffLabel;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -3467,8 +3478,8 @@ class _ChatScreenState extends State<ChatScreen>
                     // 中间空隙：左右都未达到上限时的弹性空间。
                     const Spacer(),
                     // 右侧模型选择器：最长 45%（略高于 1/3，窄屏下模型名不至于被挤成
-                    // 省略号）；其触发区第二行为实时字数——同列右对齐、贴紧模型名，
-                    // 且点字数即可展开模型菜单。
+                    // 省略号）；其触发区第二行为「思考强度 · 实时字数」——同列右对齐、
+                    // 贴紧模型名，点它即可展开模型菜单。
                     ConstrainedBox(
                       constraints:
                           BoxConstraints(maxWidth: available * 0.45),
@@ -3476,15 +3487,22 @@ class _ChatScreenState extends State<ChatScreen>
                         alignment: Alignment.centerRight,
                         widthFactor: 1,
                         heightFactor: 1,
-                        child: _ModelSelector(
-                          label: aiSettings.selectedModel.displayLabel,
+                        child: ModelSelector(
                           platforms: aiSettings.platforms,
                           selectedPlatformId: aiSettings.selectedPlatformId,
                           selectedModelId: aiSettings.selectedModelId,
-                          onSelect: (platformId, modelId) =>
-                              aiSettings.setSelectedModel(platformId, modelId),
-                          // 实时字数：常驻显示（空输入为 0 字），仅本子树随键入重建。
-                          caption: CharCountIndicator(
+                          reasoningEffortFor: aiSettings.reasoningEffortFor,
+                          thinkingEnabled: effectiveThinking,
+                          onSelect: (platformId, modelId, reasoningEffort) =>
+                              aiSettings.setSelectedModel(
+                                platformId,
+                                modelId,
+                                reasoningEffort: reasoningEffort,
+                              ),
+                          // 思考强度 + 实时字数：常驻显示（空输入为 0 字）。
+                          // 字数内部监听控制器，仅本子树随键入重建。
+                          caption: ModelStatusCaption(
+                            strengthLabel: strengthLabel,
                             controller: _inputController,
                           ),
                         ),
@@ -3881,135 +3899,6 @@ class _ChatModeDropdown extends StatelessWidget {
           '启用六个状态工具（世界 / 角色 / 历史各一读一写）+ 联网；'
               '正文输出 3 个小节，状态全部由工具维护',
       };
-}
-
-/// 右下角模型选择器：上行当前模型名（灰色、单行省略），下行可选小字说明
-/// （输入卡传入实时字数）；整个触发区可点，点击弹出菜单切换对话模型。
-class _ModelSelector extends StatelessWidget {
-  final String label;
-  final List<AiPlatform> platforms;
-  final String selectedPlatformId;
-  final String selectedModelId;
-  final void Function(String platformId, String modelId) onSelect;
-
-  /// 第二行小字（与模型名同列右对齐，随触发区一起点击）。
-  final Widget? caption;
-
-  const _ModelSelector({
-    required this.label,
-    required this.platforms,
-    required this.selectedPlatformId,
-    required this.selectedModelId,
-    required this.onSelect,
-    this.caption,
-  });
-
-  /// 两行文字的行高：比默认行高更紧，让模型名与下行小字贴合成一个整体。
-  static const double _lineHeight = 1.25;
-
-  @override
-  Widget build(BuildContext context) {
-    final gray = Theme.of(context).colorScheme.onSurfaceVariant;
-    return MenuAnchor(
-      animated: true,
-      style: MenuStyle(
-        shape: WidgetStatePropertyAll(
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      ),
-      menuChildren: [
-        for (final platform in platforms) ..._platformMenuItems(platform, gray),
-      ],
-      builder: (context, controller, _) {
-        return InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () {
-            if (controller.isOpen) {
-              controller.close();
-            } else {
-              controller.open();
-            }
-          },
-          child: Padding(
-            // 上下 4：两行文字整体高度与发送按钮（36）持平，控件行不额外长高。
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    // 右对齐：下行小字的右边界与模型名右边界严格对齐。
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          height: _lineHeight,
-                          color: gray,
-                        ),
-                      ),
-                      // 无下行小字时整行不占位（null-aware 元素）。
-                      ?caption,
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Icon(Icons.arrow_drop_down, size: 18, color: gray),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  List<Widget> _platformMenuItems(AiPlatform platform, Color gray) {
-    final isSelectedPlatform = platform.id == selectedPlatformId;
-    return [
-      // 平台分组标题（非交互项）。
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-        child: Text(
-          platform.displayName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: gray,
-          ),
-        ),
-      ),
-      for (final model in platform.models)
-        MenuItemButton(
-          onPressed: () => onSelect(platform.id, model.id),
-          child: Row(
-            children: [
-              Icon(
-                isSelectedPlatform && model.id == selectedModelId
-                    ? Icons.check
-                    : Icons.label_outline,
-                size: 16,
-                color: gray,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  model.displayLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13),
-                ),
-              ),
-            ],
-          ),
-        ),
-    ];
-  }
 }
 
 /// 下拉菜单复选行（复用原 `_ModeToggleChip` 视觉）。

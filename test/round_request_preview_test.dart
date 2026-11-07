@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/round_generation.dart';
@@ -11,6 +13,7 @@ import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/services/local_config_service.dart';
 import 'package:narrchat/services/request_frame_outline.dart';
 
 import 'helpers/fakes.dart';
@@ -302,6 +305,47 @@ void main() {
       final text = jsonEncode(after.firstFrame);
       expect(text, contains('乙'));
       expect(text, isNot(contains('甲')), reason: '不复用上一次预览的输入');
+    });
+  });
+
+  group('Chat 页思考强度进入请求体', () {
+    test('选择的强度按模型写入实际请求', () async {
+      final tempRoot = await Directory.systemTemp.createTemp(
+        'narrchat_effort_',
+      );
+      LocalConfigService.testRootOverride = tempRoot.path;
+      LocalConfigService.resetForTest();
+      addTearDown(() async {
+        LocalConfigService.testRootOverride = null;
+        LocalConfigService.resetForTest();
+        if (await tempRoot.exists()) {
+          await tempRoot.delete(recursive: true);
+        }
+      });
+
+      // 真实 Provider（临时配置目录，不碰用户文件）：选 Pro + low。
+      final settings = _SearchDisabledSettings();
+      final switched = await settings.setSelectedModel(
+        AiPlatforms.defaultPlatformId,
+        'deepseek-v4-pro',
+        reasoningEffort: 'low',
+      );
+      expect(switched, isTrue);
+      expect(settings.reasoningEffort, 'low');
+
+      final env = await build(settings: settings);
+      final ok = await env.provider.sendRound(userInput: '第一章', book: book);
+      expect(
+        ok,
+        isTrue,
+        reason: env.provider.rounds
+            .where((r) => r.isError)
+            .map((r) => r.message)
+            .join('；'),
+      );
+      expect(env.ai.bodies, hasLength(1));
+      expect(env.ai.bodies.single['model'], 'deepseek-v4-pro');
+      expect(env.ai.bodies.single['reasoning_effort'], 'low');
     });
   });
 

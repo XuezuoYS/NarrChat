@@ -20,7 +20,7 @@ import 'settings_form_state.dart';
 /// 默认API（DeepSeek 开放平台）          内置默认   ▸
 /// | 连接设置（名称 / API Key / Base URL / API 类型）
 /// | 模型1                                       ▸
-/// | | 模型1 的简写标识 / 温度 / 推理强度 / ...
+/// | | 模型1 的简写标识 / 温度 / 思考强度档位 / ...
 /// | 添加模型 / 删除此平台 / 重置为内置预置
 /// 自定义API1                              自定义     ▸
 /// | ...
@@ -740,13 +740,12 @@ class _ModelExpandableItem extends StatelessWidget {
 // 单个模型的设置编辑器（每个模型各自展开，独立编辑自己的参数）
 //
 // 可编辑项：简写标识、可调配功能（「已启用 / 未启用」两栏标签，点击切换）、
-// 温度、推理强度及其可选值列表（`reasoningEffortOptions`，**仅自定义平台**可编辑，
+// 温度、思考强度档位（`reasoningEffortOptions`，**仅自定义平台**可编辑，
 // 留空用内置默认档位）、最大输出 Tokens。
+//
+// **当前思考强度值不在本页设置**：它由对话页模型选择器按模型选择并记住
+// （见 `AiSettingsProvider.selectedReasoningEfforts`），这里只配置可选档位。
 // ---------------------------------------------------------------------------
-
-/// 「推理强度」下拉的稳定 key（每个模型编辑器各一个，供测试 / 调试精确定位）。
-Key reasoningEffortDropdownKey(String platformId, String modelId) =>
-    ValueKey('model-reasoning-effort-dropdown-$platformId-$modelId');
 
 /// 「可选强度值」输入框的格式化：把中文逗号 `，` 即时替换成英文逗号 `,`。
 ///
@@ -834,16 +833,6 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
   /// 内置预置平台不提供「可选强度值」入口：其档位固定为内置默认档位
   /// （`AppConfig.reasoningEffortOptions`），避免预置模型的规则被改乱。
   bool get _isPresetPlatform => AiPlatforms.isPresetId(widget.platformId);
-
-  /// 「推理强度」下拉的选项：模型自定义的档位列表；当前值不在列表中时
-  /// **补到首位**——[DropdownButton] 要求 value 必须出现在 items 中，
-  /// 同时也避免静默改写用户手工填写的值。
-  List<String> _reasoningEffortChoices(AiModel model) {
-    final options = model.effectiveReasoningEffortOptions;
-    final current = model.reasoningEffort;
-    if (current.isEmpty || options.contains(current)) return options;
-    return [current, ...options];
-  }
 
   /// 「可选强度值」输入：按分隔符解析后写回模型。
   ///
@@ -1039,49 +1028,19 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
           label: model.temperature.toStringAsFixed(1),
           onChanged: (v) => _update((m) => m.copyWith(temperature: v)),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 8),
+        // 当前思考强度不在本页设置：由对话页模型选择器按模型选择并记住。
+        // 这里只配置可选档位（仅自定义平台可编辑），并说明去哪里切换。
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            AppDropdown<String>(
-              // 稳定 key：供测试与调试精确定位该下拉（同页还有 API 类型下拉）。
-              key: reasoningEffortDropdownKey(widget.platformId, model.id),
-              label: '推理强度（reasoning_effort）',
-              value: model.reasoningEffort,
-              items: [
-                for (final e in _reasoningEffortChoices(model))
-                  DropdownMenuItem(value: e, child: Text(e)),
-              ],
-              onChanged: (v) {
-                if (v != null) _update((m) => m.copyWith(reasoningEffort: v));
-              },
-            ),
-            if (apiType.reasoningEffortNote != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 4),
-                child: Text(
-                  apiType.reasoningEffortNote!,
-                  style: TextStyle(fontSize: 11, color: outline),
-                ),
-              ),
-            if (model.reasoningEffort.isNotEmpty &&
-                !model.effectiveReasoningEffortOptions
-                    .contains(model.reasoningEffort))
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 4),
-                child: Text(
-                  '当前值「${model.reasoningEffort}」不在可选值列表中（发送时仍按当前值）',
-                  style: TextStyle(fontSize: 11, color: outline),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        // 「可选强度值」只对自定义平台开放：内置预置平台固定使用内置默认档位。
-        if (!_isPresetPlatform)
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+            if (_isPresetPlatform)
+              Text(
+                '思考强度档位：${model.effectiveReasoningEffortOptions.join(' / ')}'
+                '（内置预置档位）',
+                style: TextStyle(fontSize: 11, color: outline),
+              )
+            else
               TextField(
                 controller: _optionsCtrl,
                 onTapOutside: unfocusOnTapOutside,
@@ -1095,16 +1054,21 @@ class _ModelSettingsEditorState extends State<_ModelSettingsEditor> {
                   isDense: true,
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.only(top: 4, left: 4),
-                child: Text(
-                  '当前生效：${model.effectiveReasoningEffortOptions.join(' / ')}'
-                  '（留空即用内置默认档位，兼容不同服务商的取值规则）',
-                  style: TextStyle(fontSize: 11, color: outline),
-                ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Text(
+                _isPresetPlatform
+                    ? '当前强度在对话页右下角的模型选择器中按模型选择'
+                        '${apiType.reasoningEffortNote == null ? '' : '；${apiType.reasoningEffortNote}'}。'
+                    : '当前生效：${model.effectiveReasoningEffortOptions.join(' / ')}'
+                        '（留空即用内置默认档位，兼容不同服务商的取值规则）；'
+                        '当前强度在对话页右下角的模型选择器中按模型选择'
+                        '${apiType.reasoningEffortNote == null ? '' : '；${apiType.reasoningEffortNote}'}。',
+                style: TextStyle(fontSize: 11, color: outline),
               ),
-            ],
-          ),
+            ),
+          ],
+        ),
         const SizedBox(height: 16),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,

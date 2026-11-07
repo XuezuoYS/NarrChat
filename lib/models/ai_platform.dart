@@ -17,14 +17,19 @@ class AiModel {
   /// 采样温度。
   final double temperature;
 
-  /// 推理强度（`reasoning_effort`，思考模式下生效）。
+  /// 推理强度默认值（`reasoning_effort`，思考模式下生效）。
+  ///
+  /// Chat 页按「平台 + 模型」记住用户当前选择的强度（见
+  /// `AiSettingsProvider.reasoningEffortFor`）；本字段只作为**首次选中时的
+  /// 初始值**与旧配置的兼容回退。API 设置页不再编辑它。
   final String reasoningEffort;
 
-  /// 「推理强度」下拉的可选值（**空列表 = 未配置**，回落
+  /// 「推理强度」的可选档位（**空列表 = 未配置**，回落
   /// [AppConfig.reasoningEffortOptions]）。
   ///
   /// 各服务商对 `reasoning_effort` 的取值规则不一（如只认 `low/high`、
   /// 或用 `medium` / `minimal`），因此由每个模型自行声明，而不是全局写死。
+  /// Chat 页的强度选择面板直接使用这里（或内置预置）的档位。
   final List<String> reasoningEffortOptions;
 
   /// 最大输出 Tokens（null 表示不限制，由服务端决定）。
@@ -58,6 +63,14 @@ class AiModel {
 
   /// 对话框显示名：简写标识非空用简写标识，否则回退模型名（[id]）。
   String get displayLabel => shortLabel.trim().isNotEmpty ? shortLabel.trim() : id;
+
+  /// 实际生效的默认思考强度：空白时回退内置默认值。
+  ///
+  /// Chat 页从未为该模型选过强度时，用它作为当前强度；用户选择后以
+  /// `AiSettingsProvider` 中记住的值为准。
+  String get effectiveReasoningEffort => reasoningEffort.trim().isNotEmpty
+      ? reasoningEffort.trim()
+      : AppConfig.defaultReasoningEffort;
 
   /// 实际生效的推理强度可选值：未配置（空列表）时用内置默认档位。
   ///

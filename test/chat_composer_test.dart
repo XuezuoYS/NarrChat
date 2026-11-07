@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/config/ai_platforms.dart';
@@ -9,6 +10,7 @@ import 'package:narrchat/services/image_import_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/char_count_indicator.dart';
 import 'package:narrchat/widgets/image_preview.dart';
+import 'package:narrchat/widgets/model_status_caption.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -30,6 +32,20 @@ class _AllDisabledSettings extends ChatCompatibleSettings {
 class _NoSearchSettings extends AiSettingsProvider {
   @override
   bool get supportsSearch => false;
+}
+
+/// 模型不支持思考的设置替身（只影响触发区强度文案，不触碰真实配置）。
+class _NoThinkingSettings extends AiSettingsProvider {
+  @override
+  bool get supportsThinking => false;
+  @override
+  bool get thinking => false;
+}
+
+/// 超长思考强度的设置替身：用于验证窄屏下强度先省略、字数完整保留。
+class _LongEffortSettings extends AiSettingsProvider {
+  @override
+  String get reasoningEffort => 'extremely-long-reasoning-effort';
 }
 
 /// 记录生成完成回调的测试记录器（参数 = 书籍 uuid + 书名）。
@@ -281,7 +297,7 @@ void main() {
     await pumpChatScreen(tester);
 
     // 默认：思考/流式开启、联网搜索关闭。
-    expect(find.textContaining('思考'), findsOneWidget);
+    expect(find.text('流式 | 思考'), findsOneWidget);
     expect(find.textContaining('搜索(BETA)'), findsNothing);
 
     // 打开菜单，点击「思考」行关闭该选项。
@@ -296,11 +312,11 @@ void main() {
       findsOneWidget,
     );
 
-    // 收起菜单 → 摘要不再含「思考」。
+    // 收起菜单 → 摘要不再含「思考」（模型选择器的【思考off】属于另一处文案）。
     await tester.tap(find.byIcon(Icons.tune));
     await tester.pumpAndSettle();
-    expect(find.textContaining('思考'), findsNothing);
-    expect(find.textContaining('流式'), findsOneWidget);
+    expect(find.text('流式'), findsOneWidget);
+    expect(find.textContaining('流式 | 思考'), findsNothing);
     expect(find.textContaining('搜索(BETA)'), findsNothing);
   });
 
@@ -433,26 +449,44 @@ void main() {
     expect(redDot(), findsNothing);
   });
 
-  testWidgets('右下角模型选择器：显示当前模型，可在菜单中切换', (tester) async {
+  testWidgets('右下角模型选择器：当前模型 + 强度，两级菜单完成切换', (tester) async {
     final settings = AiSettingsProvider();
     await pumpChatScreen(tester, settings: settings);
 
-    // 当前模型（默认预置首位 deepseek-flash，有简写标识时显示简写名称）。
+    // 当前模型（默认预置首位 deepseek-flash）与默认强度。
     expect(find.text('DeepSeek V4.1 Flash'), findsWidgets);
+    expect(
+      find.descendant(
+        of: find.byType(ModelStatusCaption),
+        matching: find.text('high · '),
+      ),
+      findsOneWidget,
+    );
 
     // 打开模型菜单。
     await tester.tap(find.text('DeepSeek V4.1 Flash').first);
     await tester.pumpAndSettle();
-
-    // 菜单含另一模型（无简写标识时显示模型名）。
     expect(find.text('deepseek-v4-pro'), findsWidgets);
 
-    // 切换到 V4 Pro。
+    // 点击支持思考的模型 → 进入思考强度面板（第一行标注该模型）。
     await tester.tap(find.text('deepseek-v4-pro').last);
     await tester.pumpAndSettle();
+    expect(find.text('选择思考强度'), findsOneWidget);
+
+    // 选 low → 模型与强度一起生效，菜单关闭。
+    await tester.tap(find.text('low'));
+    await tester.pumpAndSettle();
     expect(settings.selectedModelId, 'deepseek-v4-pro');
-    // 选择器当前模型随之显示模型名。
+    expect(settings.reasoningEffort, 'low');
+    // 选择器当前模型与强度随之显示。
     expect(find.text('deepseek-v4-pro'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(ModelStatusCaption),
+        matching: find.text('low · '),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('识图模型：功能菜单出现「导入图片」', (tester) async {
@@ -724,6 +758,12 @@ void main() {
   /// 模型选择器触发区里的模型名文本（模型菜单未打开时全局唯一）。
   Finder modelLabel() => find.text('DeepSeek V4.1 Flash');
 
+  /// 模型选择器第二行的强度文案（限定在 [ModelStatusCaption] 内，避免命中菜单）。
+  Finder strengthCaption(String label) => find.descendant(
+    of: find.byType(ModelStatusCaption),
+    matching: find.text('$label · '),
+  );
+
   /// 字数文本当前的颜色。
   Color charCountColor(WidgetTester tester) =>
       tester.widget<Text>(charCountText()).style!.color!;
@@ -831,6 +871,95 @@ void main() {
     expect(charCount('1,234 字'), findsOneWidget);
     // 字数另起一行后，模型名宽度不随字数位数变化（不再被横向争抢）。
     expect(tester.getSize(modelLabel()).width, labelWidth);
+    expect(tester.takeException(), isNull);
+  });
+
+  // —— 模型选择器第二行：思考强度 + 字数 ——
+
+  testWidgets('第二行：默认显示当前强度 + 实时字数', (tester) async {
+    await pumpChatScreen(tester);
+
+    expect(strengthCaption('high'), findsOneWidget);
+    expect(charCount('0 字'), findsOneWidget);
+
+    await tester.enterText(composerField(), '你好');
+    await tester.pump();
+    expect(strengthCaption('high'), findsOneWidget);
+    expect(charCount('2 字'), findsOneWidget);
+  });
+
+  testWidgets('第二行：强度与字数紧贴，间距不随位数变化', (tester) async {
+    await pumpChatScreen(tester);
+
+    /// 强度文本右边界到字数文本左边界的距离。
+    double gap(String countLabel) {
+      final strength = tester.getRect(find.text('high · '));
+      final count = tester.getRect(charCount(countLabel));
+      return count.left - strength.right;
+    }
+
+    final initial = gap('0 字');
+    expect(initial, lessThanOrEqualTo(1));
+
+    await tester.enterText(composerField(), 'x' * 1234);
+    await tester.pump();
+    expect(charCount('1,234 字'), findsOneWidget);
+    expect(gap('1,234 字'), closeTo(initial, 0.01));
+  });
+
+  testWidgets('思考开关关闭：第二行显示【思考off】，重新开启恢复强度', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(tester, settings: settings);
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('思考'));
+    await tester.pumpAndSettle();
+
+    expect(settings.thinking, isFalse);
+    expect(
+      strengthCaption(ModelStatusCaption.thinkingOffLabel),
+      findsOneWidget,
+    );
+    expect(strengthCaption('high'), findsNothing);
+
+    // 重新开启：立刻恢复当前记住的强度。
+    await tester.tap(find.text('思考'));
+    await tester.pumpAndSettle();
+    expect(settings.thinking, isTrue);
+    expect(strengthCaption('high'), findsOneWidget);
+  });
+
+  testWidgets('模型不支持思考：第二行显示【无思考】', (tester) async {
+    await pumpChatScreen(tester, settings: _NoThinkingSettings());
+
+    expect(
+      strengthCaption(ModelStatusCaption.noThinkingLabel),
+      findsOneWidget,
+    );
+    expect(strengthCaption('high'), findsNothing);
+  });
+
+  testWidgets('窄屏长强度：先省略强度，字数完整保留', (tester) async {
+    await pumpChatScreen(
+      tester,
+      settings: _LongEffortSettings(),
+      size: const Size(360, 740),
+    );
+    await tester.enterText(composerField(), 'x' * 1234);
+    await tester.pump();
+
+    // 字数完整显示，不被强度挤掉。
+    expect(charCount('1,234 字'), findsOneWidget);
+
+    // 超长强度被挤压省略（省略先发生在它身上）。
+    final strength = strengthCaption('extremely-long-reasoning-effort');
+    expect(strength, findsOneWidget);
+    expect(tester.widget<Text>(strength).overflow, TextOverflow.ellipsis);
+    expect(
+      tester.renderObject<RenderParagraph>(strength).didExceedMaxLines,
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 

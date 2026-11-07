@@ -28,9 +28,13 @@ import '../services/local_config_service.dart';
 /// 配置结构（camelCase，均位于 `ai` 命名空间内）：
 /// - `platforms`：平台数组，每个平台含 `id` / `displayName` / `apiTypeId` /
 ///   `baseUrl` / `supportsResponseChaining` / `models`（模型含 `id` /
-///   `shortLabel` / `temperature` / `reasoningEffort` / `reasoningEffortOptions`
-///   （推理强度可选值，空 / 缺省即用内置默认档位）/ `maxTokens` 与能力开关）；
+///   `shortLabel` / `temperature` / `reasoningEffort`（默认思考强度）/
+///   `reasoningEffortOptions`（可选档位，空 / 缺省即用内置默认档位）/
+///   `maxTokens` 与能力开关）；
 /// - `selectedPlatformId` / `selectedModelId`：当前选中的平台与模型；
+/// - `selectedReasoningEfforts`：Chat 页按「平台 + 模型」记住的思考强度，
+///   形如 `{平台id: {模型id: 强度}}`；缺失时回退模型的 `reasoningEffort`。
+///   不存在该键**不**等于数据损坏，仅表示用户还没在 Chat 页选过；
 /// - `lastThinking` / `lastStreaming` / `lastSearch`：Chat 页每轮选项记忆；
 /// - `maxImageSizeMB` / `convertJpgToJpeg`：图片设置。
 class AiSettingsProvider extends ChangeNotifier {
@@ -53,6 +57,7 @@ class AiSettingsProvider extends ChangeNotifier {
   static const String _keyPlatforms = 'platforms';
   static const String _keySelectedPlatformId = 'selectedPlatformId';
   static const String _keySelectedModelId = 'selectedModelId';
+  static const String _keySelectedReasoningEfforts = 'selectedReasoningEfforts';
   static const String _keyLastThinking = 'lastThinking';
   static const String _keyLastStreaming = 'lastStreaming';
   static const String _keyLastSearch = 'lastSearch';
@@ -66,6 +71,8 @@ class AiSettingsProvider extends ChangeNotifier {
   late List<AiPlatform> _platforms;
   String _selectedPlatformId = '';
   String _selectedModelId = '';
+  /// Chat 页记住的思考强度：平台 id → 模型 id → 强度。
+  Map<String, Map<String, String>> _selectedReasoningEfforts = {};
   final Map<String, String> _apiKeys = {};
   bool _lastThinking = true;
   bool _lastStreaming = true;
@@ -123,8 +130,21 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 当前模型有效温度。
   double get temperature => selectedModel.temperature;
 
-  /// 当前模型有效推理强度。
-  String get reasoningEffort => selectedModel.reasoningEffort;
+  /// 当前模型在 Chat 页选择的思考强度。
+  ///
+  /// 未选过时回退该模型的默认值（见 [reasoningEffortFor]）。
+  String get reasoningEffort =>
+      reasoningEffortFor(selectedPlatform, selectedModel);
+
+  /// 指定模型在 Chat 页记住的思考强度。
+  ///
+  /// 取值顺序：Chat 页选择（`selectedReasoningEfforts`）→ 模型的
+  /// [AiModel.effectiveReasoningEffort]（旧配置兼容）→ 内置默认强度。
+  String reasoningEffortFor(AiPlatform platform, AiModel model) {
+    final stored = _selectedReasoningEfforts[platform.id]?[model.id];
+    if (stored != null && stored.isNotEmpty) return stored;
+    return model.effectiveReasoningEffort;
+  }
 
   /// 当前模型有效最大输出 Tokens。
   int? get maxTokens => selectedModel.maxTokens;
@@ -172,6 +192,9 @@ class AiSettingsProvider extends ChangeNotifier {
         _selectedPlatformId,
         section[_keySelectedModelId] as String?,
       );
+      _selectedReasoningEfforts = _parseReasoningEfforts(
+        section[_keySelectedReasoningEfforts],
+      );
       _lastThinking = section[_keyLastThinking] as bool? ?? true;
       _lastStreaming = section[_keyLastStreaming] as bool? ?? true;
       _lastSearch = section[_keyLastSearch] as bool? ?? false;
@@ -209,6 +232,50 @@ class AiSettingsProvider extends ChangeNotifier {
     );
     if (raw != null && platform.modelById(raw) != null) return raw;
     return platform.defaultModel.id;
+  }
+
+  /// 读取 `selectedReasoningEfforts`：只接受 `{平台id: {模型id: 强度}}`。
+  ///
+  /// 非法形态一律当作「未选择」；空串 / 非字符串条目直接丢弃，避免脏数据
+  /// 让 Chat 页显示空强度。加载过程不写盘。
+  static Map<String, Map<String, String>> _parseReasoningEfforts(Object? raw) {
+    if (raw is! Map) return {};
+    final parsed = <String, Map<String, String>>{};
+    for (final platformEntry in raw.entries) {
+      final platformId = platformEntry.key;
+      final models = platformEntry.value;
+      if (platformId is! String || platformId.isEmpty || models is! Map) {
+        continue;
+      }
+      final perModel = <String, String>{};
+      for (final modelEntry in models.entries) {
+        final modelId = modelEntry.key;
+        final effort = modelEntry.value;
+        if (modelId is! String || modelId.isEmpty || effort is! String) {
+          continue;
+        }
+        final value = effort.trim();
+        if (value.isEmpty) continue;
+        perModel[modelId] = value;
+      }
+      if (perModel.isNotEmpty) parsed[platformId] = perModel;
+    }
+    return parsed;
+  }
+
+  /// 清理已不存在的平台 / 模型条目（只改内存，随下一次 [save] 落盘）。
+  void _pruneReasoningEfforts(List<AiPlatform> platforms) {
+    final pruned = <String, Map<String, String>>{};
+    for (final platform in platforms) {
+      final stored = _selectedReasoningEfforts[platform.id];
+      if (stored == null) continue;
+      final kept = <String, String>{
+        for (final model in platform.models)
+          if (stored[model.id] != null) model.id: stored[model.id]!,
+      };
+      if (kept.isNotEmpty) pruned[platform.id] = kept;
+    }
+    _selectedReasoningEfforts = pruned;
   }
 
   /// 为当前所有平台加载安全存储中的 API Key。
@@ -249,6 +316,12 @@ class AiSettingsProvider extends ChangeNotifier {
         _keyPlatforms: [for (final p in list) p.toJson()],
       _keySelectedPlatformId: selectedPlatformId ?? _selectedPlatformId,
       _keySelectedModelId: selectedModelId ?? _selectedModelId,
+      // 无任何选择时不落盘该键，保持旧配置文件的形态不变。
+      if (_selectedReasoningEfforts.isNotEmpty)
+        _keySelectedReasoningEfforts: {
+          for (final platformEntry in _selectedReasoningEfforts.entries)
+            platformEntry.key: Map<String, String>.of(platformEntry.value),
+        },
       _keyLastThinking: _lastThinking,
       _keyLastStreaming: _lastStreaming,
       _keyLastSearch: _lastSearch,
@@ -300,6 +373,10 @@ class AiSettingsProvider extends ChangeNotifier {
       )
           ? selectedModelId
           : normPlatform.defaultModel.id;
+
+      // 平台 / 模型可能已被删除：先把强度记忆里失效的条目清掉，再整段落盘。
+      // （仅内存清理；写盘失败时也不会造成用户数据丢失，最差只是少了旧条目。）
+      _pruneReasoningEfforts(normalizedPlatforms);
 
       // 写各平台 API Key（空则清除，回退默认）。
       for (final p in normalizedPlatforms) {
@@ -395,12 +472,25 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 切换当前对话所用模型（跨平台），并持久化选中项。
   ///
   /// 由 Chat 页右下角模型选择器调用；模型/平台需已存在，否则返回 false 不变更。
-  Future<bool> setSelectedModel(String platformId, String modelId) async {
+  ///
+  /// [reasoningEffort] 非空时同时记住该模型的思考强度（与模型切换同一次落盘）；
+  /// 传 `null` / 空串表示「只切模型」——例如不支持思考的模型，或调用方不想
+  /// 改动该模型已记住的强度。
+  Future<bool> setSelectedModel(
+    String platformId,
+    String modelId, {
+    String? reasoningEffort,
+  }) async {
     if (!_platforms.any((p) => p.id == platformId)) return false;
     final platform = _platforms.firstWhere((p) => p.id == platformId);
     if (platform.modelById(modelId) == null) return false;
     _selectedPlatformId = platformId;
     _selectedModelId = modelId;
+    final effort = reasoningEffort?.trim() ?? '';
+    if (effort.isNotEmpty) {
+      _selectedReasoningEfforts
+          .putIfAbsent(platformId, () => <String, String>{})[modelId] = effort;
+    }
     notifyListeners();
     try {
       await _persistAiSection();
