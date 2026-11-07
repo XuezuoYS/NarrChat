@@ -45,6 +45,9 @@ class AppConfig {
   /// 默认最大输出 Tokens（null 表示不限制，由服务端决定）。
   static const int? defaultMaxTokens = null;
 
+  /// GitHub 开源仓库地址（设置页「关于」页的 GitHub 徽章入口）。
+  static const String githubRepoUrl = 'https://github.com/XuezuoYS/NarrChat';
+
   /// 温度可调范围（官方：0 ~ 2，默认 1）。
   static const double minTemperature = 0.0;
   static const double maxTemperature = 2.0;

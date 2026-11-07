@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'debug_screen.dart';
 import 'licenses_screen.dart';
 import 'update_log_screen.dart';
+import '../config/app_config.dart';
 import '../providers/ai_settings_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/external_link.dart';
 import '../utils/release_info.dart';
 import '../utils/triple_tap_detector.dart';
 import '../widgets/ai_settings_form.dart';
@@ -14,6 +17,7 @@ import '../widgets/app_notice_overlay.dart';
 import '../widgets/brand_logo.dart';
 import '../widgets/cloud_sync_panel.dart';
 import '../widgets/general_settings_form.dart';
+import '../widgets/github_badge.dart';
 import '../widgets/mod_management_panel.dart';
 import '../widgets/settings/settings_kit.dart';
 import '../widgets/settings_form_state.dart';
@@ -33,7 +37,11 @@ import '../widgets/storage_management_panel.dart';
 /// 表单状态（API 设置 + 云同步）由本页持有，切换面板不丢失；
 /// 右上角「保存」为全局保存：一次性校验并落库全部改动，不退出设置页。
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.initialIndex = pageIndexGeneral});
+  const SettingsScreen({
+    super.key,
+    this.initialIndex = pageIndexGeneral,
+    this.externalLinkOpener = openExternalLink,
+  });
 
   /// 面板序号：通用设置（设置页首页，日常最常调整项）。
   static const int pageIndexGeneral = 0;
@@ -55,6 +63,9 @@ class SettingsScreen extends StatefulWidget {
 
   /// 打开时初始选中的面板序号（用 [pageIndexGeneral] 等常量指定）。
   final int initialIndex;
+
+  /// 外部链接打开器（供测试注入替身；缺省用系统默认浏览器）。
+  final ExternalLinkOpener externalLinkOpener;
 
   static Future<void> open(
     BuildContext context, {
@@ -145,7 +156,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           case SettingsScreen.pageIndexStorage:
             return const StorageManagementPanel();
           case SettingsScreen.pageIndexAbout:
-            return const _AboutPanel();
+            return _AboutPanel(
+              externalLinkOpener: widget.externalLinkOpener,
+            );
           default:
             return const GeneralSettingsForm();
         }
@@ -156,7 +169,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 /// 「关于」面板：应用基本信息。
 class _AboutPanel extends StatefulWidget {
-  const _AboutPanel();
+  /// 外部链接打开器（测试注入替身用）。
+  final ExternalLinkOpener externalLinkOpener;
+
+  const _AboutPanel({required this.externalLinkOpener});
 
   @override
   State<_AboutPanel> createState() => _AboutPanelState();
@@ -186,6 +202,19 @@ class _AboutPanelState extends State<_AboutPanel> {
   }
 
   void _onVersionTap() => _versionTapDetector.tap();
+
+  /// 打开 GitHub 仓库：系统没接住（无可用浏览器等）时退化为复制链接。
+  Future<void> _openGitHubRepository() async {
+    final opened = await widget.externalLinkOpener(
+      Uri.parse(AppConfig.githubRepoUrl),
+    );
+    if (opened || !mounted) return;
+    await Clipboard.setData(
+      const ClipboardData(text: AppConfig.githubRepoUrl),
+    );
+    if (!mounted) return;
+    context.notices.warning('无法打开浏览器，GitHub 链接已复制');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -240,6 +269,25 @@ class _AboutPanelState extends State<_AboutPanel> {
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        // GitHub 开源仓库入口：GitHub 徽章 + 链接行，整行点击用系统浏览器打开。
+        SettingsCard(
+          child: SettingsRow(
+            leading: const GitHubBadge(),
+            title: 'NarrChat 开源仓库',
+            subtitle: AppConfig.githubRepoUrl,
+            trailing: Tooltip(
+              message: '在浏览器中打开',
+              child: Icon(
+                Icons.open_in_new,
+                size: 18,
+                color: context.narrColors.textSecondary,
+              ),
+            ),
+            onTap: _openGitHubRepository,
+            rowKey: const ValueKey('about_github'),
           ),
         ),
         const SizedBox(height: 12),
