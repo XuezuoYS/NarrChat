@@ -278,6 +278,47 @@ void main() {
     expect(times[uuid], DateTime.utc(2026, 3, 4, 5));
   });
 
+  test('新建书：updated_at 视为 created_at，updatedTimes 返回它', () async {
+    final uuid = await repository.createBook(sample());
+    final db = await pool.open(uuid);
+    final meta = await db.meta.read();
+    expect(meta.updatedAt, meta.createdAt, reason: '创建时两个时间必须同源');
+
+    final times = await repository.updatedTimes();
+    expect(times[uuid], meta.updatedAt);
+  });
+
+  test('更新时间：书库内容变化后 updatedTimes 自动校正缓存', () async {
+    final uuid = await repository.createBook(sample());
+    final before = (await repository.updatedTimes())[uuid]!;
+    final db = await pool.open(uuid);
+    await db.rounds.insert(
+      RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'g1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.utc(2026, 3, 4, 5),
+        ),
+        aiNarrative: '正文',
+      ),
+    );
+
+    // RoundStore.insert 会 touch book_meta.updated_at。
+    final meta = await db.meta.read();
+    expect(meta.updatedAt.isBefore(before), isFalse);
+
+    // 不手动 loadBook，直接读首页时间即应按文件 mtime 自愈。
+    final after = (await repository.updatedTimes())[uuid]!;
+    expect(after, meta.updatedAt, reason: '首页排序必须读到 book_meta 的信源时间');
+    // 顺带把最近对话时间也校正了。
+    expect(
+      (await repository.lastRoundTimes())[uuid],
+      DateTime.utc(2026, 3, 4, 5),
+    );
+  });
+
   test('缺文件时 loadBook 返回 null，不抛异常', () async {
     expect(await repository.loadBook('ghost'), isNull);
     expect(await repository.loadBook(''), isNull);

@@ -7,10 +7,12 @@ import 'cloud_sync_provider.dart';
 
 /// 书籍状态管理：书籍列表、当前选中书籍、增删改。
 class BookProvider extends ChangeNotifier {
-  BookProvider({BookRepository? repository, CloudSyncProvider? cloudSyncProvider})
-      : _repo = repository ?? AppRepositories.instance.books,
-        // ignore: prefer_initializing_formals
-        _cloudSyncProvider = cloudSyncProvider;
+  BookProvider({
+    BookRepository? repository,
+    CloudSyncProvider? cloudSyncProvider,
+  }) : _repo = repository ?? AppRepositories.instance.books,
+       // ignore: prefer_initializing_formals
+       _cloudSyncProvider = cloudSyncProvider;
 
   final BookRepository _repo;
 
@@ -22,15 +24,17 @@ class BookProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
 
-  /// 每本书最近一轮对话的创建时间（首页「时间排序」用，无轮次的书不包含在内）。
-  /// 键为书籍 uuid。
-  Map<String, DateTime> _lastRoundTimes = {};
+  /// 每本书最近一次内容变更时间（首页「更新时间」排序 / 列表时间展示用）。
+  ///
+  /// 键为书籍 uuid；值来自 `book_meta.updated_at` 的缓存副本，读取时会按书库
+  /// 文件 mtime 自动校正（见 `BookRepository.updatedTimes`）。
+  Map<String, DateTime> _updatedTimes = {};
 
   List<Book> get books => List.unmodifiable(_books);
   Book? get currentBook => _currentBook;
   bool get isLoading => _isLoading;
   String? get error => _error;
-  Map<String, DateTime> get lastRoundTimes => Map.unmodifiable(_lastRoundTimes);
+  Map<String, DateTime> get updatedTimes => Map.unmodifiable(_updatedTimes);
 
   /// 加载书籍列表；若当前书籍已被删除则自动重置，无选中时默认选第一本。
   ///
@@ -43,7 +47,7 @@ class BookProvider extends ChangeNotifier {
     notifyListeners();
     try {
       _books = await _repo.listBooks();
-      _lastRoundTimes = await _repo.lastRoundTimes();
+      _updatedTimes = await _repo.updatedTimes();
       _currentBook = _refreshCurrent(_currentBook);
       if (_currentBook == null && _books.isNotEmpty) {
         _currentBook = _books.first;
@@ -66,10 +70,13 @@ class BookProvider extends ChangeNotifier {
     return null;
   }
 
-  /// 刷新「最近对话时间」映射（从对话页返回首页时调用）。
-  Future<void> refreshLastRoundTimes() async {
+  /// 刷新「更新时间」映射（从对话页返回首页时调用）。
+  ///
+  /// 仓库读取会顺带校正书库 mtime 变过的缓存行，因此排序能读到最新
+  /// `book_meta.updated_at`；失败时保留旧数据，不影响列表展示。
+  Future<void> refreshTimes() async {
     try {
-      _lastRoundTimes = await _repo.lastRoundTimes();
+      _updatedTimes = await _repo.updatedTimes();
       notifyListeners();
     } catch (e) {
       // 失败时保留旧数据，不影响列表展示。

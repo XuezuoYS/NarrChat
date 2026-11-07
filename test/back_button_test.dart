@@ -23,10 +23,9 @@ void main() {
   }
 
   /// 右侧状态抽屉当前右偏移（0 表示完全展开，正值表示收起）。
-  double rightDrawerOffset(WidgetTester tester) =>
-      tester.widget<AnimatedPositioned>(
-        find.byKey(const Key('right_sidebar_drawer')),
-      ).right!;
+  double rightDrawerOffset(WidgetTester tester) => tester
+      .widget<AnimatedPositioned>(find.byKey(const Key('right_sidebar_drawer')))
+      .right!;
 
   const exitDialogTitle = '退出 NarrChat';
   const exitDialogContent = '确定要退出 NarrChat 吗？';
@@ -89,6 +88,6 @@ void main() {
 
     // 再返回：回到书籍列表首页。
     await pressBack(tester);
-    expect(find.text('新建书籍'), findsOneWidget, reason: '应已返回书籍列表首页');
+    expect(find.byTooltip('新建书籍'), findsOneWidget, reason: '应已返回书籍列表首页');
   });
 }

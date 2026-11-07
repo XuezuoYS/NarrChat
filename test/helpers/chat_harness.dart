@@ -150,9 +150,7 @@ Future<RoundProvider> pumpChatScreen(
         Provider<ClipboardPasteService>(
           create: (_) => clipboardPaste ?? FakeClipboardPasteService(),
         ),
-        Provider<ImageRevivalService>(
-          create: (_) => FakeImageRevivalService(),
-        ),
+        Provider<ImageRevivalService>(create: (_) => FakeImageRevivalService()),
       ],
       child: MaterialApp(
         theme: theme ?? NarrChatTheme.light,
@@ -172,14 +170,15 @@ Future<RoundProvider> pumpChatScreen(
 
 /// 以 [size] 视口 pump 首页（HomeScreen，书籍列表）。
 ///
-/// [books] 注入书籍列表；[times]（键 = 书籍 uuid）注入"最近对话时间"；
-/// [notificationBackend] 注入通知后端（缺省 [FakeNotificationBackend]，避免走
-/// 真实插件通道）；[notificationSettings] 注入预先 refresh 过的设置；
+/// [books] 注入书籍列表；[updatedTimes]（键 = 书籍 uuid）注入"更新时间"
+/// （`book_meta.updated_at` 的缓存副本）；[notificationBackend] 注入通知后端
+/// （缺省 [FakeNotificationBackend]，避免走真实插件通道）；
+/// [notificationSettings] 注入预先 refresh 过的设置；
 /// [textScale]：全局文字缩放倍率；[onOpenBook]：驻场岛展开区回调。
 Future<BookProvider> pumpHomeScreen(
   WidgetTester tester, {
   required List<Book> books,
-  Map<String, DateTime> times = const {},
+  Map<String, DateTime> updatedTimes = const {},
   TestStack? stack,
   NotificationBackend? notificationBackend,
   NotificationSettingsProvider? notificationSettings,
@@ -197,9 +196,9 @@ Future<BookProvider> pumpHomeScreen(
   await tester.runAsync(() async {
     for (final book in books) {
       await store.repos.books.createBook(book);
-      final time = times[book.uuid];
+      final time = updatedTimes[book.uuid];
       if (time != null) {
-        await store.setLastRoundAt(book.uuid, time);
+        await store.setBookUpdatedAt(book.uuid, time);
       }
     }
     await bookProvider.loadBooks();
@@ -239,9 +238,7 @@ Future<BookProvider> pumpHomeScreen(
             ),
           ),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
-        Provider<ImageRevivalService>(
-          create: (_) => FakeImageRevivalService(),
-        ),
+        Provider<ImageRevivalService>(create: (_) => FakeImageRevivalService()),
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
@@ -297,15 +294,11 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
         ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
         ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
-        Provider<ImageImportService>(
-          create: (_) => FakeImageImportService(),
-        ),
+        Provider<ImageImportService>(create: (_) => FakeImageImportService()),
         Provider<ClipboardPasteService>(
           create: (_) => FakeClipboardPasteService(),
         ),
-        Provider<ImageRevivalService>(
-          create: (_) => FakeImageRevivalService(),
-        ),
+        Provider<ImageRevivalService>(create: (_) => FakeImageRevivalService()),
       ],
       child: MaterialApp(
         theme: NarrChatTheme.light,
@@ -327,7 +320,10 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
 /// **必须经 [WidgetTester.runAsync]**：`testWidgets` 的测试体跑在 fake-async
 /// 区域里，真实的文件 / sqlite 回调只有在真实事件循环里才会推进；直接 `await`
 /// 会永远卡住（现象是「did not complete」）。见 `test/zz_probe_test.dart`。
-Future<TestStack> _resolveStack(WidgetTester tester, TestStack? provided) async {
+Future<TestStack> _resolveStack(
+  WidgetTester tester,
+  TestStack? provided,
+) async {
   if (provided != null) return provided;
   final stack = await tester.runAsync(TestStack.create);
   addTearDown(() => tester.runAsync(stack!.dispose));
@@ -354,10 +350,7 @@ Future<void> settle(WidgetTester tester, {int rounds = 12}) async {
 
 /// 等待 sendRound 结束（isSending 期间发送按钮有无限转圈动画，
 /// 不能用 pumpAndSettle，须等 isSending 变 false 后再 settle）。
-Future<void> waitSendDone(
-  WidgetTester tester,
-  RoundProvider provider,
-) async {
+Future<void> waitSendDone(WidgetTester tester, RoundProvider provider) async {
   // 先给几步把「点击 → 真正开始生成」推进出来，否则第一轮判断时
   // isSending 还是 false，会误以为已经结束。
   for (var i = 0; i < 40 && !provider.isSending; i++) {

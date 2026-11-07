@@ -95,7 +95,6 @@ void main() {
   testWidgets('打开时以 Provider 最新实例为准：陈旧快照不决定展示值', (tester) async {
     // 库中已有最新设置（模拟云同步落地后重载过）。
     await patchStoredBook(tester, (b) => b.copyWith(title: '云端新标题', category: '云端新分类'));
-    await bookProvider.loadBooks();
 
     // 调用方传入陈旧快照（同步落地前打开的对话页遗留引用）。
     await pumpSettings(
@@ -125,7 +124,6 @@ void main() {
       title: '远端新标题',
       category: '远端新分类',
     ));
-    await bookProvider.loadBooks();
     await tester.pump();
 
     expect(find.widgetWithText(TextField, '远端新标题'), findsOneWidget,
@@ -136,7 +134,6 @@ void main() {
 
     // 再次落地：已编辑字段仍不被覆盖。
     await patchStoredBook(tester, (b) => b.copyWith(title: '远端标题2'));
-    await bookProvider.loadBooks();
     await tester.pump();
 
     expect(find.widgetWithText(TextField, '远端标题2'), findsOneWidget);
@@ -145,7 +142,6 @@ void main() {
 
   testWidgets('保存设置不重置未改动项：记忆总结轮次合并沿用既有档位', (tester) async {
     await patchStoredBook(tester, (b) => b.copyWith(memorySummaryRounds: 10));
-    await bookProvider.loadBooks();
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     await tester.enterText(find.widgetWithText(TextField, '当前标题'), '改后标题');

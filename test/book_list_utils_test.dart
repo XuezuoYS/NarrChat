@@ -75,35 +75,49 @@ void main() {
     });
   });
 
-  group('sortBooks 时间', () {
+  group('sortBooks 更新时间', () {
     const books = [
       Book(uuid: 'b1', title: 'A'),
       Book(uuid: 'b2', title: 'B'),
       Book(uuid: 'b3', title: 'C'),
       Book(uuid: 'b4', title: 'D'),
     ];
-    final times = {
+    final updatedTimes = {
       'b2': DateTime(2026, 8, 10),
       'b1': DateTime(2026, 8, 1),
     };
 
-    test('最近对话在前，无对话排最后（无轮次之间按 uuid 倒序）', () {
-      final r = sortBooks(books, BookSortMode.time, times);
+    test('更新时间新的在前，无时间排最后（无时间之间按 uuid 倒序）', () {
+      final r = sortBooks(books, BookSortMode.time, updatedTimes);
       expect(r.map((b) => b.uuid), ['b2', 'b1', 'b4', 'b3']);
     });
 
     test('时间相同按 uuid 升序', () {
-      final same = {
-        'b1': DateTime(2026, 8, 1),
-        'b2': DateTime(2026, 8, 1),
-      };
+      final same = {'b1': DateTime(2026, 8, 1), 'b2': DateTime(2026, 8, 1)};
       final r = sortBooks(books, BookSortMode.time, same);
       expect(r.map((b) => b.uuid), ['b1', 'b2', 'b4', 'b3']);
     });
 
-    test('全部无对话按 uuid 倒序（不再暗示“新建在前”）', () {
+    test('全部无时间按 uuid 倒序', () {
       final r = sortBooks(books, BookSortMode.time, const {});
       expect(r.map((b) => b.uuid), ['b4', 'b3', 'b2', 'b1']);
+    });
+  });
+
+  group('bookGridColumns', () {
+    test('手机窄屏至少 2 列', () {
+      expect(bookGridColumns(368), 2);
+      expect(bookGridColumns(288), 2);
+    });
+
+    test('随可用宽度增加列数', () {
+      expect(bookGridColumns(568), 3);
+      expect(bookGridColumns(1124), 6);
+    });
+
+    test('非法 / 零宽度返回 1，交给布局层兜底', () {
+      expect(bookGridColumns(0), 1);
+      expect(bookGridColumns(double.nan), 1);
     });
   });
 

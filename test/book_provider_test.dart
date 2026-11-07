@@ -28,16 +28,18 @@ void main() {
     expect(stale.title, '旧标题');
 
     // 模拟云备份落地：库中数据已更新，重新加载。
-    await stack.repos.books.saveBook(stale.copyWith(
-      title: '新标题',
-      category: '新分类',
-    ));
+    await stack.repos.books.saveBook(
+      stale.copyWith(title: '新标题', category: '新分类'),
+    );
     await provider.loadBooks();
 
     expect(provider.currentBook!.title, '新标题');
     expect(provider.currentBook!.category, '新分类');
-    expect(identical(provider.currentBook, stale), isFalse,
-        reason: 'currentBook 应指向最新实例，而非旧的字段快照');
+    expect(
+      identical(provider.currentBook, stale),
+      isFalse,
+      reason: 'currentBook 应指向最新实例，而非旧的字段快照',
+    );
   });
 
   test('selectBook 同 uuid 重复选择也刷新为最新实例', () async {
@@ -70,8 +72,7 @@ void main() {
     await provider.deleteBook(target);
 
     expect(provider.books.map((b) => b.uuid), ['b2']);
-    expect(provider.currentBook?.uuid, isNot('b1'),
-        reason: '被删掉的书不能继续被选中');
+    expect(provider.currentBook?.uuid, isNot('b1'), reason: '被删掉的书不能继续被选中');
     expect(provider.currentBook?.uuid, 'b2', reason: '无选中时默认选第一本');
   });
 
@@ -93,32 +94,34 @@ void main() {
     expect(cloudProvider.books, isEmpty);
   });
 
-  test('最近对话时间来自缓存副本，用于列表时间排序', () async {
+  test('更新时间来自缓存副本，用于列表更新时间排序', () async {
     await stack.seedBook(uuid: 'b1', title: '书A');
     await stack.seedBook(uuid: 'b2', title: '书B');
-    await stack.setLastRoundAt('b1', DateTime.utc(2026, 3, 1));
-    await stack.setLastRoundAt('b2', DateTime.utc(2026, 4, 1));
+    await stack.setBookUpdatedAt('b1', DateTime.utc(2026, 3, 1));
+    await stack.setBookUpdatedAt('b2', DateTime.utc(2026, 4, 1));
 
     await provider.loadBooks();
-    expect(provider.lastRoundTimes['b1'], DateTime.utc(2026, 3, 1));
-    expect(provider.lastRoundTimes['b2'], DateTime.utc(2026, 4, 1));
+    expect(provider.updatedTimes['b1'], DateTime.utc(2026, 3, 1));
+    expect(provider.updatedTimes['b2'], DateTime.utc(2026, 4, 1));
 
     // 刷新入口（从对话页返回首页时调用）也要读到最新值。
-    await stack.setLastRoundAt('b1', DateTime.utc(2026, 5, 1));
-    await provider.refreshLastRoundTimes();
-    expect(provider.lastRoundTimes['b1'], DateTime.utc(2026, 5, 1));
+    await stack.setBookUpdatedAt('b1', DateTime.utc(2026, 5, 1));
+    await provider.refreshTimes();
+    expect(provider.updatedTimes['b1'], DateTime.utc(2026, 5, 1));
   });
 
   test('新建书籍自动选中，并带上完整设置（不是空壳）', () async {
     await stack.seedBook(uuid: 'existing', title: '已有书');
     await provider.loadBooks();
 
-    final ok = await provider.createBook(const Book(
-      title: '新书',
-      category: '武侠',
-      historyRounds: 7,
-      memorySummaryRounds: 5,
-    ));
+    final ok = await provider.createBook(
+      const Book(
+        title: '新书',
+        category: '武侠',
+        historyRounds: 7,
+        memorySummaryRounds: 5,
+      ),
+    );
     expect(ok, isTrue);
     expect(provider.currentBook, isNotNull);
     expect(provider.currentBook!.title, '新书');

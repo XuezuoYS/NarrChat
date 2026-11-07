@@ -101,6 +101,8 @@ flutter:
     - release.yaml
     # UI 品牌 Logo（左上角 / AI 头像等，由 icon/generate_icons.dart 生成）。
     - assets/app_icon_rounded.png
+    # 首页书籍封面默认图（2:3；书籍还没有自定义封面字段，先统一兜底）。
+    - assets/girl1.png
     # 手动补充的开放源代码许可证清单（开发者维护，「开放源代码许可」页读取）。
     - assets/manual_licenses.json
     # 更新日志（「更新日志」页读取；开发者维护）。

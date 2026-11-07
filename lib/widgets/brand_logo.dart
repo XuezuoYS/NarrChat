@@ -2,6 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 
+/// 品牌 Logo 的排列方向。
+enum BrandLogoAxis {
+  /// Logo 在左、文字在右（默认；顶栏 / 关于页等）。
+  horizontal,
+
+  /// Logo 在上、文字在下（首页宽屏左侧品牌栏）。
+  vertical,
+}
+
 /// 品牌 Logo：应用图标的圆角图像（assets/app_icon_rounded.png），可选附带「NarrChat」文字。
 ///
 /// 统一 AppBar 标题、聊天空状态、关于面板、AI 头像等处的品牌标识，
@@ -16,11 +25,15 @@ class BrandLogo extends StatelessWidget {
   /// 文字字号（仅 [title] 非空时生效，默认 17）。
   final double titleSize;
 
+  /// Logo 与文字的排列方向。
+  final BrandLogoAxis axis;
+
   const BrandLogo({
     super.key,
     this.size = 28,
     this.title,
     this.titleSize = 17,
+    this.axis = BrandLogoAxis.horizontal,
   });
 
   @override
@@ -32,20 +45,24 @@ class BrandLogo extends StatelessWidget {
     );
     final t = title;
     if (t == null) return logo;
+    final text = Text(
+      t,
+      style: TextStyle(
+        fontSize: titleSize,
+        fontWeight: FontWeight.w700,
+        color: context.narrColors.textPrimary,
+      ),
+    );
+    if (axis == BrandLogoAxis.vertical) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [logo, const SizedBox(height: 12), text],
+      );
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: [
-        logo,
-        const SizedBox(width: 10),
-        Text(
-          t,
-          style: TextStyle(
-            fontSize: titleSize,
-            fontWeight: FontWeight.w700,
-            color: context.narrColors.textPrimary,
-          ),
-        ),
-      ],
+      children: [logo, const SizedBox(width: 10), text],
     );
   }
 }

@@ -145,13 +145,23 @@ class TestStack {
     );
   }
 
-  /// 直接改某本书的"最近对话时间"（首页时间排序用例用）。
+  /// 直接改某本书的"最近对话时间"（历史查询用例用）。
   ///
   /// 缓存行是"列表读的副本"，改它等价于"这本书最近一次对话发生在 [time]"。
   Future<void> setLastRoundAt(String bookUuid, DateTime time) async {
     final existing = await stores.cache.indexOf(bookUuid);
     if (existing == null) return;
     await stores.cache.putIndex(existing.copyWith(lastRoundAt: time));
+  }
+
+  /// 直接改某本书的"更新时间"（首页更新时间排序用例用）。
+  ///
+  /// 缓存行是列表读的副本；这里只改缓存、不改书库文件 mtime，下次
+  /// `updatedTimes()` 看到 mtime 未变会直接采用该值，等价于注入排序时间。
+  Future<void> setBookUpdatedAt(String bookUuid, DateTime time) async {
+    final existing = await stores.cache.indexOf(bookUuid);
+    if (existing == null) return;
+    await stores.cache.putIndex(existing.copyWith(updatedAt: time));
   }
 
   /// 「上一个轮号」在该分支上的当前选中代 uuid；第 1 轮返回 null（链首）。

@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
@@ -7,18 +8,63 @@ import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
 import 'package:narrchat/services/notification_service.dart';
+import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/utils/book_list_utils.dart';
+import 'package:narrchat/widgets/book_cover.dart';
+import 'package:narrchat/widgets/book_grid_card.dart';
 import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
-/// 首页书籍列表测试：搜索 / 排序 / 导航 / 空态 / 通知提示条。
+/// 首页书籍列表测试：搜索 / 排序 / 排列 / 导航 / 空态 / 通知提示条。
 void main() {
-  /// 当前书籍列表中按视觉顺序排列的标题。
+  /// 当前方格列表中按视觉顺序排列的标题。
   List<String?> visibleTitles(WidgetTester tester) => tester
-      .widgetList<ListTile>(find.byType(ListTile))
-      .map((t) => (t.title as Text).data)
+      .widgetList<BookGridCard>(find.byType(BookGridCard))
+      .map((card) => card.book.title)
       .toList();
+
+  /// 切到列表模式（现有更多操作入口在列表行上）。
+  Future<void> switchToList(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('列表排列'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('默认方格排列 + 更新时间排序', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+
+    expect(find.byType(BookGridCard), findsOneWidget);
+    expect(find.byType(ListTile), findsNothing);
+    final sort = tester.widget<SegmentedButton<BookSortMode>>(
+      find.byType(SegmentedButton<BookSortMode>),
+    );
+    expect(sort.selected, {BookSortMode.time});
+    final layout = tester.widget<SegmentedButton<BookLayoutMode>>(
+      find.byType(SegmentedButton<BookLayoutMode>),
+    );
+    expect(layout.selected, {BookLayoutMode.grid});
+  });
+
+  testWidgets('方格与列表之间切换', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+    expect(find.byType(BookGridCard), findsOneWidget);
+
+    await switchToList(tester);
+    expect(find.byType(BookGridCard), findsNothing);
+    expect(find.byType(ListTile), findsOneWidget);
+
+    await tester.tap(find.byTooltip('方格排列'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BookGridCard), findsOneWidget);
+    expect(find.byType(ListTile), findsNothing);
+  });
 
   testWidgets('搜索：按标题 / 分类过滤', (tester) async {
     await pumpHomeScreen(
@@ -31,17 +77,20 @@ void main() {
 
     await tester.enterText(find.byType(TextField), '三体');
     await tester.pump();
-    expect(find.widgetWithText(ListTile, '三体'), findsOneWidget);
-    expect(find.widgetWithText(ListTile, '剑来'), findsNothing);
+    expect(find.widgetWithText(BookGridCard, '三体'), findsOneWidget);
+    expect(find.widgetWithText(BookGridCard, '剑来'), findsNothing);
 
     await tester.enterText(find.byType(TextField), '玄幻');
     await tester.pump();
-    expect(find.widgetWithText(ListTile, '剑来'), findsOneWidget);
-    expect(find.widgetWithText(ListTile, '三体'), findsNothing);
+    expect(find.widgetWithText(BookGridCard, '剑来'), findsOneWidget);
+    expect(find.widgetWithText(BookGridCard, '三体'), findsNothing);
   });
 
   testWidgets('搜索：无结果显示空态，可清空恢复', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '剑来')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '剑来')],
+    );
 
     await tester.enterText(find.byType(TextField), '不存在的书');
     await tester.pump();
@@ -49,7 +98,7 @@ void main() {
 
     await tester.tap(find.text('清空搜索'));
     await tester.pump();
-    expect(find.widgetWithText(ListTile, '剑来'), findsOneWidget);
+    expect(find.widgetWithText(BookGridCard, '剑来'), findsOneWidget);
   });
 
   testWidgets('排序：A-Z 按拼音', (tester) async {
@@ -67,7 +116,7 @@ void main() {
     expect(visibleTitles(tester), ['阿伟', 'Book', '张三']);
   });
 
-  testWidgets('排序：时间按最近对话在前，无对话排最后', (tester) async {
+  testWidgets('排序：更新时间新的在前', (tester) async {
     await pumpHomeScreen(
       tester,
       books: const [
@@ -75,14 +124,40 @@ void main() {
         Book(uuid: 'b2', title: 'B'),
         Book(uuid: 'b3', title: 'C'),
       ],
-      // 最近对话时间的键就是书籍 uuid；C 无轮次 → 垫底。
-      times: {'b2': DateTime(2026, 8, 10), 'b1': DateTime(2026, 8, 1)},
+      // 三本书都给更新时间：默认排序必须完全按这张表来，不受创建时间影响。
+      updatedTimes: {
+        'b2': DateTime(2026, 8, 10),
+        'b1': DateTime(2026, 8, 1),
+        'b3': DateTime(2026, 7, 1),
+      },
     );
     expect(visibleTitles(tester), ['B', 'A', 'C']);
   });
 
+  testWidgets('方格卡片：2:3 封面、三行标题省略、灰色分类', (tester) async {
+    const longTitle = '这是一个非常非常长的标题，用来验证最多三行并且超出部分显示省略号的效果';
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: longTitle, category: '玄幻')],
+    );
+
+    final coverSize = tester.getSize(find.byType(BookCover));
+    expect(coverSize.height / coverSize.width, closeTo(1.5, 0.001));
+
+    final title = tester.widget<Text>(find.text(longTitle));
+    expect(title.maxLines, 3);
+    expect(title.overflow, TextOverflow.ellipsis);
+
+    final category = tester.widget<Text>(find.text('玄幻'));
+    final cardContext = tester.element(find.byType(BookGridCard));
+    expect(category.style?.color, cardContext.narrColors.textSecondary);
+  });
+
   testWidgets('点击书籍进入对话页，返回按钮回到首页', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
 
     await tester.tap(find.text('测试书'));
     await tester.pumpAndSettle();
@@ -92,13 +167,16 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
-    expect(find.text('新建书籍'), findsOneWidget, reason: '应已返回首页书籍列表');
+    expect(find.byTooltip('新建书籍'), findsOneWidget, reason: '应已返回首页书籍列表');
   });
 
   testWidgets('对话页返回首页后：可见书籍汇报被清空（生成提示能再次出现）', (tester) async {
     // 回归：驻场提示排除「当前可见对话页的那本书」；若返回首页后仍残留该书，
     // 就会变成「生成中的书回到主页反而不提示，进别的页才提示」。
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
     final round = Provider.of<RoundProvider>(
       tester.element(find.byType(HomeScreen)),
       listen: false,
@@ -121,7 +199,10 @@ void main() {
   });
 
   testWidgets('对话页点击顶栏书名直接进入书籍设置', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
 
     await tester.tap(find.text('测试书'));
     await tester.pumpAndSettle();
@@ -134,8 +215,12 @@ void main() {
     expect(find.text('保存'), findsOneWidget, reason: '设置页应显示保存按钮');
   });
 
-  testWidgets('列表无编辑 / 书籍设置入口，仅保留删除', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+  testWidgets('列表模式无编辑 / 书籍设置入口，仅保留删除', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+    await switchToList(tester);
 
     expect(find.text('编辑'), findsNothing);
     expect(find.byIcon(Icons.edit_outlined), findsNothing);
@@ -147,8 +232,47 @@ void main() {
     expect(find.text('删除'), findsOneWidget);
   });
 
+  testWidgets('方格模式：右键弹出删除菜单并进入删除确认', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(BookGridCard)),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除'), findsOneWidget);
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除书籍'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BookGridCard), findsOneWidget, reason: '取消后书籍保留');
+  });
+
+  testWidgets('方格模式：长按也弹出删除菜单', (tester) async {
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+
+    await tester.longPress(find.byType(BookGridCard));
+    await tester.pumpAndSettle();
+    expect(find.text('删除'), findsOneWidget);
+  });
+
   testWidgets('删除书籍：输入书名最后确认后才从列表移除', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+    await switchToList(tester);
     expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
 
     await tester.tap(find.byTooltip('更多操作'));
@@ -199,7 +323,11 @@ void main() {
   });
 
   testWidgets('最后确认取消：书籍保留', (tester) async {
-    await pumpHomeScreen(tester, books: const [Book(uuid: 'b1', title: '测试书')]);
+    await pumpHomeScreen(
+      tester,
+      books: const [Book(uuid: 'b1', title: '测试书')],
+    );
+    await switchToList(tester);
 
     await tester.tap(find.byTooltip('更多操作'));
     await tester.pumpAndSettle();
@@ -215,18 +343,21 @@ void main() {
     expect(find.widgetWithText(ListTile, '测试书'), findsOneWidget);
   });
 
-  testWidgets('无书籍时显示欢迎空态与新建按钮', (tester) async {
+  testWidgets('无书籍时显示欢迎空态与右上角新建入口', (tester) async {
     await pumpHomeScreen(tester, books: const []);
     expect(find.text('还没有书籍'), findsOneWidget);
-    expect(find.text('新建书籍'), findsOneWidget);
+    expect(find.text('点击右上角 + 新建你的第一本书'), findsOneWidget);
+    expect(find.byTooltip('新建书籍'), findsOneWidget);
   });
 
   /// 构建已 refresh 的通知设置 Provider 与其假后端（模拟指定系统侧状态）。
   Future<(NotificationSettingsProvider, FakeNotificationBackend)> makeSettings(
     WidgetTester tester, {
     bool? notificationsEnabled,
-    GenerationDoneChannelState channelState =
-        const GenerationDoneChannelState(headsUp: true, sound: true),
+    GenerationDoneChannelState channelState = const GenerationDoneChannelState(
+      headsUp: true,
+      sound: true,
+    ),
   }) async {
     // 真库 I/O 要放在真实事件循环里跑，否则 fake-async 区域里会永远等下去。
     final stack = (await tester.runAsync(TestStack.create))!;
@@ -250,34 +381,45 @@ void main() {
   testWidgets('系统通知未开启时主页显示提示条', (tester) async {
     const books = [Book(uuid: 'b1', title: '测试书')];
     // 用预构建（已 refresh）的设置 Provider pump 首页，模拟通知关闭态。
-    final (settings, _) = await makeSettings(tester, notificationsEnabled: false);
-    await pumpHomeScreen(
+    final (settings, _) = await makeSettings(
       tester,
-      books: books,
-      notificationSettings: settings,
+      notificationsEnabled: false,
     );
+    await pumpHomeScreen(tester, books: books, notificationSettings: settings);
 
     expect(find.textContaining('您没有开启系统通知'), findsOneWidget);
     expect(find.text('去开启'), findsOneWidget);
   });
 
   testWidgets('通知总开关关闭时优先显示总开关提示而非渠道提示', (tester) async {
-    final (settings, _) = await makeSettings(tester, notificationsEnabled: false);
-    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+    final (settings, _) = await makeSettings(
+      tester,
+      notificationsEnabled: false,
+    );
+    await pumpHomeScreen(
+      tester,
+      books: const [],
+      notificationSettings: settings,
+    );
 
     expect(find.textContaining('您没有开启系统通知'), findsOneWidget);
     expect(find.textContaining('已被关闭'), findsNothing);
   });
 
   testWidgets('生成完成渠道悬浮通知被关闭时主页显示提示条并可跳转设置', (tester) async {
-    final (settings, backend) = await makeSettings(tester, 
+    final (settings, backend) = await makeSettings(
+      tester,
       notificationsEnabled: true,
       channelState: const GenerationDoneChannelState(
         headsUp: false,
         sound: true,
       ),
     );
-    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+    await pumpHomeScreen(
+      tester,
+      books: const [],
+      notificationSettings: settings,
+    );
 
     expect(find.textContaining('悬浮通知已被关闭'), findsOneWidget);
     expect(find.textContaining('您没有开启系统通知'), findsNothing);
@@ -287,21 +429,33 @@ void main() {
   });
 
   testWidgets('生成完成渠道悬浮与铃声均被关闭时提示两者', (tester) async {
-    final (settings, _) = await makeSettings(tester, 
+    final (settings, _) = await makeSettings(
+      tester,
       notificationsEnabled: true,
       channelState: const GenerationDoneChannelState(
         headsUp: false,
         sound: false,
       ),
     );
-    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+    await pumpHomeScreen(
+      tester,
+      books: const [],
+      notificationSettings: settings,
+    );
 
     expect(find.textContaining('悬浮通知、通知铃声已被关闭'), findsOneWidget);
   });
 
   testWidgets('生成完成渠道悬浮与铃声全开时主页不显示提示条', (tester) async {
-    final (settings, _) = await makeSettings(tester, notificationsEnabled: true);
-    await pumpHomeScreen(tester, books: const [], notificationSettings: settings);
+    final (settings, _) = await makeSettings(
+      tester,
+      notificationsEnabled: true,
+    );
+    await pumpHomeScreen(
+      tester,
+      books: const [],
+      notificationSettings: settings,
+    );
 
     expect(find.text('去开启'), findsNothing);
     expect(find.textContaining('已被关闭'), findsNothing);

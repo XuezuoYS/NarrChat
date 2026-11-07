@@ -18,7 +18,10 @@ void main() {
     final image = tester.widget<Image>(find.byType(Image));
     expect(image.width, 30);
     expect(image.height, 30);
-    expect((image.image as AssetImage).assetName, 'assets/app_icon_rounded.png');
+    expect(
+      (image.image as AssetImage).assetName,
+      'assets/app_icon_rounded.png',
+    );
     expect(find.text('NarrChat'), findsNothing);
   });
 
@@ -27,5 +30,22 @@ void main() {
 
     expect(find.byType(Image), findsOneWidget);
     expect(find.text('NarrChat'), findsOneWidget);
+  });
+
+  testWidgets('vertical 时文字排在 Logo 下方', (tester) async {
+    await tester.pumpWidget(
+      build(
+        const BrandLogo(
+          size: 30,
+          title: 'NarrChat',
+          axis: BrandLogoAxis.vertical,
+        ),
+      ),
+    );
+
+    final logo = tester.getRect(find.byType(Image));
+    final text = tester.getRect(find.text('NarrChat'));
+    expect(text.top, greaterThanOrEqualTo(logo.bottom));
+    expect(text.left, closeTo(logo.left, 0.01));
   });
 }

@@ -4,8 +4,24 @@ import 'package:provider/provider.dart';
 import '../models/book.dart';
 import '../providers/book_provider.dart';
 import '../providers/round_provider.dart';
+import 'app_menu.dart';
 import 'app_notice_overlay.dart';
 import 'round_action_dialogs.dart';
+
+/// 首页书籍菜单动作值：删除。
+const String bookMenuDelete = 'delete';
+
+/// 首页书籍统一菜单项（列表「更多操作」与方格右键 / 长按菜单共用）。
+List<PopupMenuEntry<String>> bookMenuEntries() => const [
+  PopupMenuItem(
+    value: bookMenuDelete,
+    child: AppMenuAction(
+      icon: Icons.delete_outline,
+      label: '删除',
+      color: Color(0xFFE5484D),
+    ),
+  ),
+];
 
 /// 删除书籍统一入口：确认 → 输入书名最后确认 → 删除 → 失败提示。
 ///

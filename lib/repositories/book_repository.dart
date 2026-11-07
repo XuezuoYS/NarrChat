@@ -22,8 +22,14 @@ abstract class BookRepository {
   /// 书籍列表（默认不含墓碑）。数据来自缓存副本，不打开书库。
   Future<List<Book>> listBooks({bool includeDeleted = false});
 
-  /// 每本书最近一轮的时间（"最近对话"排序用）。
+  /// 每本书最近一轮的时间（"最近对话"时间展示用）。
   Future<Map<String, DateTime>> lastRoundTimes();
+
+  /// 每本书最近一次内容变更时间（`book_meta.updated_at`，首页更新时间排序用）。
+  ///
+  /// 读取缓存副本；发现书库文件 mtime 与缓存不同（或缓存缺时间）时，会打开
+  /// 对应书库校正 `updated_at` / `last_round_at` 等派生字段。单本失败退回缓存值。
+  Future<Map<String, DateTime>> updatedTimes();
 
   /// 打开一本完整书籍（信源读取），顺带校正缓存副本。
   Future<Book?> loadBook(String bookUuid);
@@ -105,6 +111,34 @@ class BookRepositorySqlite implements BookRepository {
         if (!row.isDeleted && row.lastRoundAt != null)
           row.bookUuid: row.lastRoundAt!,
     };
+  }
+
+  @override
+  Future<Map<String, DateTime>> updatedTimes() async {
+    final rows = await _indexRows();
+    final result = <String, DateTime>{};
+    for (final row in rows) {
+      if (row.isDeleted) continue;
+      var updatedAt = row.updatedAt;
+      // 缓存时间可能落后：书库文件被写过（设置 / 轮次 / 世界书 / Mod）后，
+      // 索引副本只有再次打开这本书才会重写。首页排序前按文件 mtime 快速判断，
+      // 只对真的变过的书打开书库校正，避免每次排序都开 N 个库。
+      try {
+        final mtime = await _mtimeOf(row.bookUuid);
+        final stale =
+            updatedAt == null || (mtime != 0 && mtime != row.dbMtimeMs);
+        if (stale && mtime != 0) {
+          final db = await books.open(row.bookUuid);
+          final meta = await db.meta.read();
+          await _writeIndex(meta, db);
+          updatedAt = meta.updatedAt;
+        }
+      } catch (_) {
+        // 被占用 / 损坏 / 打不开：保留缓存时间，不影响整页展示。
+      }
+      if (updatedAt != null) result[row.bookUuid] = updatedAt;
+    }
+    return result;
   }
 
   /// 读缓存副本；**以目录库为准**剔除墓碑，并自愈缺失的活书索引。

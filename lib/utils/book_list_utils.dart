@@ -2,10 +2,24 @@ import '../models/book.dart';
 import 'pinyin_sort.dart';
 import 'search_utils.dart';
 
+/// 书籍列表排列方式（首页方格 / 列表切换）。
+enum BookLayoutMode {
+  /// 方格排列（首页默认）。
+  grid('方格排列'),
+
+  /// 列表排列（沿用原书籍列表样式）。
+  list('列表排列');
+
+  const BookLayoutMode(this.label);
+
+  /// 界面展示 / tooltip 文案。
+  final String label;
+}
+
 /// 书籍列表排序模式。
 enum BookSortMode {
-  /// 最近对话时间（新 → 旧）。
-  time('时间'),
+  /// 更新时间（`book_meta.updated_at`，新 → 旧；首页默认）。
+  time('更新时间'),
 
   /// 标题 A-Z（按拼音）。
   az('A-Z');
@@ -13,6 +27,27 @@ enum BookSortMode {
   const BookSortMode(this.label);
 
   final String label;
+}
+
+/// 首页方格排列的目标最小卡片宽度（px）。
+const double kBookGridMinCardWidth = 160;
+
+/// 首页方格排列的横向 / 纵向间距（px）。
+const double kBookGridSpacing = 16;
+
+/// 按可用宽度计算首页方格的每行书籍数。
+///
+/// 目标是让卡片宽度尽量接近 [kBookGridMinCardWidth]：
+/// - 手机窄屏至少 2 列（卡片略缩小，而不是单列巨卡）；
+/// - 宽屏按 `floor((可用宽 + 间距) / (最小宽 + 间距))` 扩展。
+/// 非有限宽度 / 0 宽返回 1，交给布局层自行处理。
+int bookGridColumns(double availableWidth) {
+  if (!availableWidth.isFinite || availableWidth <= 0) return 1;
+  final count =
+      ((availableWidth + kBookGridSpacing) /
+              (kBookGridMinCardWidth + kBookGridSpacing))
+          .floor();
+  return count < 2 ? 2 : count;
 }
 
 /// 按搜索词过滤书籍（标题 / 分类，大小写不敏感）。
@@ -29,9 +64,10 @@ List<Book> filterBooks(List<Book> books, String query) {
 
 /// 对书籍排序。
 ///
-/// [lastRoundTimes] 以书籍 uuid 为键（即 `BookDao.getLastRoundTimes()` 的返回）。
+/// [updatedTimes] 以书籍 uuid 为键，值为 `book_meta.updated_at`
+/// （首页读取的缓存副本，见 `BookRepository.updatedTimes`）。
 ///
-/// - [BookSortMode.time]：按最近对话时间倒序（最近在前）；无轮次的书排最后，
+/// - [BookSortMode.time]：按更新时间倒序（新在前）；没有时间的书排最后，
 ///   相互之间按 uuid 稳定排序；时间相同也按 uuid 稳定排序。
 /// - [BookSortMode.az]：标题拼音 A-Z，标题相同按 uuid 升序。
 ///
@@ -39,16 +75,16 @@ List<Book> filterBooks(List<Book> books, String query) {
 List<Book> sortBooks(
   List<Book> books,
   BookSortMode mode,
-  Map<String, DateTime> lastRoundTimes,
+  Map<String, DateTime> updatedTimes,
 ) {
   final list = List.of(books);
   switch (mode) {
     case BookSortMode.time:
       list.sort((a, b) {
-        final ta = lastRoundTimes[a.uuid];
-        final tb = lastRoundTimes[b.uuid];
+        final ta = updatedTimes[a.uuid];
+        final tb = updatedTimes[b.uuid];
         if (ta == null && tb == null) {
-          return b.uuid.compareTo(a.uuid); // 无轮次：相互之间按 uuid 稳定排序
+          return b.uuid.compareTo(a.uuid); // 无时间：相互之间按 uuid 稳定排序
         }
         if (ta == null) return 1;
         if (tb == null) return -1;
@@ -66,7 +102,7 @@ List<Book> sortBooks(
   return list;
 }
 
-/// 最近对话时间的简短展示（用于列表项副信息）。
+/// 更新时间的简短展示（用于列表项副信息）。
 ///
 /// - 今天 → `今天 HH:mm`；昨天 → `昨天`；
 /// - 今年 → `M-d`；更早 → `yyyy-M-d`；null → 空串。
