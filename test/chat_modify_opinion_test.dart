@@ -45,7 +45,7 @@ void main() {
     await waitSendDone(tester, provider);
   }
 
-  testWidgets('底部按钮：按意见修改紧邻「刷新本轮」右侧一位', (tester) async {
+  testWidgets('底部按钮：按意见修改紧邻「重新生成」右侧一位', (tester) async {
     await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
     final labels = tester
@@ -60,16 +60,16 @@ void main() {
 
     // 整行顺序固定（RAW 入口恒在，不随后续增删而丢）。
     // 分支入口（D1）已移到气泡右键菜单，底部操作栏不再有它。
-    expect(labels, ['查看侧边栏', 'RAW', '刷新本轮', '按意见修改', '删除本轮']);
-    // 位置口径：就在「刷新本轮」右侧一位（删除本轮仍在最后）。
-    expect(labels.indexOf('按意见修改'), labels.indexOf('刷新本轮') + 1);
+    expect(labels, ['查看侧边栏', 'RAW', '重新生成', '按意见修改', '删除本轮']);
+    // 位置口径：就在「重新生成」右侧一位（删除本轮仍在最后）。
+    expect(labels.indexOf('按意见修改'), labels.indexOf('重新生成') + 1);
     expect(labels.indexOf('删除本轮'), greaterThan(labels.indexOf('按意见修改')));
 
-    // 几何口径：同一行、在「刷新本轮」右侧。
-    final refresh = tester.getCenter(find.text('刷新本轮'));
+    // 几何口径：同一行、在「重新生成」右侧。
+    final refresh = tester.getCenter(find.text('重新生成'));
     final modify = tester.getCenter(find.text('按意见修改'));
     expect(modify.dy, closeTo(refresh.dy, 0.5), reason: '同一行');
-    expect(modify.dx, greaterThan(refresh.dx), reason: '在刷新本轮右侧');
+    expect(modify.dx, greaterThan(refresh.dx), reason: '在重新生成右侧');
   });
 
   testWidgets('底部按钮入口：灰条亮起、输入框留空（只填意见）', (tester) async {
@@ -155,7 +155,7 @@ void main() {
     expect(modeBar(), findsOneWidget);
   });
 
-  testWidgets('多次修改后出现代次控件（与刷新本轮同一套 ← / → 口径）', (tester) async {
+  testWidgets('多次修改后出现代次控件（与重新生成同一套 ← / → 口径）', (tester) async {
     final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
     // R3：重新生成 / 按意见修改不删旧代，所以**第一次**修改后同组就是 2 代，

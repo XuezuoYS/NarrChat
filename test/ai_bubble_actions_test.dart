@@ -151,14 +151,14 @@ void main() {
     await _pump(tester, width: 700);
 
     expect(find.text('RAW'), findsOneWidget);
-    // 入口顺序：查看侧边栏 → RAW → 刷新本轮（RAW 不再被代次控件挤掉）。
+    // 入口顺序：查看侧边栏 → RAW → 重新生成（RAW 不再被代次控件挤掉）。
     expect(
       tester.getCenter(find.text('RAW')).dx,
       greaterThan(tester.getCenter(find.text('查看侧边栏')).dx),
     );
     expect(
       tester.getCenter(find.text('RAW')).dx,
-      lessThan(tester.getCenter(find.text('刷新本轮')).dx),
+      lessThan(tester.getCenter(find.text('重新生成')).dx),
     );
   });
 }

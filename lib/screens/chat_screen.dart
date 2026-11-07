@@ -1242,7 +1242,7 @@ class _ChatScreenState extends State<ChatScreen>
   /// 开始一次生成：把本次应携带的图片设为「生成中」用户气泡的内容，
   /// 并复位自动跟随 / 新内容状态、滚动到底部。
   ///
-  /// 供 发送 / 修改并重新提问 / 刷新本轮（含失败条目）等所有生成入口复用，
+  /// 供 发送 / 修改并重新提问 / 重新生成（含失败条目）等所有生成入口复用，
   /// 确保「生成一开始气泡就带图片」。不触碰待发送附件 [_pendingImages]
   /// （发送方由调用处自行清空，其它场景保留未发送的图片）。
   void _startGeneration({required List<String> images}) {
@@ -1384,7 +1384,7 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// **灰条用途一律直接上屏、不弹二次确认**：用户已用一次「进入用途 + 填写 +
   /// 按发送」表达了明确意图，再拦一道确认只是多一次点击（需要确认的是
-  /// 「刷新本轮」这类不经输入框的破坏性入口，见 `_handleRefreshRound`）。
+  /// 「重新生成」这类不经输入框的破坏性入口，见 `_handleRefreshRound`）。
   Future<void> _submitInputMode(ComposerInputMode mode) async {
     final text = _inputController.text.trim();
     final roundProvider = context.read<RoundProvider>();
@@ -1476,7 +1476,7 @@ class _ChatScreenState extends State<ChatScreen>
   /// AI 气泡「按意见修改」：灰条亮起、输入框留空（只填意见）；按发送键后
   /// 删除该轮及后续所有轮次，并以该意见重写第 N 轮（新增一代，旧代可切回）。
   ///
-  /// 与「刷新本轮 / 修改并重新提问」共用同一灰条形态与同一「重写」骨架，差别只在
+  /// 与「重新生成 / 修改并重新提问」共用同一灰条形态与同一「重写」骨架，差别只在
   /// 提交动作把输入框文本当作**修改意见**（不落库）。
   void _startModifyByOpinion(Round round) {
     _enterInputMode(
@@ -1668,7 +1668,7 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// 「刷新本轮」——气泡底部按钮 / 气泡右键菜单 / 失败条目都走这一处：
+  /// 「重新生成」——气泡底部按钮 / 气泡右键菜单 / 失败条目都走这一处：
   /// 二次确认（[showRefreshRoundConfirmDialog]，文案统一、不喊「丢失后续内容」）→
   /// 以该轮输入在**同轮号**新增一代（旧代留在版本树，代次控件可切回）。
   ///
@@ -1995,7 +1995,7 @@ class _ChatScreenState extends State<ChatScreen>
       ),
       const PopupMenuItem(
         value: 'refresh',
-        child: AppMenuAction(icon: Icons.replay, label: '刷新本轮'),
+        child: AppMenuAction(icon: Icons.replay, label: '重新生成'),
       ),
       if (isAi) ...[
         const PopupMenuItem(

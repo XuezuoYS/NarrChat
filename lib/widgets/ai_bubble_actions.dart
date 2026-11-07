@@ -9,8 +9,8 @@ import 'token_usage_pill.dart';
 /// - Token 栏（模型名 + 输入 / 输出 Token，整块可点 → 弹出计费明细气泡）
 /// - 查看本轮侧边栏
 /// - RAW（查看请求/返回原始数据；**入口恒在**，无数据时由调用方给出提示）
-/// - 刷新本轮
-/// - 按意见修改（紧邻「刷新本轮」右侧）
+/// - 重新生成
+/// - 按意见修改（紧邻「重新生成」右侧）
 /// - 删除本轮
 ///
 /// 「从此新建分支」在气泡右键菜单里（见对话页 `_buildMenuItems`），
@@ -72,7 +72,7 @@ class AiBubbleActions extends StatelessWidget {
             ),
             ActionButton(
               icon: Icons.refresh,
-              label: '刷新本轮',
+              label: '重新生成',
               onPressed: onRefresh,
             ),
             ActionButton(

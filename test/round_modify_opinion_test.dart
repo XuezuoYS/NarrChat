@@ -179,7 +179,7 @@ void main() {
       );
 
       expect(ok, isTrue);
-      // 第 3 轮从视图消失（内容仍在版本树：分支模型的既定语义，与「刷新本轮」一致）。
+      // 第 3 轮从视图消失（内容仍在版本树：分支模型的既定语义，与「重新生成」一致）。
       expect(provider.rounds.map((r) => r.roundIndex).toList(), [1, 2]);
       expect(provider.versionInfoFor(2)!.aliveCount, 2, reason: '第 2 轮同组新增一代');
       expect(roundOf(provider, 2).aiNarrative, contains('成功正文'));
@@ -234,7 +234,7 @@ void main() {
       final tail = provider.rounds.last;
       expect(tail.isError, isTrue);
       expect(tail.roundIndex, 1, reason: '失败的是第 1 轮本身');
-      // 与「刷新本轮」同规则：保留该轮**原**输入与原图，重试即重刷该轮；
+      // 与「重新生成」同规则：保留该轮**原**输入与原图，重试即重刷该轮；
       // 意见只留在失败尝试的 RAW 里。
       expect(tail.userInput, '第 1 轮输入');
       expect(tail.userImages, const ['img/old.png']);

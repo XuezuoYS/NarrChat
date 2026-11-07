@@ -114,7 +114,7 @@ class _BookGenState {
   ///
   /// 与 [pendingUserInput] 同时置位 / 清空：
   /// - 普通新一轮 = 链尾 +1（见 `RoundProvider.nextRoundIndex`）；
-  /// - 「刷新本轮 / 修改并重新提问 / 按意见修改」= **被重写的那一轮**。
+  /// - 「重新生成 / 修改并重新提问 / 按意见修改」= **被重写的那一轮**。
   ///
   /// 界面据此把生成中气泡画在真正的位置：R2 时代刷新会先删该轮起的投影行，
   /// 「链尾 +1」恰好等于目标轮号；R3 改成同轮新增一代后若继续沿用链尾 +1，
@@ -343,7 +343,7 @@ class RoundProvider extends ChangeNotifier {
 
   /// 生成中气泡应落在的轮号（null = 当前没有生成）。
   ///
-  /// 普通新一轮 = 链尾 +1；「刷新本轮 / 修改并重新提问 / 按意见修改」=
+  /// 普通新一轮 = 链尾 +1；「重新生成 / 修改并重新提问 / 按意见修改」=
   /// **被重写的轮号**。界面把待定气泡画在这一轮的位置，并在生成期间暂时隐藏
   /// 该轮旧代与后续轮次（见 `ChatScreen._rebuildGeometry`）。
   int? get pendingRoundIndex => _curGen?.pendingRoundIndex;
@@ -2619,7 +2619,7 @@ class RoundProvider extends ChangeNotifier {
   /// - [deleteFollowing] = true：删除本轮**及之后**全部轮次（本分支的全部代）；
   /// - [deleteFollowing] = false：只删**当前这一代**（等同于「删除此代」）。
   ///
-  /// 与「刷新本轮」的区别：刷新是**新增**一代并切过去（旧代留着可切回），
+  /// 与「重新生成」的区别：重新生成是**新增**一代并切过去（旧代留着可切回），
   /// 删除是物理删行。
   Future<void> deleteRound(Round round, {required bool deleteFollowing}) async {
     if (deleteFollowing) {
@@ -2739,7 +2739,7 @@ class RoundProvider extends ChangeNotifier {
     }
   }
 
-  /// 「刷新本轮」——**唯一入口**（气泡底部按钮 / 气泡菜单 / 错误代按钮与菜单共用）：
+  /// 「重新生成」——**唯一入口**（气泡底部按钮 / 气泡菜单 / 错误代按钮与菜单共用）：
   /// 以该轮的用户输入 / 图片重新请求 AI（新增一代并切到它，旧代留着可切回）。
   ///
   /// [round] 只作**载体**：真正被读的是 [Round.roundIndex] / [Round.userInput] /
@@ -2789,7 +2789,7 @@ class RoundProvider extends ChangeNotifier {
   /// 与 [refreshRound] / [editAndReAsk] 同一套「重写」骨架，差别只在请求：
   /// 1. 取被重写轮 [round] 与其**上一轮**的快照（内容来自内存投影）；
   /// 2. 删除该轮起的投影行（旧代保留在版本树，`← / →` 可切回；后续轮次随旧代
-  ///    一起从视图隐藏——分支模型既定语义，与「刷新本轮」一致）；
+  ///    一起从视图隐藏——分支模型既定语义，与「重新生成」一致）；
   /// 3. 以「修改轮」提示词重新请求 AI（见 [sendIntent]）：
   ///    - 历史 = 该轮生成时收到的 n 轮 + 该轮自身（n+1）；
   ///    - 状态 / 记忆等工具读取到的信息全部停在**上一轮**；

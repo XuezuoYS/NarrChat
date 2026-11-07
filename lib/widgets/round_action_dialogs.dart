@@ -122,9 +122,9 @@ Future<bool> showDeleteUnusedGenerationsConfirmDialog(
   return result ?? false;
 }
 
-/// 「刷新本轮」二次确认对话框（**唯一入口的确认框**）。
+/// 「重新生成」二次确认对话框（**唯一入口的确认框**）。
 ///
-/// 「刷新本轮」= 以该轮的用户输入在**同轮号**重新请求 AI（新增一代，旧代留在
+/// 「重新生成」= 以该轮的用户输入在**同轮号**重新请求 AI（新增一代，旧代留在
 /// 版本树可切回；生成期间界面按该轮截断展示）。气泡底部按钮、气泡右键菜单、
 /// 失败条目按钮/菜单都走这一处
 /// 文案：**不提示「会丢失后续内容」**——旧版本与后续轮次都保留在版本树里，
@@ -136,7 +136,7 @@ Future<bool> showRefreshRoundConfirmDialog(
   final result = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text('刷新本轮'),
+      title: const Text('重新生成'),
       content: Text('将重新生成第 $roundIndex 轮，并以该轮的用户输入重新请求 AI。是否继续？'),
       actions: [
         TextButton(

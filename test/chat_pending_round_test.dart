@@ -10,7 +10,7 @@ import 'helpers/fakes.dart';
 
 /// 生成中气泡的**落点轮号**。
 ///
-/// 回归背景：R3 起「刷新本轮 / 修改并重新提问 / 按意见修改」不再先删投影行，
+/// 回归背景：R3 起「重新生成 / 修改并重新提问 / 按意见修改」不再先删投影行，
 /// 而是在同轮新增一代；待定气泡若仍按「链尾 +1」摆放，刷新第 N 轮会先在末尾
 /// 冒出「第 N+1 轮正在生成」，旧代与后续轮也一直挂到生成结束——停止后才并回
 /// 第 N 轮。这里钉住：待定气泡就在目标轮的位置，生成期间视图按目标轮截断。
@@ -24,14 +24,14 @@ void main() {
   Finder generatingHeader(int roundIndex) =>
       find.text('第 $roundIndex 轮 · 正在生成中……');
 
-  /// 某一轮 AI 气泡底部的「刷新本轮」按钮。
+  /// 某一轮 AI 气泡底部的「重新生成」按钮。
   Finder refreshButtonOf(int roundIndex) => find.descendant(
         of: find.ancestor(
           of: find.text('第 $roundIndex 轮的剧情正文。'),
           matching: find.byType(ChatBubble),
         ),
         matching: find.ancestor(
-          of: find.text('刷新本轮'),
+          of: find.text('重新生成'),
           matching: find.byType(ActionButton),
         ),
       );
@@ -59,10 +59,10 @@ void main() {
       seedBodyRepeats: 1,
     );
 
-    // 走真实入口：气泡底部「刷新本轮」→ 二次确认 → 继续。
+    // 走真实入口：气泡底部「重新生成」→ 二次确认 → 继续。
     await tester.tap(refreshButtonOf(3));
     await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsOneWidget, reason: '刷新仍要二次确认');
+    expect(find.byType(AlertDialog), findsOneWidget, reason: '重新生成仍要二次确认');
     expect(find.textContaining('将重新生成第 3 轮'), findsOneWidget);
 
     await tester.tap(find.text('继续'));

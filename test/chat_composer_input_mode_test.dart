@@ -240,17 +240,17 @@ void main() {
     expect(modeBar(), findsOneWidget);
   });
 
-  testWidgets('灰条以外的破坏性入口（刷新本轮）依旧二次确认：取消即不生成', (tester) async {
+  testWidgets('灰条以外的破坏性入口（重新生成）依旧二次确认：取消即不生成', (tester) async {
     final rp = await pumpChatScreen(tester, seedRounds: 1, seedBodyRepeats: 1);
 
-    // 底部「刷新本轮」不经输入框：保留二次确认（与灰条用途的区别就在这）。
-    await tester.tap(find.text('刷新本轮'));
+    // 底部「重新生成」不经输入框：保留二次确认（与灰条用途的区别就在这）。
+    await tester.tap(find.text('重新生成'));
     await tester.pumpAndSettle();
 
     final dialog = find.byType(AlertDialog);
     expect(dialog, findsOneWidget);
     expect(
-      find.descendant(of: dialog, matching: find.text('刷新本轮')),
+      find.descendant(of: dialog, matching: find.text('重新生成')),
       findsOneWidget,
       reason: '确认框与入口同名（全栈统一为一个入口名）',
     );

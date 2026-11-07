@@ -438,7 +438,7 @@ void main() {
       expect(env.ai.calls, 0);
     });
 
-    test('「刷新本轮」载体允许指向尚不存在的轮次（失败条目「本该产生的那一轮」）', () async {
+    test('「重新生成」载体允许指向尚不存在的轮次（失败条目「本该产生的那一轮」）', () async {
       final env = await build();
       await env.provider.loadRounds(book.uuid);
       env.ai.failWith = const AiException('模拟失败');

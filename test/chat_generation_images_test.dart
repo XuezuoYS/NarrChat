@@ -8,13 +8,13 @@ import 'package:narrchat/widgets/image_preview.dart';
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
 
-/// 「生成一开始用户气泡即带图」的非发送路径：刷新本轮（正常轮次 / 错误代）。
+/// 「生成一开始用户气泡即带图」的非发送路径：重新生成（正常轮次 / 错误代）。
 ///
 /// R3 语义：失败不再是「底部特殊失败气泡」，而是链上一条 `message_status='error'`
 /// 的真轮次（方案 A）；因此失败态由 `Round.isError` 判定，入口仍在
-/// `AiBubbleActions` 上（与正常轮次同一个「刷新本轮」）。
+/// `AiBubbleActions` 上（与正常轮次同一个「重新生成」）。
 void main() {
-  testWidgets('刷新本轮：生成一开始用户气泡即带原图片（非发送路径）', (tester) async {
+  testWidgets('重新生成：生成一开始用户气泡即带原图片（非发送路径）', (tester) async {
     final settings = AiSettingsProvider();
     settings.setSelectedModel(
       AiPlatforms.defaultPlatformId,
@@ -43,7 +43,7 @@ void main() {
       ai: ai,
     );
 
-    // 长按用户气泡 → 上下文菜单 → 刷新本轮（与气泡底部按钮同一操作）。
+    // 长按用户气泡 → 上下文菜单 → 重新生成（与气泡底部按钮同一操作）。
     await tester.longPress(find.text('第 1 轮的用户输入'));
     await settle(tester);
     await tester.tap(
@@ -51,7 +51,7 @@ void main() {
         of: find.byWidgetPredicate(
           (w) => w is PopupMenuItem<String> && w.value == 'refresh',
         ),
-        matching: find.text('刷新本轮'),
+        matching: find.text('重新生成'),
       ),
     );
     await settle(tester);
@@ -69,7 +69,7 @@ void main() {
     await waitSendDone(tester, rp);
   });
 
-  testWidgets('错误代「刷新本轮」：同一确认框 + 同一路径，以失败输入与原图重刷该轮',
+  testWidgets('错误代「重新生成」：同一确认框 + 同一路径，以失败输入与原图重刷该轮',
       (tester) async {
     final ai = ToggleAiService()..fail = true;
     final rp = await pumpChatScreen(tester, ai: ai);
@@ -88,12 +88,12 @@ void main() {
 
     ai.fail = false;
     // 错误代底部按钮：与正常轮次同一入口 → 先弹同一个二次确认。
-    await tester.tap(find.text('刷新本轮').last);
+    await tester.tap(find.text('重新生成').last);
     await settle(tester);
     final dialog = find.byType(AlertDialog);
     expect(dialog, findsOneWidget);
     expect(
-      find.descendant(of: dialog, matching: find.text('刷新本轮')),
+      find.descendant(of: dialog, matching: find.text('重新生成')),
       findsOneWidget,
       reason: '确认框标题与入口同名',
     );

@@ -14,7 +14,7 @@ enum RoundSendKind {
   /// 不截断投影）。
   newRound,
 
-  /// 从某一轮起重来：按修改后的输入在**同轮号**新增一代（「刷新本轮」
+  /// 从某一轮起重来：按修改后的输入在**同轮号**新增一代（「重新生成」
   /// 「修改并重新提问」）。旧代留在版本树，历史按该轮之前截断。
   ///
   /// 请求 = **截断后**投影上的新一轮请求（见 [RoundProvider.sendIntent]），
@@ -43,7 +43,7 @@ class RoundSendIntent {
         targetRoundIndex = null,
         opinion = '';
 
-  /// 「刷新本轮 / 修改并重新提问」：截断 [targetRoundIndex] 起的投影后重发。
+  /// 「重新生成 / 修改并重新提问」：截断 [targetRoundIndex] 起的投影后重发。
   const RoundSendIntent.reaskRound({
     required this.targetRoundIndex,
     required this.userInput,

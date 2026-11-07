@@ -184,7 +184,7 @@ void main() {
     expect(env.provider.rawExchangesFor('g2'), isNull, reason: '代没了 RAW 也不该留');
   });
 
-  test('刷新本轮：同轮新增一代，链长不变、新代被选中', () async {
+  test('重新生成：同轮新增一代，链长不变、新代被选中', () async {
     await env.provider.sendRound(userInput: '第一章', book: book);
     final before = env.provider.rounds.single;
     final aliveBefore = env.provider.versionInfoFor(1)!.aliveCount;
