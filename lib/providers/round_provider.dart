@@ -9,6 +9,7 @@ import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
 import '../models/book.dart';
 import '../models/branch.dart';
+import '../models/branch_copy.dart';
 import '../models/raw_exchange.dart';
 import '../models/round.dart';
 import '../models/round_generation.dart';
@@ -634,6 +635,12 @@ class RoundProvider extends ChangeNotifier {
     }
   }
 
+  /// 新分支的自动名：默认分支算第 1 条，因此第一个分支叫「分支 2」。
+  ///
+  /// 「从此新建分支」与「从此代拷贝链至新的分支」共用同一口径，
+  /// 避免两处各写一遍命名规则后漂移。
+  String _nextBranchName() => '分支 ${_chain.branches.length + 2}';
+
   /// 从某一代分叉出一条 IF 线，成功返回新分支 uuid。
   ///
   /// 分支内此刻没有轮次；用户下一次输入会写入链首代。错误代不能分叉。
@@ -650,7 +657,7 @@ class RoundProvider extends ChangeNotifier {
         bookUuid: _bookUuid,
         generationUuid: round.uuid,
         branchName: (title ?? '').trim().isEmpty
-            ? '分支 ${_chain.branches.length + 2}'
+            ? _nextBranchName()
             : title!.trim(),
       );
       _bumpVersions();
@@ -661,6 +668,54 @@ class RoundProvider extends ChangeNotifier {
       return branch.branchUuid;
     } catch (e) {
       _error = e.toString();
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// 「从此代拷贝链至新的分支」：拷贝目标代及其整棵子代树。
+  ///
+  /// - 新分支的 father = 目标代的父代（链首时沿用源分支父级，无父级则成根）；
+  /// - **不切换**当前分支：是否跳转由对话框让用户选；
+  /// - 成功后刷新活动链与分支列表（源分支内容不动），并触发一次云同步；
+  /// - 失败 / 被拒时写入 [error] 并返回 null，界面据此展示原因。
+  ///
+  /// [onProgress] 透传给仓储，用于对话框显示「已拷贝 x / y 代」。
+  Future<BranchCopyResult?> copyChainToNewBranch({
+    required Round round,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (_bookUuid.isEmpty || round.uuid.isEmpty) return null;
+    if (isSending) {
+      _error = '正在生成中，暂不可拷贝';
+      notifyListeners();
+      return null;
+    }
+    if (round.isError) {
+      _error = '失败代不能拷贝，请先重新生成';
+      notifyListeners();
+      return null;
+    }
+    final bookUuid = _bookUuid;
+    try {
+      final result = await _roundsRepo.copyChainToNewBranch(
+        bookUuid: bookUuid,
+        fromGenerationUuid: round.uuid,
+        branchName: _nextBranchName(),
+        onProgress: onProgress,
+      );
+      _bumpVersions();
+      // 新分支不激活：活动链仍是源分支，但分支列表 / 面板要立刻出现它。
+      if (_bookUuid == bookUuid) {
+        await loadRounds(bookUuid);
+      }
+      _cloudSyncProvider?.triggerSync();
+      return result;
+    } catch (e) {
+      debugPrint('[branch] 拷贝链失败：$e');
+      // 对话框直接展示这句原因：StateError 去掉 "Bad state:" 前缀，
+      // 别让用户看到 Dart 的异常类名。
+      _error = e is StateError ? e.message : e.toString();
       notifyListeners();
       return null;
     }

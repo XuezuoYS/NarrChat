@@ -5,6 +5,7 @@ import 'package:narrchat/database/book_db.dart';
 import 'package:narrchat/database/book_db_pool.dart';
 import 'package:narrchat/models/book_meta.dart';
 import 'package:narrchat/models/branch.dart';
+import 'package:narrchat/models/branch_father_snapshot.dart';
 import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/repositories/round_repository.dart';
 import 'package:path/path.dart' as p;
@@ -490,5 +491,274 @@ void main() {
     await book.rounds.updateMeta('g1', {'message_status': '', 'message': ''});
     final cleared = (await book.rounds.generation('g1'))!;
     expect(cleared.meta.message, isEmpty);
+  });
+
+  group('拷贝链至新分支', () {
+    /// 第 2 轮有一对兄弟代（g2a 选中）、第 3 轮有两个版本（g3a 选中），
+    /// 以及一条只挂在 g2b 下面的 g3b —— 用来证明「只拷目标子树」。
+    Future<void> seedCopyTree() async {
+      await book.rounds.insert(gen('g1', 1, using: true));
+      await book.rounds.insert(
+        gen('g2a', 2, father: 'g1', using: true, narrative: '正文-g2a'),
+      );
+      await book.rounds.insert(gen('g2b', 2, father: 'g1', serial: 2));
+      await book.rounds.insert(gen('g3a', 3, father: 'g2a', using: true));
+      await book.rounds.insert(
+        gen('g3a2', 3, father: 'g2a', serial: 2, message: '另一版本'),
+      );
+      await book.rounds.insert(gen('g3b', 3, father: 'g2b', using: true));
+      await book.rounds.insert(gen('g4a', 4, father: 'g3a', using: true));
+    }
+
+    test('整棵子代树：新 uuid / 父指针重映射 / 源分支不变 / 新分支不激活', () async {
+      await seedCopyTree();
+      final sourceMetaCount = (await book.rounds.listMeta()).length;
+      // 把 updated_at 拨回过去，才能证明拷贝确实刷新了它。
+      await book.meta.setUpdatedAt(DateTime.utc(2000));
+      final progress = <(int, int)>[];
+
+      final result = await repository.copyChainToNewBranch(
+        bookUuid: 'b1',
+        fromGenerationUuid: 'g2a',
+        branchName: '分支 2',
+        onProgress: (done, total) => progress.add((done, total)),
+      );
+
+      expect(result.generationCount, 4, reason: 'g2a + g3a/g3a2 + g4a');
+      expect(result.firstRoundIndex, 2);
+      expect(result.lastRoundIndex, 4);
+      expect(result.branchName, '分支 2');
+
+      // 分支行：父级 = 目标代的父代 g1，且不激活。
+      expect(result.branch.fatherRow, 'g1');
+      expect(result.branch.fatherRowIndex, 1);
+      expect(result.branch.fatherBranch, '');
+      expect(result.branch.branchWorking, isFalse);
+      final shot = BranchFatherSnapshot.decode(result.branch.fatherRowShot)!;
+      expect(shot.uuid, 'g1');
+
+      // 源分支一行不改，新分支只有 4 行。
+      final metas = await book.rounds.listMeta();
+      expect(metas.length, sourceMetaCount + 4);
+      final copied =
+          metas.where((m) => m.branchUuid == result.branch.branchUuid).toList();
+      expect(copied.length, 4);
+      expect(
+        copied.map((m) => (m.roundIndex, m.roundSerialNum)).toSet(),
+        {(2, 1), (3, 1), (3, 2), (4, 1)},
+        reason: '轮号 / 代序号原样保留',
+      );
+      RoundMeta copyOf(int index, int serial) => copied.firstWhere(
+        (m) => m.roundIndex == index && m.roundSerialNum == serial,
+      );
+      final c2 = copyOf(2, 1);
+      final c3 = copyOf(3, 1);
+      final c3old = copyOf(3, 2);
+      final c4 = copyOf(4, 1);
+      expect(c2.fatherUuid, isNull, reason: '链首副本的 father_uuid 为 NULL');
+      expect(c3.fatherUuid, c2.uuid);
+      expect(c3old.fatherUuid, c2.uuid, reason: '同轮兄弟代也重映射到同一个父副本');
+      expect(c4.fatherUuid, c3.uuid);
+      expect(c3.isUsing, isTrue);
+      expect(c3old.isUsing, isFalse, reason: 'is_using 原样保留');
+      expect(c3old.message, '另一版本');
+
+      // 内容原样：新代 uuid 与源代不重叠，正文 / 输入完整带过来。
+      final sourceUuids = {
+        'g1', 'g2a', 'g2b', 'g3a', 'g3a2', 'g3b', 'g4a',
+      };
+      for (final meta in copied) {
+        expect(sourceUuids.contains(meta.uuid), isFalse);
+      }
+      final copiedG2 = (await book.rounds.generation(c2.uuid))!;
+      expect(copiedG2.userInput, '问-g2a');
+      expect(copiedG2.aiNarrative, '正文-g2a');
+      final copiedG3 = (await book.rounds.generation(c3.uuid))!;
+      expect(copiedG3.userInput, '问-g3a');
+
+      // 不在目标子树里的 g2b / g3b 一个都没被带走（用源代仍在证明没删源）。
+      expect((await book.rounds.generation('g2b')), isNotNull);
+      expect((await book.rounds.generation('g3b')), isNotNull);
+
+      // 内容变更：updated_at 被刷新；工作分支仍是默认分支。
+      final updatedAt = (await book.meta.read()).updatedAt;
+      expect(updatedAt.isAfter(DateTime.utc(2000)), isTrue);
+      final working = await repository.loadChain('b1');
+      expect(working.workingBranch, Branch.defaultBranchUuid);
+      expect(working.branches.single.branchWorking, isFalse);
+
+      // 进度：开始 0/N，结束 N/N。
+      expect(progress.first, (0, 4));
+      expect(progress.last, (4, 4));
+      for (final (done, total) in progress) {
+        expect(total, 4);
+        expect(done, inInclusiveRange(0, 4));
+      }
+    });
+
+    test('新分支的提示词上文 = 父代 + 拷贝链（不重复）', () async {
+      await seedCopyTree();
+      final result = await repository.copyChainToNewBranch(
+        bookUuid: 'b1',
+        fromGenerationUuid: 'g2a',
+        branchName: '分支 2',
+      );
+      await repository.switchBranch(
+        bookUuid: 'b1',
+        branchUuid: result.branch.branchUuid,
+      );
+
+      final chain = await repository.loadChain('b1');
+      expect(chain.rounds.map((r) => r.roundIndex), [2, 3, 4]);
+      expect(chain.rounds.map((r) => r.uuid), isNot(contains('g2a')));
+      expect(chain.nextRoundIndex, 5);
+
+      final context = await repository.buildPromptContext(
+        bookUuid: 'b1',
+        chain: chain,
+        historyRounds: 10,
+      );
+      expect(
+        context.rounds.map((r) => r.roundIndex),
+        [1, 2, 3, 4],
+        reason: '父代 g1 + 拷贝链；不能把 g2a 之前的父级重复一遍',
+      );
+      expect(context.rounds.first.uuid, 'g1');
+      expect(
+        context.rounds.where((r) => r.userInput == '问-g2a').length,
+        1,
+        reason: '目标代只以副本形式出现一次',
+      );
+
+      final upstream = await repository.loadUpstreamContext(
+        bookUuid: 'b1',
+        chain: chain,
+        limit: 10,
+      );
+      expect(upstream.rounds.map((r) => r.uuid), ['g1']);
+      expect(upstream.fallbackRound, isNull);
+    });
+
+    test('目标是链首：沿用源分支的父级四列', () async {
+      await seedChain();
+      final source = await repository.forkBranch(
+        bookUuid: 'b1',
+        generationUuid: 'g2',
+        branchName: '源分支',
+      );
+      // fork 后工作分支已是源分支；补两轮链首 / 后续。
+      await book.rounds.insert(
+        gen('b3', 3, branch: source.branchUuid, using: true),
+      );
+      await book.rounds.insert(
+        gen('b4', 4, father: 'b3', branch: source.branchUuid, using: true),
+      );
+
+      final result = await repository.copyChainToNewBranch(
+        bookUuid: 'b1',
+        fromGenerationUuid: 'b3',
+        branchName: '拷贝分支',
+      );
+
+      expect(result.branch.fatherRow, 'g2', reason: '链首的父级 = 源分支的分叉点');
+      expect(result.branch.fatherRowIndex, 2);
+      expect(result.branch.fatherBranch, '');
+      expect(result.generationCount, 2);
+      final copied = (await book.rounds.listMeta())
+          .where((m) => m.branchUuid == result.branch.branchUuid)
+          .toList();
+      final root = copied.firstWhere((m) => m.fatherUuid == null);
+      expect(root.roundIndex, 3);
+      expect(
+        copied.firstWhere((m) => m.fatherUuid == root.uuid).roundIndex,
+        4,
+      );
+
+      // 工作分支仍是源分支；切过去后上文从 g1 / g2 接回来。
+      expect((await repository.loadChain('b1')).workingBranch,
+          source.branchUuid);
+      await repository.switchBranch(
+        bookUuid: 'b1',
+        branchUuid: result.branch.branchUuid,
+      );
+      final chain = await repository.loadChain('b1');
+      final context = await repository.buildPromptContext(
+        bookUuid: 'b1',
+        chain: chain,
+        historyRounds: 10,
+      );
+      expect(context.rounds.map((r) => r.roundIndex), [1, 2, 3, 4]);
+      expect(context.rounds[1].uuid, 'g2');
+    });
+
+    test('默认分支第 1 轮：根分支（无父级），整链拷走', () async {
+      await seedChain();
+      final result = await repository.copyChainToNewBranch(
+        bookUuid: 'b1',
+        fromGenerationUuid: 'g1',
+        branchName: '根拷贝',
+      );
+
+      expect(result.branch.fatherRow, isEmpty);
+      expect(result.branch.fatherBranch, isEmpty);
+      expect(result.branch.fatherRowShot, isEmpty);
+      expect(result.branch.fatherRowIndex, 1);
+      expect(result.generationCount, 3);
+
+      await repository.switchBranch(
+        bookUuid: 'b1',
+        branchUuid: result.branch.branchUuid,
+      );
+      final chain = await repository.loadChain('b1');
+      expect(chain.rounds.map((r) => r.roundIndex), [1, 2, 3]);
+      expect(chain.nextRoundIndex, 4);
+      final upstream = await repository.loadUpstreamContext(
+        bookUuid: 'b1',
+        chain: chain,
+        limit: 10,
+      );
+      expect(upstream.rounds, isEmpty);
+      expect(upstream.fallbackRound, isNull);
+    });
+
+    test('失败代 / 不在活动链上的代 / 找不到代：拒绝且不落库', () async {
+      await seedChain();
+      await book.rounds.insert(gen('g2b', 2, father: 'g1', serial: 2));
+      await book.rounds.insert(
+        gen('e4', 4, father: 'g3', status: 'error', using: true),
+      );
+      final before = (await book.rounds.listMeta()).length;
+
+      await expectLater(
+        repository.copyChainToNewBranch(
+          bookUuid: 'b1',
+          fromGenerationUuid: 'e4',
+          branchName: 'x',
+        ),
+        throwsA(isA<StateError>()),
+        reason: '失败代不能拷贝',
+      );
+      await expectLater(
+        repository.copyChainToNewBranch(
+          bookUuid: 'b1',
+          fromGenerationUuid: 'g2b',
+          branchName: 'x',
+        ),
+        throwsA(isA<StateError>()),
+        reason: '非当前活动链上的代不能拷贝',
+      );
+      await expectLater(
+        repository.copyChainToNewBranch(
+          bookUuid: 'b1',
+          fromGenerationUuid: 'missing',
+          branchName: 'x',
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      expect((await book.rounds.listMeta()).length, before);
+      final chain = await repository.loadChain('b1');
+      expect(chain.branches, isEmpty, reason: '被拒时不留下半条分支');
+    });
   });
 }

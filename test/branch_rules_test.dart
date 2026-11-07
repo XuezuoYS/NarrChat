@@ -155,6 +155,87 @@ void main() {
     });
   });
 
+  group('planCopyBranch', () {
+    test('有直接父代：父级四列取父代，快照可还原，默认不激活', () {
+      final father = RoundGeneration(
+        meta: meta('m2', index: 2, using: true),
+        userInput: '父代问',
+        aiNarrative: '父代答',
+      );
+      final branch = BranchRules.planCopyBranch(
+        branchUuid: 'br1',
+        branchName: '拷贝分支',
+        father: father,
+        sourceBranch: null,
+        now: epoch,
+      );
+
+      expect(branch.branchUuid, 'br1');
+      expect(branch.fatherRow, 'm2');
+      expect(branch.fatherRowIndex, 2);
+      expect(branch.fatherBranch, '');
+      expect(branch.branchWorking, isFalse, reason: '拷贝后默认留在原分支');
+      final restored = BranchFatherSnapshot.decode(branch.fatherRowShot)!;
+      expect(restored.uuid, 'm2');
+      expect(restored.userInput, '父代问');
+    });
+
+    test('目标是链首：原样沿用源分支的父级四列', () {
+      final source = Branch(
+        branchUuid: 'src',
+        fatherRow: 'm1',
+        fatherRowIndex: 1,
+        fatherBranch: 'rootBr',
+        branchName: '源分支',
+        fatherRowShot: '{"uuid":"m1"}',
+        branchWorking: true,
+        createdAt: epoch,
+        updatedAt: epoch,
+      );
+      final branch = BranchRules.planCopyBranch(
+        branchUuid: 'br2',
+        branchName: '拷贝分支',
+        father: null,
+        sourceBranch: source,
+        now: epoch,
+      );
+
+      expect(branch.fatherRow, 'm1');
+      expect(branch.fatherRowIndex, 1);
+      expect(branch.fatherBranch, 'rootBr');
+      expect(branch.fatherRowShot, '{"uuid":"m1"}');
+    });
+
+    test('没有父级（默认分支第 1 轮）：根分支', () {
+      final branch = BranchRules.planCopyBranch(
+        branchUuid: 'br3',
+        branchName: '根拷贝',
+        father: null,
+        sourceBranch: null,
+        now: epoch,
+      );
+
+      expect(branch.fatherRow, isEmpty);
+      expect(branch.fatherBranch, isEmpty);
+      expect(branch.fatherRowShot, isEmpty);
+      expect(branch.fatherRowIndex, 1);
+      expect(branch.isDefault, isFalse);
+    });
+
+    test('空 uuid 直接拒绝', () {
+      expect(
+        () => BranchRules.planCopyBranch(
+          branchUuid: '',
+          branchName: 'x',
+          father: null,
+          sourceBranch: null,
+          now: epoch,
+        ),
+        throwsArgumentError,
+      );
+    });
+  });
+
   group('planVersionOf', () {
     test('同组序号取最大 +1，沿用父代与轮号', () {
       final all = [

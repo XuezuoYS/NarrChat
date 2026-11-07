@@ -403,4 +403,74 @@ void main() {
       expect(walk.fullOldestFirst, isEmpty);
     });
   });
+
+  group('subtreeMetas', () {
+    test('包含自身与全部后代，父代一定排在子代之前', () {
+      final all = [
+        meta('g1', index: 1, using: true),
+        meta('g2a', father: 'g1', index: 2, serial: 1),
+        meta('g2b', father: 'g1', index: 2, serial: 2),
+        meta('g3a', father: 'g2a', index: 3),
+        meta('g3b', father: 'g2b', index: 3),
+        meta('g4a', father: 'g3a', index: 4),
+      ];
+
+      final subtree = RoundTree.subtreeMetas(all: all, root: all[1]);
+
+      expect(subtree.map((row) => row.uuid), ['g2a', 'g3a', 'g4a']);
+      // 根（g2a）的父代 g1 不在本次子树里，只检查子树内部的父子顺序。
+      final inSubtree = subtree.map((row) => row.uuid).toSet();
+      final seen = <String>{};
+      for (final row in subtree) {
+        final father = row.fatherUuid;
+        if (father != null &&
+            father.isNotEmpty &&
+            inSubtree.contains(father)) {
+          expect(
+            seen.contains(father),
+            isTrue,
+            reason: '${row.uuid} 的父代必须已经出现在它之前',
+          );
+        }
+        seen.add(row.uuid);
+      }
+    });
+
+    test('只取目标子树：同轮兄弟代与它们的后代都不进来', () {
+      final all = [
+        meta('g1', index: 1, using: true),
+        meta('g2a', father: 'g1', index: 2, serial: 1, using: true),
+        meta('g2b', father: 'g1', index: 2, serial: 2),
+        meta('g3a', father: 'g2a', index: 3),
+        meta('g3b', father: 'g2b', index: 3),
+      ];
+
+      expect(
+        RoundTree.subtreeMetas(all: all, root: all[1]).map((row) => row.uuid),
+        ['g2a', 'g3a'],
+      );
+      expect(
+        RoundTree.subtreeMetas(all: all, root: all[0]).map((row) => row.uuid),
+        ['g1', 'g2a', 'g2b', 'g3a', 'g3b'],
+        reason: '从根开始则整棵树都要',
+      );
+    });
+
+    test('branchUuid 过滤跨分支脏数据；成环也能正常停下', () {
+      final all = [
+        // a、b、c 的 father 指针在 c → a 处绕成环：从 a 起走会回到 a。
+        meta('a', father: 'c', index: 1, using: true),
+        meta('b', father: 'a', index: 2),
+        meta('x', father: 'a', branch: 'br1', index: 2),
+        meta('c', father: 'b', index: 3),
+      ];
+
+      expect(
+        RoundTree.subtreeMetas(all: all, root: all[0], branchUuid: '')
+            .map((row) => row.uuid),
+        ['a', 'b', 'c'],
+        reason: '别分支的 x 被过滤；成环时 visited 兜底，不会重复/卡死',
+      );
+    });
+  });
 }

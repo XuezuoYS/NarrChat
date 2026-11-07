@@ -170,6 +170,63 @@ class BranchRules {
     );
   }
 
+  /// 从某一代「拷贝链」到新分支：计算待写入的 [Branch]。
+  ///
+  /// 与 [planFork] 的区别：拷贝分支的链里已经有内容（目标代及其整棵子代树，
+  /// 由调用方复制并重映射），所以分支的父级不是「目标代」而是**目标代的父代**：
+  /// 新分支链首（目标代的副本）`father_uuid = NULL`，上下文靠分支表接回父代。
+  ///
+  /// 父级取值优先级：
+  /// 1. [father] 非空 = 目标代在同一分支里的直接父代（正常路径）；
+  /// 2. 目标代是链首（没有直接父代）→ 原样沿用 [sourceBranch] 的父级四列，
+  ///    这样新分支与源分支拥有完全相同的上文；
+  /// 3. 都没有（默认分支第 1 轮）→ 根分支，`father_row` 为空。
+  ///
+  /// 父代快照只在父代已删时兜底一轮，语义与 [planFork] 一致。
+  static Branch planCopyBranch({
+    required String branchUuid,
+    required String branchName,
+    required RoundGeneration? father,
+    required Branch? sourceBranch,
+    required DateTime now,
+    bool working = false,
+  }) {
+    if (branchUuid.isEmpty) {
+      throw ArgumentError('拷贝链需要新的分支 uuid');
+    }
+    final String fatherRow;
+    final int fatherRowIndex;
+    final String fatherBranch;
+    final String fatherRowShot;
+    if (father != null) {
+      fatherRow = father.uuid;
+      fatherRowIndex = father.roundIndex;
+      fatherBranch = father.branchUuid;
+      fatherRowShot = BranchFatherSnapshot.encode(father);
+    } else if (sourceBranch != null && sourceBranch.fatherRow.isNotEmpty) {
+      fatherRow = sourceBranch.fatherRow;
+      fatherRowIndex = sourceBranch.fatherRowIndex;
+      fatherBranch = sourceBranch.fatherBranch;
+      fatherRowShot = sourceBranch.fatherRowShot;
+    } else {
+      fatherRow = '';
+      fatherRowIndex = 1;
+      fatherBranch = '';
+      fatherRowShot = '';
+    }
+    return Branch(
+      branchUuid: branchUuid,
+      fatherRow: fatherRow,
+      fatherRowIndex: fatherRowIndex,
+      fatherBranch: fatherBranch,
+      branchName: branchName,
+      fatherRowShot: fatherRowShot,
+      branchWorking: working,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
   /// 新一代的元信息骨架（生成 / 重新生成 / 修改提问共用）。
   ///
   /// - [father] 为空 = 链首代；
@@ -381,21 +438,12 @@ class BranchRules {
   }
 
   /// [target] 及其后代子树的全部 uuid（含自身）。
+  ///
+  /// 遍历规则与顺序统一由 [RoundTree.subtreeMetas] 提供（父代在前、可防环）：
+  /// 「删除此代」只关心集合，拷贝链还需要这个顺序来重映射 `father_uuid`。
   static List<String> subtreeOf(RoundMeta target, List<RoundMeta> all) {
-    final byFather = RoundTree.childrenIndex(all);
-    final result = <String>[target.uuid];
-    final visited = <String>{target.uuid};
-    final queue = <String>[target.uuid];
-    while (queue.isNotEmpty) {
-      final current = queue.removeLast();
-      final kids = byFather[current];
-      if (kids == null) continue;
-      for (final kid in kids) {
-        if (!visited.add(kid.uuid)) continue;
-        result.add(kid.uuid);
-        queue.add(kid.uuid);
-      }
-    }
-    return result;
+    return RoundTree.subtreeMetas(all: all, root: target)
+        .map((row) => row.uuid)
+        .toList(growable: false);
   }
 }

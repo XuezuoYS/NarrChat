@@ -69,6 +69,43 @@ Future<void> _openBubbleMenu(WidgetTester tester, String bodyText) async {
   await tester.pumpAndSettle();
 }
 
+/// 右键菜单 →「从此代拷贝链至新的分支」→ 对话框打开。
+///
+/// 只 `pumpAndSettle` 走完菜单退场 / 对话框入场；拷贝本身是真实库 I/O，
+/// 用 [_waitCopyDone] 等它进入完成态。
+Future<void> _tapCopyChain(WidgetTester tester, String bodyText) async {
+  await _openBubbleMenu(tester, bodyText);
+  await tester.tap(
+    find.descendant(
+      of: _menuItem('copyChain'),
+      matching: find.text('从此代拷贝链至新的分支'),
+    ),
+  );
+  await tester.pumpAndSettle();
+  expect(
+    find.byKey(const ValueKey('copy-chain-dialog')),
+    findsOneWidget,
+    reason: '点击后必须立刻弹出拷贝对话框',
+  );
+}
+
+/// 等拷贝对话框进入完成态。
+///
+/// 真实库 I/O 要靠 `runAsync` 推进（no-isolate 工厂走微任务、打开文件走真实
+/// 事件循环，两种路径都覆盖），普通 `pumpAndSettle` 不足以保证切到完成态。
+Future<void> _waitCopyDone(WidgetTester tester) async {
+  final done = find.byKey(const ValueKey('copy-chain-jump'));
+  for (var i = 0; i < 100; i++) {
+    if (done.evaluate().isNotEmpty) {
+      await tester.pumpAndSettle();
+      return;
+    }
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+  }
+  fail('拷贝对话框没有在预期步数内进入完成态');
+}
+
 void main() {
   testWidgets('顶栏入口：Git 图标 + 分支名；点开是贴着入口的小窗且不暗化背景', (tester) async {
     await _pumpThread(tester);
@@ -191,7 +228,8 @@ void main() {
     await _openBubbleMenu(tester, '第 2 轮的剧情正文。');
 
     expect(_menuItem('fork'), findsOneWidget);
-    // 菜单顺序：紧跟「按意见修改」之后。
+    expect(_menuItem('copyChain'), findsOneWidget);
+    // 菜单顺序：按意见修改 → 从此新建分支 → 从此代拷贝链至新的分支。
     final labels = tester
         .widgetList<PopupMenuItem<String>>(find.byType(PopupMenuItem<String>))
         .map((item) {
@@ -203,6 +241,11 @@ void main() {
       labels.indexOf('从此新建分支'),
       labels.indexOf('按意见修改') + 1,
       reason: '菜单项顺序固定：按意见修改 → 从此新建分支',
+    );
+    expect(
+      labels.indexOf('从此代拷贝链至新的分支'),
+      labels.indexOf('从此新建分支') + 1,
+      reason: '拷贝链紧跟在新建分支之后',
     );
 
     await tester.tap(
@@ -242,6 +285,8 @@ void main() {
     expect(find.text('复制正文'), findsOneWidget, reason: '菜单确实打开了');
     expect(_menuItem('fork'), findsNothing, reason: '错误代不给新建分支入口');
     expect(find.text('从此新建分支'), findsNothing);
+    expect(_menuItem('copyChain'), findsNothing, reason: '错误代不给拷贝链入口');
+    expect(find.text('从此代拷贝链至新的分支'), findsNothing);
   });
 
   testWidgets('改名后分支列表立即更新（不用重开小窗），顶栏标签同步', (tester) async {
@@ -398,5 +443,96 @@ void main() {
       reason: '父代已删时不做「跳到别处」的半截跳转',
     );
     await flushNotices(tester);
+  });
+
+  testWidgets('拷贝链：完成 →「留在当前分支」不切；再拷一次「点击跳转」切过去并定位', (
+    tester,
+  ) async {
+    final thread = await _pumpThread(tester, rounds: 3);
+    final provider = thread.provider;
+    await settle(tester);
+    final sourceFirstUuid = provider.rounds.first.uuid;
+
+    // 第一次：留在当前分支。
+    await _tapCopyChain(tester, '第 2 轮的剧情正文。');
+    await _waitCopyDone(tester);
+    expect(find.text('拷贝完成'), findsOneWidget);
+    expect(find.text('已创建分支「分支 2」'), findsOneWidget);
+    expect(find.text('共拷贝 2 代（第 2–3 轮）。'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('copy-chain-stay')));
+    await settle(tester);
+    expect(provider.workingBranchUuid, '', reason: '留在当前分支');
+    expect(provider.branches.length, 2, reason: '默认分支 + 新分支');
+    expect(provider.rounds.map((r) => r.roundIndex), [1, 2, 3]);
+    expect(
+      find.textContaining('可在顶栏分支列表切换'),
+      findsOneWidget,
+      reason: '留在原分支时提示新分支在哪',
+    );
+    await flushNotices(tester);
+
+    // 第二次：点击跳转。
+    await _tapCopyChain(tester, '第 2 轮的剧情正文。');
+    await _waitCopyDone(tester);
+    expect(find.text('已创建分支「分支 3」'), findsOneWidget);
+    final newBranch = provider.branches.firstWhere(
+      (branch) => branch.branchName == '分支 3',
+    );
+    await tester.tap(find.byKey(const ValueKey('copy-chain-jump')));
+    await settle(tester, rounds: 40);
+    await settle(tester);
+
+    expect(provider.workingBranchUuid, newBranch.branchUuid);
+    expect(
+      find.descendant(of: _branchEntry(), matching: find.text('分支 3')),
+      findsOneWidget,
+      reason: '顶栏分支标签切到新分支',
+    );
+    expect(provider.rounds.map((r) => r.roundIndex), [2, 3]);
+    final card = find.byKey(const ValueKey('chat-branch-header-card'));
+    expect(card, findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.text('起始自第 1 轮第 1 代')),
+      findsOneWidget,
+      reason: '新分支 father = 被拷贝那一代的父代',
+    );
+    expect(
+      find.descendant(
+        of: card,
+        matching: find.text('父 UUID：$sourceFirstUuid'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('根拷贝（默认分支第 1 轮）：链首卡片「从第 1 轮开始」且无跳转按钮', (
+    tester,
+  ) async {
+    final thread = await _pumpThread(tester, rounds: 2);
+    final provider = thread.provider;
+    await settle(tester);
+
+    await _tapCopyChain(tester, '第 1 轮的剧情正文。');
+    await _waitCopyDone(tester);
+    expect(find.text('已创建分支「分支 2」'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('copy-chain-jump')));
+    await settle(tester, rounds: 40);
+    await settle(tester);
+
+    expect(provider.workingBranchUuid, isNotEmpty);
+    final card = find.byKey(const ValueKey('chat-branch-header-card'));
+    expect(card, findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.text('从第 1 轮开始')),
+      findsOneWidget,
+      reason: '根分支没有分叉点',
+    );
+    expect(
+      find.descendant(of: card, matching: find.text('父级：无（根分支）')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('chat-branch-father-jump')), findsNothing);
+    expect(provider.rounds.map((r) => r.roundIndex), [1, 2]);
   });
 }

@@ -1,6 +1,7 @@
 import '../database/book_db.dart';
 import '../database/book_db_pool.dart';
 import '../models/branch.dart';
+import '../models/branch_copy.dart';
 import '../models/round.dart';
 import '../models/round_generation.dart';
 import '../services/branch_rules.dart';
@@ -315,6 +316,141 @@ class RoundRepository {
     await db.branches.upsert(branch);
     await db.branches.setWorking(branch.branchUuid);
     return branch;
+  }
+
+  /// 从某一代「拷贝链」到一条新分支：拷贝**目标代及其整棵子代树**。
+  ///
+  /// 规则（与界面口径一致，详见 `docs/database.md`）：
+  /// - 只认当前分支（`branch_working`）活动链上的目标代；同轮兄弟代不参与；
+  /// - 目标代的**父代**记为新分支的 father（`branches.father_row` 四列）；
+  ///   目标代是链首时沿用源分支的父级信息，没有父级则成为根分支；
+  /// - 副本使用全新 uuid，`father_uuid` 按树重映射（链首为 NULL），
+  ///   `round_index` / `round_serial_num` / `is_using` / 内容原样保留；
+  /// - 新分支**不激活**；源分支一行不改；`book_meta.updated_at` 刷新一次。
+  ///
+  /// 分批写入，[onProgress] 依次给出 `(0, total)` 与每批后的已写入数。
+  Future<BranchCopyResult> copyChainToNewBranch({
+    required String bookUuid,
+    required String fromGenerationUuid,
+    required String branchName,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (bookUuid.isEmpty) throw ArgumentError('拷贝链需要书籍 uuid');
+    if (fromGenerationUuid.isEmpty) throw ArgumentError('拷贝链需要目标代 uuid');
+    final db = await books.open(bookUuid);
+    final metas = await db.rounds.listMeta();
+    final branches = await db.branches.list();
+
+    Branch? sourceBranch;
+    var workingBranch = Branch.defaultBranchUuid;
+    for (final branch in branches) {
+      if (branch.branchWorking) {
+        sourceBranch = branch;
+        workingBranch = branch.branchUuid;
+        break;
+      }
+    }
+
+    final target = metas
+        .where((meta) => meta.uuid == fromGenerationUuid)
+        .firstOrNull;
+    if (target == null) {
+      throw StateError('找不到要拷贝的代');
+    }
+    if (target.isError) {
+      throw StateError('失败代不能拷贝');
+    }
+    final chain = RoundTree.planChain(metas, workingBranch);
+    if (!chain.any((meta) => meta.uuid == target.uuid)) {
+      throw StateError('这一代已不在当前活动链上，无法拷贝');
+    }
+
+    // 直接父代 = 同一分支里上一轮的选中代；目标代是链首时没有这一行。
+    RoundGeneration? father;
+    final fatherUuid = target.fatherUuid;
+    if (fatherUuid != null && fatherUuid.isNotEmpty) {
+      father = await db.rounds.generation(fatherUuid);
+      if (father == null) {
+        throw StateError('父代已不存在，无法拷贝');
+      }
+    }
+
+    // 整棵子代树（同分支内，父先子后）；只读完成后再写，校验失败不留脏数据。
+    final subtree = RoundTree.subtreeMetas(
+      all: metas,
+      root: target,
+      branchUuid: target.branchUuid,
+    );
+    final loaded = await db.rounds.generations(
+      subtree.map((meta) => meta.uuid),
+    );
+    final byUuid = {
+      for (final generation in loaded) generation.uuid: generation,
+    };
+    final sources = <RoundGeneration>[];
+    for (final meta in subtree) {
+      final generation = byUuid[meta.uuid];
+      if (generation == null) {
+        throw StateError('数据缺失：找不到要拷贝的代 ${meta.uuid}');
+      }
+      sources.add(generation);
+    }
+
+    final branch = BranchRules.planCopyBranch(
+      branchUuid: UuidUtils.generateUuidV4(),
+      branchName: branchName.trim().isEmpty ? '新分支' : branchName.trim(),
+      father: father,
+      sourceBranch: sourceBranch,
+      now: DateTime.now().toUtc(),
+    );
+
+    final newUuidByOld = <String, String>{};
+    final copies = <RoundGeneration>[];
+    for (final source in sources) {
+      final newUuid = UuidUtils.generateUuidV4();
+      String? newFather;
+      if (source.uuid != target.uuid) {
+        newFather = newUuidByOld[source.fatherUuid ?? ''];
+        if (newFather == null) {
+          throw StateError('拷贝链数据缺口：找不到 ${source.uuid} 的父代');
+        }
+      }
+      newUuidByOld[source.uuid] = newUuid;
+      copies.add(
+        source.copyWith(
+          meta: RoundMeta(
+            uuid: newUuid,
+            fatherUuid: newFather,
+            branchUuid: branch.branchUuid,
+            roundIndex: source.roundIndex,
+            roundSerialNum: source.roundSerialNum,
+            isUsing: source.isUsing,
+            operatedAt: source.operatedAt,
+            messageStatus: source.meta.messageStatus,
+            message: source.meta.message,
+          ),
+        ),
+      );
+    }
+
+    await db.insertBranchCopy(
+      branch: branch,
+      rows: copies,
+      onProgress: onProgress,
+    );
+
+    var firstRoundIndex = target.roundIndex;
+    var lastRoundIndex = target.roundIndex;
+    for (final row in copies) {
+      if (row.roundIndex < firstRoundIndex) firstRoundIndex = row.roundIndex;
+      if (row.roundIndex > lastRoundIndex) lastRoundIndex = row.roundIndex;
+    }
+    return BranchCopyResult(
+      branch: branch,
+      generationCount: copies.length,
+      firstRoundIndex: firstRoundIndex,
+      lastRoundIndex: lastRoundIndex,
+    );
   }
 
   /// 切换分支（不触发云备份）。

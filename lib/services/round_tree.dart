@@ -113,6 +113,38 @@ class RoundTree {
     return chain;
   }
 
+  /// [root] 及其整棵子代树（含自身）。
+  ///
+  /// 遍历顺序为 BFS：**父代一定排在子代之前**，调用方可以边遍历边把
+  /// `father_uuid` 换成新 uuid（「从此代拷贝链」的落库顺序正需要这个保证）。
+  ///
+  /// - [branchUuid] 非空时只取该分支内的代。跨分支的 `father_uuid` 本不该存在
+  ///   （分支头用 `father_uuid = NULL` + `branches.father_row` 表达跨分支父级），
+  ///   这里过滤只是脏数据的保险；
+  /// - 用 `visited` 防环：脏数据里若出现环，遍历会正常结束而不是卡死。
+  static List<RoundMeta> subtreeMetas({
+    required List<RoundMeta> all,
+    required RoundMeta root,
+    String? branchUuid,
+  }) {
+    final byFather = childrenIndex(all);
+    final result = <RoundMeta>[root];
+    final visited = <String>{root.uuid};
+    // result 同时充当队列：下标推进 + 尾部追加即可，不必再占一份列表。
+    var index = 0;
+    while (index < result.length) {
+      final current = result[index++];
+      final kids = byFather[current.uuid];
+      if (kids == null) continue;
+      for (final kid in kids) {
+        if (branchUuid != null && kid.branchUuid != branchUuid) continue;
+        if (!visited.add(kid.uuid)) continue;
+        result.add(kid);
+      }
+    }
+    return result;
+  }
+
   /// 链尾（最新一轮）；空链返回 null。
   static RoundMeta? chainTail(List<RoundMeta> chain) =>
       chain.isEmpty ? null : chain.last;

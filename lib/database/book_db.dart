@@ -192,6 +192,44 @@ class BookDb implements BookStore {
   static Future<void> touch(DatabaseExecutor e) async {
     await e.update('book_meta', {'updated_at': nowTimestamp()});
   }
+
+  /// 拷贝链分批写入的行数（同一事务内分批提交，仅用于向界面回报进度）。
+  static const int _copyChunkSize = 500;
+
+  /// 一次事务写入新分支与它的拷贝链（「从此代拷贝链」专用）。
+  ///
+  /// - 分支行与全部代在同一事务里落库：任一步失败整体回滚，不会留下半条分支；
+  /// - 代按 [_copyChunkSize] 分批提交并回调 [onProgress]，同一事务仍然原子；
+  /// - `message` 走统一的截断（见 [_clampRowMessage]）；
+  /// - 只刷新一次 `book_meta.updated_at`；**不**改 `branch_working`
+  ///   （新分支默认不激活，等用户点「点击跳转」再切）。
+  Future<void> insertBranchCopy({
+    required Branch branch,
+    required List<RoundGeneration> rows,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (branch.isDefault) {
+      throw ArgumentError('拷贝分支不能是默认分支');
+    }
+    await _db.transaction((txn) async {
+      await txn.insert('branches', branch.toRow());
+      final total = rows.length;
+      onProgress?.call(0, total);
+      for (var start = 0; start < total; start += _copyChunkSize) {
+        final end =
+            start + _copyChunkSize > total ? total : start + _copyChunkSize;
+        final batch = txn.batch();
+        for (var i = start; i < end; i++) {
+          // 不做逐条组内归一化：拷贝保留源数据自己的 is_using，
+          // 同组「至多一个选中」的不变量由源分支负责（与 importAll 同口径）。
+          batch.insert('round_stack', BookDb._clampRowMessage(rows[i].toRow()));
+        }
+        await batch.commit(noResult: true);
+        onProgress?.call(end, total);
+      }
+      await BookDb.touch(txn);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

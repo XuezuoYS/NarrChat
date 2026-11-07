@@ -104,9 +104,13 @@ class BranchPanel extends StatelessWidget {
 
   Widget _buildRow(BuildContext context, ThemeData theme, Branch branch) {
     final isWorking = branch.branchUuid == workingBranchUuid;
+    // 根分支（非默认分支但 father_row 为空，只会由「从此代拷贝链」从默认分支
+    // 第 1 轮拷出）没有分叉点，说「从第 1 轮开始」而不是「从第 1 轮分叉」。
     final subtitle = branch.isDefault
         ? '默认分支（不可删除）'
-        : '从第 ${branch.fatherRowIndex} 轮分叉';
+        : branch.fatherRow.isEmpty
+            ? '从第 1 轮开始'
+            : '从第 ${branch.fatherRowIndex} 轮分叉';
     return InkWell(
       onTap: isWorking ? null : () => onSwitch(branch.branchUuid),
       child: Padding(

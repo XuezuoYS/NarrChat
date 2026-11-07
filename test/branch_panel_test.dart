@@ -19,6 +19,8 @@ Branch _ifBranch({
 }) =>
     Branch(
       branchUuid: uuid,
+      // 普通分叉一定有分叉点代 uuid；没有的话会被当成根分支显示「从第 1 轮开始」。
+      fatherRow: 'g-father-$fatherRowIndex',
       branchName: name,
       fatherRowIndex: fatherRowIndex,
       createdAt: DateTime.utc(2026, 1, 2),
@@ -75,6 +77,23 @@ void main() {
       await pumpPanel(tester);
       expect(find.textContaining('默认分支'), findsOneWidget);
       expect(find.text('从第 12 轮分叉'), findsOneWidget);
+    });
+
+    testWidgets('根分支（father_row 为空）显示「从第 1 轮开始」', (tester) async {
+      final rootCopy = Branch(
+        branchUuid: 'b-root',
+        branchName: '根拷贝',
+        fatherRowIndex: 1,
+        createdAt: DateTime.utc(2026, 1, 3),
+        updatedAt: DateTime.utc(2026, 1, 3),
+      );
+      await pumpPanel(tester, branches: [_defaultBranch(), rootCopy]);
+      expect(find.text('从第 1 轮开始'), findsOneWidget);
+      expect(
+        find.text('从第 1 轮分叉'),
+        findsNothing,
+        reason: '没有分叉点时不能说「分叉」',
+      );
     });
 
     testWidgets('当前工作分支打勾，其它空心', (tester) async {

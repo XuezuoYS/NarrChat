@@ -287,6 +287,20 @@ void main() {
     expect(rp.workingBranchUuid, '', reason: '删掉激活分支后回到默认分支');
   });
 
+  test('拷贝链至新分支 → 触发一次 both（新分支 + 拷贝代都是内容）', () async {
+    final (rp, cloud) = await buildLoaded();
+    expect(await rp.sendRound(userInput: '第一轮', book: book), isTrue);
+    expect(await rp.sendRound(userInput: '第二轮', book: book), isTrue);
+    cloud.triggers = 0;
+
+    final result = await rp.copyChainToNewBranch(round: rp.rounds[1]);
+
+    expect(result, isNotNull);
+    expect(cloud.triggers, 1, reason: '新建分支 + 复制出的轮次都是内容变更');
+    expect(cloud.lastKind, SyncKind.both);
+    expect(rp.workingBranchUuid, '', reason: '新分支不激活');
+  });
+
   // 兼容旧调用点的方法在 R3 只剩"重载"语义：不该产生任何触发。
   test('reloadCurrent（原采纳入口）→ 只重载，不触发同步', () async {
     final (rp, cloud) = await buildLoaded();

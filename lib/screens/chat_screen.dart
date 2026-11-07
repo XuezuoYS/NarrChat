@@ -56,6 +56,7 @@ import '../widgets/brand_logo.dart';
 import '../widgets/char_count_indicator.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/composer_input_mode.dart';
+import '../widgets/copy_chain_dialog.dart';
 
 import '../widgets/git_branch_icon.dart';
 import '../widgets/image_preview.dart';
@@ -1841,6 +1842,8 @@ class _ChatScreenState extends State<ChatScreen>
           _handleRefreshRound(round);
         case 'fork':
           _forkFromRound(round);
+        case 'copyChain':
+          _copyChainFromRound(round);
         case 'sidebar':
           _onViewSidebar(round);
         case 'raw':
@@ -1901,6 +1904,14 @@ class _ChatScreenState extends State<ChatScreen>
             child: AppMenuAction(
               iconWidget: GitBranchIcon(size: 18),
               label: '从此新建分支',
+            ),
+          ),
+        if (canFork)
+          const PopupMenuItem(
+            value: 'copyChain',
+            child: AppMenuAction(
+              icon: Icons.copy_all,
+              label: '从此代拷贝链至新的分支',
             ),
           ),
         const PopupMenuItem(
@@ -2113,16 +2124,23 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// 「点击跳转」把视图带回分叉点（切到父分支并定位到那一轮）；父代已删除 /
   /// 父分支不存在时只提示原因，不做「跳到别处」的半截跳转。
+  ///
+  /// **根分支**（非默认分支但 `father_row` 为空，只会由「从此代拷贝链」从
+  /// 默认分支第 1 轮拷出来）没有父级可跳：只显示「从第 1 轮开始」并隐藏跳转按钮。
   Widget _buildBranchHeaderCard(RoundProvider provider) {
     final branch = provider.currentBranch;
     if (branch == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
+    final isRoot = branch.fatherRow.isEmpty;
     final fork = provider.forkPointOf(branch);
     final serial = fork?.generationSerial;
-    final origin = serial == null
-        ? '起始自第 ${branch.fatherRowIndex} 轮'
-        : '起始自第 ${branch.fatherRowIndex} 轮第 $serial 代';
-    final fatherUuid = branch.fatherRow.isEmpty ? '—' : branch.fatherRow;
+    final origin = isRoot
+        ? '从第 1 轮开始'
+        : serial == null
+            ? '起始自第 ${branch.fatherRowIndex} 轮'
+            : '起始自第 ${branch.fatherRowIndex} 轮第 $serial 代';
+    final fatherLabel =
+        isRoot ? '父级：无（根分支）' : '父 UUID：${branch.fatherRow}';
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Container(
@@ -2167,24 +2185,25 @@ class _ChatScreenState extends State<ChatScreen>
                           color: scheme.onSurfaceVariant,
                         ),
                       ),
-                      TextButton(
-                        key: const ValueKey('chat-branch-father-jump'),
-                        onPressed: () => _jumpToBranchFork(branch, fork),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          visualDensity: VisualDensity.compact,
+                      if (!isRoot)
+                        TextButton(
+                          key: const ValueKey('chat-branch-father-jump'),
+                          onPressed: () => _jumpToBranchFork(branch, fork),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          child: const Text(
+                            '点击跳转',
+                            style: TextStyle(fontSize: 12),
+                          ),
                         ),
-                        child: const Text(
-                          '点击跳转',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
                     ],
                   ),
                   Text(
-                    '父 UUID：$fatherUuid',
+                    fatherLabel,
                     style: TextStyle(
                       fontSize: 11.5,
                       // 父 UUID 是排查用的次要信息，但必须能看清：
@@ -2262,6 +2281,58 @@ class _ChatScreenState extends State<ChatScreen>
     if (!mounted) return;
     if (branchUuid == null) {
       context.notices.warning(provider.error ?? '新建分支失败');
+    }
+  }
+
+  /// 「从此代拷贝链至新的分支」：拷贝目标代及其整棵子代树，完成后由用户选
+  /// 「点击跳转 / 留在当前分支」。
+  ///
+  /// 对话框自己负责「拷贝中 / 完成 / 失败」三态；这里只做 Provider 适配与
+  /// 完成后的动作：
+  /// - 跳转：切到新分支，等新链落到界面后定位到被拷贝的那一轮；
+  /// - 留下：只提示新分支已创建，可从顶栏分支列表切换。
+  Future<void> _copyChainFromRound(Round round) async {
+    final provider = context.read<RoundProvider>();
+    final outcome = await showCopyChainDialog(
+      context,
+      round: round,
+      copy: (onProgress) async {
+        final result = await provider.copyChainToNewBranch(
+          round: round,
+          onProgress: onProgress,
+        );
+        if (result == null) {
+          throw StateError(provider.error ?? '拷贝失败');
+        }
+        return result;
+      },
+    );
+    if (!mounted || outcome == null) return;
+    if (outcome.choice == CopyChainChoice.stay) {
+      context.notices.success(
+        '已创建分支「${outcome.result.branchName}」，可在顶栏分支列表切换',
+      );
+      return;
+    }
+    final switched = await provider.switchBranch(
+      outcome.result.branch.branchUuid,
+    );
+    if (!mounted) return;
+    if (!switched) {
+      context.notices.warning(provider.error ?? '切换到新分支失败');
+      return;
+    }
+    // 切分支会整链换血：等新链落到界面（几何 / 窗口重建）后再定位。
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    // 跳到历史位置 = 用户主动离开底部，后续新内容不再自动跟随。
+    _userScrolledAway = true;
+    final moved = await _chatLocator.jumpToRound(round.roundIndex);
+    if (!mounted) return;
+    if (!moved) {
+      context.notices.warning(
+        '已切换到新分支，但未能定位到第 ${round.roundIndex} 轮',
+      );
     }
   }
 
