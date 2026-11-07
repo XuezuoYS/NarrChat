@@ -298,7 +298,16 @@ class _ChatScreenState extends State<ChatScreen>
   List<ChatItem> _chatRows = const [];
 
   /// 渲染行最新一端距书底的距离（把列表本地 `pixels` 换算成全书偏移）。
+  ///
+  /// 几何兜底值；布局完成且 [_windowBaseFromHead] 为真时改用真实列表边界反推。
   double _windowBase = 0;
+
+  /// 窗口基准是否以**最早渲染行**为锚（显式轮次跳转后启用）。
+  ///
+  /// 默认以「窗口最新行」为锚，适合贴尾浏览 / 顶部底部跳转；显式轮次跳转让目标
+  /// 成为窗口首行后，以首行为锚可以把目标之前的估算行压到零，落点只取决于
+  /// 当前列表的真实可滚动边界。
+  bool _windowBaseFromHead = false;
 
   /// 链上轮次按 uuid 索引（渲染行 → 正文）。
   Map<String, Round> _chatRoundsByUuid = const {};
@@ -865,16 +874,61 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   @override
-  double get windowBookOffsetBase => _windowBase;
+  double get windowBookOffsetBase {
+    // 显式轮次跳转后，以**最早渲染行**为窗口锚点：
+    //   最早行顶边（全书坐标） = 基准 - 前导留白 + 最大偏移 + 视口高
+    // 反解出基准。最大偏移只是当前列表的本地边界，不代表全书；它和首行一起
+    // 把窗口内未构建行的估算误差关在“目标之前”——目标就是首行时误差为零。
+    if (_windowBaseFromHead && _chatRows.isNotEmpty &&
+        _scrollController.hasClients) {
+      final position = _scrollController.position;
+      if (position.hasContentDimensions && position.hasViewportDimension) {
+        final firstIndex = _chatGeometry.indexOf(_chatRows.first.key);
+        if (firstIndex != null) {
+          final maxOffset = math.max(
+            0.0,
+            position.maxScrollExtent - position.minScrollExtent,
+          );
+          return _chatGeometry.topEdgeOf(firstIndex) +
+              windowLeadingInset -
+              maxOffset -
+              position.viewportDimension;
+        }
+      }
+    }
+    return _windowBase;
+  }
 
   @override
   double get windowLeadingInset => _composerHeight + 8;
 
   @override
   Future<void> rebuildWindowAround(int roundIndex) async {
+    // 顶部 / 底部跳转回到默认的「最新行锚点」口径。
+    _windowBaseFromHead = false;
     if (_chatWindow.window == null) return;
     if (windowContainsRound(roundIndex)) return;
     _chatWindow.rebuildAround(roundIndex);
+    if (!mounted) return;
+    setState(() => _rebuildGeometry(_chatRoundsNow()));
+    // 等这一帧把新窗口的行建出来（高度回填后再由定位层复核落点）。
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
+  @override
+  Future<void> rebuildWindowForJump(int roundIndex) async {
+    if (_chatWindow.window == null) return;
+    final isLatest = roundIndex >= (_chatGeometry.maxRoundIndex ?? roundIndex);
+    if (isLatest) {
+      // 最新轮仍用贴尾窗口：目标顶边只差它自己一轮，且不至于让上方历史消失。
+      _windowBaseFromHead = false;
+      if (!windowContainsRound(roundIndex) || !_windowIncludesTail) {
+        _chatWindow.rebuildAround(roundIndex);
+      }
+    } else {
+      _windowBaseFromHead = true;
+      _chatWindow.rebuildForRoundJump(roundIndex);
+    }
     if (!mounted) return;
     setState(() => _rebuildGeometry(_chatRoundsNow()));
     // 等这一帧把新窗口的行建出来（高度回填后再由定位层复核落点）。
@@ -1079,10 +1133,14 @@ class _ChatScreenState extends State<ChatScreen>
     final viewport = _viewportDimension;
     if (viewport <= 0 || !_chatWindow.isInitialized) return;
     final edges = _distanceToWindowEdges();
-    final grewUp = _chatWindow.expandUp(
-      distanceToWindowTop: edges.top,
-      viewportDimension: viewport,
-    );
+    // 定点跳转复核期间目标必须是窗口第一行：此刻向上扩窗会把更早轮次插到目标
+    // 前面，刚对齐的落点立刻被推走。向下扩窗不改变目标的“首行”身份，保留。
+    final grewUp = _chatLocator.hasPendingJump
+        ? false
+        : _chatWindow.expandUp(
+            distanceToWindowTop: edges.top,
+            viewportDimension: viewport,
+          );
     final grewDown = _chatWindow.expandDown(
       distanceToWindowBottom: edges.bottom,
       viewportDimension: viewport,
@@ -2690,7 +2748,10 @@ class _ChatScreenState extends State<ChatScreen>
         roundProvider.workingBranchUuid != _lastBranchUuid ||
         pendingChanged ||
         (chatWidth - _lastChatLayoutWidth).abs() > 0.5) {
-      if (chainChanged) _chatWindow.reset();
+      if (chainChanged) {
+        _chatWindow.reset();
+        _windowBaseFromHead = false;
+      }
       _lastRoundsSource = rounds;
       _lastRoundsCount = rounds.length;
       _lastWarningsVersion = warningsVersion;

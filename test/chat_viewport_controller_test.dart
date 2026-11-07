@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/chat/chat_geometry.dart';
@@ -47,6 +49,43 @@ class _FakeViewport implements ChatViewport {
       listener();
     }
   }
+}
+
+/// 可控窗口宿主：记录「准备定点跳转窗口」的调用，并可按需卡住重建。
+class _FakeWindowHost implements ChatWindowHost {
+  _FakeWindowHost({this.contains = true});
+
+  bool contains;
+
+  final List<int> jumpRequests = [];
+
+  /// 非 null 时 `rebuildWindowForJump` 等待它放行，用来模拟重建期间用户接管。
+  Completer<void>? jumpGate;
+
+  @override
+  bool windowContainsRound(int roundIndex) => contains;
+
+  @override
+  bool get windowIncludesTail => true;
+
+  @override
+  double get windowBookOffsetBase => 0;
+
+  @override
+  double get windowLeadingInset => 0;
+
+  @override
+  Future<void> rebuildWindowAround(int roundIndex) async {}
+
+  @override
+  Future<void> rebuildWindowForJump(int roundIndex) async {
+    jumpRequests.add(roundIndex);
+    final gate = jumpGate;
+    if (gate != null) await gate.future;
+  }
+
+  @override
+  void ensureWindowExpanded() {}
 }
 
 /// 3 轮 × (用户 96 + AI 320) 的固定几何。
@@ -162,6 +201,41 @@ void main() {
       controller.geometry = gapped;
       expect(await controller.jumpToRound(3), isTrue);
       expect(controller.currentRoundIndex, 1, reason: '第 3 轮不存在 → 落在第 1 轮');
+    });
+
+    test('定点跳转总是请求精确定位窗口（目标已在窗口内也不例外）', () async {
+      final host = _FakeWindowHost(contains: true);
+      final precise = ChatViewportController(
+        viewport: viewport,
+        geometry: geometry,
+        window: host,
+      );
+      addTearDown(precise.dispose);
+
+      expect(await precise.jumpToRound(1), isTrue);
+      expect(host.jumpRequests, [1], reason: '旧窗口可能仍把未构建行累计进落点');
+      expect(precise.hasPendingJump, isTrue, reason: '移动后等待帧末复核');
+      precise.cancelPendingJump();
+      expect(precise.hasPendingJump, isFalse);
+    });
+
+    test('等待跳转窗口期间用户接管：放行后不再把视图拽回目标', () async {
+      final host = _FakeWindowHost()..jumpGate = Completer<void>();
+      final precise = ChatViewportController(
+        viewport: viewport,
+        geometry: geometry,
+        window: host,
+      );
+      addTearDown(precise.dispose);
+
+      final jumping = precise.jumpToRound(1);
+      await Future<void>.delayed(Duration.zero);
+      expect(precise.hasPendingJump, isTrue);
+
+      precise.cancelPendingJump();
+      host.jumpGate!.complete();
+      expect(await jumping, isTrue);
+      expect(viewport.jumps, isEmpty, reason: '用户已接管，落点不应再被应用');
     });
   });
 

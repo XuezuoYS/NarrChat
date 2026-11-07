@@ -142,6 +142,34 @@ void main() {
       controller.rebuildAround(123);
       expect(controller.window!.contains(123), isTrue);
     });
+
+    test('定点跳转：目标成为窗口首行，只保留其后两页', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      controller.rebuildForRoundJump(100);
+      expect(
+        controller.window,
+        const ChatWindow(firstRoundIndex: 100, lastRoundIndex: 130),
+        reason: '目标之前不留轮次，落点不再依赖未构建的旧行',
+      );
+    });
+
+    test('定点跳转靠尾部：目标仍为首行，末端夹到总轮数', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 200);
+      controller.rebuildForRoundJump(195);
+      expect(
+        controller.window,
+        const ChatWindow(firstRoundIndex: 195, lastRoundIndex: 200),
+      );
+    });
+
+    test('定点跳转第 1 轮：窗口从链首开始', () {
+      final controller = ChatWindowController()..initialize(totalRounds: 80);
+      controller.rebuildForRoundJump(1);
+      expect(
+        controller.window,
+        const ChatWindow(firstRoundIndex: 1, lastRoundIndex: 31),
+      );
+    });
   });
 
   group('轮数变少', () {

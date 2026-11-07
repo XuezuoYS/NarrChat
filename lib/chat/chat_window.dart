@@ -249,6 +249,22 @@ class ChatWindowController extends ChangeNotifier {
     _setWindow(ChatWindow(firstRoundIndex: first, lastRoundIndex: last));
   }
 
+  /// 显式跳到第 [targetRoundIndex] 轮前重建窗口：**目标就是窗口第一行**。
+  ///
+  /// 与 [rebuildAround] 两侧对称不同，这里刻意只保留目标及其后的轮次：
+  /// 跳转落点由「窗口最早一行 + 当前列表真实边界」反推（见页面
+  /// `windowBookOffsetBase`），目标之前的估算行越少，落点越不依赖未构建内容。
+  /// 目标之后保留两页，够一轮跳转后继续向下回看，也不会把窗口撑得过大。
+  void rebuildForRoundJump(int targetRoundIndex) {
+    if (_totalRounds == 0) {
+      _setWindow(null);
+      return;
+    }
+    final target = _clampRound(targetRoundIndex);
+    final last = _clampRound(target + jumpRadius * 2);
+    _setWindow(ChatWindow(firstRoundIndex: target, lastRoundIndex: last));
+  }
+
   int _clampRound(int roundIndex) {
     if (roundIndex < 1) return 1;
     if (_totalRounds > 0 && roundIndex > _totalRounds) return _totalRounds;

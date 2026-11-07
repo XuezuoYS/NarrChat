@@ -14,17 +14,18 @@ typedef ChatPostFrame = void Function(VoidCallback callback);
 
 /// 页面侧把「窗口」变成真实列表的那一小部分能力。
 ///
-/// 定位层自己不渲染任何东西，但它需要知道三件事：
-/// 1. 目标轮在不在当前窗口里（不在就得请页面重建窗口）；
-/// 2. 窗口最新一端距书底多远（把列表本地 `pixels` 换算成**全书偏移**）；
-/// 3. 列表前导留白（底部避让输入面板那段，暂时还由 `padding` 表达）。
+/// 定位层自己不渲染任何东西，但它需要知道四件事：
+/// 1. 目标轮在不在当前窗口里（顶部 / 底部跳转用）；
+/// 2. 窗口的「坐标零点」在全书里的位置（把列表本地 `pixels` 换算成**全书偏移**）；
+/// 3. 列表前导留白（底部避让输入面板那段）；
+/// 4. 如何为一次显式轮次跳转准备窗口（目标要成为窗口第一行）。
 ///
 /// 全书偏移换算（`reverse` 语义，`pixels = 0` 是列表最新端）：
 /// ```
 /// 书内距离 = 窗口基准 - 前导留白 + 本地距离
 /// ```
-/// 窗口外的条目只有估算高度，但它和跳转落点来自同一个几何模型，
-/// 相减时估算误差正好抵消 —— 所以「先把窗口挪到目标附近，再按几何跳」够准。
+/// 轮次跳转的窗口基准由**窗口最早一行 + 列表真实边界**反推：目标成为窗口首行时，
+/// 落点只取决于这条真实边界，不再把目标之后几十个未构建行的估算高度累加进来。
 abstract class ChatWindowHost {
   /// 目标轮是否已在当前窗口内。
   bool windowContainsRound(int roundIndex);
@@ -38,8 +39,14 @@ abstract class ChatWindowHost {
   /// 列表前导留白（`reverse` 下是贴底一侧；没有留白时返回 0）。
   double get windowLeadingInset;
 
-  /// 把窗口重建到目标轮附近并等它落地（页面负责重建列表行）。
+  /// 把窗口重建到目标轮附近并等它落地（顶部 / 底部跳转用）。
   Future<void> rebuildWindowAround(int roundIndex);
+
+  /// 为「跳到第 [roundIndex] 轮」准备窗口并等它落地。
+  ///
+  /// 与 [rebuildWindowAround] 分开：显式轮次跳转要求目标成为窗口第一行，
+  /// 且窗口坐标基准切到由真实列表边界反推的口径（见类注释）。
+  Future<void> rebuildWindowForJump(int roundIndex);
 
   /// 请求按当前滚动方向预取一页（异步；拖动速度不受影响）。
   void ensureWindowExpanded();
@@ -154,6 +161,12 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
   /// 是否正在按速度滚动（轨道据此决定是否常亮）。
   bool get isScrolling => _velocity != 0;
 
+  /// 是否还有待复核的轮次跳转。
+  ///
+  /// 页面据此在落点稳定前暂停向上预取：目标此刻是窗口第一行，若立刻把更早的轮次
+  /// 插到它前面，就会把刚对齐的目标推走。向下预取不受影响（目标仍是第一行）。
+  bool get hasPendingJump => _pendingJumpRound != null;
+
   /// 列表前导留白（底部避让输入面板那段）。
   double get _leadingInset => window?.windowLeadingInset ?? 0;
 
@@ -205,11 +218,22 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
     cancelPendingJump();
     final resolved = _resolveRound(roundIndex);
     if (resolved == null) return false;
+    // 先登记待复核，再重建窗口：重建过程本身会触发滚动通知，页面从这一刻起
+    // 暂停向上预取，避免「目标刚成为窗口首行就被更早轮次挤走」。
+    _pendingJumpRound = resolved;
+    _jumpChecks = 0;
     final host = window;
-    if (host != null && !host.windowContainsRound(resolved)) {
-      await host.rebuildWindowAround(resolved);
+    if (host != null) {
+      // 即便目标已在当前窗口也要准备：旧窗口的基准可能把大量未构建行的估算高度
+      // 累计进落点，这正是早期轮次越跳越偏的根因。
+      await host.rebuildWindowForJump(resolved);
+      // 等待期间被用户滚动取消：不要再把用户刚接管的视图拽回目标。
+      if (_pendingJumpRound != resolved) return true;
       // 重建后仍然查不到：这一轮已经不在了（删轮 / 脏数据），什么都不做。
-      if (_geometry.indexOfRound(resolved) == null) return false;
+      if (_geometry.indexOfRound(resolved) == null) {
+        _pendingJumpRound = null;
+        return false;
+      }
     }
     final moved = _applyJumpOffset(resolved);
     if (!moved && !_lastJumpClamped) {
@@ -218,8 +242,6 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
       return true;
     }
     // 落点被夹住 = 列表内容还在逐帧建出来，必须继续复核。
-    _pendingJumpRound = resolved;
-    _jumpChecks = 0;
     _scheduleVerify();
     return true;
   }
@@ -231,7 +253,9 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
     final first = _geometry.firstRoundIndex;
     if (first == null) return false;
     final host = window;
-    if (host != null && !host.windowContainsRound(first)) {
+    if (host != null) {
+      // 即便首轮已在窗口内也要通知一次：页面可能还停在轮次跳转的“首行锚点”
+      // 口径，顶部跳转要把它恢复成默认口径。
       await host.rebuildWindowAround(first);
     }
     if (!viewport.hasClients) return false;
@@ -246,8 +270,9 @@ class ChatViewportController extends ChangeNotifier implements ChatLocator {
     cancelPendingJump();
     final host = window;
     final max = _geometry.maxRoundIndex;
-    if (host != null && !host.windowIncludesTail && max != null) {
-      // 窗口不含末轮：先把窗口挪回末端，否则「底部」只是当前窗口的底部。
+    if (host != null && max != null) {
+      // 窗口不含末轮时先把窗口挪回末端，否则「底部」只是当前窗口的底部；
+      // 已含末轮时这次调用也让页面恢复默认基准（见 jumpToTop 的同类说明）。
       await host.rebuildWindowAround(max);
     }
     if (!viewport.hasClients) return false;
