@@ -3,8 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/agent_mode_level.dart';
 import '../providers/experimental_settings_provider.dart';
-import '../services/local_config_service.dart';
-import '../services/update_check_flow.dart';
+import 'other_settings_section.dart';
 import 'settings/settings_kit.dart';
 import 'ui_settings_form.dart';
 
@@ -12,7 +11,7 @@ import 'ui_settings_form.dart';
 ///
 /// 三个子模块同一页面纵向分区（统一使用设置组件套件的分区头 + 卡片）：
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
-/// - 其它设置：应用行为类杂项（如「检查更新」开关）；
+/// - 其它设置：应用行为类杂项（「检查更新」开关 + 「立即检查更新」入口）；
 /// - 实验性设置：实验性功能档位（如「Agent 模式」三档：关 / Lv.1 / Lv.2）。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
@@ -38,7 +37,8 @@ class GeneralSettingsForm extends StatelessWidget {
         SettingsSection(
           icon: Icons.system_update_alt_outlined,
           title: '其它设置',
-          child: _OtherSettingsSection(),
+          // OtherSettingsSection 自身即统一卡片（开关 + 立即检查两行同卡）。
+          child: OtherSettingsSection(),
         ),
         SettingsSection(
           icon: Icons.science_outlined,
@@ -46,60 +46,6 @@ class GeneralSettingsForm extends StatelessWidget {
           child: _ExperimentalSettingsSection(),
         ),
       ],
-    );
-  }
-}
-
-/// 「其它设置」子模块内容：目前包含「检查更新」开关（默认开启）。
-class _OtherSettingsSection extends StatefulWidget {
-  const _OtherSettingsSection();
-
-  @override
-  State<_OtherSettingsSection> createState() => _OtherSettingsSectionState();
-}
-
-class _OtherSettingsSectionState extends State<_OtherSettingsSection> {
-  /// 「检查更新」开关（默认开启；从本地配置读取，读取失败按默认值）。
-  bool _updateCheckEnabled = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadUpdateCheckEnabled();
-  }
-
-  /// 读取「检查更新」开关（本地明文配置文件；读取失败按默认开启）。
-  Future<void> _loadUpdateCheckEnabled() async {
-    var enabled = true;
-    try {
-      final config = await LocalConfigService.read();
-      enabled = UpdateCheckFlow.updateCheckEnabledFrom(config);
-    } catch (_) {
-      // 配置不可用（如测试环境无 path_provider）时按默认开启。
-    }
-    if (mounted) setState(() => _updateCheckEnabled = enabled);
-  }
-
-  /// 切换「检查更新」开关：先生效再持久化，保存失败不影响本次会话。
-  void _toggleUpdateCheck(bool value) {
-    setState(() => _updateCheckEnabled = value);
-    LocalConfigService.update({UpdateCheckFlow.keyUpdateCheckEnabled: value})
-        .catchError((Object e) {
-      debugPrint('检查更新开关保存失败：$e');
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SettingsCard(
-      child: SettingsSwitchRow(
-        icon: Icons.system_update_alt_outlined,
-        title: '检查更新',
-        subtitle: '启动时检查新版本（每天最多一次）',
-        value: _updateCheckEnabled,
-        switchKey: const ValueKey('other_update_check_switch'),
-        onChanged: _toggleUpdateCheck,
-      ),
     );
   }
 }

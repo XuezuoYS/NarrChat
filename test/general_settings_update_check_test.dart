@@ -11,6 +11,7 @@ import 'package:narrchat/services/local_config_service.dart';
 import 'package:narrchat/services/system_fonts_service.dart';
 import 'package:narrchat/services/update_check_flow.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/settings/settings_kit.dart';
 import 'package:provider/provider.dart';
 
 /// 真实 LocalConfigService 的文件 IO 在 testWidgets 的 fake zone 中不会自行
@@ -143,6 +144,27 @@ void main() {
     expect(find.byKey(const ValueKey('other_update_check_switch')), findsOneWidget);
     // 左侧导航第一项也是「通用设置」（导航项 + 面板标题共两处同名文本）。
     expect(find.text('通用设置'), findsNWidgets(2));
+  });
+
+  testWidgets('「其它设置」在检查更新开关下方提供「立即检查更新」入口', (tester) async {
+    await openGeneralSettings(tester);
+
+    final switchRow = find.byKey(const ValueKey('other_update_check_switch'));
+    final checkNow = find.byKey(const ValueKey('other_update_check_now'));
+    expect(checkNow, findsOneWidget);
+    expect(find.text('立即检查更新'), findsOneWidget);
+
+    // 与开关同一张卡片，且在开关下方。
+    final card = find.ancestor(
+      of: checkNow,
+      matching: find.byType(SettingsCard),
+    );
+    expect(card, findsOneWidget);
+    expect(find.descendant(of: card, matching: switchRow), findsOneWidget);
+    expect(
+      tester.getRect(checkNow).top,
+      greaterThan(tester.getRect(switchRow).bottom),
+    );
   });
 
   testWidgets('「关于」面板不再显示检查更新开关（已迁移）', (tester) async {
