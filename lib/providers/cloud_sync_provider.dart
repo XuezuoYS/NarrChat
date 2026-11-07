@@ -50,10 +50,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     BackupRemote Function()? backupRemoteFactory,
     WebDavService Function()? webDavFactory,
     SyncTombstoneStore? tombstoneStore,
-  })  : _injectedRepositories = repositories,
-        _remoteFactory = backupRemoteFactory,
-        _davFactory = webDavFactory,
-        _injectedTombstoneStore = tombstoneStore {
+  }) : _injectedRepositories = repositories,
+       _remoteFactory = backupRemoteFactory,
+       _davFactory = webDavFactory,
+       _injectedTombstoneStore = tombstoneStore {
     _now = DateTime.now;
   }
 
@@ -64,7 +64,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 懒取：裸构造（未注入、且全局未初始化）时只有真正用到才会抛，
   /// 不影响 `CloudSyncProvider()` 本身在测试里被创建。
-  AppRepositories get _repos => _injectedRepositories ?? AppRepositories.instance;
+  AppRepositories get _repos =>
+      _injectedRepositories ?? AppRepositories.instance;
 
   BackupRemote _newRemote() =>
       _remoteFactory?.call() ?? WebDavBackupRemote(_createDav());
@@ -108,6 +109,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   List<WebDavFile> _backups = [];
   List<BackupUnitEntry> _backupUnits = const [];
+  List<BackupUnitEntry> _deletedBackupUnits = const [];
+  Map<String, String> _bookTitlesCache = const {};
+  Map<String, BackupDeletedBook> _deletedBookMarks = const {};
   bool _backupsLoaded = false;
 
   bool _opsBusy = false;
@@ -158,8 +162,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 自动同步是否真的会跑（与 [triggerSync] 的门控同一套条件）。
   ///
-  /// 删除书籍时用它决定：自动同步会跑就交给数据面按墓碑清（library 先推），
-  /// 不会跑才立即尽力清云端书单元。
+  /// 删除书籍时用它决定：自动同步会跑就交给数据面按墓碑整理（library 先推，
+  /// 云端只留最新一代）；不会跑才立即尽力整理一次。
   bool get autoSyncEnabled =>
       isConfigured && _syncMode == SyncMode.auto && _autoUpload;
 
@@ -175,8 +179,12 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isBusy => _opsBusy || _running;
   List<WebDavFile> get backups => List.unmodifiable(_backups);
 
-  /// 云端备份的「库」列表（Library / Mod / 每本书，顺序固定）。
+  /// 云端备份的「库」列表（Library / Mod / 每本书，顺序固定；不含已删除）。
   List<BackupUnitEntry> get backupUnits => List.unmodifiable(_backupUnits);
+
+  /// 已删除书籍的云端备份条目（每本一行，只有最新一代；按删除时间新 → 旧）。
+  List<BackupUnitEntry> get deletedBackupUnits =>
+      List.unmodifiable(_deletedBackupUnits);
   bool get backupsLoaded => _backupsLoaded;
   DateTime? get lastSyncRequestAt => _lastSyncRequestAt;
 
@@ -194,11 +202,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 推一条同步结果提示（驻场岛展示）。
   void showSyncResult(String message, NoticeKind kind) {
     if (message.trim().isEmpty) return;
-    _resultToasts.add(SyncResultToast(
-      id: _nextToastId++,
-      message: message,
-      kind: kind,
-    ));
+    _resultToasts.add(
+      SyncResultToast(id: _nextToastId++, message: message, kind: kind),
+    );
     while (_resultToasts.length > maxResultToasts) {
       _resultToasts.removeAt(0);
     }
@@ -323,10 +329,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       final report = await runner.run(
         context: BackupContext(
           bookUuids: () async => [
-            for (final book in await stores.library.books())
-              book.bookUuid,
+            for (final book in await stores.library.books()) book.bookUuid,
           ],
-          // 已删除的书不推数据库；runner 在书单元之前按墓碑清掉本机与云端残留。
+          // 已删除的书不推数据库；runner 在书单元之前按墓碑清本机残留，
+          // 云端只留最新一代，供「书籍回收站」还原。
           deletedBookUuids: () async => [
             for (final row in await stores.library.books(includeDeleted: true))
               if (row.isDeleted) row.bookUuid,
@@ -455,30 +461,37 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   static SyncPhase _phaseOf(String phase) => switch (phase) {
-        'push' => SyncPhase.pushSnapshot,
-        'pull' => SyncPhase.pullSnapshot,
-        'images' => SyncPhase.pushImages,
-        'purge' => SyncPhase.purgeBooks,
-        'done' => SyncPhase.idle,
-        _ => SyncPhase.merge,
-      };
+    'push' => SyncPhase.pushSnapshot,
+    'pull' => SyncPhase.pullSnapshot,
+    'images' => SyncPhase.pushImages,
+    'retain' => SyncPhase.retainDeletedBooks,
+    'done' => SyncPhase.idle,
+    _ => SyncPhase.merge,
+  };
 
   // --- 设置读写 ---------------------------------------------------------------
 
   Future<void> load() async {
     try {
       _webdavUrl = await LocalConfigService.readValue<String>(_keyUrl) ?? '';
-      _webdavUsername = await LocalConfigService.readValue<String>(_keyUsername) ?? '';
-      _folder = await LocalConfigService.readValue<String>(_keyFolder) ?? defaultFolder;
-      _autoUpload = await LocalConfigService.readValue<bool>(_keyAutoUpload) ?? false;
+      _webdavUsername =
+          await LocalConfigService.readValue<String>(_keyUsername) ?? '';
+      _folder =
+          await LocalConfigService.readValue<String>(_keyFolder) ??
+          defaultFolder;
+      _autoUpload =
+          await LocalConfigService.readValue<bool>(_keyAutoUpload) ?? false;
       _syncMode = SyncMode.auto;
-      _deviceId = await LocalConfigService.readValue<String>(_keyDeviceId) ?? '';
+      _deviceId =
+          await LocalConfigService.readValue<String>(_keyDeviceId) ?? '';
       if (_deviceId.isEmpty) {
         _deviceId = _generateDeviceId();
         await LocalConfigService.update({_keyDeviceId: _deviceId});
       }
       _webdavPassword = await _secureStorage.read(key: _keyPassword) ?? '';
-      final legacy = await LocalConfigService.readValue<String>(_legacyKeyKeepVersions);
+      final legacy = await LocalConfigService.readValue<String>(
+        _legacyKeyKeepVersions,
+      );
       if (legacy != null) {
         await LocalConfigService.update({_legacyKeyKeepVersions: null});
       }
@@ -548,6 +561,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoUpload = false;
     _backups = [];
     _backupUnits = const [];
+    _deletedBackupUnits = const [];
+    _bookTitlesCache = const {};
+    _deletedBookMarks = const {};
     _backupsLoaded = false;
     _dataState = SyncState.idle;
     _imageState = SyncState.idle;
@@ -718,27 +734,59 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       for (final file in files)
         if (BackupUnit.fromSnapshotName(file.name) != null) file,
     ]..sort(compareSnapshots);
-    _backupUnits = BackupCatalog.build(
-      files: _backups,
-      bookTitles: await _bookTitles(),
-    );
+    final snapshot = await _librarySnapshot();
+    _bookTitlesCache = snapshot.titles;
+    _deletedBookMarks = snapshot.deleted;
+    _rebuildBackupCatalog();
     _backupsLoaded = true;
   }
 
-  /// 云端各本书的书名（列表展示用）。
+  /// 一次读目录库，同时拿到「书 uuid → 书名」与「墓碑书 → 删除信息」。
   ///
-  /// 直接读**目录库**（含墓碑）：墓碑书的书名也还在，且不需要打开书库；
-  /// 读不出来（未初始化 / 目录损坏）就当没有书名，展示时用 uuid 前 8 位兜底。
-  Future<Map<String, String>> _bookTitles() async {
+  /// 直接读**目录库**（含墓碑）：墓碑书的书名与删除轮号都还在，且不需要
+  /// 打开任何书库；读不出来（未初始化 / 目录损坏）就当没有，展示时用 uuid
+  /// 前 8 位兜底。
+  Future<({Map<String, String> titles, Map<String, BackupDeletedBook> deleted})>
+  _librarySnapshot() async {
     try {
       final rows = await _repos.stores.library.books(includeDeleted: true);
-      return {
-        for (final row in rows)
-          if (row.title.trim().isNotEmpty) row.bookUuid: row.title,
-      };
+      final titles = <String, String>{};
+      final deleted = <String, BackupDeletedBook>{};
+      for (final row in rows) {
+        if (row.title.trim().isNotEmpty) {
+          titles[row.bookUuid] = row.title;
+        }
+        if (row.isDeleted) {
+          deleted[row.bookUuid] = BackupDeletedBook(
+            deletedAt: row.deletedAt,
+            roundIndex: row.deletedRoundIndex,
+          );
+        }
+      }
+      return (titles: titles, deleted: deleted);
     } catch (_) {
-      return const {};
+      return (
+        titles: <String, String>{},
+        deleted: <String, BackupDeletedBook>{},
+      );
     }
+  }
+
+  /// 用当前云端文件 + 本机目录重建备份列表（活书 / 已删除分开）。
+  void _rebuildBackupCatalog() {
+    final entries = BackupCatalog.build(
+      files: _backups,
+      bookTitles: _bookTitlesCache,
+      deletedBooks: _deletedBookMarks,
+    );
+    _backupUnits = [
+      for (final entry in entries)
+        if (!entry.isDeleted) entry,
+    ];
+    _deletedBackupUnits = [
+      for (final entry in entries)
+        if (entry.isDeleted) entry,
+    ];
   }
 
   /// 快照从新到旧排序：先按代数降序，再按名字。
@@ -793,7 +841,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 把某个单元的冲突裁决应用到本地/云端（面板里逐个处理用）。
-  Future<String?> resolveConflict(BackupPlan plan, BackupConflictChoice choice) async {
+  Future<String?> resolveConflict(
+    BackupPlan plan,
+    BackupConflictChoice choice,
+  ) async {
     if (choice == BackupConflictChoice.skip) return null;
     final stores = _repos.stores;
     final locator = BackupLocator(userDataDir: stores.paths.userDataDir);
@@ -841,36 +892,56 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  // --- 删除传播 ---------------------------------------------------------------
+  // --- 删除与回收站 -----------------------------------------------------------
 
   /// 一本书被删除后的云端动作。
   ///
-  /// - 自动同步真的会跑：交给数据面（library 先推，runner 再按墓碑清该书单元），
-  ///   顺序保证不会把刚删掉的书原地推回去；
-  /// - 否则：立即尽力清一次云端书单元，失败静默——墓碑还在，下次同步兜底。
+  /// - 自动同步真的会跑：交给数据面（library 先推，runner 再按墓碑整理该书
+  ///   单元，只留最新一代），顺序保证不会把刚删掉的书原地推回去；
+  /// - 否则：立即尽力整理一次云端书单元，失败静默——墓碑还在，下次同步兜底。
   void handleBookDeleted(String bookUuid) {
     if (bookUuid.isEmpty) return;
     // 这本书都删了，留着它的冲突裁决没有意义。
-    final before = _unresolvedConflicts.length;
-    _unresolvedConflicts = [
-      for (final plan in _unresolvedConflicts)
-        if (plan.unit != BackupUnit.book(bookUuid)) plan,
-    ];
-    if (_unresolvedConflicts.length != before) notifyListeners();
+    _dropUnresolvedConflict(BackupUnit.book(bookUuid));
     if (!isConfigured) return;
     if (autoSyncEnabled) {
       triggerSync(kind: SyncKind.data);
       return;
     }
-    unawaited(purgeDeletedBookBackup(bookUuid).then((error) {
-      if (error != null) debugPrint('清理云端书备份失败（下次同步重试）：$error');
-    }));
+    unawaited(
+      retainDeletedBookBackup(bookUuid).then((error) {
+        if (error != null) debugPrint('整理云端书备份失败（下次同步重试）：$error');
+      }),
+    );
   }
 
-  /// 立即清掉某本已删除书籍的云端备份（尽力而为，不改变同步状态）。
+  /// 立即整理某本已删除书籍的云端备份：只留最新同步的一代（尽力而为）。
   ///
   /// 返回错误文本（成功为 null）。后台调用只记日志即可：墓碑还在，
   /// 下一次数据面同步会重试。
+  Future<String?> retainDeletedBookBackup(String bookUuid) async {
+    if (bookUuid.isEmpty || !isConfigured) return null;
+    final remote = _newRemote();
+    try {
+      await remote.ensureReady();
+      await retainLatestRemoteBookSnapshot(
+        remote: remote,
+        bookUuid: bookUuid,
+        remoteNames: await remote.list(),
+        store: _repos.stores.sync,
+      );
+      return null;
+    } catch (error) {
+      return error.toString();
+    } finally {
+      remote.close();
+    }
+  }
+
+  /// 彻底删除某本已删除书籍的云端备份（墓碑保留）。
+  ///
+  /// 返回错误文本（成功为 null）。用于回收站的「彻底删除」，失败时条目
+  /// 仍可重试。
   Future<String?> purgeDeletedBookBackup(String bookUuid) async {
     if (bookUuid.isEmpty || !isConfigured) return null;
     final remote = _newRemote();
@@ -888,6 +959,87 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       remote.close();
     }
+  }
+
+  /// 回收站「还原此书」：下载保留的最新一代快照，清墓碑并让书回到列表。
+  ///
+  /// 只处理仍然是墓碑的书；如果别处已经恢复（墓碑被清），拒绝覆盖活书。
+  Future<String?> restoreDeletedBook(BackupUnitEntry entry) async {
+    if (!entry.unit.isBook || !entry.isDeleted) {
+      return '这个条目不是可还原的已删除书籍';
+    }
+    if (!isConfigured) return '尚未配置云备份';
+    final uuid = entry.unit.refUuid;
+    final row = await _repos.stores.library.book(uuid);
+    if (row == null || !row.isDeleted) {
+      return '这本书已经恢复，请刷新备份列表';
+    }
+    final error = await restoreSnapshot(
+      entry.latest.name,
+      label: entry.displayName,
+    );
+    if (error != null) return error;
+    // 本地墓碑已清：把它从「已删除」挪回活书列表，不必再等一次云端列表。
+    // 快照里的书名可能与本机目录副本不同，reviveBook 已回写目录，这里同步
+    // 更新列表缓存，避免刚还原的面板还显示旧书名。
+    _deletedBookMarks = {..._deletedBookMarks}..remove(uuid);
+    final restored = await _repos.stores.library.book(uuid);
+    if (restored != null && restored.title.trim().isNotEmpty) {
+      _bookTitlesCache = {..._bookTitlesCache, uuid: restored.title};
+    }
+    _rebuildBackupCatalog();
+    _dropUnresolvedConflict(entry.unit);
+    // 清墓碑要随 library 推上去；手动档不主动同步，交给用户点「同步」。
+    if (autoSyncEnabled) triggerSync(kind: SyncKind.data);
+    notifyListeners();
+    return null;
+  }
+
+  /// 回收站「彻底删除」：删掉云端最后一份备份，条目消失，墓碑保留。
+  Future<String?> permanentlyDeleteDeletedBook(BackupUnitEntry entry) async {
+    if (!entry.unit.isBook || !entry.isDeleted) {
+      return '这个条目不是可删除的回收站书籍';
+    }
+    if (!isConfigured) return '尚未配置云备份';
+    final uuid = entry.unit.refUuid;
+    final row = await _repos.stores.library.book(uuid);
+    if (row == null || !row.isDeleted) {
+      return '这本书已经恢复，请刷新备份列表';
+    }
+    _opsBusy = true;
+    notifyListeners();
+    try {
+      final error = await purgeDeletedBookBackup(uuid);
+      if (error != null) return error;
+      // 正常删除时本机已清过；这里兜底清一次旧版本留下的残留。
+      try {
+        await _repos.books.purgeBookData(uuid);
+      } catch (_) {
+        // 本机残留不影响云端删除结果。
+      }
+      _deletedBookMarks = {..._deletedBookMarks}..remove(uuid);
+      _backups = [
+        for (final file in _backups)
+          if (unitOfSnapshot(file.name) != entry.unit) file,
+      ];
+      _rebuildBackupCatalog();
+      _dropUnresolvedConflict(entry.unit);
+      notifyListeners();
+      return null;
+    } finally {
+      _opsBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 移除某个单元未裁决的冲突（书被删/被还原后不再有意义）。
+  void _dropUnresolvedConflict(BackupUnit unit) {
+    final before = _unresolvedConflicts.length;
+    _unresolvedConflicts = [
+      for (final plan in _unresolvedConflicts)
+        if (plan.unit != unit) plan,
+    ];
+    if (_unresolvedConflicts.length != before) notifyListeners();
   }
 
   // --- 内部工具 ---------------------------------------------------------------
@@ -949,13 +1101,16 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 直接塞入备份列表（测试用）。[bookTitles] 是「书 uuid → 书名」，
-  /// 用来验证分组列表的书名与兜底。
+  /// [deletedBooks] 是「书 uuid → 删除信息」，用来验证回收站分组。
   void debugSetBackups(
     List<WebDavFile> backups, {
     Map<String, String> bookTitles = const {},
+    Map<String, BackupDeletedBook> deletedBooks = const {},
   }) {
     _backups = List.of(backups);
-    _backupUnits = BackupCatalog.build(files: _backups, bookTitles: bookTitles);
+    _bookTitlesCache = Map.of(bookTitles);
+    _deletedBookMarks = Map.of(deletedBooks);
+    _rebuildBackupCatalog();
     _backupsLoaded = true;
     notifyListeners();
   }

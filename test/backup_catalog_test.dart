@@ -19,10 +19,12 @@ void main() {
       bookTitles: {'b1': '甲书', 'b2': '乙书'},
     );
 
-    expect(
-      entries.map((entry) => entry.displayName).toList(),
-      ['Library 库', 'Mod 库', '书籍《甲书》库', '书籍《乙书》库'],
-    );
+    expect(entries.map((entry) => entry.displayName).toList(), [
+      'Library 库',
+      'Mod 库',
+      '书籍《甲书》库',
+      '书籍《乙书》库',
+    ]);
     expect(entries.map((entry) => entry.unit.kind).toList(), [
       BackupUnitKind.library,
       BackupUnitKind.mods,
@@ -40,11 +42,10 @@ void main() {
       bookTitles: {'old': '旧书', 'new': '新书'},
     );
 
-    expect(
-      entries.map((entry) => entry.unit.refUuid).toList(),
-      ['new', 'old'],
-      reason: '最新备份在前',
-    );
+    expect(entries.map((entry) => entry.unit.refUuid).toList(), [
+      'new',
+      'old',
+    ], reason: '最新备份在前');
   });
 
   test('时间缺失的垫底；同时间按 uuid 升序（跨设备稳定）', () {
@@ -57,7 +58,11 @@ void main() {
       ],
     );
 
-    expect(entries.map((entry) => entry.unit.refUuid).toList(), ['b', 'c', 'a']);
+    expect(entries.map((entry) => entry.unit.refUuid).toList(), [
+      'b',
+      'c',
+      'a',
+    ]);
   });
 
   test('同一库的代次新 → 旧，最新一代与总代数正确', () {
@@ -70,14 +75,11 @@ void main() {
     );
 
     final entry = entries.single;
-    expect(
-      entry.snapshots.map((snapshot) => snapshot.name).toList(),
-      [
-        'narrchat_library_shot-g7.db',
-        'narrchat_library_shot-g5.db',
-        'narrchat_library_shot-g2.db',
-      ],
-    );
+    expect(entry.snapshots.map((snapshot) => snapshot.name).toList(), [
+      'narrchat_library_shot-g7.db',
+      'narrchat_library_shot-g5.db',
+      'narrchat_library_shot-g2.db',
+    ]);
     expect(entry.latestGeneration, 7);
     expect(entry.totalCount, 3);
   });
@@ -99,9 +101,7 @@ void main() {
 
   test('书名缺失时用 uuid 前 8 位兜底', () {
     final entries = BackupCatalog.build(
-      files: [
-        file('narrbook_abcdef12-3456-7890_shot-g1.db'),
-      ],
+      files: [file('narrbook_abcdef12-3456-7890_shot-g1.db')],
     );
 
     expect(entries.single.displayName, '书籍《abcdef12》库');
@@ -122,6 +122,76 @@ void main() {
       'Mod 库',
       '书籍《深海余烬》库',
     ]);
+  });
+
+  test('bookTitle 是原样书名（回收站主标题不带书名号）', () {
+    final entries = BackupCatalog.build(
+      files: [file('narrbook_b1_shot-g1.db')],
+      bookTitles: {'b1': '深海余烬'},
+    );
+
+    expect(entries.single.bookTitle, '深海余烬');
+    expect(entries.single.displayName, '书籍《深海余烬》库');
+  });
+
+  test('墓碑书标记为已删除：统一排在活书之后，按删除时间新 → 旧', () {
+    final entries = BackupCatalog.build(
+      files: [
+        file('narrbook_olddel_shot-g2.db'),
+        file('narrbook_live_shot-g1.db', at: DateTime.utc(2026, 11, 5)),
+        file('narrchat_library_shot-g1.db'),
+        file('narrbook_newdel_shot-g3.db'),
+      ],
+      bookTitles: {'live': '活书', 'olddel': '早删', 'newdel': '晚删'},
+      deletedBooks: {
+        'olddel': BackupDeletedBook(
+          deletedAt: DateTime.utc(2026, 11, 1, 9),
+          roundIndex: 3,
+        ),
+        'newdel': BackupDeletedBook(
+          deletedAt: DateTime.utc(2026, 11, 6, 16, 50),
+          roundIndex: 12,
+        ),
+      },
+    );
+
+    expect(entries.map((entry) => entry.unit.unitKey).toList(), [
+      'library',
+      'book:live',
+      'book:newdel',
+      'book:olddel',
+    ]);
+    expect(
+      entries.where((entry) => entry.isDeleted).map((entry) => entry.bookTitle),
+      ['晚删', '早删'],
+    );
+    expect(
+      entries
+          .where((entry) => entry.isDeleted)
+          .map((entry) => entry.deletedRoundIndex),
+      [12, 3],
+    );
+    expect(entries.firstWhere((entry) => !entry.isDeleted).isDeleted, isFalse);
+  });
+
+  test('已删除条目时间缺失垫底；书名缺失回退 uuid 前 8 位', () {
+    final entries = BackupCatalog.build(
+      files: [
+        file('narrbook_abcdef12-3456_shot-g1.db'),
+        file('narrbook_zzz_shot-g2.db'),
+      ],
+      deletedBooks: {
+        'abcdef12-3456': const BackupDeletedBook(),
+        'zzz': BackupDeletedBook(deletedAt: DateTime.utc(2026, 11, 2)),
+      },
+    );
+
+    expect(entries.map((entry) => entry.unit.refUuid).toList(), [
+      'zzz',
+      'abcdef12-3456',
+    ]);
+    expect(entries.last.bookTitle, 'abcdef12');
+    expect(entries.last.deletedRoundIndex, isNull);
   });
 
   test('formatTime：本地时间展示，缺失给「时间未知」', () {

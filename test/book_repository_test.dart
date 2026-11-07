@@ -65,18 +65,18 @@ void main() {
   });
 
   Book sample({String uuid = '', String title = '新书'}) => Book(
-        uuid: uuid,
-        title: title,
-        category: '武侠',
-        baseSetting: '设定',
-        writingRequirements: '要求',
-        writingStyle: '范文',
-        globalPrePrompt: '前置',
-        globalPostPrompt: '后置',
-        historyRounds: 6,
-        memorySummaryRounds: 5,
-        roleHierarchy: '层级',
-      );
+    uuid: uuid,
+    title: title,
+    category: '武侠',
+    baseSetting: '设定',
+    writingRequirements: '要求',
+    writingStyle: '范文',
+    globalPrePrompt: '前置',
+    globalPostPrompt: '后置',
+    historyRounds: 6,
+    memorySummaryRounds: 5,
+    roleHierarchy: '层级',
+  );
 
   test('新建：书库 + 目录行 + 缓存副本一次写好', () async {
     final uuid = await repository.createBook(sample());
@@ -100,11 +100,9 @@ void main() {
     final uuid = await repository.createBook(sample());
     final loaded = (await repository.loadBook(uuid))!;
 
-    await repository.saveBook(loaded.copyWith(
-      title: '改名后',
-      historyRounds: 9,
-      baseSetting: '新设定',
-    ));
+    await repository.saveBook(
+      loaded.copyWith(title: '改名后', historyRounds: 9, baseSetting: '新设定'),
+    );
 
     expect((await library.book(uuid))!.title, '改名后');
     expect((await cache.indexOf(uuid))!.title, '改名后');
@@ -119,6 +117,30 @@ void main() {
   test('删除：墓碑留在目录，书库文件 / 连接 / 缓存行 / 高度 / 图片引用全清掉', () async {
     final uuid = await repository.createBook(sample());
     final db = await pool.open(uuid);
+    await db.rounds.insert(
+      RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'r3',
+          roundIndex: 3,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.utc(2026, 3, 1),
+        ),
+        aiNarrative: '三',
+      ),
+    );
+    await db.rounds.insert(
+      RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'r7',
+          roundIndex: 7,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.utc(2026, 3, 7),
+        ),
+        aiNarrative: '七',
+      ),
+    );
     await cache.putHeights(
       uuid,
       {'r1': 42},
@@ -137,6 +159,11 @@ void main() {
     expect(tombstone.title, '新书', reason: '墓碑书名从目录库合成');
 
     expect((await library.book(uuid))!.isDeleted, isTrue);
+    expect(
+      (await library.book(uuid))!.deletedRoundIndex,
+      7,
+      reason: '墓碑要带删除时的最大轮号',
+    );
     expect(await pool.exists(uuid), isFalse);
     expect(pool.isOpen(uuid), isFalse, reason: '删除要关掉连接');
     expect(await cache.indexOf(uuid), isNull, reason: '缓存行也要删');
@@ -154,15 +181,18 @@ void main() {
     await repository.deleteBook('');
   });
 
-  test('重复删除幂等：墓碑时间不被刷新', () async {
+  test('重复删除幂等：墓碑时间与轮号不被刷新', () async {
     final uuid = await repository.createBook(sample());
     await repository.deleteBook(uuid);
     final first = (await library.book(uuid))!.deletedAt!;
+    final firstRound = (await library.book(uuid))!.deletedRoundIndex;
+    expect(firstRound, 0, reason: '没有轮次的书记为 0');
 
     await Future<void>.delayed(const Duration(milliseconds: 5));
     await repository.deleteBook(uuid);
 
     expect((await library.book(uuid))!.deletedAt, first);
+    expect((await library.book(uuid))!.deletedRoundIndex, firstRound);
     expect(await pool.exists(uuid), isFalse);
   });
 
@@ -183,9 +213,16 @@ void main() {
     expect((await repository.listBooks()).single.uuid, live);
   });
 
-  test('reviveBook：云端快照还原后清墓碑并重建索引', () async {
-    final uuid = await repository.createBook(sample());
+  test('reviveBook：云端快照还原后清墓碑、回写书名并重建索引', () async {
+    final uuid = await repository.createBook(sample(title: '旧名'));
     final path = p.join(pool.booksDir, 'narrbook_$uuid.db');
+
+    // 模拟云端快照：书库里的书名与目录副本不同。
+    final db = await pool.open(uuid);
+    final meta = await db.meta.read();
+    await db.meta.writeSettings(meta.copyWith(title: '云端名'));
+    await db.close();
+    await pool.close(uuid);
     final bytes = await File(path).readAsBytes();
 
     await repository.deleteBook(uuid);
@@ -196,8 +233,12 @@ void main() {
     await repository.reviveBook(uuid);
 
     expect((await library.book(uuid))!.isDeleted, isFalse);
-    expect((await repository.listBooks()).single.uuid, uuid);
-    expect((await cache.indexOf(uuid))!.title, '新书');
+    expect((await library.book(uuid))!.deletedRoundIndex, isNull);
+    expect((await library.book(uuid))!.title, '云端名', reason: '还原后目录副本要跟书库信源对齐');
+    final listed = (await repository.listBooks()).single;
+    expect(listed.uuid, uuid);
+    expect(listed.title, '云端名');
+    expect((await cache.indexOf(uuid))!.title, '云端名');
   });
 
   test('物理删除：目录行 / 缓存行 / 库文件全部消失', () async {
@@ -213,16 +254,18 @@ void main() {
   test('最近对话时间：打开书时按书库内容校正缓存', () async {
     final uuid = await repository.createBook(sample());
     final db = await pool.open(uuid);
-    await db.rounds.insert(RoundGeneration(
-      meta: RoundMeta(
-        uuid: 'g1',
-        roundIndex: 1,
-        roundSerialNum: 1,
-        isUsing: true,
-        operatedAt: DateTime.utc(2026, 3, 4, 5),
+    await db.rounds.insert(
+      RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'g1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.utc(2026, 3, 4, 5),
+        ),
+        aiNarrative: '正文',
       ),
-      aiNarrative: '正文',
-    ));
+    );
     await db.close();
     await pool.close(uuid);
 

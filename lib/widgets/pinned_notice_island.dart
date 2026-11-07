@@ -843,7 +843,7 @@ class _PinnedNoticeIslandState extends State<PinnedNoticeIsland>
       SyncPhase.pushImages => '上传图片',
       SyncPhase.pullImages => '下载图片',
       SyncPhase.deleteImages => '清理图片',
-      SyncPhase.purgeBooks => '清理已删除的书',
+      SyncPhase.retainDeletedBooks => '整理已删除的书',
       SyncPhase.pushManifest => '提交清单',
       SyncPhase.updateCursor => '刷新游标',
       SyncPhase.acquireLock => '获取锁',

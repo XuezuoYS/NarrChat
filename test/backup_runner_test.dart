@@ -66,12 +66,12 @@ void main() {
       p.join(userData.path, 'books', 'narrbook_$uuid.db');
 
   BookMeta bookMeta(String uuid, {String title = '书'}) => BookMeta(
-        bookUuid: uuid,
-        masterUuid: 'm',
-        title: title,
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 2),
-      );
+    bookUuid: uuid,
+    masterUuid: 'm',
+    title: title,
+    createdAt: DateTime.utc(2026, 1, 1),
+    updatedAt: DateTime.utc(2026, 1, 2),
+  );
 
   RoundGeneration gen(String uuid, int index, {String narrative = ''}) {
     return RoundGeneration(
@@ -122,8 +122,9 @@ void main() {
   }) {
     return BackupContext(
       bookUuids: () async => books,
-      updatedAtOf: updatedAtOf ?? (unit) async =>
-          unit.isBook ? DateTime.utc(2026, 1, 2) : null,
+      updatedAtOf:
+          updatedAtOf ??
+          (unit) async => unit.isBook ? DateTime.utc(2026, 1, 2) : null,
       beforeReplace: beforeReplace,
       afterReplace: afterReplace,
     );
@@ -255,7 +256,10 @@ void main() {
     await seed();
     await runner().run(context: context());
 
-    final book = await BookDb.open(bookUuid: 'b1', pathOverride: bookPath('b1'));
+    final book = await BookDb.open(
+      bookUuid: 'b1',
+      pathOverride: bookPath('b1'),
+    );
     await book.rounds.insert(gen('g2', 2, narrative: '二'));
     await book.close();
 
@@ -318,15 +322,15 @@ void main() {
     await seed();
     await runner().run(context: context());
 
-    final book = await BookDb.open(bookUuid: 'b1', pathOverride: bookPath('b1'));
+    final book = await BookDb.open(
+      bookUuid: 'b1',
+      pathOverride: bookPath('b1'),
+    );
     await book.rounds.insert(gen('g2', 2, narrative: '本地新轮'));
     await book.close();
     final localBefore = await File(bookPath('b1')).readAsBytes();
 
-    remote.put(
-      'narrbook_b1_shot-g2.db',
-      const [9, 9, 9],
-    );
+    remote.put('narrbook_b1_shot-g2.db', const [9, 9, 9]);
     remote.put(
       'manifest_narrbook_b1.json',
       BackupManifest.build(
@@ -347,7 +351,10 @@ void main() {
     await seed();
     await runner().run(context: context());
 
-    final book = await BookDb.open(bookUuid: 'b1', pathOverride: bookPath('b1'));
+    final book = await BookDb.open(
+      bookUuid: 'b1',
+      pathOverride: bookPath('b1'),
+    );
     await book.rounds.insert(gen('g2', 2, narrative: '本地新轮'));
     await book.close();
 
@@ -376,7 +383,10 @@ void main() {
     await seed();
     await runner().run(context: context());
 
-    final book = await BookDb.open(bookUuid: 'b1', pathOverride: bookPath('b1'));
+    final book = await BookDb.open(
+      bookUuid: 'b1',
+      pathOverride: bookPath('b1'),
+    );
     await book.rounds.insert(gen('g2', 2, narrative: '本地新轮'));
     await book.close();
 
@@ -414,8 +424,10 @@ void main() {
     await runner(keepVersions: 2).run(context: context());
 
     for (var i = 0; i < 2; i++) {
-      final book =
-          await BookDb.open(bookUuid: 'b1', pathOverride: bookPath('b1'));
+      final book = await BookDb.open(
+        bookUuid: 'b1',
+        pathOverride: bookPath('b1'),
+      );
       await book.rounds.insert(gen('extra$i', 2 + i, narrative: '追加'));
       await book.close();
       await runner(keepVersions: 2).run(context: context());
@@ -430,9 +442,8 @@ void main() {
   test('取消：中途标记取消后不再处理后续单元', () async {
     await seed();
     var calls = 0;
-    final report = await runner(
-      isCancelled: () => ++calls > 1,
-    ).run(context: context());
+    final report = await runner(isCancelled: () => ++calls > 1)
+        .run(context: context());
 
     expect(report.cancelled, isTrue);
     expect(report.pushed, lessThan(3));
@@ -449,7 +460,7 @@ void main() {
     expect(phases.last, 'done');
   });
 
-  group('按墓碑清理已删除的书', () {
+  group('按墓碑整理已删除的书', () {
     /// 在目录里补一行 b2 并打墓碑（模拟旧版本遗留 / 另一台设备删掉）。
     Future<void> addTombstonedBook(String uuid) async {
       final library = LibraryDb(
@@ -460,7 +471,7 @@ void main() {
       await library.close();
     }
 
-    test('墓碑书：云端书单元 / sync_unit / 本机残留都清掉，活书照常推送', () async {
+    test('墓碑书：本机残留清掉，云端只留最新一代，活书照常推送', () async {
       await seed();
       await addTombstonedBook('b2');
       final legacyFile = await BookDb.create(
@@ -469,13 +480,24 @@ void main() {
       );
       await legacyFile.close();
       remote.put('narrbook_b2_shot-g1.db', const [1, 2, 3]);
-      remote.put('manifest_narrbook_b2.json', const [4, 5, 6]);
-      await store.putUnit(const SyncUnitRow(
-        unitKey: 'book:b2',
-        kind: 'book',
-        refUuid: 'b2',
-        generation: 1,
-      ));
+      remote.put('narrbook_b2_shot-g2.db', const [4, 5, 6]);
+      remote.put(
+        'manifest_narrbook_b2.json',
+        BackupManifest.build(
+          unit: BackupUnit.book('b2'),
+          generation: 2,
+          digest: 'digest-2',
+          deviceId: 'dev-1',
+        ).encode(),
+      );
+      await store.putUnit(
+        const SyncUnitRow(
+          unitKey: 'book:b2',
+          kind: 'book',
+          refUuid: 'b2',
+          generation: 2,
+        ),
+      );
 
       final purgedLocal = <String>[];
       final report = await runner().run(
@@ -492,12 +514,25 @@ void main() {
       );
 
       expect(report.errors, isEmpty);
-      expect(report.purged, 1);
+      expect(report.trimmed, 1, reason: '删掉了 b2 的第 1 代');
       expect(purgedLocal, ['b2']);
       expect(File(bookPath('b2')).existsSync(), isFalse);
-      expect(remote.files.containsKey('narrbook_b2_shot-g1.db'), isFalse);
-      expect(remote.files.containsKey('manifest_narrbook_b2.json'), isFalse);
-      expect(await store.unit('book:b2'), isNull);
+      expect(
+        remote.files.containsKey('narrbook_b2_shot-g1.db'),
+        isFalse,
+        reason: '更早的代删掉',
+      );
+      expect(
+        remote.files.containsKey('narrbook_b2_shot-g2.db'),
+        isTrue,
+        reason: '最新一代留给书籍回收站',
+      );
+      expect(
+        remote.files.containsKey('manifest_narrbook_b2.json'),
+        isTrue,
+        reason: '清单指向保留的那一代，留着',
+      );
+      expect(await store.unit('book:b2'), isNotNull, reason: '保留同步基线，方便以后还原');
       expect(
         remote.files.keys,
         contains('narrbook_b1_shot-g1.db'),
@@ -505,7 +540,7 @@ void main() {
       );
     });
 
-    test('拉到的 library 带墓碑：先清理再发现书单元，不会把删掉的书推回云端', () async {
+    test('拉到的 library 带墓碑：先整理再发现书单元，不会把删掉的书推回云端', () async {
       await seed();
       final localLibrary = LibraryDb(
         pathOverride: p.join(userData.path, 'narrchat_library.db'),
@@ -534,7 +569,11 @@ void main() {
       await cloudLib.putBook(
         const LibraryBookRow(bookUuid: 'b2', title: '本地书'),
       );
-      await cloudLib.setDeletedAt('b2', DateTime.utc(2026, 1, 1));
+      await cloudLib.setDeletedAt(
+        'b2',
+        DateTime.utc(2026, 1, 1),
+        roundIndex: 4,
+      );
       await cloudLib.close();
       remote.put(
         BackupUnit.library.snapshotName(2),
@@ -549,7 +588,8 @@ void main() {
           deviceId: 'dev-2',
         ).encode(),
       );
-      // 云端还留着 b2 的旧快照（另一台设备先推过）。
+      // 云端还留着 b2 的两代旧快照（另一台设备先推过）。
+      remote.put('narrbook_b2_shot-g1.db', const [8, 8]);
       remote.put('narrbook_b2_shot-g2.db', const [9, 9]);
 
       final report = await runner().run(
@@ -564,14 +604,29 @@ void main() {
 
       expect(report.errors, isEmpty);
       expect(report.pulled, 1, reason: 'library 被拉下来了');
-      expect(File(bookPath('b2')).existsSync(), isFalse,
-          reason: '墓碑书的本地文件要清掉');
+      expect(report.trimmed, 1, reason: 'b2 的第 1 代被整理掉');
+      expect(File(bookPath('b2')).existsSync(), isFalse, reason: '墓碑书的本地文件要清掉');
       expect(
-        remote.files.keys.any((n) => n.startsWith('narrbook_b2_shot-g')),
+        remote.files.keys.any((name) => name.startsWith('narrbook_b2_shot-g3')),
         isFalse,
         reason: '删掉的书不能再被推上去',
       );
-      expect(remote.files.containsKey('manifest_narrbook_b2.json'), isFalse);
+      expect(
+        remote.files.containsKey('narrbook_b2_shot-g2.db'),
+        isTrue,
+        reason: '最新一代保留',
+      );
+      expect(
+        remote.files.containsKey('narrbook_b2_shot-g1.db'),
+        isFalse,
+        reason: '旧代删掉',
+      );
+      final tombstoneLibrary = LibraryDb(
+        pathOverride: p.join(userData.path, 'narrchat_library.db'),
+      );
+      final tombstone = (await tombstoneLibrary.book('b2'))!;
+      await tombstoneLibrary.close();
+      expect(tombstone.deletedRoundIndex, 4, reason: '墓碑带着轮号同步');
     });
 
     test('单本清理失败只记单元错误，其它书照常处理', () async {
@@ -590,8 +645,36 @@ void main() {
       );
 
       expect(report.errors.keys, contains('book:b2'));
-      expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'),
-          reason: '其它单元不受影响');
+      expect(
+        remote.files.keys,
+        contains('narrbook_b1_shot-g1.db'),
+        reason: '其它单元不受影响',
+      );
+    });
+
+    test('云端整理失败只记该单元错误，其它书照常处理', () async {
+      await seed();
+      await addTombstonedBook('b2');
+      remote.put('narrbook_b2_shot-g1.db', const [1]);
+      remote.put('narrbook_b2_shot-g2.db', const [2]);
+      remote.failDeletes = '模拟删除失败';
+
+      final report = await runner().run(
+        context: BackupContext(
+          bookUuids: () async => ['b1'],
+          deletedBookUuids: () async => ['b2'],
+          updatedAtOf: (unit) async =>
+              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
+        ),
+      );
+
+      expect(report.errors.keys, contains('book:b2'));
+      expect(report.trimmed, 0);
+      expect(
+        remote.files.keys,
+        contains('narrbook_b1_shot-g1.db'),
+        reason: '其它单元不受影响',
+      );
     });
   });
 
@@ -634,7 +717,10 @@ void main() {
       expect(remote.files.containsKey('a.png'), isTrue);
       expect(File(p.join(userData.path, 'img', 'b.png')).existsSync(), isTrue);
       expect(remote.files.containsKey('c.png'), isFalse);
-      expect(remote.files.containsKey(BackupImagePlane.tombstoneFileName), isTrue);
+      expect(
+        remote.files.containsKey(BackupImagePlane.tombstoneFileName),
+        isTrue,
+      );
     });
 
     test('第二次同步不重复搬运', () async {

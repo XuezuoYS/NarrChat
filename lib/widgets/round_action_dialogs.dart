@@ -94,9 +94,7 @@ Future<bool> showRefreshRoundConfirmDialog(
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('刷新本轮'),
-      content: Text(
-        '将重新生成第 $roundIndex 轮，并以该轮的用户输入重新请求 AI。是否继续？',
-      ),
+      content: Text('将重新生成第 $roundIndex 轮，并以该轮的用户输入重新请求 AI。是否继续？'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(false),
@@ -113,14 +111,20 @@ Future<bool> showRefreshRoundConfirmDialog(
 }
 
 /// 删除书籍确认对话框。
-Future<bool> showDeleteBookConfirmDialog(BuildContext context, String title) async {
+///
+/// 第一次确认说明影响范围：本机清空，云端只留最新一份备份（回收站可还原）。
+Future<bool> showDeleteBookConfirmDialog(
+  BuildContext context,
+  String title,
+) async {
   final result = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('删除书籍'),
       content: Text(
-        '确定删除书籍「$title」吗？该书籍的全部内容、本机数据与云端备份将被删除，'
-        '仅保留目录墓碑；离线时会在下次同步补删，且无法恢复。',
+        '确定删除书籍「$title」吗？本机数据（含全部轮次与设定）会被清除；'
+        '云端备份只保留最近一次同步的版本，可在「云同步 → 已删除」中还原或彻底删除。'
+        '从未同步到云端的书删除后无法还原。',
       ),
       actions: [
         TextButton(
@@ -222,8 +226,9 @@ class _DeleteBookFinalConfirmDialogState
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              '此操作不可恢复。该书籍的全部内容、本机数据与云端备份都会被删除，'
-              '仅保留目录墓碑。',
+              '此操作会清空本机数据，且本机数据删除后不可恢复。\n'
+              '云端备份只保留最近一次同步的版本（从未同步过则没有备份）；'
+              '需要时可在「云同步 → 已删除」中还原。',
               style: TextStyle(color: colors.error, height: 1.4),
             ),
             const SizedBox(height: 14),

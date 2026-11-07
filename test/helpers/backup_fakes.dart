@@ -25,6 +25,9 @@ class FakeBackupRemote implements BackupRemote {
   /// 置为非空时，所有读操作抛这个异常（模拟网络故障）。
   String? failReads;
 
+  /// 置为非空时，所有删除操作抛这个异常（模拟删除失败）。
+  String? failDeletes;
+
   /// 只对这几个文件名的读取抛异常（模拟 `sync_config.json` 单独读不到）。
   final Set<String> failReadsFor = {};
 
@@ -61,6 +64,8 @@ class FakeBackupRemote implements BackupRemote {
 
   @override
   Future<void> delete(String name) async {
+    final failure = failDeletes;
+    if (failure != null) throw BackupRemoteException(failure);
     deleteCount++;
     files.remove(name);
   }
@@ -108,13 +113,13 @@ class FakeWebDavService extends WebDavService {
     Map<String, DateTime?> modified = const {},
     this.listError,
     this.getError,
-  })  : files = {...files},
-        _modifiedTimes = modified,
-        super(
-          baseUrl: 'https://dav.example.invalid/',
-          username: 'user',
-          password: 'secret',
-        );
+  }) : files = {...files},
+       _modifiedTimes = modified,
+       super(
+         baseUrl: 'https://dav.example.invalid/',
+         username: 'user',
+         password: 'secret',
+       );
 
   /// 云端文件（名字 → 字节）。
   final Map<String, List<int>> files;
@@ -174,4 +179,3 @@ class FakeWebDavService extends WebDavService {
     super.close();
   }
 }
-

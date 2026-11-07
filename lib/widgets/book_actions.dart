@@ -9,7 +9,9 @@ import 'round_action_dialogs.dart';
 
 /// 删除书籍统一入口：确认 → 输入书名最后确认 → 删除 → 失败提示。
 ///
-/// 供 [HomeScreen] 与 [BookListScreen] 共用，避免删除逻辑重复。
+/// 删除后本机数据清空，云端只保留最新一份备份（可在「云同步 → 已删除」中
+/// 还原或彻底删除）。供 [HomeScreen] 与 [BookListScreen] 共用，避免删除逻辑
+/// 重复。
 Future<void> deleteBookWithConfirm(BuildContext context, Book book) async {
   final ok = await showDeleteBookConfirmDialog(context, book.title);
   if (!ok || !context.mounted) return;

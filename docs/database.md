@@ -1,4 +1,4 @@
-# 数据库（R3，schema 22）
+# 数据库（R3，schema 23）
 
 > 上一个版本（单库 `narrchat.db`）已归档到 [`docs/old/database_r2.md`](old/database_r2.md)。
 > 新一代设计的原始提案在 [`docs/000temp_database_next.md`](000temp_database_next.md)。
@@ -15,7 +15,7 @@ R3 按**访问边界**拆开：目录库只回答"有哪些书"，每本书自�
 
 ```
 user_data/                          ← 用户数据（会云同步）
-  narrchat_library.db               目录库：书籍身份 + 墓碑 + master uuid
+  narrchat_library.db               目录库：书籍身份 + 墓碑（含删除时轮号）+ master uuid
   narrchat_mods.db                  Mod 库：用户自定义 Mod
   books/narrbook_<书uuid>.db        每本书一个库：设置 / 轮次 / 分支 / 世界书 / 启用 Mod
   img/                              图片（内容寻址：<sha256>.<ext>）
@@ -32,7 +32,7 @@ local_config/local_db/              ← 本地数据（不云同步）
 
 | 数据 | 位置 | 谁是信源 |
 | --- | --- | --- |
-| 书是否存在 / 是否被删 | `library.books` | 目录库 |
+| 书是否存在 / 是否被删 / 删除时间与删除时轮号 | `library.books` | 目录库 |
 | 书名、各种设置 | 书库的 `book_meta` | **书库**（目录与缓存都跟它对齐） |
 | 列表页显示用的行 | `library_cache.book_index` | 副本，丢了能自愈重建 |
 | 轮次、分支、世界书、启用的 Mod | 书库 | 书库 |
@@ -100,6 +100,7 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 - **单位 = 一个 DB 文件 = 一代**：`<base>_shot-g<N>.db` + `manifest_<base>.json`；
 - **备份列表按「库」分组**：顶层固定 `Library 库` → `Mod 库` → `书籍《书名》库`
   （书籍按最新一代的上传时间新 → 旧），点进二级页才列代次、做整份还原；
+  已删除的书不占活书列表，末尾单独一个「已删除」入口 →「书籍回收站」；
 - **摘要只按文件内容算**，且排除所有时间戳、`branch_working`、meta 身份列 ——
   否则"只是打开看了一下"也会被当成内容变更；
 - **摘要 SQL 的列名一律加引号**：裸写 `current_time` 会被 SQLite 当成
@@ -111,18 +112,25 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 - **冲突只给整本书一个选择**（替换本地 / 保留本地 / 保留云端），不再逐部件合并；
 - 不迁移旧版本云端快照，也不做"检测到旧数据"的提示。
 
-## 删除一本书
+## 删除一本书（回收站）
 
-删除是**永久删除**，只留墓碑：
+删除只清本机，云端留一份「最新同步」的快照，供回收站还原：
 
-1. `library.books` 写 `deleted_at`（目录行保留，供其它设备传播删除）；
+1. `library.books` 写 `deleted_at` + `deleted_round_index`（删除时全书最大轮号；
+   目录行保留，供其它设备传播删除）；
 2. 本机清掉：`books/narrbook_<uuid>.db`（含 sqlite 旁挂文件）、
-   `library_cache` 的索引 / 高度 / 图片引用、`sync.db` 的 `book:<uuid>` 单元；
-3. 云端清掉：`narrbook_<uuid>_shot-g*.db` 与 `manifest_narrbook_<uuid>.json`。
-   自动同步开着时交给数据面（先推 library 墓碑，再按墓碑清）；否则删除时立即
-   尽力清一次，失败由下一次同步兜底；
-4. 墓碑随 library 同步到其它设备；其它设备拉到后同样清本机与云端残留；
-5. 旧版本只打墓碑、没删文件的，启动时按墓碑扫一遍本机残留。
+   `library_cache` 的索引 / 高度 / 图片引用；
+3. 云端整理：每本书只留最新同步的一代快照（更早的代删掉），清单只在指向
+   保留代时留下；这本书不再参与推拉。自动同步开着时交给数据面（先推 library
+   墓碑，再整理）；否则删除时立即尽力整理一次，失败由下一次同步兜底；
+4. 墓碑随 library 同步到其它设备；其它设备拉到后清本机残留，并把云端整理成
+   同一份最新代；
+5. 云同步 → 云端备份列表末尾「已删除」→「书籍回收站」：每本书一行
+   （书名 / UUID / 删除时间 + 轮次），可以「还原此书」（下载保留的那一代、
+   清墓碑、书回到列表）或「彻底删除」（二次确认，删云端最后一份备份；
+   library 墓碑保留，条目消失）；
+6. 从未同步过、云端没有快照的书不进回收站（本地墓碑保留）；
+7. 旧版本只打墓碑、没删文件的，启动时按墓碑扫一遍本机残留。
 
 图片**不做引用回收**：书删了也不删图片 blob（可能被其它书 / 历史代引用），
 与图片平面的既有规则一致。
@@ -148,6 +156,7 @@ branch（分支，默认分支不落表，用 branch_uuid = ''）
 | `lib/database/book_db.dart` | 单本书库，**唯一写入口**（`updated_at`、`is_using` 归一化、提示截断都在这里收口） |
 | `lib/database/book_db_pool.dart` | 书库连接池 |
 | `lib/repositories/*.dart` | 上层门面：书 / 轮次 / 世界书 / Mod |
-| `lib/services/cloud_backup/backup_book_purge.dart` | 删书时清云端：该书的全部快照 + 清单（只认墓碑驱动） |
+| `lib/services/cloud_backup/backup_book_purge.dart` | 删书后的云端处理：保留最新一代 / 彻底删除（只认墓碑驱动） |
+| `lib/screens/book_recycle_bin_page.dart` | 书籍回收站：每本已删书一行，还原 / 彻底删除 |
 | `lib/services/app_stores.dart` | 组装根：解析路径 → 迁移 → 开库 |
 | `lib/services/app_repositories.dart` | 应用级仓库集合，provider 从这里拿数据入口 |

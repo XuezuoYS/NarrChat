@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../screens/backup_unit_page.dart';
+import '../screens/book_recycle_bin_page.dart';
 import '../services/cloud_backup/backup_catalog.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
@@ -195,7 +196,12 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // 左侧品牌渐变竖向色块。
-              Container(width: 6, decoration: const BoxDecoration(gradient: NarrChatTheme.brandGradient)),
+              Container(
+                width: 6,
+                decoration: const BoxDecoration(
+                  gradient: NarrChatTheme.brandGradient,
+                ),
+              ),
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
@@ -247,7 +253,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                             _Stat(
                               icon: Icons.folder_outlined,
                               label: '文件夹',
-                              value: provider.folder.isEmpty ? '—' : provider.folder,
+                              value: provider.folder.isEmpty
+                                  ? '—'
+                                  : provider.folder,
                             ),
                             _Stat(
                               icon: Icons.storage_outlined,
@@ -323,11 +331,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
   }
 
-  Widget _planeBadge(
-    BuildContext context,
-    String planeLabel,
-    SyncState state,
-  ) {
+  Widget _planeBadge(BuildContext context, String planeLabel, SyncState state) {
     final colors = context.narrColors;
     final (label, color) = switch (state) {
       SyncState.syncing => ('同步中', NarrChatTheme.primary),
@@ -426,7 +430,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   // ---------------------------------------------------------------------------
   // 连接设置卡片
   // ---------------------------------------------------------------------------
-  Widget _buildConnectionCard(BuildContext context, CloudSyncProvider provider) {
+  Widget _buildConnectionCard(
+    BuildContext context,
+    CloudSyncProvider provider,
+  ) {
     final colors = context.narrColors;
     return _sectionCard(
       icon: Icons.link,
@@ -549,7 +556,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.cloud_outlined,
       title: '云端备份',
-      subtitle: '一键同步本地与云端；点开任意一个库，可查看它的历史版本并整份还原。',
+      subtitle: '一键同步本地与云端；点开任意一个库可查看历史版本并整份还原，删除的书保留在列表末尾。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -583,10 +590,12 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     );
   }
 
-  /// 顶层列表：一个库一行（Library / Mod / 每本书），点进去才看代次。
+  /// 顶层列表：一个库一行（Library / Mod / 每本书），点进去才看代次；
+  /// 已删除的书不占活书列表，末尾单独一个「已删除」入口。
   Widget _buildBackupList(BuildContext context, CloudSyncProvider provider) {
     final colors = context.narrColors;
-    if (provider.backupUnits.isEmpty) {
+    final deletedCount = provider.deletedBackupUnits.length;
+    if (provider.backupUnits.isEmpty && deletedCount == 0) {
       return Container(
         width: double.infinity,
         padding: const EdgeInsets.all(16),
@@ -606,6 +615,8 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       children: [
         for (final entry in provider.backupUnits)
           _buildUnitTile(context, colors, entry),
+        if (deletedCount > 0)
+          _buildRecycleBinTile(context, colors, deletedCount),
       ],
     );
   }
@@ -661,6 +672,85 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                       const SizedBox(height: 2),
                       Text(
                         meta.toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  size: 20,
+                  color: colors.textSecondary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 列表末尾的「已删除」入口：点进去是书籍回收站。
+  Widget _buildRecycleBinTile(
+    BuildContext context,
+    NarrChatColors colors,
+    int count,
+  ) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.divider),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => BookRecycleBinPage.open(context),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: errorColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(
+                    Icons.delete_outline,
+                    size: 18,
+                    color: errorColor,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '已删除',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: colors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$count 本书 · 点进去还原或彻底删除',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -776,7 +866,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
-                        style: TextStyle(fontSize: 12, color: colors.textSecondary),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.textSecondary,
+                        ),
                       ),
                     ],
                   ),
@@ -823,8 +916,7 @@ class _StatStrip extends StatelessWidget {
       child: Row(
         children: [
           for (var i = 0; i < stats.length; i++) ...[
-            if (i > 0)
-              Container(width: 1, height: 32, color: colors.divider),
+            if (i > 0) Container(width: 1, height: 32, color: colors.divider),
             Expanded(child: _StatCell(item: stats[i])),
           ],
         ],
@@ -852,7 +944,9 @@ class _DisplayField extends StatelessWidget {
   Widget build(BuildContext context) {
     final inputTheme = Theme.of(context).inputDecorationTheme;
     final border =
-        inputTheme.enabledBorder ?? inputTheme.border ?? const OutlineInputBorder();
+        inputTheme.enabledBorder ??
+        inputTheme.border ??
+        const OutlineInputBorder();
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -934,7 +1028,11 @@ class _SegOption {
   final String label;
   final String desc;
 
-  const _SegOption({required this.icon, required this.label, required this.desc});
+  const _SegOption({
+    required this.icon,
+    required this.label,
+    required this.desc,
+  });
 }
 
 /// 同步模式分段选择：用一块圆角高亮在左右选项间**弹性滑动**（底部高亮片动画），

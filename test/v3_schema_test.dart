@@ -58,7 +58,10 @@ void main() {
       expect(formatTimestamp(t), '2026-03-04T05:06:07.089Z');
       expect(formatTimestamp(t).length, 24);
       final later = DateTime.utc(2026, 3, 4, 5, 6, 7, 890);
-      expect(formatTimestamp(later).compareTo(formatTimestamp(t)), greaterThan(0));
+      expect(
+        formatTimestamp(later).compareTo(formatTimestamp(t)),
+        greaterThan(0),
+      );
     });
 
     test('本地时间先转 UTC 再格式化', () {
@@ -67,8 +70,10 @@ void main() {
     });
 
     test('解析只接受定长格式，脏数据返回 null', () {
-      expect(parseTimestamp('2026-03-04T05:06:07.089Z'),
-          DateTime.utc(2026, 3, 4, 5, 6, 7, 89));
+      expect(
+        parseTimestamp('2026-03-04T05:06:07.089Z'),
+        DateTime.utc(2026, 3, 4, 5, 6, 7, 89),
+      );
       expect(parseTimestamp('2026-03-04T05:06:07Z'), isNull);
       expect(parseTimestamp('2026-03-04 05:06:07'), isNull);
       expect(parseTimestamp(1720000000000), isNull);
@@ -77,13 +82,62 @@ void main() {
   });
 
   group('narrchat_library.db', () {
-    test('建库：表齐全 / user_version 22 / meta 单行 / 目录读写与墓碑过滤', () async {
+    /// 造一个 v22 的目录库；[withRoundColumn] = true 模拟「列已加、user_version
+    /// 还停在 22」的遗留状态（升级必须跳过重复加列）。
+    Future<void> createV22Library(
+      String path, {
+      bool withRoundColumn = false,
+      List<Map<String, Object?>> rows = const [],
+    }) async {
+      final old = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 22,
+          onCreate: (db, version) async {
+            await db.execute('''
+              CREATE TABLE meta (
+                master_uuid      TEXT PRIMARY KEY,
+                database_version INTEGER NOT NULL
+              )
+            ''');
+            await db.execute(
+              withRoundColumn
+                  ? '''
+              CREATE TABLE books (
+                book_uuid           TEXT PRIMARY KEY,
+                title               TEXT NOT NULL,
+                deleted_at          TEXT,
+                deleted_round_index INTEGER
+              )
+            '''
+                  : '''
+              CREATE TABLE books (
+                book_uuid  TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                deleted_at TEXT
+              )
+            ''',
+            );
+            await db.insert('meta', {
+              'master_uuid': 'master-1',
+              'database_version': 22,
+            });
+            for (final row in rows) {
+              await db.insert('books', row);
+            }
+          },
+        ),
+      );
+      await old.close();
+    }
+
+    test('建库：表齐全 / user_version 23 / meta 单行 / 目录读写与墓碑过滤', () async {
       final path = newTempPath('v3_library_', 'narrchat_library.db');
       final store = LibraryDb(pathOverride: path);
 
       expect(await store.masterUuid(), isNotEmpty);
       expect(await store.databaseVersion(), userDataDbVersion);
-      expect(userDataDbVersion, 22);
+      expect(userDataDbVersion, 23);
 
       await store.putBook(const LibraryBookRow(bookUuid: 'b1', title: '甲'));
       await store.putBook(const LibraryBookRow(bookUuid: 'b2', title: '乙'));
@@ -92,16 +146,18 @@ void main() {
       await store.setTitle('b1', '甲改');
       expect((await store.book('b1'))!.title, '甲改');
 
-      await store.setDeletedAt('b1', DateTime.utc(2026, 5, 1));
+      await store.setDeletedAt('b1', DateTime.utc(2026, 5, 1), roundIndex: 7);
       expect((await store.books()).map((e) => e.bookUuid), ['b2']);
-      expect(
-        (await store.books(includeDeleted: true)).map((e) => e.bookUuid),
-        ['b1', 'b2'],
-      );
+      expect((await store.books(includeDeleted: true)).map((e) => e.bookUuid), [
+        'b1',
+        'b2',
+      ]);
       expect((await store.book('b1'))!.isDeleted, isTrue);
+      expect((await store.book('b1'))!.deletedRoundIndex, 7);
 
       await store.setDeletedAt('b1', null);
       expect((await store.books()).map((e) => e.bookUuid), ['b1', 'b2']);
+      expect((await store.book('b1'))!.deletedRoundIndex, isNull);
       await store.removeBook('b2');
       expect((await store.books()).map((e) => e.bookUuid), ['b1']);
 
@@ -114,6 +170,75 @@ void main() {
       await reopened.close();
     });
 
+    test('v22 库升级：补 deleted_round_index，旧墓碑保留为 NULL', () async {
+      final path = newTempPath('v3_library_upgrade_', 'narrchat_library.db');
+      await createV22Library(
+        path,
+        rows: [
+          {'book_uuid': 'live', 'title': '活书'},
+          {
+            'book_uuid': 'gone',
+            'title': '删书',
+            'deleted_at': '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      );
+
+      final store = LibraryDb(pathOverride: path);
+      final rows = await store.books(includeDeleted: true);
+      expect(await store.databaseVersion(), 23);
+      expect(rows.map((row) => row.bookUuid).toList(), ['gone', 'live']);
+      final gone = rows.singleWhere((row) => row.bookUuid == 'gone');
+      expect(gone.isDeleted, isTrue);
+      expect(gone.deletedRoundIndex, isNull, reason: '老墓碑没有轮号');
+      await store.close();
+
+      final db = await openAppDatabase(
+        path: path,
+        version: userDataDbVersion,
+        onCreate: createLibrarySchema,
+      );
+      expect(await columnsOf(db, 'books'), [
+        'book_uuid',
+        'title',
+        'deleted_at',
+        'deleted_round_index',
+      ]);
+      await db.close();
+
+      final reopened = LibraryDb(pathOverride: path);
+      await reopened.setDeletedAt(
+        'gone',
+        DateTime.utc(2026, 5, 1),
+        roundIndex: 12,
+      );
+      expect((await reopened.book('gone'))!.deletedRoundIndex, 12);
+      await reopened.setDeletedAt('gone', null);
+      expect((await reopened.book('gone'))!.deletedRoundIndex, isNull);
+      await reopened.close();
+    });
+
+    test('v22 库已带 deleted_round_index：升级跳过加列，不报 duplicate column', () async {
+      final path = newTempPath('v3_library_upgrade2_', 'narrchat_library.db');
+      await createV22Library(
+        path,
+        withRoundColumn: true,
+        rows: [
+          {
+            'book_uuid': 'gone',
+            'title': '删书',
+            'deleted_at': '2026-01-01T00:00:00.000Z',
+            'deleted_round_index': 5,
+          },
+        ],
+      );
+
+      final store = LibraryDb(pathOverride: path);
+      expect(await store.databaseVersion(), 23);
+      expect((await store.book('gone'))!.deletedRoundIndex, 5);
+      await store.close();
+    });
+
     test('表结构与列顺序符合文档', () async {
       final path = newTempPath('v3_library_schema_', 'narrchat_library.db');
       final store = LibraryDb(pathOverride: path);
@@ -123,7 +248,12 @@ void main() {
         version: userDataDbVersion,
         onCreate: createLibrarySchema,
       );
-      expect(await columnsOf(db, 'books'), ['book_uuid', 'title', 'deleted_at']);
+      expect(await columnsOf(db, 'books'), [
+        'book_uuid',
+        'title',
+        'deleted_at',
+        'deleted_round_index',
+      ]);
       expect(await columnsOf(db, 'meta'), ['master_uuid', 'database_version']);
       expect(await readUserVersion(db), userDataDbVersion);
       await db.close();
@@ -134,22 +264,21 @@ void main() {
   group('narrchat_mods.db', () {
     test('主键别名：mod_uuid ↔ Mod.uuid，软删后不出现', () async {
       final path = newTempPath('v3_mods_', 'narrchat_mods.db');
-      final store = ModsDb(
-        pathOverride: path,
-        masterUuidOverride: 'master-1',
-      );
+      final store = ModsDb(pathOverride: path, masterUuidOverride: 'master-1');
 
       expect(await store.masterUuid(), 'master-1');
 
-      await store.upsert(Mod(
-        uuid: 'm1',
-        name: '甲',
-        worldBookEntries: const [
-          ModWorldBookEntry(keyword: '龙', content: '很凶'),
-        ],
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 2),
-      ));
+      await store.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          worldBookEntries: const [
+            ModWorldBookEntry(keyword: '龙', content: '很凶'),
+          ],
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 2),
+        ),
+      );
 
       final got = await store.get('m1');
       expect(got, isNotNull);
@@ -175,19 +304,22 @@ void main() {
     late String path;
 
     BookMeta sampleMeta(String uuid) => BookMeta(
-          bookUuid: uuid,
-          masterUuid: 'master-1',
-          title: '测试书',
-          category: '分类',
-          createdAt: DateTime.utc(2026, 1, 1),
-          updatedAt: DateTime.utc(2026, 1, 2),
-          historyRounds: 3,
-          memorySummaryRounds: 2,
-        );
+      bookUuid: uuid,
+      masterUuid: 'master-1',
+      title: '测试书',
+      category: '分类',
+      createdAt: DateTime.utc(2026, 1, 1),
+      updatedAt: DateTime.utc(2026, 1, 2),
+      historyRounds: 3,
+      memorySummaryRounds: 2,
+    );
 
     test('建库：五张表齐全，book_meta 单行且可读回', () async {
       path = newTempPath('v3_book_', 'narrbook_b1.db');
-      final book = await BookDb.create(meta: sampleMeta('b1'), pathOverride: path);
+      final book = await BookDb.create(
+        meta: sampleMeta('b1'),
+        pathOverride: path,
+      );
 
       final meta = await book.meta.read();
       expect(meta.bookUuid, 'b1');
@@ -203,51 +335,44 @@ void main() {
         onCreate: createBookSchema,
       );
       expect(await readUserVersion(db), userDataDbVersion);
-      expect(
-        (await columnsOf(db, 'book_meta')).take(8),
-        [
-          'master_uuid',
-          'database_version',
-          'book_uuid',
-          'title',
-          'category',
-          'created_at',
-          'updated_at',
-          'base_setting',
-        ],
-      );
-      expect(
-        (await columnsOf(db, 'round_stack')).take(8),
-        [
-          'uuid',
-          'father_uuid',
-          'branch_uuid',
-          'round_index',
-          'round_serial_num',
-          'is_using',
-          'operated_at',
-          'message_status',
-        ],
-      );
-      expect(
-        (await columnsOf(db, 'branches')).take(6),
-        [
-          'branch_uuid',
-          'father_row',
-          'father_row_index',
-          'father_branch',
-          'branch_name',
-          'father_row_shot',
-        ],
-      );
+      expect((await columnsOf(db, 'book_meta')).take(8), [
+        'master_uuid',
+        'database_version',
+        'book_uuid',
+        'title',
+        'category',
+        'created_at',
+        'updated_at',
+        'base_setting',
+      ]);
+      expect((await columnsOf(db, 'round_stack')).take(8), [
+        'uuid',
+        'father_uuid',
+        'branch_uuid',
+        'round_index',
+        'round_serial_num',
+        'is_using',
+        'operated_at',
+        'message_status',
+      ]);
+      expect((await columnsOf(db, 'branches')).take(6), [
+        'branch_uuid',
+        'father_row',
+        'father_row_index',
+        'father_branch',
+        'branch_name',
+        'father_row_shot',
+      ]);
       await db.close();
       await book.close();
     });
 
     test('身份校验：文件名与 book_uuid 不符 / 文件不存在都拒绝打开', () async {
       final createPath = newTempPath('v3_book_id_', 'narrbook_b1.db');
-      final book =
-          await BookDb.create(meta: sampleMeta('b1'), pathOverride: createPath);
+      final book = await BookDb.create(
+        meta: sampleMeta('b1'),
+        pathOverride: createPath,
+      );
       await book.close();
 
       await expectLater(
@@ -265,10 +390,18 @@ void main() {
 
     test('轮次：插入时同组归一化 / 轻量索引带图片标记 / 区间取正文', () async {
       final bookPath = newTempPath('v3_book_rounds_', 'narrbook_b1.db');
-      final book =
-          await BookDb.create(meta: sampleMeta('b1'), pathOverride: bookPath);
+      final book = await BookDb.create(
+        meta: sampleMeta('b1'),
+        pathOverride: bookPath,
+      );
 
-      RoundGeneration gen(String uuid, int index, {bool using = true, String father = '', List<String> images = const []}) {
+      RoundGeneration gen(
+        String uuid,
+        int index, {
+        bool using = true,
+        String father = '',
+        List<String> images = const [],
+      }) {
         return RoundGeneration(
           meta: RoundMeta(
             uuid: uuid,
@@ -296,8 +429,10 @@ void main() {
       expect(byId['g1']!.hasImages, isFalse);
 
       await book.rounds.insert(gen('g3', 2, father: 'g2'));
-      final window =
-          await book.rounds.listGenerations(firstRoundIndex: 2, lastRoundIndex: 2);
+      final window = await book.rounds.listGenerations(
+        firstRoundIndex: 2,
+        lastRoundIndex: 2,
+      );
       expect(window.single.uuid, 'g3');
       expect(window.single.aiNarrative, '答 g3');
 
@@ -346,32 +481,42 @@ void main() {
 
     test('分支：默认分支不入表 / 激活唯一 / 删除后为空', () async {
       final bookPath = newTempPath('v3_book_branch_', 'narrbook_b1.db');
-      final book =
-          await BookDb.create(meta: sampleMeta('b1'), pathOverride: bookPath);
+      final book = await BookDb.create(
+        meta: sampleMeta('b1'),
+        pathOverride: bookPath,
+      );
 
-      await book.branches.upsert(Branch(
-        branchUuid: 'br1',
-        branchName: '如果',
-        fatherRow: 'g1',
-        fatherRowIndex: 3,
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 1),
-      ));
-      await book.branches.upsert(Branch(
-        branchUuid: 'br2',
-        branchName: '另一个如果',
-        createdAt: DateTime.utc(2026, 1, 2),
-        updatedAt: DateTime.utc(2026, 1, 2),
-      ));
+      await book.branches.upsert(
+        Branch(
+          branchUuid: 'br1',
+          branchName: '如果',
+          fatherRow: 'g1',
+          fatherRowIndex: 3,
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      await book.branches.upsert(
+        Branch(
+          branchUuid: 'br2',
+          branchName: '另一个如果',
+          createdAt: DateTime.utc(2026, 1, 2),
+          updatedAt: DateTime.utc(2026, 1, 2),
+        ),
+      );
 
       await book.branches.setWorking('br1');
       expect(
-        (await book.branches.list()).where((b) => b.branchWorking).map((b) => b.branchUuid),
+        (await book.branches.list())
+            .where((b) => b.branchWorking)
+            .map((b) => b.branchUuid),
         ['br1'],
       );
       await book.branches.setWorking('br2');
       expect(
-        (await book.branches.list()).where((b) => b.branchWorking).map((b) => b.branchUuid),
+        (await book.branches.list())
+            .where((b) => b.branchWorking)
+            .map((b) => b.branchUuid),
         ['br2'],
       );
       expect((await book.branches.get('br1'))!.fatherRowIndex, 3);
@@ -408,14 +553,16 @@ void main() {
 
       expect((await book.meta.read()).updatedAt, DateTime.utc(2026, 1, 1));
 
-      await book.worldBook.upsert(WorldBookRow(
-        uuid: 'w1',
-        keyword: '龙, 蛇',
-        content: '爬行类',
-        isUsing: true,
-        createdAt: DateTime.utc(2026, 2, 1),
-        updatedAt: DateTime.utc(2026, 2, 1),
-      ));
+      await book.worldBook.upsert(
+        WorldBookRow(
+          uuid: 'w1',
+          keyword: '龙, 蛇',
+          content: '爬行类',
+          isUsing: true,
+          createdAt: DateTime.utc(2026, 2, 1),
+          updatedAt: DateTime.utc(2026, 2, 1),
+        ),
+      );
       final rows = await book.worldBook.list();
       expect(rows.single.keywords, ['龙', '蛇']);
 
@@ -423,8 +570,10 @@ void main() {
         UseModRow(modUuid: 'preset::a', sortOrder: 0),
         UseModRow(modUuid: 'm1', sortOrder: 1),
       ]);
-      expect((await book.useMods.list()).map((e) => e.modUuid),
-          ['preset::a', 'm1']);
+      expect((await book.useMods.list()).map((e) => e.modUuid), [
+        'preset::a',
+        'm1',
+      ]);
 
       final touched = await book.meta.read();
       expect(touched.updatedAt.isAfter(DateTime.utc(2026, 1, 1)), isTrue);
@@ -446,26 +595,30 @@ void main() {
         ),
         pathOverride: bookPath,
       );
-      await book.rounds.insert(RoundGeneration(
-        meta: RoundMeta(
-          uuid: 'g1',
-          roundIndex: 1,
-          roundSerialNum: 1,
-          isUsing: true,
-          operatedAt: DateTime.utc(2026, 1, 1),
+      await book.rounds.insert(
+        RoundGeneration(
+          meta: RoundMeta(
+            uuid: 'g1',
+            roundIndex: 1,
+            roundSerialNum: 1,
+            isUsing: true,
+            operatedAt: DateTime.utc(2026, 1, 1),
+          ),
         ),
-      ));
+      );
       final afterInsert = (await book.meta.read()).updatedAt;
 
-      await book.rounds.insert(RoundGeneration(
-        meta: RoundMeta(
-          uuid: 'g2',
-          roundIndex: 1,
-          roundSerialNum: 2,
-          isUsing: false,
-          operatedAt: DateTime.utc(2026, 1, 1),
+      await book.rounds.insert(
+        RoundGeneration(
+          meta: RoundMeta(
+            uuid: 'g2',
+            roundIndex: 1,
+            roundSerialNum: 2,
+            isUsing: false,
+            operatedAt: DateTime.utc(2026, 1, 1),
+          ),
         ),
-      ));
+      );
       final afterSecond = (await book.meta.read()).updatedAt;
       expect(afterSecond.isBefore(afterInsert), isFalse);
 
@@ -480,13 +633,15 @@ void main() {
       final path = newTempPath('v3_cache_', 'library_cache.db');
       final cache = CacheDb(pathOverride: path);
 
-      await cache.putIndex(BookIndexRow(
-        bookUuid: 'b1',
-        title: '甲',
-        category: '武侠',
-        updatedAt: DateTime.utc(2026, 1, 2),
-        dbMtimeMs: 111,
-      ));
+      await cache.putIndex(
+        BookIndexRow(
+          bookUuid: 'b1',
+          title: '甲',
+          category: '武侠',
+          updatedAt: DateTime.utc(2026, 1, 2),
+          dbMtimeMs: 111,
+        ),
+      );
       await cache.putIndex(const BookIndexRow(bookUuid: 'b2', title: '乙'));
       final got = await cache.indexOf('b1');
       expect(got!.title, '甲');
@@ -521,25 +676,29 @@ void main() {
       expect(initial.deviceId, '');
       expect(initial.inFlight, isFalse);
 
-      await sync.writeState(const SyncStateRow(
-        deviceId: 'dev-1',
-        lastPhase: 'done',
-        inFlight: true,
-      ));
+      await sync.writeState(
+        const SyncStateRow(
+          deviceId: 'dev-1',
+          lastPhase: 'done',
+          inFlight: true,
+        ),
+      );
       final state = await sync.readState();
       expect(state.deviceId, 'dev-1');
       expect(state.inFlight, isTrue);
       expect(state.lastPhase, 'done');
 
-      await sync.putUnit(SyncUnitRow(
-        unitKey: SyncUnitKind.bookKey('b1'),
-        kind: SyncUnitKind.book,
-        refUuid: 'b1',
-        generation: 3,
-        baseDigest: 'abc',
-        remoteDigest: 'abc',
-        lastSyncedAt: DateTime.utc(2026, 1, 1),
-      ));
+      await sync.putUnit(
+        SyncUnitRow(
+          unitKey: SyncUnitKind.bookKey('b1'),
+          kind: SyncUnitKind.book,
+          refUuid: 'b1',
+          generation: 3,
+          baseDigest: 'abc',
+          remoteDigest: 'abc',
+          lastSyncedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
       final unit = await sync.unit(SyncUnitKind.bookKey('b1'));
       expect(unit!.generation, 3);
       expect(unit.baseDigest, 'abc');
@@ -549,10 +708,12 @@ void main() {
       await sync.removeUnit(SyncUnitKind.bookKey('b1'));
       expect(await sync.units(), isEmpty);
 
-      await sync.putUnit(const SyncUnitRow(
-        unitKey: SyncUnitKind.libraryKey,
-        kind: SyncUnitKind.library,
-      ));
+      await sync.putUnit(
+        const SyncUnitRow(
+          unitKey: SyncUnitKind.libraryKey,
+          kind: SyncUnitKind.library,
+        ),
+      );
       await sync.clearUnits();
       expect(await sync.units(), isEmpty);
       await sync.close();

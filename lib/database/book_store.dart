@@ -21,9 +21,9 @@ class UseModRow {
   }
 
   Map<String, Object?> toRow() => {
-        'mod_uuid': modUuid,
-        'sort_order': sortOrder,
-      };
+    'mod_uuid': modUuid,
+    'sort_order': sortOrder,
+  };
 }
 
 /// 书库元信息（`book_meta`，单行）。
@@ -80,6 +80,11 @@ abstract class RoundStore {
 
   /// 全书代数（调试 / 测试用）。
   Future<int> count();
+
+  /// 全书最大轮号（删除书籍时记进 library 墓碑；空书返回 0）。
+  ///
+  /// 只读一列聚合，不拉正文。
+  Future<int> maxRoundIndex();
 
   /// 最近一代的操作时间（列表"最近对话"排序用）；空书返回 null。
   ///

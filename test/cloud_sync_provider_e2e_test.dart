@@ -3,12 +3,14 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/cloud_backup/backup_digest.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
+import 'package:narrchat/services/webdav_service.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/backup_fakes.dart' hide MemoryTombstoneStore;
@@ -89,8 +91,11 @@ void main() {
     final ok = await provider.sync();
 
     expect(provider.dataError, isNull, reason: '数据面不该报错：${provider.dataError}');
-    expect(provider.imageError, isNull,
-        reason: '图片面不该报错：${provider.imageError}');
+    expect(
+      provider.imageError,
+      isNull,
+      reason: '图片面不该报错：${provider.imageError}',
+    );
     expect(ok, isTrue);
     expect(provider.dataSyncState, SyncState.success);
     expect(provider.imageSyncState, SyncState.success);
@@ -214,10 +219,7 @@ void main() {
     expect(restoredCalls, 1, reason: '拉取后应通知上层重载界面');
 
     // 文件被整份替换。
-    expect(
-      await File(stack.paths.libraryDbPath).readAsBytes(),
-      remoteBytes,
-    );
+    expect(await File(stack.paths.libraryDbPath).readAsBytes(), remoteBytes);
 
     // `_closeForReplace` 关掉了连接，这里验证"下一次读取会自动重开"。
     final rows = await stack.stores.library.books();
@@ -240,11 +242,11 @@ void main() {
 
     await provider.sync();
 
-    expect(provider.dataSyncState, SyncState.success,
-        reason: '冲突不算单元级失败');
+    expect(provider.dataSyncState, SyncState.success, reason: '冲突不算单元级失败');
     expect(provider.unresolvedConflicts, isNotEmpty);
-    final conflict = provider.unresolvedConflicts
-        .firstWhere((plan) => plan.unit == BackupUnit.library);
+    final conflict = provider.unresolvedConflicts.firstWhere(
+      (plan) => plan.unit == BackupUnit.library,
+    );
     expect(conflict.action, BackupAction.conflict);
 
     // 待裁决期间本地文件不动。
@@ -348,11 +350,14 @@ void main() {
     expect(loaded?.title, '云端书');
   });
 
-  test('删除书籍后同步：云端书单元清掉、library 墓碑保留', () async {
+  test('删除书籍后同步：云端只留最新一代，library 墓碑保留', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
-    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
     await provider.sync();
     expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'));
+
+    await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '第二轮');
+    await provider.sync();
+    expect(remote.files.keys, contains('narrbook_b1_shot-g2.db'));
 
     final phases = <SyncPhase>{};
     void listener() {
@@ -367,15 +372,20 @@ void main() {
 
     expect(ok, isTrue);
     expect(provider.dataError, isNull);
-    expect(phases, contains(SyncPhase.purgeBooks));
-    expect(
-      remote.files.keys.any((name) => name.contains(bookUuid)),
-      isFalse,
-      reason: '云端不能再留这本书的任何快照 / 清单',
-    );
+    expect(phases, contains(SyncPhase.retainDeletedBooks));
+    expect(remote.files.keys.where((name) => name.contains(bookUuid)).toSet(), {
+      'manifest_narrbook_b1.json',
+      'narrbook_b1_shot-g2.db',
+    }, reason: '只剩最新一代快照 + 指向它的清单');
     expect(await stack.stores.books.exists(bookUuid), isFalse);
-    expect((await stack.stores.library.book(bookUuid))!.isDeleted, isTrue);
-    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+    final tombstone = (await stack.stores.library.book(bookUuid))!;
+    expect(tombstone.isDeleted, isTrue);
+    expect(tombstone.deletedRoundIndex, 2);
+    expect(
+      await stack.stores.sync.unit('book:$bookUuid'),
+      isNotNull,
+      reason: '保留同步基线，方便还原后继续同步',
+    );
     expect(
       remote.files.keys,
       contains('narrchat_library_shot-g2.db'),
@@ -383,7 +393,7 @@ void main() {
     );
   });
 
-  test('拉到另一台设备的墓碑：本机书库与云端残留一起清掉', () async {
+  test('拉到另一台设备的墓碑：本机清掉，云端整理成只剩最新一代', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
     await provider.sync();
     expect(remote.files.keys, contains('narrbook_b1_shot-g1.db'));
@@ -414,14 +424,38 @@ void main() {
     expect(await stack.stores.books.exists(bookUuid), isFalse);
     expect((await stack.stores.library.book(bookUuid))!.isDeleted, isTrue);
     expect(
-      remote.files.keys.any((name) => name.contains(bookUuid)),
-      isFalse,
-      reason: '本机拉到墓碑后要顺手清掉云端残留',
+      remote.files.keys,
+      contains('narrbook_${bookUuid}_shot-g2.db'),
+      reason: '拉到墓碑后，云端最新一代要留给回收站',
     );
-    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+    expect(
+      remote.files.keys.any(
+        (name) => name == 'narrbook_${bookUuid}_shot-g3.db',
+      ),
+      isFalse,
+      reason: '不能把删掉的书推回去',
+    );
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNotNull);
   });
 
-  test('purgeDeletedBookBackup：立即清云端书单元，不动 library / mods', () async {
+  test('retainDeletedBookBackup：立即整理云端，只留最新一代', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
+    await provider.sync();
+    await stack.seedRound(bookUuid, roundIndex: 3, aiNarrative: '正文');
+    await provider.sync();
+    expect(remote.files.keys, contains('narrbook_b1_shot-g2.db'));
+    await stack.repos.books.deleteBook(bookUuid);
+
+    final error = await provider.retainDeletedBookBackup(bookUuid);
+
+    expect(error, isNull);
+    expect(remote.files.keys, contains('narrbook_b1_shot-g2.db'));
+    expect(remote.files.keys, isNot(contains('narrbook_b1_shot-g1.db')));
+    expect(remote.files.keys, contains('manifest_narrbook_b1.json'));
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNotNull);
+  });
+
+  test('purgeDeletedBookBackup：彻底删云端书单元，不动 library / mods', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
     await provider.sync();
     expect(remote.files.keys, contains('manifest_narrbook_b1.json'));
@@ -435,28 +469,92 @@ void main() {
     expect(remote.files.keys, contains('manifest_narrchat_library.json'));
   });
 
-  test('还原书快照：清墓碑并让书重新回到列表', () async {
+  test('restoreDeletedBook：下载保留的一代，清墓碑并让书重新回到列表', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '旧名');
     // 另一台设备有同 uuid 的书，作为云端快照来源。
     final other = await TestStack.create(prefix: 'sync_e2e_restore_');
     addTearDown(other.dispose);
     await other.seedBook(uuid: bookUuid, title: '云端名');
+    final snapshotName = 'narrbook_${bookUuid}_shot-g1.db';
     remote.put(
-      'narrbook_${bookUuid}_shot-g1.db',
+      snapshotName,
       await File('${other.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
     );
-
     await stack.repos.books.deleteBook(bookUuid);
     expect(await stack.repos.books.listBooks(), isEmpty);
 
-    final error =
-        await provider.restoreSnapshot('narrbook_${bookUuid}_shot-g1.db');
+    final entry = BackupCatalog.build(
+      files: [WebDavFile(name: snapshotName)],
+      bookTitles: {bookUuid: '旧名'},
+      deletedBooks: {
+        bookUuid: BackupDeletedBook(
+          deletedAt: DateTime.utc(2026, 11, 7),
+          roundIndex: 1,
+        ),
+      },
+    ).single;
+    provider.debugSetBackups(
+      [WebDavFile(name: snapshotName)],
+      bookTitles: {bookUuid: '旧名'},
+      deletedBooks: {
+        bookUuid: BackupDeletedBook(
+          deletedAt: DateTime.utc(2026, 11, 7),
+          roundIndex: 1,
+        ),
+      },
+    );
+
+    final error = await provider.restoreDeletedBook(entry);
 
     expect(error, isNull);
     expect((await stack.stores.library.book(bookUuid))!.isDeleted, isFalse);
+    expect(
+      (await stack.stores.library.book(bookUuid))!.title,
+      '云端名',
+      reason: '目录副本要跟快照里的书名对齐',
+    );
     expect(await stack.stores.books.exists(bookUuid), isTrue);
     final books = await stack.repos.books.listBooks();
     expect(books.single.uuid, bookUuid);
     expect(books.single.title, '云端名');
+    expect(provider.deletedBackupUnits, isEmpty, reason: '已从回收站移除');
+    expect(
+      provider.backupUnits
+          .singleWhere((item) => item.unit.refUuid == bookUuid)
+          .bookTitle,
+      '云端名',
+      reason: '还原后面板立即显示新书名',
+    );
+  });
+
+  test('permanentlyDeleteDeletedBook：删云端最后一份，保留墓碑', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '书A');
+    await provider.sync();
+    await stack.repos.books.deleteBook(bookUuid);
+    final snapshotName = 'narrbook_${bookUuid}_shot-g1.db';
+    final deletedBooks = {
+      bookUuid: BackupDeletedBook(
+        deletedAt: DateTime.utc(2026, 11, 7),
+        roundIndex: 0,
+      ),
+    };
+    provider.debugSetBackups(
+      [WebDavFile(name: snapshotName)],
+      bookTitles: {bookUuid: '书A'},
+      deletedBooks: deletedBooks,
+    );
+    final entry = provider.deletedBackupUnits.single;
+
+    final error = await provider.permanentlyDeleteDeletedBook(entry);
+
+    expect(error, isNull);
+    expect(remote.files.keys.any((name) => name.contains(bookUuid)), isFalse);
+    expect(await stack.stores.sync.unit('book:$bookUuid'), isNull);
+    expect(
+      (await stack.stores.library.book(bookUuid))!.isDeleted,
+      isTrue,
+      reason: '彻底删除只删云端备份，墓碑保留',
+    );
+    expect(provider.deletedBackupUnits, isEmpty);
   });
 }

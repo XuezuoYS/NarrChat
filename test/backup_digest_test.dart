@@ -48,9 +48,9 @@ void main() {
   /// 全在同一个路径上反复开关；复用实例时一旦某个旧 handle 还没真正关闭，
   /// 第二次读到的就不是磁盘上的最新内容（全量并行跑时曾触发过一次摘要不一致）。
   Future<Database> openDb(String path) => databaseFactory.openDatabase(
-        path,
-        options: OpenDatabaseOptions(singleInstance: false),
-      );
+    path,
+    options: OpenDatabaseOptions(singleInstance: false),
+  );
 
   /// 摘要不一致时的现场：把这些表整表 dump 出来，一眼看出是哪张表/哪一列变了。
   ///
@@ -70,7 +70,12 @@ void main() {
     ].join('\n');
   }
 
-  RoundGeneration gen(String uuid, int index, {String narrative = '', bool using = false}) {
+  RoundGeneration gen(
+    String uuid,
+    int index, {
+    String narrative = '',
+    bool using = false,
+  }) {
     return RoundGeneration(
       meta: RoundMeta(
         uuid: uuid,
@@ -85,12 +90,12 @@ void main() {
   }
 
   BookMeta meta(String uuid) => BookMeta(
-        bookUuid: uuid,
-        masterUuid: 'master',
-        title: '书',
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 2),
-      );
+    bookUuid: uuid,
+    masterUuid: 'master',
+    title: '书',
+    createdAt: DateTime.utc(2026, 1, 1),
+    updatedAt: DateTime.utc(2026, 1, 2),
+  );
 
   group('book 单元', () {
     test('同内容重复计算结果一致', () async {
@@ -128,20 +133,21 @@ void main() {
       final after = await BackupDigest.ofBook(BackupUnit.book('b1'), db2);
       final scene = after == before ? '' : await digestScene(db2);
       await db2.close();
-      expect(after, before,
-          reason: '只动时间戳不该被当成内容变更。当前库内容：\n$scene');
+      expect(after, before, reason: '只动时间戳不该被当成内容变更。当前库内容：\n$scene');
     });
 
     test('branch_working 变化不影响摘要', () async {
       final dir = newTempDir('digest_branch_');
       final path = p.join(dir, 'narrbook_b1.db');
       final book = await BookDb.create(meta: meta('b1'), pathOverride: path);
-      await book.branches.upsert(Branch(
-        branchUuid: 'br1',
-        branchName: '如果',
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 1),
-      ));
+      await book.branches.upsert(
+        Branch(
+          branchUuid: 'br1',
+          branchName: '如果',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
       await book.close();
 
       final db = await openDb(path);
@@ -223,7 +229,8 @@ void main() {
     expect(
       after,
       isNot(before),
-      reason: 'current_time 是剧情内容。列名裸写会被 SQLite 当成 CURRENT_TIME '
+      reason:
+          'current_time 是剧情内容。列名裸写会被 SQLite 当成 CURRENT_TIME '
           '关键字，于是读到的是查询时刻而不是存下来的值',
     );
   });
@@ -253,9 +260,7 @@ void main() {
       final dir = newTempDir('digest_library_');
       final path = p.join(dir, 'narrchat_library.db');
       final library = LibraryDb(pathOverride: path, masterUuidOverride: 'm');
-      await library.putBook(
-        const LibraryBookRow(bookUuid: 'b1', title: '甲'),
-      );
+      await library.putBook(const LibraryBookRow(bookUuid: 'b1', title: '甲'));
       await library.close();
 
       final db = await openDb(path);
@@ -286,9 +291,25 @@ void main() {
       await fourth.close();
 
       final db4 = await openDb(path);
-      final tombstonedLater = await BackupDigest.ofLibrary(BackupUnit.library, db4);
+      final tombstonedLater = await BackupDigest.ofLibrary(
+        BackupUnit.library,
+        db4,
+      );
       await db4.close();
       expect(tombstonedLater, tombstoned);
+
+      // 删除时的轮号只是回收站展示信息，也不进摘要。
+      final fifth = LibraryDb(pathOverride: path);
+      await fifth.setDeletedAt('b1', DateTime.utc(2027, 9, 9), roundIndex: 12);
+      await fifth.close();
+
+      final db5 = await openDb(path);
+      final roundChanged = await BackupDigest.ofLibrary(
+        BackupUnit.library,
+        db5,
+      );
+      await db5.close();
+      expect(roundChanged, tombstoned);
     });
   });
 
@@ -297,13 +318,15 @@ void main() {
       final dir = newTempDir('digest_mods_');
       final path = p.join(dir, 'narrchat_mods.db');
       final mods = ModsDb(pathOverride: path, masterUuidOverride: 'm');
-      await mods.upsert(Mod(
-        uuid: 'm1',
-        name: '甲',
-        prePrompt: '前置',
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 1),
-      ));
+      await mods.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          prePrompt: '前置',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
       await mods.close();
 
       final db = await openDb(path);
@@ -311,13 +334,15 @@ void main() {
       await db.close();
 
       final again = ModsDb(pathOverride: path);
-      await again.upsert(Mod(
-        uuid: 'm1',
-        name: '甲',
-        prePrompt: '前置',
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2031, 5, 5),
-      ));
+      await again.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          prePrompt: '前置',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2031, 5, 5),
+        ),
+      );
       await again.close();
 
       final db2 = await openDb(path);
@@ -326,13 +351,15 @@ void main() {
       expect(touched, before, reason: '只刷更新时间不该算内容变化');
 
       final third = ModsDb(pathOverride: path);
-      await third.upsert(Mod(
-        uuid: 'm1',
-        name: '甲',
-        prePrompt: '改过的前置',
-        createdAt: DateTime.utc(2026, 1, 1),
-        updatedAt: DateTime.utc(2026, 1, 1),
-      ));
+      await third.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          prePrompt: '改过的前置',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
       await third.close();
 
       final db3 = await openDb(path);
@@ -347,7 +374,10 @@ void main() {
     final bookPath = p.join(dir, 'narrbook_b1.db');
     final otherPath = p.join(dir, 'narrbook_b2.db');
     final book = await BookDb.create(meta: meta('b1'), pathOverride: bookPath);
-    final other = await BookDb.create(meta: meta('b2'), pathOverride: otherPath);
+    final other = await BookDb.create(
+      meta: meta('b2'),
+      pathOverride: otherPath,
+    );
     await book.close();
     await other.close();
 

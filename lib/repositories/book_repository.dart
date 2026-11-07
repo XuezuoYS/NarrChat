@@ -34,11 +34,12 @@ abstract class BookRepository {
   /// 保存设置（书名是信源，会一并回写目录与缓存副本）。
   Future<void> saveBook(Book book);
 
-  /// 用户删除一本书：打墓碑（目录行保留），并清掉本机数据。
+  /// 用户删除一本书：打墓碑（目录行保留，记删除时间与当时的最新轮号），
+  /// 并清掉本机数据。
   ///
   /// 「仅保留 library 墓碑」：书库文件 / 缓存行 / 高度 / 图片引用 / 连接都在
-  /// 这里清干净；云端备份由同步层按墓碑清理（见 `CloudSyncProvider` /
-  /// `BackupRunner`）。
+  /// 这里清干净；云端只保留最新同步的一代快照，供「书籍回收站」还原
+  /// （见 `CloudSyncProvider` / `BackupRunner`）。
   Future<void> deleteBook(String bookUuid);
 
   /// 清掉一本书的本机数据（书库文件 / 缓存行 / 高度 / 图片引用），**不动墓碑**。
@@ -194,12 +195,14 @@ class BookRepositorySqlite implements BookRepository {
   /// 书库读不出来时的兜底索引行：只保证"能列出来"，其余字段留空。
   Future<void> _writeFallbackIndex(LibraryBookRow row) async {
     try {
-      await cache.putIndex(BookIndexRow(
-        bookUuid: row.bookUuid,
-        title: row.title,
-        deletedAt: row.deletedAt,
-        dbMtimeMs: await _mtimeOf(row.bookUuid),
-      ));
+      await cache.putIndex(
+        BookIndexRow(
+          bookUuid: row.bookUuid,
+          title: row.title,
+          deletedAt: row.deletedAt,
+          dbMtimeMs: await _mtimeOf(row.bookUuid),
+        ),
+      );
     } catch (_) {
       // 兜底也失败就真没办法了，不阻断其它书。
     }
@@ -239,31 +242,32 @@ class BookRepositorySqlite implements BookRepository {
       historyRounds: book.historyRounds,
       memorySummaryRounds: book.memorySummaryRounds,
       roleHierarchy: book.roleHierarchy,
-      roleHierarchyDetail:
-          Constants.encodeRoleCategories(book.roleCategories),
+      roleHierarchyDetail: Constants.encodeRoleCategories(book.roleCategories),
     );
 
     final db = await BookDb.create(meta: meta, pathOverride: _pathOf(uuid));
     await db.close();
 
     await library.putBook(LibraryBookRow(bookUuid: uuid, title: book.title));
-    await cache.putIndex(BookIndexRow(
-      bookUuid: uuid,
-      title: meta.title,
-      category: meta.category,
-      createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
-      dbMtimeMs: await _mtimeOf(uuid),
-      baseSetting: meta.baseSetting,
-      writingRequirements: meta.writingRequirements,
-      writingStyle: meta.writingStyle,
-      globalPrePrompt: meta.globalPrePrompt,
-      globalPostPrompt: meta.globalPostPrompt,
-      historyRounds: meta.historyRounds,
-      memorySummaryRounds: meta.memorySummaryRounds,
-      roleHierarchy: meta.roleHierarchy,
-      roleHierarchyDetail: meta.roleHierarchyDetail,
-    ));
+    await cache.putIndex(
+      BookIndexRow(
+        bookUuid: uuid,
+        title: meta.title,
+        category: meta.category,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        dbMtimeMs: await _mtimeOf(uuid),
+        baseSetting: meta.baseSetting,
+        writingRequirements: meta.writingRequirements,
+        writingStyle: meta.writingStyle,
+        globalPrePrompt: meta.globalPrePrompt,
+        globalPostPrompt: meta.globalPostPrompt,
+        historyRounds: meta.historyRounds,
+        memorySummaryRounds: meta.memorySummaryRounds,
+        roleHierarchy: meta.roleHierarchy,
+        roleHierarchyDetail: meta.roleHierarchyDetail,
+      ),
+    );
     return uuid;
   }
 
@@ -290,8 +294,7 @@ class BookRepositorySqlite implements BookRepository {
       historyRounds: book.historyRounds,
       memorySummaryRounds: book.memorySummaryRounds,
       roleHierarchy: book.roleHierarchy,
-      roleHierarchyDetail:
-          Constants.encodeRoleCategories(book.roleCategories),
+      roleHierarchyDetail: Constants.encodeRoleCategories(book.roleCategories),
     );
     await db.meta.writeSettings(meta);
     // 目录行只回写书名：不能整行覆盖，否则会把墓碑清掉。
@@ -309,9 +312,17 @@ class BookRepositorySqlite implements BookRepository {
       return;
     }
     // 先写墓碑再清数据：中途失败也能靠「墓碑 + 启动/同步兜底」续上。
-    // 已墓碑的书不重复写时间——墓碑只取「是否删除」这个布尔，但没必要制造脏写。
+    // 轮号必须**在清书库之前**读：墓碑要带着「删除时的最新轮号」进 library，
+    // 之后书库就没了。
+    // 已墓碑的书不重复写时间/轮号——墓碑只取「是否删除」这个布尔，但没必要
+    // 制造脏写。
     if (!row.isDeleted) {
-      await library.setDeletedAt(bookUuid, DateTime.now().toUtc());
+      final roundIndex = await _maxRoundIndexOf(bookUuid);
+      await library.setDeletedAt(
+        bookUuid,
+        DateTime.now().toUtc(),
+        roundIndex: roundIndex,
+      );
     }
     await _clearBookData(bookUuid);
   }
@@ -358,8 +369,14 @@ class BookRepositorySqlite implements BookRepository {
       await library.putBook(
         LibraryBookRow(bookUuid: bookUuid, title: meta.title),
       );
-    } else if (row.isDeleted) {
-      await library.setDeletedAt(bookUuid, null);
+    } else {
+      if (row.isDeleted) {
+        await library.setDeletedAt(bookUuid, null);
+      }
+      // 书名信源是书库：快照里的书名可能和本机目录副本不同，回写一次。
+      if (row.title != meta.title) {
+        await library.setTitle(bookUuid, meta.title);
+      }
     }
     await _writeIndex(meta, db);
   }
@@ -374,31 +391,43 @@ class BookRepositorySqlite implements BookRepository {
     await cache.clearImageRefs(bookUuid);
   }
 
+  /// 删除前读一次全书最大轮号；读不到（文件缺失 / 损坏 / 被锁）按 0。
+  Future<int> _maxRoundIndexOf(String bookUuid) async {
+    try {
+      final db = await books.tryOpen(bookUuid);
+      return db == null ? 0 : await db.rounds.maxRoundIndex();
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// 用信源校正缓存副本（打开书时顺手做，缓存不会长期漂移）。
   ///
   /// 墓碑从**目录库**取：缓存里那一列只是副本，单看它会把"删掉的书"写成活的。
   Future<void> _writeIndex(BookMeta meta, BookDb db) async {
     final directoryRow = await library.book(meta.bookUuid);
     final lastRoundAt = await db.rounds.lastRoundAt();
-    await cache.putIndex(BookIndexRow(
-      bookUuid: meta.bookUuid,
-      title: meta.title,
-      category: meta.category,
-      createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
-      lastRoundAt: lastRoundAt,
-      deletedAt: directoryRow?.deletedAt,
-      dbMtimeMs: await _mtimeOf(meta.bookUuid),
-      baseSetting: meta.baseSetting,
-      writingRequirements: meta.writingRequirements,
-      writingStyle: meta.writingStyle,
-      globalPrePrompt: meta.globalPrePrompt,
-      globalPostPrompt: meta.globalPostPrompt,
-      historyRounds: meta.historyRounds,
-      memorySummaryRounds: meta.memorySummaryRounds,
-      roleHierarchy: meta.roleHierarchy,
-      roleHierarchyDetail: meta.roleHierarchyDetail,
-    ));
+    await cache.putIndex(
+      BookIndexRow(
+        bookUuid: meta.bookUuid,
+        title: meta.title,
+        category: meta.category,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        lastRoundAt: lastRoundAt,
+        deletedAt: directoryRow?.deletedAt,
+        dbMtimeMs: await _mtimeOf(meta.bookUuid),
+        baseSetting: meta.baseSetting,
+        writingRequirements: meta.writingRequirements,
+        writingStyle: meta.writingStyle,
+        globalPrePrompt: meta.globalPrePrompt,
+        globalPostPrompt: meta.globalPostPrompt,
+        historyRounds: meta.historyRounds,
+        memorySummaryRounds: meta.memorySummaryRounds,
+        roleHierarchy: meta.roleHierarchy,
+        roleHierarchyDetail: meta.roleHierarchyDetail,
+      ),
+    );
   }
 
   Book _bookFromIndex(BookIndexRow row) {

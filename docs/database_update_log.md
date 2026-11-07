@@ -3,7 +3,29 @@
 > 本文件只记**数据结构**的变更。功能层面的更新见 `update_log.md`。
 > R2 及更早的账号在 [`docs/old/database_update_log_r2.md`](old/database_update_log_r2.md)。
 
-## schema 22 —— V3 拆库（当前）
+## schema 23 —— 删除书籍回收站（当前）
+
+`user_data` 下四个库的版本从 22 升到 23。
+
+### 新增字段
+
+- `narrchat_library.db` 的 `books` 增加 `deleted_round_index INTEGER`：
+  删除一本书时记录全书最大轮号（0 = 删除时还没有轮次；NULL = 老墓碑没记）。
+  只用于云同步「书籍回收站」的展示，不参与内容摘要。
+
+### 迁移
+
+- `LibraryDb` 打开旧库时执行
+  `ALTER TABLE books ADD COLUMN deleted_round_index INTEGER`；老墓碑保持 NULL。
+- 书库 / Mod 库的表结构没变，只把 `database_version` 镜像写成 23。
+
+### 行为变化
+
+- 删除书籍不再清空云端：云端只留最新同步的一代快照（更早的代删掉），
+  在云同步列表末尾「已删除」→「书籍回收站」里还原或彻底删除。
+- 「彻底删除」删掉云端最后一份备份与本机同步记录，`library` 墓碑保留。
+
+## schema 22 —— V3 拆库（上一版）
 
 一次性从"单库 `narrchat.db`"换成"分库 + 分支/代"。**不兼容旧库**，靠启动时的
 一次性迁移（`r2_to_v3`)把老数据搬过来，老库改名成 `.r2.bak` 留档。

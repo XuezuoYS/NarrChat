@@ -12,6 +12,7 @@ class LibraryBookRow {
     required this.bookUuid,
     required this.title,
     this.deletedAt,
+    this.deletedRoundIndex,
   });
 
   final String bookUuid;
@@ -22,6 +23,11 @@ class LibraryBookRow {
   /// 软删墓碑：非空表示这本书已被用户删除（云备份删除传播用）。
   final DateTime? deletedAt;
 
+  /// 删除时全书的最大轮号（0 = 删的时候还没有轮次；null = 老墓碑没记）。
+  ///
+  /// 只用于云同步「书籍回收站」的展示，不参与内容摘要。
+  final int? deletedRoundIndex;
+
   bool get isDeleted => deletedAt != null;
 
   factory LibraryBookRow.fromRow(Map<String, Object?> row) {
@@ -29,20 +35,23 @@ class LibraryBookRow {
       bookUuid: (row['book_uuid'] as String?) ?? '',
       title: (row['title'] as String?) ?? '',
       deletedAt: parseTimestamp(row['deleted_at']),
+      deletedRoundIndex: (row['deleted_round_index'] as int?),
     );
   }
 
   Map<String, Object?> toRow() => {
-        'book_uuid': bookUuid,
-        'title': title,
-        'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt!),
-      };
+    'book_uuid': bookUuid,
+    'title': title,
+    'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt!),
+    'deleted_round_index': deletedAt == null ? null : deletedRoundIndex,
+  };
 }
 
 /// 书籍目录库（`user_data/narrchat_library.db`）。
 ///
 /// 职责边界：
-/// - 本库**只**存书的身份与墓碑，不存分类 / 时间 / 轮次——那些在书库与缓存里；
+/// - 本库**只**存书的身份与墓碑（含删除时间 / 删除时轮号），不存分类、正文
+///   时间与轮次内容——那些在书库与缓存里；
 /// - 列表页不查本库（避免每次列表都开一个库），页面数据来自 `library_cache.db`；
 /// - 写本库的唯一入口就是本类，保证「书目录 + 书文件」不会各自漂移。
 abstract class LibraryStore {
@@ -63,7 +72,14 @@ abstract class LibraryStore {
   Future<void> setTitle(String bookUuid, String title);
 
   /// 打上 / 清除墓碑。
-  Future<void> setDeletedAt(String bookUuid, DateTime? deletedAt);
+  ///
+  /// 打墓碑时 [roundIndex] 记「删除时全书的最大轮号」；传 null 复活时两列
+  /// 一起清空。老版本调用只关心墓碑时可以不传轮号（回收站显示「轮次未知」）。
+  Future<void> setDeletedAt(
+    String bookUuid,
+    DateTime? deletedAt, {
+    int? roundIndex,
+  });
 
   /// 物理删除目录行（连墓碑一起清掉，用于彻底移除）。
   Future<void> removeBook(String bookUuid);
@@ -96,7 +112,13 @@ class LibraryDb implements LibraryStore {
         await _insertMeta(db, masterUuidOverride ?? UuidUtils.generateUuidV4());
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // R3 首次建库即 22，之后只做加法迁移；这里是以后加列的落点。
+        // 22 → 23：删除时记录轮号。老墓碑没有这一列，升级后保持 NULL。
+        if (oldVersion < 23 &&
+            !await columnExists(db, 'books', 'deleted_round_index')) {
+          await db.execute(
+            'ALTER TABLE books ADD COLUMN deleted_round_index INTEGER',
+          );
+        }
         await writeDatabaseVersion(db, 'meta', newVersion);
       },
     );
@@ -163,11 +185,18 @@ class LibraryDb implements LibraryStore {
   }
 
   @override
-  Future<void> setDeletedAt(String bookUuid, DateTime? deletedAt) async {
+  Future<void> setDeletedAt(
+    String bookUuid,
+    DateTime? deletedAt, {
+    int? roundIndex,
+  }) async {
     final db = await _database;
     await db.update(
       'books',
-      {'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt)},
+      {
+        'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt),
+        'deleted_round_index': deletedAt == null ? null : roundIndex,
+      },
       where: 'book_uuid = ?',
       whereArgs: [bookUuid],
     );

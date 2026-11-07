@@ -14,11 +14,11 @@ library;
 
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-
 /// `user_data/` 下四个库（library / mods / 每本书）**共用的 schema 版本**。
 ///
 /// 3.0 是软件大版本号，数据库版本继续沿用旧编号，从 22 起算。
-const int userDataDbVersion = 22;
+/// 23：library 增加删除时的轮号（回收站展示用）。
+const int userDataDbVersion = 23;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。
 const int localCacheDbVersion = 1;
@@ -42,9 +42,10 @@ Future<void> createLibrarySchema(Database db) async {
   ''');
   await db.execute('''
     CREATE TABLE IF NOT EXISTS books (
-      book_uuid  TEXT PRIMARY KEY,
-      title      TEXT NOT NULL,
-      deleted_at TEXT
+      book_uuid           TEXT PRIMARY KEY,
+      title               TEXT NOT NULL,
+      deleted_at          TEXT,
+      deleted_round_index INTEGER
     )
   ''');
   await db.execute(

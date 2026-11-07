@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -45,9 +46,7 @@ void main() {
           theme: theme,
           builder: floatingNoticeBuilder(),
           home: Scaffold(
-            body: SingleChildScrollView(
-              child: CloudSyncPanel(form: form),
-            ),
+            body: SingleChildScrollView(child: CloudSyncPanel(form: form)),
           ),
         ),
       ),
@@ -67,14 +66,22 @@ void main() {
   });
 
   testWidgets('超窄屏(320) 亮色：面板渲染且无溢出', (tester) async {
-    await pumpPanel(tester,
-        theme: NarrChatTheme.light, form: makeForm(), width: 320);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: makeForm(),
+      width: 320,
+    );
     expect(find.text('云同步'), findsOneWidget);
   });
 
   testWidgets('超窄卡片(261)：连接操作行换行而不溢出', (tester) async {
-    await pumpPanel(tester,
-        theme: NarrChatTheme.light, form: makeForm(), width: 261);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: makeForm(),
+      width: 261,
+    );
     expect(find.text('测试连接'), findsOneWidget);
     expect(find.text('删除连接'), findsOneWidget);
     expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
@@ -95,10 +102,12 @@ void main() {
   });
 
   testWidgets('进入面板即自动拉取云端「保留历史版本」，无需点开弹窗', (tester) async {
-    final dav = FakeWebDavService(files: {
-      'narrchat_library_shot-g3.db': [1, 2, 3, 4],
-      'sync_config.json': utf8.encode('{"keepVersions":9}'),
-    });
+    final dav = FakeWebDavService(
+      files: {
+        'narrchat_library_shot-g3.db': [1, 2, 3, 4],
+        'sync_config.json': utf8.encode('{"keepVersions":9}'),
+      },
+    );
     final provider = CloudSyncProvider(webDavFactory: () => dav)
       ..debugSetConfigured();
     final form = makeForm(provider: provider);
@@ -181,6 +190,102 @@ void main() {
     );
   });
 
+  testWidgets('列表末尾「已删除」：活书/墓碑分开，点进书籍回收站', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups(
+      [
+        const WebDavFile(name: 'narrbook_live_shot-g1.db'),
+        WebDavFile(
+          name: 'narrbook_gone_shot-g2.db',
+          lastModified: DateTime.utc(2026, 11, 7, 16),
+        ),
+      ],
+      bookTitles: const {'live': '活书', 'gone': '删书'},
+      deletedBooks: {
+        'gone': BackupDeletedBook(
+          deletedAt: DateTime(2026, 11, 7, 16, 50),
+          roundIndex: 12,
+        ),
+      },
+    );
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    expect(find.text('书籍《活书》库'), findsOneWidget);
+    expect(find.text('书籍《删书》库'), findsNothing, reason: '墓碑书不进活书列表');
+    expect(find.text('已删除'), findsOneWidget);
+    expect(find.text('1 本书 · 点进去还原或彻底删除'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('已删除')).dy,
+      greaterThan(tester.getTopLeft(find.text('书籍《活书》库')).dy),
+      reason: '已删除入口在列表末尾',
+    );
+
+    await tester.ensureVisible(find.text('已删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('已删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('书籍回收站'), findsOneWidget);
+    expect(find.text('删书'), findsOneWidget);
+    expect(find.text('UUID：gone'), findsOneWidget);
+    expect(find.text('删除于 2026-11-07 16:50 · 第 12 轮'), findsOneWidget);
+  });
+
+  testWidgets('只有已删除条目：不显示「云端暂无备份」空态', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups(
+      [const WebDavFile(name: 'narrbook_gone_shot-g2.db')],
+      bookTitles: const {'gone': '删书'},
+      deletedBooks: {
+        'gone': BackupDeletedBook(deletedAt: DateTime(2026, 11, 7)),
+      },
+    );
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    expect(find.textContaining('云端暂无备份'), findsNothing);
+    expect(find.text('已删除'), findsOneWidget);
+  });
+
+  testWidgets('窄屏(261)：「已删除」入口渲染且不溢出', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    provider.debugSetBackups(
+      [
+        const WebDavFile(name: 'narrbook_abcdef12_shot-g1.db'),
+        const WebDavFile(name: 'narrbook_gone_shot-g2.db'),
+      ],
+      bookTitles: const {'abcdef12': '一个特别特别特别特别特别长的书名', 'gone': '删掉的书'},
+      deletedBooks: {
+        'gone': BackupDeletedBook(
+          deletedAt: DateTime(2026, 11, 7),
+          roundIndex: 123,
+        ),
+      },
+    );
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+      width: 261,
+    );
+
+    expect(find.text('已删除'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
+  });
+
   testWidgets('窄屏(261)：分组条目渲染且不溢出', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
@@ -192,7 +297,9 @@ void main() {
           size: 1024,
         ),
       ],
-      bookTitles: const {'abcdef12-3456-7890-abcd-ef1234567890': '一个特别特别特别特别特别长的书名'},
+      bookTitles: const {
+        'abcdef12-3456-7890-abcd-ef1234567890': '一个特别特别特别特别特别长的书名',
+      },
     );
     await pumpPanel(
       tester,
@@ -249,7 +356,12 @@ void main() {
   testWidgets('保留历史版本是只读展示框：非 TextField，未连接显示 —', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
-    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
 
     // 连接设置卡只剩 4 个可编辑输入框（服务器 / 用户名 / 密码 / 文件夹）。
     expect(find.byType(TextField), findsNWidgets(4));
@@ -260,7 +372,12 @@ void main() {
   testWidgets('未连接点击展示框：只弹悬浮通知，不打开弹窗也不联网', (tester) async {
     final provider = CloudSyncProvider();
     final form = makeForm(provider: provider);
-    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
 
     await tester.tap(find.text('—'));
     await tester.pump();
@@ -275,7 +392,12 @@ void main() {
       ..debugSetConfigured(value: true)
       ..debugSetKeepVersions(8);
     final form = makeForm(provider: provider);
-    await pumpPanel(tester, theme: NarrChatTheme.light, form: form, provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
 
     expect(find.text('8'), findsWidgets, reason: '状态卡与展示框都显示云端值');
 

@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
+import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
@@ -12,6 +13,7 @@ import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
 
 import 'helpers/backup_fakes.dart';
+import 'helpers/fakes.dart' show TestStack;
 
 /// `CloudSyncProvider`：触发门控、快照命名解析、整本冲突状态、结果提示队列。
 ///
@@ -99,8 +101,7 @@ void main() {
 
       now = base.add(const Duration(minutes: 1, seconds: 59));
       provider.didChangeAppLifecycleState(AppLifecycleState.resumed);
-      expect(provider.lastSyncRequestAt, base,
-          reason: '窗口内跳过，且不改写基准时刻');
+      expect(provider.lastSyncRequestAt, base, reason: '窗口内跳过，且不改写基准时刻');
       await drain(provider);
 
       now = base.add(const Duration(minutes: 2));
@@ -180,7 +181,8 @@ void main() {
 
     test('unitOfSnapshot：目录库 / Mod 库 / 每本书各自映射到单元', () {
       expect(
-        CloudSyncProvider.unitOfSnapshot('narrchat_library_shot-g1.db')?.unitKey,
+        CloudSyncProvider.unitOfSnapshot('narrchat_library_shot-g1.db')
+            ?.unitKey,
         'library',
       );
       expect(
@@ -202,15 +204,12 @@ void main() {
         const WebDavFile(name: 'narrchat_library_shot-g5.db'),
         const WebDavFile(name: 'narrchat_mods_shot-g5.db'),
       ]..sort(CloudSyncProvider.compareSnapshots);
-      expect(
-        files.map((f) => f.name).toList(),
-        [
-          'narrbook_b1_shot-g7.db',
-          'narrchat_mods_shot-g5.db',
-          'narrchat_library_shot-g5.db',
-          'narrbook_b1_shot-g2.db',
-        ],
-      );
+      expect(files.map((f) => f.name).toList(), [
+        'narrbook_b1_shot-g7.db',
+        'narrchat_mods_shot-g5.db',
+        'narrchat_library_shot-g5.db',
+        'narrbook_b1_shot-g2.db',
+      ]);
     });
 
     test('describeSnapshot：能识别的给出单元键，不能识别的标未知', () {
@@ -234,10 +233,10 @@ void main() {
         bookTitles: const {'b1': '书一'},
       );
 
-      expect(
-        provider.backupUnits.map((entry) => entry.displayName).toList(),
-        ['Library 库', '书籍《书一》库'],
-      );
+      expect(provider.backupUnits.map((entry) => entry.displayName).toList(), [
+        'Library 库',
+        '书籍《书一》库',
+      ]);
       expect(provider.backupUnits.last.totalCount, 2);
       expect(provider.backupUnits.last.latestGeneration, 2);
     });
@@ -248,10 +247,12 @@ void main() {
         CloudSyncProvider(webDavFactory: () => dav)..debugSetConfigured();
 
     test('读到云端值：列表与展示缓存一起更新，临时客户端关闭', () async {
-      final dav = FakeWebDavService(files: {
-        'narrchat_library_shot-g2.db': [1, 2, 3],
-        'sync_config.json': utf8.encode('{"keepVersions":12}'),
-      });
+      final dav = FakeWebDavService(
+        files: {
+          'narrchat_library_shot-g2.db': [1, 2, 3],
+          'sync_config.json': utf8.encode('{"keepVersions":12}'),
+        },
+      );
       final provider = providerWith(dav);
 
       await provider.refreshBackups();
@@ -264,9 +265,11 @@ void main() {
     });
 
     test('云端还没有 sync_config.json：默认值 + 标记已加载', () async {
-      final dav = FakeWebDavService(files: {
-        'narrchat_library_shot-g1.db': [1],
-      });
+      final dav = FakeWebDavService(
+        files: {
+          'narrchat_library_shot-g1.db': [1],
+        },
+      );
       final provider = providerWith(dav);
 
       await provider.refreshBackups();
@@ -277,7 +280,9 @@ void main() {
 
     test('sync_config 读取失败：不把默认值伪装成云端真值', () async {
       final dav = FakeWebDavService(
-        files: {'narrchat_library_shot-g1.db': [1]},
+        files: {
+          'narrchat_library_shot-g1.db': [1],
+        },
         getError: '连接超时',
       );
       final provider = providerWith(dav);
@@ -296,9 +301,9 @@ void main() {
       expect(await provider1.refreshKeepVersions(), contains('连接超时'));
       expect(provider1.keepVersionsLoaded, isFalse);
 
-      final ok = FakeWebDavService(files: {
-        'sync_config.json': utf8.encode('{"keepVersions":7}'),
-      });
+      final ok = FakeWebDavService(
+        files: {'sync_config.json': utf8.encode('{"keepVersions":7}')},
+      );
       final provider2 = providerWith(ok);
       expect(await provider2.refreshKeepVersions(), isNull);
       expect(provider2.keepVersions, 7);
@@ -339,10 +344,7 @@ void main() {
 
     test('restoreSnapshot：无法识别的文件名给出明确错误', () async {
       final provider = CloudSyncProvider()..debugSetConfigured();
-      expect(
-        await provider.restoreSnapshot('random.db'),
-        '无法识别的备份文件',
-      );
+      expect(await provider.restoreSnapshot('random.db'), '无法识别的备份文件');
     });
 
     test('restoreSnapshot：未配置云备份时拒绝', () async {
@@ -380,11 +382,7 @@ void main() {
         provider.resultToasts,
         hasLength(CloudSyncProvider.maxResultToasts),
       );
-      expect(
-        provider.resultToasts.first.message,
-        '消息 2',
-        reason: '最早一条被挤掉',
-      );
+      expect(provider.resultToasts.first.message, '消息 2', reason: '最早一条被挤掉');
     });
 
     test('dismissSyncResult：按 id 关闭指定条目，且不影响其它条目', () {
@@ -392,14 +390,12 @@ void main() {
       provider.showSyncResult('已取消数据同步', NoticeKind.info);
       provider.showSyncResult('图片同步：连接超时（HTTP 408）', NoticeKind.error);
 
-      final error = provider.resultToasts
-          .firstWhere((t) => t.kind == NoticeKind.error);
+      final error = provider.resultToasts.firstWhere(
+        (t) => t.kind == NoticeKind.error,
+      );
       provider.dismissSyncResult(error.id);
 
-      expect(
-        provider.resultToasts.map((t) => t.message).toList(),
-        ['已取消数据同步'],
-      );
+      expect(provider.resultToasts.map((t) => t.message).toList(), ['已取消数据同步']);
 
       // 重复关闭：无副作用。
       provider.dismissSyncResult(error.id);
@@ -444,6 +440,82 @@ void main() {
       final provider = CloudSyncProvider()..debugSetConfigured(value: false);
       provider.handleBookDeleted('b1');
       expect(provider.dataSyncState, SyncState.idle);
+    });
+  });
+
+  group('书籍回收站', () {
+    late TestStack stack;
+
+    setUp(() async {
+      stack = await TestStack.create();
+    });
+
+    tearDown(() async {
+      await stack.dispose();
+    });
+
+    BackupUnitEntry deletedEntry(
+      String uuid, {
+      String title = '删书',
+      int roundIndex = 6,
+    }) {
+      return BackupCatalog.build(
+        files: [WebDavFile(name: 'narrbook_${uuid}_shot-g2.db')],
+        bookTitles: {uuid: title},
+        deletedBooks: {
+          uuid: BackupDeletedBook(
+            deletedAt: DateTime.utc(2026, 11, 7, 16, 50),
+            roundIndex: roundIndex,
+          ),
+        },
+      ).single;
+    }
+
+    test('refreshBackups：墓碑书进已删除，活书留在活列表', () async {
+      final live = await stack.seedBook(uuid: 'live', title: '活书');
+      final gone = await stack.seedBook(uuid: 'gone', title: '删书');
+      await stack.seedRound(gone, roundIndex: 6, aiNarrative: '六');
+      await stack.repos.books.deleteBook(gone);
+
+      final dav = FakeWebDavService(
+        files: {
+          'narrbook_${live}_shot-g1.db': [1],
+          'narrbook_${gone}_shot-g2.db': [2],
+          'narrchat_library_shot-g1.db': [3],
+        },
+      );
+      final provider = CloudSyncProvider(
+        repositories: stack.repos,
+        webDavFactory: () => dav,
+      )..debugSetConfigured();
+
+      await provider.refreshBackups();
+
+      expect(provider.error, isNull);
+      expect(provider.backupUnits.map((entry) => entry.unit.unitKey).toList(), [
+        'library',
+        'book:live',
+      ]);
+      final deleted = provider.deletedBackupUnits.single;
+      expect(deleted.unit.unitKey, 'book:gone');
+      expect(deleted.bookTitle, '删书');
+      expect(deleted.deletedAt, isNotNull);
+      expect(deleted.deletedRoundIndex, 6);
+      expect(deleted.latest.name, 'narrbook_gone_shot-g2.db');
+    });
+
+    test('墓碑已清时还原 / 彻底删除都拒绝覆盖活书', () async {
+      final live = await stack.seedBook(uuid: 'live', title: '活书');
+      final entry = deletedEntry(live, title: '活书');
+      final provider = CloudSyncProvider(repositories: stack.repos)
+        ..debugSetConfigured();
+
+      expect(await provider.restoreDeletedBook(entry), '这本书已经恢复，请刷新备份列表');
+      expect(
+        await provider.permanentlyDeleteDeletedBook(entry),
+        '这本书已经恢复，请刷新备份列表',
+      );
+      expect(await stack.repos.books.listBooks(), hasLength(1));
     });
   });
 }

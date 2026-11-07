@@ -58,7 +58,7 @@ class AppRepositories {
       mod: ModRepository(mods: resolved.mods, books: resolved.books),
     );
     // 旧版本删除书只打墓碑、不删文件：启动时清一次本机残留（墓碑保留）。
-    // 云端残留由下一次数据面同步按墓碑清理；这里失败不阻塞启动。
+    // 云端旧代由下一次数据面同步整理（只留最新一代）；这里失败不阻塞启动。
     try {
       await repository.books.purgeTombstonedBooks();
     } catch (_) {

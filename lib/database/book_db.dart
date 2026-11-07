@@ -19,11 +19,11 @@ import 'db_schema.dart';
 /// "本地较新"的判断会随调用点漂移，云备份冲突裁决随之失灵。
 class BookDb implements BookStore {
   BookDb._(this.bookUuid, this._db)
-      : meta = _BookMetaStoreImpl._(_db),
-        rounds = _RoundStoreImpl._(_db),
-        branches = _BranchStoreImpl._(_db),
-        worldBook = _WorldBookStoreImpl._(_db),
-        useMods = _UseModStoreImpl._(_db);
+    : meta = _BookMetaStoreImpl._(_db),
+      rounds = _RoundStoreImpl._(_db),
+      branches = _BranchStoreImpl._(_db),
+      worldBook = _WorldBookStoreImpl._(_db),
+      useMods = _UseModStoreImpl._(_db);
 
   /// 正文列白名单：只允许这些列经由 [RoundStore.updateContent] 写入。
   ///
@@ -317,7 +317,10 @@ class _RoundStoreImpl implements RoundStore {
       if (generation.isUsing) {
         await _clearUsingInGroup(txn, generation.meta);
       }
-      await txn.insert('round_stack', BookDb._clampRowMessage(generation.toRow()));
+      await txn.insert(
+        'round_stack',
+        BookDb._clampRowMessage(generation.toRow()),
+      );
       await BookDb.touch(txn);
     });
   }
@@ -340,10 +343,7 @@ class _RoundStoreImpl implements RoundStore {
   }
 
   @override
-  Future<void> updateContent(
-    String uuid,
-    Map<String, Object?> content,
-  ) async {
+  Future<void> updateContent(String uuid, Map<String, Object?> content) async {
     final filtered = _filterColumns(content, BookDb.contentColumns);
     if (filtered.isEmpty) return;
     await _db.transaction((txn) async {
@@ -435,6 +435,15 @@ class _RoundStoreImpl implements RoundStore {
   }
 
   @override
+  Future<int> maxRoundIndex() async {
+    final rows = await _db.rawQuery(
+      'SELECT MAX(round_index) AS i FROM round_stack',
+    );
+    final value = rows.first['i'];
+    return value is int ? value : 0;
+  }
+
+  @override
   Future<DateTime?> lastRoundAt() async {
     final rows = await _db.rawQuery(
       'SELECT MAX(operated_at) AS t FROM round_stack',
@@ -451,7 +460,8 @@ class _RoundStoreImpl implements RoundStore {
     await e.update(
       'round_stack',
       {'is_using': 0},
-      where: "branch_uuid = ? AND round_index = ? "
+      where:
+          "branch_uuid = ? AND round_index = ? "
           "AND IFNULL(father_uuid, '') = IFNULL(?, '') AND uuid <> ?",
       whereArgs: [
         meta.branchUuid,
