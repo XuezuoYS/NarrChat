@@ -59,6 +59,7 @@ const double kUserBubbleHorizontalPadding = 14;
 ///   输入框（不发送）——见 [onRecommendedActionInsert] / [onRecommendedActionCustomTap]。
 /// - [footer]：气泡下方操作区（Token 用量、查看侧边栏、刷新、调试、删除等）。
 /// - [onContextMenu]：右键（桌面）或长按（触屏）时回调，传入全局坐标用于弹出菜单。
+///   命中区是**整块内容区域**（含行尾留白、段间空隙），不是只认文字。
 class ChatBubble extends StatelessWidget {
   final bool isUser;
   final String text;
@@ -114,15 +115,17 @@ class ChatBubble extends StatelessWidget {
                     ? available * kUserBubbleNarrowRatio
                     : chatBubbleMaxWidth(available),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Flexible(
-                    child: _buildContent(context, theme, showAction,
-                        CrossAxisAlignment.end),
-                  ),
-                ],
+              child: _withContextMenu(
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Flexible(
+                      child: _buildContent(context, theme, showAction,
+                          CrossAxisAlignment.end),
+                    ),
+                  ],
+                ),
               ),
             ),
           );
@@ -134,33 +137,35 @@ class ChatBubble extends StatelessWidget {
             alignment: Alignment.centerLeft,
             child: SizedBox(
               width: available,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      const BrandLogo(size: 30),
-                      if (roundIndex != null) ...[
-                        const SizedBox(width: 10),
-                        Text(
-                          // 气泡页眉：完成后仅剩「第 n 轮」。
-                          '第 $roundIndex 轮',
-                          style: TextStyle(
-                            // 软件二级描述文本色（次要文本色），随主题切换。
-                            color: context.narrColors.textSecondary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            height: 1,
+              child: _withContextMenu(
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const BrandLogo(size: 30),
+                        if (roundIndex != null) ...[
+                          const SizedBox(width: 10),
+                          Text(
+                            // 气泡页眉：完成后仅剩「第 n 轮」。
+                            '第 $roundIndex 轮',
+                            style: TextStyle(
+                              // 软件二级描述文本色（次要文本色），随主题切换。
+                              color: context.narrColors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              height: 1,
+                            ),
                           ),
-                        ),
+                        ],
                       ],
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _buildContent(context, theme, showAction,
-                      CrossAxisAlignment.stretch),
-                ],
+                    ),
+                    const SizedBox(height: 8),
+                    _buildContent(context, theme, showAction,
+                        CrossAxisAlignment.stretch),
+                  ],
+                ),
               ),
             ),
           );
@@ -174,48 +179,60 @@ class ChatBubble extends StatelessWidget {
               constraints: BoxConstraints(
                 maxWidth: chatBubbleMaxWidth(available),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const BrandLogo(size: 30),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (roundIndex != null) ...[
-                          Text(
-                            // 气泡页眉：完成后仅剩「第 n 轮」。
-                            '第 $roundIndex 轮',
-                            style: TextStyle(
-                              // 软件二级描述文本色（次要文本色），随主题切换。
-                              color: context.narrColors.textSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              height: 1,
+              child: _withContextMenu(
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const BrandLogo(size: 30),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (roundIndex != null) ...[
+                            Text(
+                              // 气泡页眉：完成后仅剩「第 n 轮」。
+                              '第 $roundIndex 轮',
+                              style: TextStyle(
+                                // 软件二级描述文本色（次要文本色），随主题切换。
+                                color: context.narrColors.textSecondary,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                height: 1,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
+                            const SizedBox(height: 8),
+                          ],
+                          _buildContent(context, theme, showAction,
+                              CrossAxisAlignment.start),
                         ],
-                        _buildContent(context, theme, showAction,
-                            CrossAxisAlignment.start),
-                      ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           );
         }
-        return BubblePointerListener(
-          onContextMenu: onContextMenu,
-          child: bubble,
-        );
+        return bubble;
       },
     );
   }
+
+  /// 气泡内容块的指针监听：桌面右键 / 触屏长按唤出上下文菜单。
+  ///
+  /// 监听层贴着**内容块**（而不是外层 [Align]）并整块命中，原因：
+  /// - 外层 Align 会撑满整个消息列，包在那里会把气泡之外的空白也变成热区；
+  /// - 内容块内的行尾空白、段间空隙、头像与正文之间的缝都没有可命中的子级，
+  ///   不整块命中就会出现「只能右键文字」的割裂手感；
+  /// - `onContextMenu == null` 时监听层退化为普通包裹，命中区不变。
+  Widget _withContextMenu(Widget block) => BubblePointerListener(
+        onContextMenu: onContextMenu,
+        hitTestBehavior: HitTestBehavior.opaque,
+        child: block,
+      );
 
   /// 正文列（图片预览条 + 正文 + 推荐下一步 + footer）。
   ///

@@ -7,14 +7,23 @@ import 'package:flutter/material.dart';
 /// （与 [kTouchSlop] 一致）取消长按，避免上下滚动时误触。供气泡类组件复用。
 ///
 /// [onContextMenu] 为 null 时不监听（等价于普通包裹）。
+///
+/// [hitTestBehavior] 决定**空白处**算不算命中：默认 [HitTestBehavior.deferToChild]
+/// 只认真正命中的子级（如文字 / 按钮），正文块内的留白右键会落空；需要「整块
+/// 内容区域都能右键」的调用点传 [HitTestBehavior.opaque]——此时监听层按自己的
+/// 尺寸整块命中，子级交互照常不受影响。
 class BubblePointerListener extends StatefulWidget {
   final Widget child;
   final void Function(Offset globalPosition)? onContextMenu;
+
+  /// 命中测试行为；[onContextMenu] 为 null 时仍按普通包裹处理。
+  final HitTestBehavior hitTestBehavior;
 
   const BubblePointerListener({
     super.key,
     required this.child,
     this.onContextMenu,
+    this.hitTestBehavior = HitTestBehavior.deferToChild,
   });
 
   @override
@@ -73,6 +82,10 @@ class _BubblePointerListenerState extends State<BubblePointerListener> {
   @override
   Widget build(BuildContext context) {
     return Listener(
+      // 无回调时保持旧语义（普通包裹）：不能悄悄放大命中区。
+      behavior: widget.onContextMenu == null
+          ? HitTestBehavior.deferToChild
+          : widget.hitTestBehavior,
       onPointerDown: _handlePointerDown,
       onPointerMove: _handlePointerMove,
       onPointerUp: (_) => _cancelLongPress(),

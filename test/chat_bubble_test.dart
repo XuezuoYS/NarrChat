@@ -158,6 +158,141 @@ void main() {
     expect(menuCount, 1);
   });
 
+  /// 在 [position] 模拟桌面右键（`BubblePointerListener` 对鼠标右键立即响应）。
+  Future<void> rightClickAt(WidgetTester tester, Offset position) async {
+    await tester.sendEventToBinding(
+      PointerDownEvent(
+        pointer: 91,
+        position: position,
+        buttons: kSecondaryMouseButton,
+        kind: PointerDeviceKind.mouse,
+      ),
+    );
+    await tester.sendEventToBinding(
+      PointerUpEvent(
+        pointer: 91,
+        position: position,
+        kind: PointerDeviceKind.mouse,
+      ),
+    );
+    await tester.pump();
+  }
+
+  /// 宽屏 AI 正文：第一段把正文块撑到阅读列宽上限，第二段很短。
+  ///
+  /// 返回「正文块内、但落在短段落文字右侧留白」的落点——这里没有任何文字可
+  /// 命中，正是「只能右键文字」那个 bug 的现场。
+  Future<Offset> pumpWideAiWithShortSecondParagraph(
+    WidgetTester tester,
+    VoidCallback onMenu,
+  ) async {
+    const longParagraph =
+        '这一整段正文足够长，会把正文块撑到阅读列宽上限，从而让后面的短段落右侧'
+        '也落在同一个正文块范围之内。再多写一点，确保它确实超过一行的宽度，'
+        '而不是只占几个字，否则正文块就不会被撑满。';
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 800,
+        bubble: ChatBubble(
+          isUser: false,
+          text: '$longParagraph\n\n短段落',
+          onContextMenu: (_) => onMenu(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final bodyRect = tester.getRect(find.byType(MarkdownPreview));
+    final shortRect = tester.getRect(find.text('短段落'));
+    final position = Offset(bodyRect.right - 8, shortRect.center.dy);
+    expect(shortRect.right, lessThan(position.dx),
+        reason: '前提：落点在短段落文字右侧的留白里');
+    expect(position.dx, lessThan(bodyRect.right),
+        reason: '前提：落点仍在正文块范围内');
+    return position;
+  }
+
+  testWidgets('AI 气泡：正文块内的留白也能右键（不必命中文字）', (tester) async {
+    var menuCount = 0;
+    final position = await pumpWideAiWithShortSecondParagraph(
+      tester,
+      () => menuCount++,
+    );
+
+    await rightClickAt(tester, position);
+
+    expect(menuCount, 1, reason: '正文块范围内整块可右键，不再只认文字');
+  });
+
+  testWidgets('AI 气泡：正文块留白处触屏长按同样触发上下文菜单', (tester) async {
+    var menuCount = 0;
+    final position = await pumpWideAiWithShortSecondParagraph(
+      tester,
+      () => menuCount++,
+    );
+
+    final gesture = await tester.startGesture(
+      position,
+      kind: PointerDeviceKind.touch,
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(menuCount, 1);
+    await gesture.up();
+    await tester.pump();
+    expect(menuCount, 1);
+  });
+
+  testWidgets('AI 气泡：正文块之外的空白不触发右键（不放大成整行热区）', (tester) async {
+    var menuCount = 0;
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 800,
+        bubble: ChatBubble(
+          isUser: false,
+          text: '短消息',
+          onContextMenu: (_) => menuCount++,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final bubbleRect = tester.getRect(find.byType(ChatBubble));
+    final bodyRect = tester.getRect(find.byType(MarkdownPreview));
+    expect(bodyRect.width, lessThan(300), reason: '短正文块远窄于整条消息列');
+    final position = Offset(bubbleRect.right - 20, bodyRect.center.dy);
+    expect(position.dx, greaterThan(bodyRect.right + 40),
+        reason: '前提：落点在正文块右侧的空白处');
+
+    await rightClickAt(tester, position);
+
+    expect(menuCount, 0, reason: '正文块之外仍是死区');
+  });
+
+  testWidgets('用户气泡：气泡内边距（文字右侧）也能右键', (tester) async {
+    var menuCount = 0;
+    await tester.pumpWidget(
+      buildInWidth(
+        width: 360,
+        bubble: ChatBubble(
+          isUser: true,
+          text: '测试消息内容',
+          onContextMenu: (_) => menuCount++,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final bubbleRect = userBubbleRect(tester);
+    final textRect = tester.getRect(find.byType(PlainTextPreview));
+    final position = Offset(bubbleRect.right - 4, textRect.center.dy);
+    expect(position.dx, greaterThan(textRect.right),
+        reason: '前提：落点在文字右侧的气泡内边距里');
+
+    await rightClickAt(tester, position);
+
+    expect(menuCount, 1, reason: '气泡整块都是热区');
+  });
+
   testWidgets('带图气泡：正文上方显示图片预览，缺失文件显示占位', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
