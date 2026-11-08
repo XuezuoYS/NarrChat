@@ -187,12 +187,33 @@ void main() {
     expect(strip.bottom, closeTo(railRect.top, 1), reason: '与下方左栏无缝衔接');
   });
 
-  testWidgets('点击顶栏加号打开「新建书籍」页', (tester) async {
+  testWidgets('点击顶栏加号弹出菜单，可进入新建书籍页', (tester) async {
     await pumpHomeScreen(tester, books: const [], size: const Size(400, 800));
 
     await tester.tap(find.byTooltip('新建书籍'));
     await tester.pumpAndSettle();
+    expect(find.text('创建新书'), findsOneWidget);
+    expect(find.text('Agent 创建新书'), findsOneWidget);
+
+    await tester.tap(find.text('创建新书'));
+    await tester.pumpAndSettle();
 
     expect(find.text('新建书籍'), findsOneWidget, reason: '应进入书籍创建页');
+  });
+
+  testWidgets('菜单可进入 Agent 创建新书输入页', (tester) async {
+    await pumpHomeScreen(tester, books: const [], size: const Size(400, 800));
+
+    await tester.tap(find.byTooltip('新建书籍'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent 创建新书'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('agent_book_idea_field')),
+      findsOneWidget,
+      reason: '应进入输入页（满宽 Markdown 输入框）',
+    );
+    expect(find.text('输入内容不会被保存，只用于本次生成'), findsOneWidget);
   });
 }

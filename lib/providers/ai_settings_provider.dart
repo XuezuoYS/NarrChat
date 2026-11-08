@@ -168,6 +168,16 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 每轮流式选项（记忆值，并按平台能力收敛）。
   bool get streaming => _lastStreaming && supportsStreaming;
 
+  /// 指定模型本轮是否会发送思考（用户记忆偏好 ∩ 模型能力）。
+  ///
+  /// 供「一句话创建新书」这类**不改变全局选中模型**的流程解析参数用：
+  /// 页面选中的模型可能不是 [selectedModel]，不能直接读 [thinking]。
+  bool thinkingFor(AiModel model) => _lastThinking && model.supportsThinking;
+
+  /// 指定模型本轮是否会流式输出（用户记忆偏好 ∩ 模型能力）。
+  bool streamingFor(AiModel model) =>
+      _lastStreaming && model.supportsStreaming;
+
   /// 指定平台的 API Key（供设置编辑器读取）。
   String apiKeyFor(String platformId) => _apiKeys[platformId] ?? '';
 

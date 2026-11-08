@@ -559,4 +559,34 @@ void main() {
       expect((await readConfig()).containsKey('ai'), isFalse);
     });
   });
+
+  group('按模型解析本轮能力（创建流程用）', () {
+    test('thinkingFor / streamingFor = 用户记忆偏好 ∩ 模型能力', () async {
+      final provider = AiSettingsProvider();
+      await provider.load();
+
+      const thinkOnly = AiModel(
+        id: 'think-only',
+        supportsThinking: true,
+        supportsStreaming: false,
+      );
+      const streamOnly = AiModel(
+        id: 'stream-only',
+        supportsThinking: false,
+        supportsStreaming: true,
+      );
+      expect(provider.thinkingFor(thinkOnly), isTrue);
+      expect(provider.streamingFor(thinkOnly), isFalse);
+      expect(provider.thinkingFor(streamOnly), isFalse);
+      expect(provider.streamingFor(streamOnly), isTrue);
+
+      // 用户把「思考 / 流式」记忆偏好全部关掉后，两者都应为 false。
+      await provider.setPerRoundOptions(
+        thinking: false,
+        streaming: false,
+      );
+      expect(provider.thinkingFor(thinkOnly), isFalse);
+      expect(provider.streamingFor(streamOnly), isFalse);
+    });
+  });
 }

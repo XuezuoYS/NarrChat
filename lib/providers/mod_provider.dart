@@ -3,10 +3,9 @@ import 'package:flutter/foundation.dart';
 import '../models/mod.dart';
 import '../models/preset_mods.dart';
 import '../models/round.dart';
-import '../models/world_book_entry.dart';
 import '../repositories/mod_repository.dart';
 import '../services/app_repositories.dart';
-import '../services/world_book_scanner.dart';
+import '../services/mods_bundle_builder.dart';
 import 'cloud_sync_provider.dart';
 
 /// Mod 状态管理：用户自定义 Mod 的增删改查、书籍启用与顺序配置，
@@ -21,8 +20,6 @@ class ModProvider extends ChangeNotifier {
 
   /// 云同步 Provider：Mod 修改保存后触发全自动同步（null = 未接入，如测试）。
   final CloudSyncProvider? _cloudSyncProvider;
-
-  final WorldBookScanner _scanner = const WorldBookScanner();
 
   List<Mod> _userMods = [];
   String? _error;
@@ -206,88 +203,20 @@ class ModProvider extends ChangeNotifier {
     final userMods = await _repo.listMods();
     final userByUuid = {for (final m in userMods) m.uuid: m};
 
-    final pre = <String>[];
-    final post = <String>[];
-    final system = <String>[];
-    final worldEntries = <ModWorldBookEntry>[];
-
+    final mods = <Mod>[];
     for (final ref in refs) {
       final mod = ref.startsWith(Mod.presetRefPrefix)
           ? PresetMods.byKey(ref.substring(Mod.presetRefPrefix.length))
           : userByUuid[ref];
-      if (mod == null) continue;
-      if (mod.prePrompt.trim().isNotEmpty) {
-        pre.add(mod.prePrompt);
-      }
-      if (mod.postPrompt.trim().isNotEmpty) {
-        post.add(mod.postPrompt);
-      }
-      if (mod.systemPrompt.trim().isNotEmpty) {
-        system.add(mod.systemPrompt);
-      }
-      worldEntries.addAll(
-        mod.worldBookEntries.where((e) => e.content.trim().isNotEmpty),
-      );
+      if (mod != null) mods.add(mod);
     }
 
-    return ModsBundle(
-      prePrompts: _joinBlocks(pre),
-      postPrompts: _joinBlocks(post),
-      systemPrompts: _joinBlocks(system),
-      worldBooks: _scanWorldBook(
-        entries: worldEntries,
-        userInput: userInput,
-        historyRounds: historyRounds,
-      ),
+    // 拼接规则（块间空行 / 归一化 / 世界书扫描）的唯一实现在
+    // `ModsBundleBuilder`：创建流程的校验器复用同一份逻辑。
+    return const ModsBundleBuilder().build(
+      mods: mods,
+      userInput: userInput,
+      historyRounds: historyRounds,
     );
-  }
-
-  /// 拼接多个 Mod 的同类文案：逐块归一化后**以空行分隔**。
-  ///
-  /// 拼合端**不信任 Mod 端传来的文本**：每块各自 trim、去掉行尾空白、把 3 个以上
-  /// 连续空行折叠为一个空行，块与块之间强制插入一个空行。若直接逐行拼接，
-  /// 前一个 Mod 的末段会把后一个 Mod 的首行吞进同一段（Markdown 下块边界消失）。
-  /// 空块在这里被丢弃（Mod 文案为空时不留空行）。
-  static String _joinBlocks(List<String> blocks) => blocks
-      .map(_normalizeBlock)
-      .where((block) => block.isNotEmpty)
-      .join('\n\n');
-
-  /// 单个 Mod 文案块归一化（见 [_joinBlocks]）。
-  static String _normalizeBlock(String raw) => raw
-      .replaceAll(RegExp(r'[ \t]+\n'), '\n')
-      .replaceAll(RegExp(r'\n{3,}'), '\n\n')
-      .trim();
-
-  /// 扫描 Mod 世界书条目：
-  /// - 关键词为空的条目恒定注入；
-  /// - 关键词非空的条目复用 [WorldBookScanner] 命中才注入。
-  String _scanWorldBook({
-    required List<ModWorldBookEntry> entries,
-    required String userInput,
-    required List<Round> historyRounds,
-  }) {
-    final constant = entries
-        .where((e) => e.keywords.isEmpty)
-        .map((e) => e.content.trim())
-        .where((c) => c.isNotEmpty)
-        .toList();
-    final keywordEntries = entries.where((e) => e.keywords.isNotEmpty).toList();
-    final scanned = keywordEntries.isEmpty
-        ? ''
-        : _scanner.scan(
-            userInput: userInput,
-            historyRounds: historyRounds,
-            entries: [
-              for (final e in keywordEntries)
-                WorldBookEntry(
-                  bookUuid: '',
-                  keyword: e.keyword,
-                  content: e.content,
-                ),
-            ],
-          );
-    final parts = [...constant, if (scanned.trim().isNotEmpty) scanned.trim()];
-    return parts.join('\n\n');
   }
 }

@@ -127,6 +127,37 @@ class Mod {
   /// 唯一引用标识：预置用 `preset:<key>`，用户自定义用 `user:<uuid>`。
   String get ref => isPreset ? 'preset:$presetKey' : 'user:$uuid';
 
+  /// 界面引用（[ref] 的形态）→ 书库存储引用（`preset::<key>` / uuid）。
+  ///
+  /// 预置 Mod 在 `use_mods` 里用 `preset::<key>`，用户 Mod 直接用 uuid；
+  /// 界面统一用 [ref] 的形态。无法识别（前缀不对 / 键为空）返回 null。
+  /// 已是存储形态时原样返回（调用方不需要先判断）。
+  static String? storageRefOfUiRef(String uiRef) {
+    final text = uiRef.trim();
+    if (text.isEmpty) return null;
+    if (text.startsWith(presetRefPrefix)) return text;
+    if (text.startsWith('preset:')) {
+      final key = text.substring('preset:'.length).trim();
+      return key.isEmpty ? null : presetRef(key);
+    }
+    if (text.startsWith('user:')) {
+      final uuid = text.substring('user:'.length).trim();
+      return uuid.isEmpty ? null : uuid;
+    }
+    return null;
+  }
+
+  /// 书库存储引用 → 界面引用（[ref] 的形态）；无法识别返回 null。
+  static String? uiRefOfStorageRef(String storageRef) {
+    final text = storageRef.trim();
+    if (text.isEmpty) return null;
+    if (text.startsWith(presetRefPrefix)) {
+      final key = text.substring(presetRefPrefix.length).trim();
+      return key.isEmpty ? null : 'preset:$key';
+    }
+    return 'user:$text';
+  }
+
   factory Mod.fromMap(Map<String, Object?> map) {
     return Mod(
       uuid: (map['uuid'] as String?) ?? '',

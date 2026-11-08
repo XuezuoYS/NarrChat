@@ -1032,3 +1032,147 @@ class StubCloudSyncProvider extends CloudSyncProvider {
     return null;
   }
 }
+
+/// 一次脚本化 AI 调用的返回内容。
+class ScriptedAiResponse {
+  const ScriptedAiResponse(
+    this.content, {
+    this.promptTokens = 10,
+    this.completionTokens = 20,
+    this.cachedTokensIn,
+    this.incomplete = false,
+    this.error,
+  });
+
+  final String content;
+  final int? promptTokens;
+  final int? completionTokens;
+  final int? cachedTokensIn;
+
+  /// 模拟 `response.incomplete`（输出被截断）。
+  final bool incomplete;
+
+  /// 非 null：本次调用直接抛出该异常。
+  final Object? error;
+}
+
+/// 按调用顺序回放预设内容的 AI 替身（创建流程 / 分步执行器测试用）。
+///
+/// - 每次调用消费一条 [scripted]；耗尽后抛 [StateError]（提示用例漏配）；
+/// - 记录每次请求体、是否流式、走的是 chat 还是 responses 线路；
+/// - 流式时把内容拆成两段推给 `onChunk`；
+/// - 可设置 [gate] 阻塞调用（取消 / 进行中状态测试），[gateStarted] 在开始等待时完成。
+class ScriptedAiService extends AiService {
+  ScriptedAiService(this.scripted);
+
+  final List<ScriptedAiResponse> scripted;
+  final List<Map<String, dynamic>> bodies = [];
+  final List<bool> streams = [];
+  final List<String> wires = [];
+
+  /// 非 null：每次调用先等待该 Completer，用于模拟「正在生成」。
+  Completer<void>? gate;
+
+  /// [gate] 开始等待时完成（测试据此确认请求已发起）。
+  Completer<void>? gateStarted;
+
+  int _next = 0;
+
+  int get calls => bodies.length;
+
+  Future<AiCallResult> _call(
+    String wire, {
+    required Map<String, dynamic> requestBody,
+    required bool stream,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) async {
+    wires.add(wire);
+    bodies.add(requestBody);
+    streams.add(stream);
+    onRequestBody?.call('{}');
+
+    if (_next >= scripted.length) {
+      throw StateError(
+        'ScriptedAiService 没有更多预设响应（第 ${_next + 1} 次调用）',
+      );
+    }
+    final scriptedCall = scripted[_next++];
+
+    if (gate != null) {
+      if (gateStarted != null && !gateStarted!.isCompleted) {
+        gateStarted!.complete();
+      }
+      await gate!.future;
+    }
+    if (isCancelled?.call() ?? false) {
+      throw const AiCancelledException();
+    }
+    final error = scriptedCall.error;
+    if (error != null) throw error;
+
+    if (stream && scriptedCall.content.isNotEmpty) {
+      final mid = scriptedCall.content.length ~/ 2;
+      onChunk?.call(
+        AiStreamChunk(contentDelta: scriptedCall.content.substring(0, mid)),
+      );
+      if (isCancelled?.call() ?? false) {
+        throw const AiCancelledException();
+      }
+      onChunk?.call(
+        AiStreamChunk(contentDelta: scriptedCall.content.substring(mid)),
+      );
+    }
+    if (stream) onChunk?.call(const AiStreamChunk(done: true));
+
+    return AiCallResult(
+      content: scriptedCall.content,
+      promptTokens: scriptedCall.promptTokens,
+      completionTokens: scriptedCall.completionTokens,
+      cachedTokensIn: scriptedCall.cachedTokensIn,
+      incomplete: scriptedCall.incomplete,
+      incompleteReason: scriptedCall.incomplete ? 'max_output_tokens' : '',
+    );
+  }
+
+  @override
+  Future<AiCallResult> chat({
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, dynamic> requestBody,
+    bool stream = false,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) {
+    return _call(
+      'chat',
+      requestBody: requestBody,
+      stream: stream,
+      onChunk: onChunk,
+      onRequestBody: onRequestBody,
+      isCancelled: isCancelled,
+    );
+  }
+
+  @override
+  Future<AiCallResult> responses({
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, dynamic> requestBody,
+    bool stream = false,
+    void Function(AiStreamChunk chunk)? onChunk,
+    void Function(String requestBody)? onRequestBody,
+    bool Function()? isCancelled,
+  }) {
+    return _call(
+      'responses',
+      requestBody: requestBody,
+      stream: stream,
+      onChunk: onChunk,
+      onRequestBody: onRequestBody,
+      isCancelled: isCancelled,
+    );
+  }
+}

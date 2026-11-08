@@ -91,10 +91,29 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? const SizedBox.shrink()
                   : const BrandLogo(size: 28, title: 'NarrChat'),
               actions: [
-                IconButton(
-                  icon: const Icon(Icons.add),
-                  tooltip: '新建书籍',
-                  onPressed: () => createHomeBook(context),
+                // 加号：先弹菜单（创建新书 / Agent 创建新书），再进入对应流程。
+                MenuAnchor(
+                  key: const ValueKey('home_new_book_menu'),
+                  menuChildren: [
+                    MenuItemButton(
+                      key: const ValueKey('home_new_book_create'),
+                      leadingIcon: const Icon(Icons.add, size: 17),
+                      onPressed: () => createHomeBook(context),
+                      child: const Text('创建新书'),
+                    ),
+                    MenuItemButton(
+                      key: const ValueKey('home_new_book_agent'),
+                      leadingIcon: const Icon(Icons.auto_awesome, size: 17),
+                      onPressed: () => createHomeBookWithAgent(context),
+                      child: const Text('Agent 创建新书'),
+                    ),
+                  ],
+                  builder: (context, controller, _) => IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: '新建书籍',
+                    onPressed: () =>
+                        controller.isOpen ? controller.close() : controller.open(),
+                  ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),
