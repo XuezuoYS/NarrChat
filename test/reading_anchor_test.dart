@@ -205,7 +205,7 @@ void main() {
     });
   });
 
-  group('ScrollLockAnchor（展开 / 收起补偿请求）', () {
+  group('ScrollLockAnchor（显式滚动补偿请求）', () {
     ScrollMetrics metrics({required double pixels, double max = 2000}) =>
         FixedScrollMetrics(
           minScrollExtent: 0,
@@ -353,6 +353,71 @@ void main() {
         ),
         500,
       );
+    });
+
+    test('request 返回凭据：已被布局取走的请求不受帧末 discard 影响', () {
+      final lock = ScrollLockAnchor();
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: lock,
+      );
+      final requestId = lock.request(shift: 300);
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        800,
+        reason: '请求在布局阶段落地',
+      );
+      lock.discard(requestId);
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        500,
+        reason: '已经落地的补偿不能被帧末撤销（凭据已失效）',
+      );
+    });
+
+    test('帧末 discard 撤销「当帧没被取走」的请求，不漏到以后的布局', () {
+      final lock = ScrollLockAnchor();
+      final physics = ReadingAnchorScrollPhysics(
+        anchor: ReadingAnchor(),
+        lock: lock,
+      );
+      // 构建期登记（代次切换就是这么用的），但这一帧没有尺寸变化 → 没人取走。
+      final requestId = lock.request(shift: 300, suppressAnchorGrowth: true);
+      lock.discard(requestId);
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: metrics(pixels: 500),
+          newPosition: metrics(pixels: 500),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        500,
+        reason: '撤销后连「压掉阅读锚定」也一并失效（不会迟一点再跳一次）',
+      );
+      expect(lock.takeRequest().isEmpty, isTrue);
+    });
+
+    test('新请求覆盖旧凭据：旧凭据 discard 无效', () {
+      final lock = ScrollLockAnchor();
+      final first = lock.request(shift: 100);
+      final second = lock.request(shift: 40);
+      lock.discard(first);
+      expect(
+        lock.takeRequest().shift,
+        140,
+        reason: '两笔请求都还在（旧凭据不得撤销新请求）',
+      );
+      expect(second, isNot(first), reason: '凭据每次请求都换一个');
     });
   });
 }

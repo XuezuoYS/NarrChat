@@ -102,6 +102,9 @@ const double _kScrollToBottomEpsilon = 1.0;
 /// 切换版本后「视图停在控件」的帧级校准上限（懒加载列表逐帧收敛，开销极小）。
 const int _kAnchorRefineMax = 8;
 
+/// 代次切换补偿的残余误差（px）：小于它就不动，避免无意义的位移。
+const double _kAnchorShiftEpsilon = 0.5;
+
 /// 右侧栏开合动画时长。
 const Duration _kSidebarAnimDuration = Duration(milliseconds: 300);
 
@@ -147,6 +150,49 @@ typedef _ChatShellSignals = ({
   /// 版本树 / 投影变更计数（代次控件显隐会改变条目高度，同为缓存失效依据）。
   int versionsRevision,
 });
+
+/// 一次代次切换（或删代）的滚动锚点快照。
+///
+/// **为什么按书坐标记**：切换会改写整条活动链——从「链尾那代」切回「有后续轮的
+/// 代」时，后面的轮次整段回来，它们插在 `reverse` 列表**偏移 0 那一端**。贴底时
+/// `pixels` 保持 0，视图于是落到新链的最底部，代次控件被顶出几屏；而那一刻控件
+/// 往往已经在 `cacheExtent` 之外（不再构建），`localToGlobal` 量不到它——只按
+/// 控件实位补偿的旧做法到这里就断了。书坐标（[ChatGeometry] 偏移 + 窗口基准）
+/// 不依赖控件挂在树上，先按它把视图放回原处，帧末再用实测的控件位置精修。
+class _VersionSwitchAnchor {
+  _VersionSwitchAnchor({
+    required this.roundIndex,
+    required this.roundUuidBefore,
+    required this.stepperKey,
+    required this.beforeTop,
+    required this.beforeOffset,
+    required this.beforeBase,
+    required this.beforePixels,
+  });
+
+  /// 被切换的那一轮。
+  final int roundIndex;
+
+  /// 切换前该轮当前代的 uuid：它变了 = 新的活动链已经落地。
+  final String roundUuidBefore;
+
+  /// 代次控件的稳定 Key（帧末精修用）。
+  final GlobalKey stepperKey;
+
+  /// 切换前控件的全局 y；控件没挂上时为 `null`（只靠几何兜底）。
+  final double? beforeTop;
+
+  /// 切换前「该轮 AI 行底边距书底」的偏移；`null` = 拿不到几何锚点（只靠控件）。
+  final double? beforeOffset;
+
+  /// 切换前的窗口基准（窗口不含末轮时会变，见 [ChatWindowHost.windowBookOffsetBase]）。
+  final double beforeBase;
+
+  /// 切换前的滚动偏移（几何兜底算目标位置要用）。
+  final double beforePixels;
+
+  bool get hasGeometryAnchor => beforeOffset != null;
+}
 
 /// 对话界面（独立页面，由书籍列表点击进入）。
 ///
@@ -249,6 +295,12 @@ class _ChatScreenState extends State<ChatScreen>
   /// 各轮代次控件的稳定 Key（切换前后按控件位置补偿滚动）。
   final Map<int, GlobalKey> _stepperKeys = {};
 
+  /// 一次还没落地的切换锚点（新的活动链生效后由 [_applyVersionAnchor] 消费）。
+  _VersionSwitchAnchor? _pendingVersionAnchor;
+
+  /// 代次切换在途：忽略重复点击（两次会互相覆盖锚点，第二次还会误报切换失败）。
+  bool _versionSwitchInFlight = false;
+
   /// 用户是否已手动上翻离开底部（期间暂停自动跟随，回到底部附近后自动恢复）。
   bool _userScrolledAway = false;
 
@@ -290,6 +342,14 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 持久化的实测高度（按列宽档 + 字号档隔离，见 [ChatHeightBucket]）。
   Map<ChatItemKey, double> _persistedHeights = const {};
+
+  /// 本页量到过的高度（跨几何重建保留，不落库）。
+  ///
+  /// 代次切换会让后续轮整段移出 / 移回活动链：[ChatGeometry.rebuild] 只带
+  /// [ChatGeometry.dumpMeasuredHeights] 时，移出那一趟的实测高度就丢了，切回来
+  /// 只剩默认估算（ai 320 / user 96，与真实高度差得远）——按书坐标算滚动补偿
+  /// 会偏出几屏。这里把量过的高度留在页面上，重建时一并带回去。
+  final Map<ChatItemKey, double> _heightMemo = {};
 
   /// 当前生效的档位（变了就重新读一遍缓存）。
   int _heightWidthBucket = -1;
@@ -814,6 +874,8 @@ class _ChatScreenState extends State<ChatScreen>
     _heightWidthBucket = widthBucket;
     _heightTypeScaleBucket = typeScaleBucket;
     _persistedHeights = const {};
+    // 换书 / 换档后旧高度一律不可复用（跨档复用会整体错位）。
+    _heightMemo.clear();
     unawaited(_loadPersistedHeights(bookUuid));
   }
 
@@ -849,6 +911,10 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// 上报的是**内容高度**（底部避让留白在测量包装之外），几何与高度缓存都只认内容。
   void _onItemMeasured(ChatItemKey key, double height) {
+    // 先记一笔「本页量到过的高度」：代次切换把后续轮移出活动链后，几何重建时
+    // 只能靠它把实测值找回来（`dumpMeasuredHeights` 会随着重建丢掉已移出的行）。
+    // 待定气泡不算：它的身份是「这次生成」，高度不该进账本（同 [_pendingHeights]）。
+    if (key.roundUuid != _kPendingRoundUuid) _heightMemo[key] = height;
     if (!_chatGeometry.updateHeight(key, height)) return;
     // 待定气泡不落库：它的身份是「这次生成」，下一轮就有真轮次了。
     if (key.roundUuid != _kPendingRoundUuid) {
@@ -1085,7 +1151,12 @@ class _ChatScreenState extends State<ChatScreen>
     _chatGeometry.rebuild(
       _chatItems,
       // 重建只换条目集合，实测高度必须带过去（否则每帧打回估算值）。
-      cache: {..._persistedHeights, ..._chatGeometry.dumpMeasuredHeights()},
+      // [_heightMemo] 专门兜住「这一趟已不在链上、但之前量过」的行（代次切换）。
+      cache: {
+        ..._persistedHeights,
+        ..._heightMemo,
+        ..._chatGeometry.dumpMeasuredHeights(),
+      },
     );
     // 几何是同一个实例，setter 会因 identical 早退；这里显式通知一次。
     _chatLocator.notifyGeometryChanged();
@@ -1690,27 +1761,35 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 切换当前轮的版本（`← / →`）：**直接切换，不弹任何提示**。
   ///
-  /// 「视图停在控件」：切换后正文长度可能变化、条目高度随之改变——这里按
-  /// **代次控件在视口中的位置**做滚动补偿（而不是保持总滚动偏移），
-  /// 保证控件不会被正文长度变化挤出视口；同时跳过一帧自动贴底。
+  /// 「视图停在控件」：切换可能改写**整条活动链**（切回有后续轮的代，后面的轮次
+  /// 会随父代回来），所以这里只登记一次锚点；真正的补偿在下一帧构建期按书坐标
+  /// 算好、在布局阶段落地（见 [_applyVersionAnchor]），帧末再用控件实位精修
+  /// （见 [_holdVersionAnchor]）；同时跳过一帧自动贴底。
+  ///
+  /// 切换在途时忽略重复点击：两次切换会互相覆盖锚点，第二次还会因为目标已经
+  /// 是「当前代」而误报「切换失败」。
   Future<void> _switchVersion(int roundIndex, {required bool forward}) async {
+    if (_versionSwitchInFlight) return;
     final rp = context.read<RoundProvider>();
     final info = rp.versionInfoFor(roundIndex);
     final target = forward ? info?.nextUuid : info?.prevUuid;
     if (target == null) return;
-    final anchorKey = _stepperKeyFor(roundIndex);
-    final beforeTop = _globalTopOf(anchorKey);
+    _pendingVersionAnchor = _captureVersionAnchor(roundIndex);
     _skipAutoFollowOnce = true;
-    final switched = await rp.switchRoundVersion(
-      roundIndex,
-      forward: forward,
-    );
-    if (!mounted) return;
-    if (!switched) {
-      context.notices.warning('切换失败，请稍后重试');
-      return;
+    _versionSwitchInFlight = true;
+    try {
+      final switched = await rp.switchRoundVersion(
+        roundIndex,
+        forward: forward,
+      );
+      if (!mounted) return;
+      if (!switched) {
+        _pendingVersionAnchor = null;
+        context.notices.warning('切换失败，请稍后重试');
+      }
+    } finally {
+      _versionSwitchInFlight = false;
     }
-    _keepAnchorInPlace(anchorKey, beforeTop);
   }
 
   /// 代次控件的稳定 Key（同一轮复用；供切换前后做位置补偿）。
@@ -1723,36 +1802,125 @@ class _ChatScreenState extends State<ChatScreen>
     return box.localToGlobal(Offset.zero).dy;
   }
 
-  /// 把 [key] 对应控件放回切换前在视口中的纵向位置（按控件锚点补偿滚动，
-  /// 而不是以总滚动偏移为准——否则「新代正文更长/更短」会让控件漂出视口）。
+  /// 记下切换 / 删代前的滚动锚点：控件实位 + **书坐标**（几何偏移 / 窗口基准）。
   ///
-  /// 补偿方向随列表方向反转：`reverse: true` 下滚动偏移**增大**内容**下移**，
-  /// 故 [step] 用 `pixels − delta` 抵消「控件下移」。
+  /// 书坐标那条在切换后仍然有效（控件可能已被后续轮推出构建范围，量不到了）；
+  /// 控件实位那条留给帧末精修。首行锚点口径（显式轮次跳转后，见
+  /// [_windowBaseFromHead]）的基准掺了懒加载估算边界，几何算不准，这时只保留
+  /// 控件一条路（与改造前行为一致）。
+  _VersionSwitchAnchor? _captureVersionAnchor(int roundIndex) {
+    final round = context
+        .read<RoundProvider>()
+        .rounds
+        .where((r) => r.roundIndex == roundIndex)
+        .firstOrNull;
+    if (round == null) return null;
+    final stepperKey = _stepperKeyFor(roundIndex);
+    return _VersionSwitchAnchor(
+      roundIndex: roundIndex,
+      roundUuidBefore: round.uuid,
+      stepperKey: stepperKey,
+      beforeTop: _globalTopOf(stepperKey),
+      beforeOffset: _windowBaseFromHead ? null : _anchorRowOffsetAt(roundIndex),
+      beforeBase: windowBookOffsetBase,
+      beforePixels: _scrollController.hasClients
+          ? _scrollController.position.pixels
+          : 0,
+    );
+  }
+
+  /// 该轮 **AI 行底边距书底** 的偏移（几何口径；`null` = 这一轮不在几何里）。
   ///
-  /// 懒加载列表的高度在随后几帧继续收敛（更长正文会逐帧撑开），故按本文件既有
-  /// 的「帧末复查 + 补滚」模式逐帧校准，最多 [_kAnchorRefineMax] 帧。
+  /// 代次控件在 AI 气泡 footer 里贴着气泡底边，所以「AI 行底边」就是控件在书中
+  /// 位置的稳定代理：正文变长变短它都不动（条目是底部锚定的），只有它**后面**
+  /// （更新一侧）的轮次增减 / 长高才会改变它。
+  double? _anchorRowOffsetAt(int roundIndex) {
+    final index = _chatGeometry.indexOfRound(roundIndex);
+    if (index == null) return null;
+    // 同一轮的条目固定是「user 行 + ai/failed 行」，见 [_rebuildGeometry]。
+    final anchorIndex = index + 1;
+    if (anchorIndex >= _chatGeometry.itemCount) return null;
+    final row = _chatGeometry.items[anchorIndex];
+    if (row.roundIndex != roundIndex) return null;
+    if (row.kind != ChatItemKind.ai && row.kind != ChatItemKind.failed) {
+      return null;
+    }
+    return _chatGeometry.offsetOf(anchorIndex);
+  }
+
+  /// 新的活动链落地那一帧：把锚点换算成滚动补偿，交给布局阶段落地。
   ///
-  /// 位置补偿受列表边界约束：切换前就在**列表底部**时无法继续下滚，
-  /// 此时钳到最大滚动位置（即仍停在底部），控件不会被推得更远。
-  void _keepAnchorInPlace(GlobalKey key, double? beforeTop) {
-    if (beforeTop == null) return;
+  /// 为什么在 build 里做：`loadRounds` 的通知刚发出去，新几何要等这一帧的 build
+  /// 才建出来。登记完由 [ReadingAnchorScrollPhysics] 在**同一帧布局**里补进
+  /// `pixels`，所以不会先闪一帧「新的最底部」。
+  void _applyVersionAnchor() {
+    final anchor = _pendingVersionAnchor;
+    if (anchor == null) return;
+    // 新链还没落地（切换还在路上）：等下一帧，别把补偿提前用掉。
+    final round = context
+        .read<RoundProvider>()
+        .rounds
+        .where((r) => r.roundIndex == anchor.roundIndex)
+        .firstOrNull;
+    if (round == null || round.uuid == anchor.roundUuidBefore) return;
+
+    _pendingVersionAnchor = null;
+    final beforeOffset = anchor.beforeOffset;
+    if (beforeOffset != null && !_windowBaseFromHead) {
+      final afterOffset = _anchorRowOffsetAt(anchor.roundIndex);
+      if (afterOffset != null) {
+        // 行底边偏移的变化 = 该行**更新一侧**内容的增减；窗口基准的变化再补一次，
+        // 「窗口没吃到新行」时两者正好抵消（推导见 [_anchorPixelsFor]）。
+        final shift = (afterOffset - beforeOffset) +
+            (anchor.beforeBase - windowBookOffsetBase);
+        final requestId = _scrollLockAnchor.request(
+          shift: shift,
+          // 同一次内容变化：新链尾部行的长高已经算进 afterOffset，别再让阅读
+          // 锚定按「视口下方长高」补第二遍。
+          suppressAnchorGrowth: true,
+        );
+        // 这一帧若没有尺寸变化，请求不会被取走：帧末撤销，别漏到以后的布局里。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollLockAnchor.discard(requestId);
+        });
+      }
+    }
+    _holdVersionAnchor(anchor);
+  }
+
+  /// 帧末把代次控件放回切换前的位置。
+  ///
+  /// 两条路：
+  /// - 控件还挂着 → 直接量它的全局 y（最准，不受任何估算影响）；
+  /// - 控件量不到（被整段回来的后续轮推出 `cacheExtent`）→ 用**书坐标**反推目标
+  ///   偏移：几何随行实测逐帧收敛，能自己纠回来。
+  ///
+  /// 每帧都按当时的真实位置重算（懒加载列表的高度随后几帧还在收敛），最多
+  /// [_kAnchorRefineMax] 帧——与本文件既有的「帧末复查 + 补滚」做法一致。
+  /// 补偿受列表边界约束：下方内容不够时钳在端点，控件不会被推得更远。
+  void _holdVersionAnchor(_VersionSwitchAnchor anchor) {
+    if (anchor.beforeTop == null && !anchor.hasGeometryAnchor) return;
     var attempt = 0;
     void step() {
       if (!mounted || !_scrollController.hasClients) return;
-      final afterTop = _globalTopOf(key);
-      if (afterTop != null) {
+      final position = _scrollController.position;
+      final afterTop = _globalTopOf(anchor.stepperKey);
+      final beforeTop = anchor.beforeTop;
+      double? target;
+      if (afterTop != null && beforeTop != null) {
+        // reverse: true 下视觉坐标为 `y = viewportDimension + pixels − offset`：
+        // 滚动偏移增大内容**下移**，故取 `pixels − delta`。
         final delta = afterTop - beforeTop;
-        if (delta.abs() >= 0.5) {
-          final position = _scrollController.position;
-          // reverse: true 下视觉坐标为 `y = viewportDimension + pixels − offset`：
-          // 滚动偏移增大内容**下移**，故取 `pixels − delta`（正向列表为 `+`）。
-          _scrollController.jumpTo(
-            (position.pixels - delta).clamp(
-              position.minScrollExtent,
-              position.maxScrollExtent,
-            ),
-          );
+        if (delta.abs() >= _kAnchorShiftEpsilon) {
+          target = position.pixels - delta;
         }
+      } else {
+        target = _anchorPixelsFor(anchor);
+      }
+      if (target != null) {
+        _scrollController.jumpTo(
+          target.clamp(position.minScrollExtent, position.maxScrollExtent),
+        );
       }
       if (++attempt < _kAnchorRefineMax) {
         WidgetsBinding.instance.addPostFrameCallback((_) => step());
@@ -1762,6 +1930,22 @@ class _ChatScreenState extends State<ChatScreen>
 
     WidgetsBinding.instance.addPostFrameCallback((_) => step());
     WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// 按书坐标反推「代次控件切换前所在位置」对应的滚动偏移。
+  ///
+  /// `reverse` 下视觉纵向位置 = `(窗口基准 − 前导留白) + pixels + 视口高 − 条目
+  /// 底边距书底的偏移`；让它保持不变，滚动偏移的变化量正好就是
+  /// `该行底边偏移的变化 + 窗口基准的变化`。正文变长变短不影响结果——控件贴的是
+  /// AI 行**底边**。
+  double? _anchorPixelsFor(_VersionSwitchAnchor anchor) {
+    final beforeOffset = anchor.beforeOffset;
+    if (beforeOffset == null || _windowBaseFromHead) return null;
+    final afterOffset = _anchorRowOffsetAt(anchor.roundIndex);
+    if (afterOffset == null) return null;
+    return anchor.beforePixels +
+        (afterOffset - beforeOffset) +
+        (anchor.beforeBase - windowBookOffsetBase);
   }
 
   /// 本轮 AI 气泡的代次控件（null = 单代 / 无版本信息 → 不显示）。
@@ -1898,17 +2082,17 @@ class _ChatScreenState extends State<ChatScreen>
       remaining: info.aliveCount - 1,
     );
     if (!confirmed || !mounted) return;
-    // 与切换代次同一套「视图停在控件」补偿：删除后正文长度变化不让控件漂走。
-    final anchorKey = _stepperKeyFor(round.roundIndex);
-    final beforeTop = _globalTopOf(anchorKey);
+    // 与切换代次同一套锚点：删代同样会让后续轮随父代消失 / 回来，正文与整条链
+    // 一起变，控件不能被甩走（补偿在下一帧构建期落地，见 [_applyVersionAnchor]）。
+    _pendingVersionAnchor = _captureVersionAnchor(round.roundIndex);
     _skipAutoFollowOnce = true;
     final deleted = await rp.deleteCurrentGeneration(round);
     if (!mounted) return;
     if (!deleted) {
+      _pendingVersionAnchor = null;
       context.notices.warning('删除失败，请稍后重试');
       return;
     }
-    _keepAnchorInPlace(anchorKey, beforeTop);
   }
 
   /// 长按 / 右键气泡触发的上下文菜单。
@@ -2845,6 +3029,9 @@ class _ChatScreenState extends State<ChatScreen>
     // 渲染行 = 窗口切片（几何条目，自旧到新）。分支头 / 真实气泡 / 待定气泡 /
     // 占位条目都在同一张表里：渲染位置就是几何位置，不存在"下标换算"。
     _syncChatRows();
+    // 代次切换的锚点补偿：几何 / 窗口基准都已就绪，登记给本帧布局落地
+    // （见 [_applyVersionAnchor]；必须在建列表之前，布局才拿得到请求）。
+    _applyVersionAnchor();
     final rows = _chatRows;
     final itemKeys = [for (final row in rows) ValueKey('chat-item-${row.key}')];
     // Key → 逻辑序号：`findChildIndexCallback` 用它把视图下标翻回去（O(1)）。

@@ -56,7 +56,7 @@ class ReadingAnchor {
   }
 }
 
-/// 一次「展开 / 收起」补偿请求（见 [ScrollLockAnchor]）。
+/// 一次显式滚动补偿请求（见 [ScrollLockAnchor]）。
 class ScrollLockRequest {
   const ScrollLockRequest({this.shift = 0, this.suppressAnchorGrowth = false});
 
@@ -76,9 +76,13 @@ class ScrollLockRequest {
   bool get isEmpty => shift == 0 && !suppressAnchorGrowth;
 }
 
-/// 「展开 / 收起」时对滚动偏移的显式请求（待补偿量 + 是否压掉阅读锚定）。
+/// 一次**显式滚动补偿**请求（待补偿量 + 是否压掉阅读锚定）。
 ///
-/// 用法：气泡在切换展开状态前把请求交给 [request]；
+/// 两个使用者，规则一致：
+/// - 气泡展开 / 收起：在切换状态前把请求交给 [request]；
+/// - 代次切换：在 build 期按**书坐标**算好要补的偏移再交进来（那时控件可能已经
+///   被后来的轮次推出构建范围，量不到它的位置，只能按几何算）。
+///
 /// [ReadingAnchorScrollPhysics] 在**下一帧的布局阶段**取走它再落地。
 ///
 /// 为什么不在气泡里直接 `jumpTo`：切换瞬间列表还是**旧尺寸**，
@@ -94,23 +98,41 @@ class ScrollLockAnchor {
   double _pendingShift = 0;
   bool _suppressAnchorGrowth = false;
 
+  /// 请求序号（只增）与「尚未被布局取走」的那一次（0 = 没有）。
+  int _requestSerial = 0;
+  int _pendingRequest = 0;
+
   /// 请求下次布局把滚动偏移补 [shift]、并按需压掉阅读锚定的增长。
-  void request({double shift = 0, bool suppressAnchorGrowth = false}) {
+  ///
+  /// 返回本次请求的凭据，配合 [discard] 使用：**在 build 期**登记请求的调用方
+  /// （代次切换）要防一手「这一帧恰好没有尺寸变化」——请求会漏到以后某次无关的
+  /// 布局里去。布局后的帧末 [discard] 一次即可，已被取走的请求不受影响。
+  int request({double shift = 0, bool suppressAnchorGrowth = false}) {
     if (shift.abs() >= _kMinimumShift) _pendingShift += shift;
     if (suppressAnchorGrowth) _suppressAnchorGrowth = true;
+    _pendingRequest = ++_requestSerial;
+    return _pendingRequest;
+  }
+
+  /// 撤销一次**还没被布局取走**的请求（凭据不符 / 已被取走都无操作）。
+  void discard(int requestId) {
+    if (requestId != _pendingRequest) return;
+    _pendingShift = 0;
+    _suppressAnchorGrowth = false;
+    _pendingRequest = 0;
   }
 
   /// 取走本次请求（读取即清零）；无请求时为 [ScrollLockRequest.none]。
   ScrollLockRequest takeRequest() {
-    if (_pendingShift == 0 && !_suppressAnchorGrowth) {
-      return ScrollLockRequest.none;
-    }
-    final request = ScrollLockRequest(
-      shift: _pendingShift,
-      suppressAnchorGrowth: _suppressAnchorGrowth,
-    );
+    final request = (_pendingShift == 0 && !_suppressAnchorGrowth)
+        ? ScrollLockRequest.none
+        : ScrollLockRequest(
+            shift: _pendingShift,
+            suppressAnchorGrowth: _suppressAnchorGrowth,
+          );
     _pendingShift = 0;
     _suppressAnchorGrowth = false;
+    _pendingRequest = 0;
     return request;
   }
 }
