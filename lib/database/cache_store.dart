@@ -1,6 +1,7 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../services/app_paths.dart';
+import '../utils/image_path_utils.dart';
 import '../utils/timestamp_format.dart';
 import 'db_open.dart';
 import 'db_schema.dart';
@@ -28,6 +29,7 @@ class BookIndexRow {
     this.memorySummaryRounds = 0,
     this.roleHierarchy = '',
     this.roleHierarchyDetail = '',
+    this.bookCoverImg,
   });
 
   final String bookUuid;
@@ -53,6 +55,9 @@ class BookIndexRow {
   final String roleHierarchy;
   final String roleHierarchyDetail;
 
+  /// 自定义封面的图片相对路径（书库 `book_meta.book_cover_img` 的副本）。
+  final String? bookCoverImg;
+
   bool get isDeleted => deletedAt != null;
 
   factory BookIndexRow.fromRow(Map<String, Object?> row) {
@@ -74,6 +79,7 @@ class BookIndexRow {
       memorySummaryRounds: (row['memory_summary_rounds'] as int?) ?? 0,
       roleHierarchy: (row['role_hierarchy'] as String?) ?? '',
       roleHierarchyDetail: (row['role_hierarchy_detail'] as String?) ?? '',
+      bookCoverImg: cleanImagePath(row['book_cover_img']),
     );
   }
 
@@ -97,6 +103,7 @@ class BookIndexRow {
       'memory_summary_rounds': memorySummaryRounds,
       'role_hierarchy': roleHierarchy,
       'role_hierarchy_detail': roleHierarchyDetail,
+      'book_cover_img': bookCoverImg,
     };
   }
 
@@ -118,6 +125,8 @@ class BookIndexRow {
     int? memorySummaryRounds,
     String? roleHierarchy,
     String? roleHierarchyDetail,
+    String? bookCoverImg,
+    bool clearBookCoverImg = false,
   }) {
     return BookIndexRow(
       bookUuid: bookUuid,
@@ -137,6 +146,9 @@ class BookIndexRow {
       memorySummaryRounds: memorySummaryRounds ?? this.memorySummaryRounds,
       roleHierarchy: roleHierarchy ?? this.roleHierarchy,
       roleHierarchyDetail: roleHierarchyDetail ?? this.roleHierarchyDetail,
+      bookCoverImg: clearBookCoverImg
+          ? null
+          : (bookCoverImg ?? this.bookCoverImg),
     );
   }
 

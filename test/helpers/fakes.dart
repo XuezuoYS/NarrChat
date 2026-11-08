@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart' show BuildContext;
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/database/migration/migration_paths.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
@@ -21,6 +22,7 @@ import 'package:narrchat/repositories/world_book_repository.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/app_repositories.dart';
 import 'package:narrchat/services/app_stores.dart';
+import 'package:narrchat/services/book_cover_import_service.dart';
 import 'package:narrchat/services/clipboard_paste_service.dart';
 import 'package:narrchat/services/debug_database_service.dart';
 import 'package:narrchat/services/debug_file_service.dart';
@@ -620,6 +622,31 @@ class FakeImageImportService implements ImageImportService {
     lastConvertJpgToJpeg = convertJpgToJpeg;
     if (_next >= results.length) return const ImageImportResult();
     return results[_next++];
+  }
+}
+
+/// 可控封面导入替身：返回预设的相对路径 / 抛预设异常，并记录调用。
+///
+/// 真实实现要开 `file_picker` 并做裁剪页交互，用例一律用它替换；
+/// 需要「预览能显示图片」时，用 `writeImageFixture` 把文件写进临时
+/// `user_data/img/`，再让 [relPath] 返回同一个相对路径。
+class FakeBookCoverImportService implements BookCoverImportService {
+  FakeBookCoverImportService({this.relPath, this.error});
+
+  /// 每次调用返回的相对路径（null = 用户取消）。
+  String? relPath;
+
+  /// 非空时直接抛出（模拟格式不支持 / 超限 / 解码失败）。
+  Object? error;
+
+  int calls = 0;
+
+  @override
+  Future<String?> importCover(BuildContext context) async {
+    calls++;
+    final failure = error;
+    if (failure != null) throw failure;
+    return relPath;
   }
 }
 

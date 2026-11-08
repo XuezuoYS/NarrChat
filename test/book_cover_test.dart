@@ -1,11 +1,32 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/default_cover_style.dart';
+import 'package:narrchat/services/image_store.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/book_cover.dart';
 
-/// 默认封面组件：插画1 / 无插画（生成灰底书名封面）。
+import 'helpers/image_fixtures.dart';
+
+/// 默认封面组件：插画1 / 无插画（生成灰底书名封面）/ 自定义封面。
 void main() {
+  late Directory userData;
+
+  setUp(() {
+    userData = Directory.systemTemp.createTempSync('narrchat_book_cover_');
+    ImageStore.testUserDataRoot = userData.path;
+  });
+
+  tearDown(() {
+    ImageStore.testUserDataRoot = null;
+    try {
+      userData.deleteSync(recursive: true);
+    } catch (_) {
+      // 临时目录清理失败不影响结论。
+    }
+  });
+
   Widget build(Widget child) {
     return MaterialApp(
       theme: NarrChatTheme.light,
@@ -61,5 +82,39 @@ void main() {
     expect(find.byType(Image), findsNothing);
     expect(find.text('灰'), findsOneWidget);
     expect(find.text('灰皮书'), findsNothing);
+  });
+
+  testWidgets('有自定义封面：优先显示文件图片，不再加载默认插画', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(userData, bytes),
+    ))!;
+
+    await tester.pumpWidget(
+      build(BookCover(width: 120, title: '测试书', coverImg: rel)),
+    );
+    await tester.pump();
+
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.fit, BoxFit.cover);
+    final provider = image.image;
+    expect(provider, isA<ResizeImage>());
+    expect((provider as ResizeImage).imageProvider, isA<FileImage>());
+    expect(find.text('未设置封面'), findsNothing);
+    expect(find.text('图片已损坏'), findsNothing);
+  });
+
+  testWidgets('自定义封面文件丢失：回落默认插画（首页不出现灰块）', (tester) async {
+    await tester.pumpWidget(
+      build(const BookCover(width: 120, title: '测试书', coverImg: 'img/gone.png')),
+    );
+    await tester.pump();
+
+    final image = tester.widget<Image>(find.byType(Image));
+    final provider = image.image;
+    expect(provider, isA<ResizeImage>());
+    expect((provider as ResizeImage).imageProvider, isA<AssetImage>());
+    expect(find.text('图片已损坏'), findsNothing);
+    expect(find.text('未设置封面'), findsNothing);
   });
 }

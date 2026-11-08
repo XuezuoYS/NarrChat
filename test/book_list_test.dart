@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,15 +11,18 @@ import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/screens/chat_screen.dart';
 import 'package:narrchat/screens/home_screen.dart';
+import 'package:narrchat/services/image_store.dart';
 import 'package:narrchat/services/notification_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/utils/book_list_utils.dart';
 import 'package:narrchat/widgets/book_cover.dart';
 import 'package:narrchat/widgets/book_grid_card.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
+import 'helpers/image_fixtures.dart';
 
 /// 首页书籍列表测试：搜索 / 排序 / 排列 / 导航 / 空态 / 通知提示条。
 void main() {
@@ -205,6 +210,73 @@ void main() {
       findsNothing,
       reason: '无插画模式不应再加载插画',
     );
+  });
+
+  testWidgets('自定义封面：首页方格显示文件图片（cover 居中）', (tester) async {
+    final stack = (await tester.runAsync(TestStack.create))!;
+    addTearDown(() => tester.runAsync(stack.dispose));
+    final userData = Directory(p.join(stack.rootDir.path, 'user_data'));
+    ImageStore.testUserDataRoot = userData.path;
+    addTearDown(() => ImageStore.testUserDataRoot = null);
+
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(userData, bytes),
+    ))!;
+
+    await pumpHomeScreen(
+      tester,
+      stack: stack,
+      books: [Book(uuid: 'b1', title: '封面书', bookCoverImg: rel)],
+    );
+
+    final cover = find.byType(BookCover);
+    final image = tester.widget<Image>(
+      find.descendant(of: cover, matching: find.byType(Image)),
+    );
+    expect(image.fit, BoxFit.cover);
+    expect(image.alignment, Alignment.center);
+    expect(image.image, isA<ResizeImage>());
+    expect(
+      ((image.image as ResizeImage).imageProvider as FileImage)
+          .file
+          .path
+          .replaceAll('\\', '/'),
+      endsWith('img/cover.png'),
+      reason: '封面应直接读 user_data/img 下的文件',
+    );
+    expect(find.text('未设置封面'), findsNothing);
+    expect(find.text('图片已损坏'), findsNothing);
+  });
+
+  testWidgets('封面文件丢失：首页回落默认插画，不出现灰块', (tester) async {
+    final userData = Directory.systemTemp.createTempSync('narrchat_home_cover_');
+    ImageStore.testUserDataRoot = userData.path;
+    addTearDown(() {
+      ImageStore.testUserDataRoot = null;
+      try {
+        userData.deleteSync(recursive: true);
+      } catch (_) {
+        // 清理失败不影响结论。
+      }
+    });
+
+    await pumpHomeScreen(
+      tester,
+      books: const [
+        Book(uuid: 'b1', title: '封面书', bookCoverImg: 'img/gone.png'),
+      ],
+    );
+
+    final cover = find.byType(BookCover);
+    final image = tester.widget<Image>(
+      find.descendant(of: cover, matching: find.byType(Image)),
+    );
+    final provider = image.image;
+    expect(provider, isA<ResizeImage>());
+    expect((provider as ResizeImage).imageProvider, isA<AssetImage>());
+    expect(find.text('未设置封面'), findsNothing);
+    expect(find.text('图片已损坏'), findsNothing);
   });
 
   testWidgets('点击书籍进入对话页，返回按钮回到首页', (tester) async {

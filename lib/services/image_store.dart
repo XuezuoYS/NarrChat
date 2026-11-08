@@ -27,6 +27,55 @@ class ImageStore {
   @visibleForTesting
   static String? testUserDataRoot;
 
+  /// 已经异步解析出来的 `user_data/` 绝对路径（首次解析后缓存）。
+  ///
+  /// 缓存它才能提供 [resolveAbsoluteSync]：展示层（书籍封面）首帧就判断
+  /// 「文件在不在」，不必等一个 Future 转一圈再决定显示图片还是占位。
+  static String? _cachedUserDataRoot;
+
+  /// 当前是否能同步解析相对路径（测试注入了根目录，或已异步解析过一次）。
+  static bool get canResolveSync =>
+      testUserDataRoot != null || _cachedUserDataRoot != null;
+
+  /// 同步解析相对路径为绝对路径。
+  ///
+  /// 调用前请用 [canResolveSync] 确认根目录已知；路径不在 `img/` 下时抛
+  /// [ImageFormatException]（与异步版本同口径）。
+  static String resolveAbsoluteSync(String relPath) {
+    final root = testUserDataRoot ?? _cachedUserDataRoot;
+    if (root == null) {
+      throw ImageFormatException('用户数据目录尚未解析');
+    }
+    // 与异步版本同一套路径逃逸校验。
+    final normalized = relPath.replaceAll('\\', '/');
+    if (!normalized.startsWith('$relativeDir/')) {
+      throw ImageFormatException('非法图片路径');
+    }
+    // 用 p.join 拼出与异步版本完全一致的绝对路径（Windows 分隔符也一致）。
+    return p.join(
+      root,
+      relativeDir,
+      normalized.substring(relativeDir.length + 1),
+    );
+  }
+
+  static Future<Directory> _userData() async {
+    final testRoot = testUserDataRoot;
+    if (testRoot != null) return Directory(testRoot);
+    final cached = _cachedUserDataRoot;
+    if (cached != null) return Directory(cached);
+    final dir = await AppPaths.userData();
+    _cachedUserDataRoot = dir.path;
+    return dir;
+  }
+
+  static Future<Directory> _imgDir() async {
+    final userData = await _userData();
+    final dir = Directory(p.join(userData.path, relativeDir));
+    await dir.create(recursive: true);
+    return dir;
+  }
+
   /// 归一化并校验扩展名；非法抛 [ImageFormatException]，合法返回小写扩展名（不带点）。
   static String normalizeExt(String filename) {
     final ext = p.extension(filename).toLowerCase().replaceFirst('.', '');
@@ -34,15 +83,6 @@ class ImageStore {
       throw ImageFormatException('仅支持 png / jpg / jpeg 格式');
     }
     return ext;
-  }
-
-  static Future<Directory> _imgDir() async {
-    final userData = testUserDataRoot != null
-        ? Directory(testUserDataRoot!)
-        : await AppPaths.userData();
-    final dir = Directory(p.join(userData.path, relativeDir));
-    await dir.create(recursive: true);
-    return dir;
   }
 
   /// img 目录（不存在则创建）。供「存储管理」列出 / 管理本地图片。

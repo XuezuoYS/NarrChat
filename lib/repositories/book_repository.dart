@@ -61,6 +61,14 @@ abstract class BookRepository {
 
   /// 云端快照还原后恢复书的身份（清墓碑 + 用书库重建索引）。
   Future<void> reviveBook(String bookUuid);
+
+  /// 图片 [relPath] 是否仍被任何一本书引用（封面或轮次附图）。
+  ///
+  /// 供「封面被清掉 / 换掉后回收孤儿图片」使用，**宁可多留，不可错删**：
+  /// - 封面读列表缓存副本（保存设置时同步维护，够新）；
+  /// - 轮次附图逐本查 `round_stack`（历史代、非活动分支都算引用）；
+  /// - 任何一步读不出来都按「仍被引用」处理，调用方因此不会删图。
+  Future<bool> isImageReferenced(String relPath);
 }
 
 /// SQLite 版 [BookRepository]。
@@ -277,6 +285,7 @@ class BookRepositorySqlite implements BookRepository {
       memorySummaryRounds: book.memorySummaryRounds,
       roleHierarchy: book.roleHierarchy,
       roleHierarchyDetail: Constants.encodeRoleCategories(book.roleCategories),
+      bookCoverImg: book.bookCoverImg,
     );
 
     final db = await BookDb.create(meta: meta, pathOverride: _pathOf(uuid));
@@ -300,6 +309,7 @@ class BookRepositorySqlite implements BookRepository {
         memorySummaryRounds: meta.memorySummaryRounds,
         roleHierarchy: meta.roleHierarchy,
         roleHierarchyDetail: meta.roleHierarchyDetail,
+        bookCoverImg: meta.bookCoverImg,
       ),
     );
     return uuid;
@@ -329,9 +339,8 @@ class BookRepositorySqlite implements BookRepository {
       memorySummaryRounds: book.memorySummaryRounds,
       roleHierarchy: book.roleHierarchy,
       roleHierarchyDetail: Constants.encodeRoleCategories(book.roleCategories),
-      // 封面还没进 `Book` 模型：保存设置时原样继承书库里的值，
-      // 否则每次保存设置都会把 `book_cover_img` 写成 NULL。
-      bookCoverImg: existing.bookCoverImg,
+      // 封面以传入的 `Book` 为准：界面上的「移除封面」就是把这里写成 NULL。
+      bookCoverImg: book.bookCoverImg,
     );
     await db.meta.writeSettings(meta);
     // 目录行只回写书名：不能整行覆盖，否则会把墓碑清掉。
@@ -428,6 +437,43 @@ class BookRepositorySqlite implements BookRepository {
     await cache.clearImageRefs(bookUuid);
   }
 
+  @override
+  Future<bool> isImageReferenced(String relPath) async {
+    if (relPath.isEmpty) return false;
+
+    // 1) 封面：读列表缓存副本（不用为每本书各开一次库）。
+    List<BookIndexRow> index;
+    try {
+      index = await cache.allIndex();
+    } catch (_) {
+      return true; // 缓存读不出来：保守当「还在用」，不删。
+    }
+    for (final row in index) {
+      if (row.bookCoverImg == relPath) return true;
+    }
+
+    // 2) 轮次附图：逐本查，查完把「本次新开的连接」关掉，不给连接池留垃圾。
+    List<LibraryBookRow> directory;
+    try {
+      directory = await library.books();
+    } catch (_) {
+      return true;
+    }
+    for (final row in directory) {
+      final wasOpen = books.isOpen(row.bookUuid);
+      final db = await books.tryOpen(row.bookUuid);
+      if (db == null) continue;
+      try {
+        if (await db.rounds.containsImage(relPath)) return true;
+      } catch (_) {
+        return true; // 书库读不出来：同样不删。
+      } finally {
+        if (!wasOpen) await books.close(row.bookUuid);
+      }
+    }
+    return false;
+  }
+
   /// 删除前读一次全书最大轮号；读不到（文件缺失 / 损坏 / 被锁）按 0。
   Future<int> _maxRoundIndexOf(String bookUuid) async {
     try {
@@ -463,6 +509,7 @@ class BookRepositorySqlite implements BookRepository {
         memorySummaryRounds: meta.memorySummaryRounds,
         roleHierarchy: meta.roleHierarchy,
         roleHierarchyDetail: meta.roleHierarchyDetail,
+        bookCoverImg: meta.bookCoverImg,
       ),
     );
   }
@@ -481,6 +528,7 @@ class BookRepositorySqlite implements BookRepository {
       memorySummaryRounds: row.memorySummaryRounds,
       roleHierarchy: row.roleHierarchy,
       roleCategories: Constants.decodeRoleCategories(row.roleHierarchyDetail),
+      bookCoverImg: row.bookCoverImg,
     );
   }
 
@@ -498,6 +546,7 @@ class BookRepositorySqlite implements BookRepository {
       memorySummaryRounds: meta.memorySummaryRounds,
       roleHierarchy: meta.roleHierarchy,
       roleCategories: Constants.decodeRoleCategories(meta.roleHierarchyDetail),
+      bookCoverImg: meta.bookCoverImg,
     );
   }
 

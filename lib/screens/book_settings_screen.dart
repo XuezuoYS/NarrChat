@@ -9,8 +9,14 @@ import '../providers/book_provider.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../providers/mod_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../services/book_cover_import_service.dart';
+import '../services/image_store.dart';
+import '../services/sync/image_deletion.dart';
+import '../services/sync/sync_models.dart';
+import '../theme/app_theme.dart';
 import '../utils/constants.dart';
 import '../widgets/app_notice_overlay.dart';
+import '../widgets/book_cover_image.dart';
 import '../widgets/book_mod_panel.dart';
 import '../widgets/book_other_settings_panel.dart';
 import '../widgets/draggable_role_list.dart';
@@ -37,11 +43,23 @@ import '../widgets/world_book_panel.dart';
 class BookSettingsScreen extends StatefulWidget {
   final Book? book;
 
-  const BookSettingsScreen({super.key, this.book});
+  /// 封面「选图 + 裁剪」服务（可注入替身；缺省走真实 `file_picker` + 裁剪页）。
+  final BookCoverImportService? coverService;
 
-  static Future<bool?> open(BuildContext context, {Book? book}) {
+  const BookSettingsScreen({super.key, this.book, this.coverService});
+
+  static Future<bool?> open(
+    BuildContext context, {
+    Book? book,
+    BookCoverImportService? coverService,
+  }) {
     return Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => BookSettingsScreen(book: book)),
+      MaterialPageRoute(
+        builder: (_) => BookSettingsScreen(
+          book: book,
+          coverService: coverService,
+        ),
+      ),
     );
   }
 
@@ -60,6 +78,19 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
   late int _historyRounds;
   late int _memorySummaryRounds;
   late List<RoleCategory> _roleCategories;
+
+  /// 当前草稿里的封面（图片相对路径；null = 没有封面）。
+  String? _coverImg;
+
+  /// 用户本次是否动过封面：动过就不再跟随外部（云同步）刷新。
+  bool _coverDirty = false;
+
+  /// 封面导入 / 裁剪进行中（按钮禁用 + 文案切换）。
+  bool _importingCover = false;
+
+  /// 封面「选图 + 裁剪」服务（构造参数注入，缺省走真实实现）。
+  late final BookCoverImportService _coverService =
+      widget.coverService ?? const PlatformBookCoverImportService();
 
   bool _isSaving = false;
 
@@ -109,6 +140,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     _roleCategories = List.of(
       b?.roleCategories ?? Constants.defaultRoleCategories,
     );
+    _coverImg = b?.bookCoverImg;
     // 打开书籍设置即触发一次静默同步：另一台设备刚改过的书籍设置就近拉到本地
     // （编辑态打开时展示最新值；已无空闲轮询，此处是编辑前唯一的拉取点）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -206,6 +238,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       if (!_rolesDirty) {
         _roleCategories = List.of(book.roleCategories);
       }
+      // 用户本次动过封面就不覆盖草稿；没动过则跟随最新（云同步落地）。
+      if (!_coverDirty) _coverImg = book.bookCoverImg;
     } finally {
       _syncing = false;
     }
@@ -217,6 +251,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       context.notices.warning('书籍标题不能为空');
       return;
     }
+    // 清掉 / 换掉的旧封面（保存成功后再回收它的图片）。
+    final previousCover = _book?.bookCoverImg;
     setState(() => _isSaving = true);
     final book = Book(
       uuid: _book?.uuid ?? '',
@@ -233,6 +269,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       roleHierarchy:
           Constants.joinRoleHierarchy(_roleCategories.map((c) => c.name).toList()),
       roleCategories: List.of(_roleCategories),
+      bookCoverImg: _coverImg,
     );
 
     final provider = context.read<BookProvider>();
@@ -247,7 +284,10 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       // 新建书籍：将草稿阶段配置的世界书条目与 Mod 一并落库到新书。
       if (_isCreate) {
         await _commitDraftData(errors);
+        if (!mounted) return;
       }
+      // 封面被清除 / 换掉：旧图若全库都没人再用，顺手删掉（本机 + 云端墓碑）。
+      await _releaseCoverImageIfUnused(previousCover);
       if (!mounted) return;
       Navigator.of(context).pop(true);
       if (errors.isNotEmpty) {
@@ -260,6 +300,42 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
       context.notices.error('保存失败：${provider.error ?? '未知错误'}');
     }
   }
+
+  /// 回收「被清掉 / 换掉」的旧封面图片。
+  ///
+  /// 只有**全库都没人引用**时才删（别的书的封面、任何一代的剧情附图都算引用）；
+  /// 删除走 [ImageDeletionService]：本机文件 + 删除墓碑一起处理，否则下次图片
+  /// 同步会把云端那份又拉回来。
+  ///
+  /// 一切异常都按「不删」处理：宁可留一张孤儿图，也不能误删别处在用的图。
+  Future<void> _releaseCoverImageIfUnused(String? previousCover) async {
+    final current = _coverImg;
+    if (previousCover == null ||
+        previousCover.isEmpty ||
+        previousCover == current) {
+      return;
+    }
+    // 跨 await 前先取好依赖。
+    final books = context.read<BookProvider>();
+    final deletion = context.read<ImageDeletionService?>();
+    final cloud = context.read<CloudSyncProvider?>();
+    if (deletion == null) return;
+    bool referenced;
+    try {
+      referenced = await books.isImageReferenced(previousCover);
+    } catch (_) {
+      return;
+    }
+    if (referenced) return;
+    try {
+      await deletion.delete(previousCover);
+    } catch (_) {
+      return;
+    }
+    // 图片平面尽快收敛（删除墓碑在上一行已写入）。
+    cloud?.triggerSync(kind: SyncKind.images);
+  }
+
   /// 新建书籍成功后，将草稿阶段配置的世界书条目与 Mod 配置落库到新书。
   Future<void> _commitDraftData(List<String> errors) async {
     // 所有 Provider 在首个 await 之前获取，避免跨异步间隙使用 context。
@@ -296,6 +372,115 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
         errors.add('Mod 配置保存失败');
       }
     }
+  }
+
+  /// 导入封面：选图 → 裁剪成 2:3 → 按内容哈希落盘（`img/<sha256>.png`）。
+  ///
+  /// 只改页面草稿（预览立刻更新），真正写库在点「保存」时；因此中途关掉设置页
+  /// 只会留下一个孤儿图片文件（图片库是内容寻址 + 刻意不做引用回收）。
+  Future<void> _importCover() async {
+    if (_importingCover) return;
+    final notices = context.notices;
+    setState(() => _importingCover = true);
+    try {
+      final relPath = await _coverService.importCover(context);
+      if (relPath == null || relPath.isEmpty || !mounted) return;
+      setState(() {
+        _coverImg = relPath;
+        _coverDirty = true;
+      });
+    } on ImageFormatException catch (e) {
+      notices.warning(e.message);
+    } on BookCoverImportException catch (e) {
+      notices.warning(e.message);
+    } catch (e) {
+      notices.error('封面导入失败：$e', copyable: true);
+    } finally {
+      if (mounted) setState(() => _importingCover = false);
+    }
+  }
+
+  /// 移除封面（只改草稿；保存后库里这一列才变 NULL，首页回到默认封面）。
+  void _removeCover() {
+    setState(() {
+      _coverImg = null;
+      _coverDirty = true;
+    });
+  }
+
+  /// 概览页顶部的封面区块：左边 2:3 预览，右边说明与操作按钮。
+  Widget _buildCoverCard(BuildContext context) {
+    final colors = context.narrColors;
+    final cover = _coverImg;
+    final hasCover = cover != null && cover.isNotEmpty;
+    return SettingsCard(
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          BookCoverImage(
+            key: const ValueKey('book_settings_cover_preview'),
+            relPath: cover,
+            width: 96,
+            radius: 10,
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '书籍封面',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '2:3 比例，首页方格与列表都会用它；未设置时首页显示「默认封面」。',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.4,
+                    color: colors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    FilledButton.tonalIcon(
+                      key: const ValueKey('book_settings_cover_import'),
+                      onPressed: _importingCover ? null : _importCover,
+                      icon: Icon(
+                        hasCover
+                            ? Icons.swap_horiz
+                            : Icons.add_photo_alternate_outlined,
+                        size: 18,
+                      ),
+                      label: Text(
+                        _importingCover
+                            ? '处理中…'
+                            : (hasCover ? '更换封面' : '导入封面'),
+                      ),
+                    ),
+                    if (hasCover)
+                      TextButton.icon(
+                        key: const ValueKey('book_settings_cover_remove'),
+                        onPressed: _importingCover ? null : _removeCover,
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                        label: const Text('清除封面'),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -399,7 +584,7 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     );
   }
 
-  /// 书籍概览：书名、分类、文笔要求描述、历史轮次数、全局前后置词。
+  /// 书籍概览：封面、书名、分类、文笔要求描述、历史轮次数、全局前后置词。
   Widget _buildOverview(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -408,6 +593,8 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
           '书籍概览',
           '书籍基本信息与对话行为配置。',
         ),
+        _buildCoverCard(context),
+        const SizedBox(height: 16),
         SettingsTextField(
           controller: _title,
           label: '书籍标题 *',

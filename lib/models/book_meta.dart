@@ -1,3 +1,4 @@
+import '../utils/image_path_utils.dart';
 import '../utils/timestamp_format.dart';
 
 /// 单本书的元信息（`book_meta` 表，单行）。
@@ -72,7 +73,7 @@ class BookMeta {
       memorySummaryRounds: (row['memory_summary_rounds'] as int?) ?? 0,
       roleHierarchy: (row['role_hierarchy'] as String?) ?? '',
       roleHierarchyDetail: (row['role_hierarchy_detail'] as String?) ?? '',
-      bookCoverImg: _cleanImagePath(row['book_cover_img']),
+      bookCoverImg: cleanImagePath(row['book_cover_img']),
     );
   }
 
@@ -146,11 +147,4 @@ class BookMeta {
           : (bookCoverImg ?? this.bookCoverImg),
     );
   }
-}
-
-/// 封面列归一化：NULL / 空白都表示「没有自定义封面」，统一收敛成 null。
-String? _cleanImagePath(Object? raw) {
-  if (raw is! String) return null;
-  final trimmed = raw.trim();
-  return trimmed.isEmpty ? null : trimmed;
 }

@@ -22,7 +22,8 @@ import 'settings_screen.dart';
 /// - 搜索：按标题 / 分类过滤（空格分隔多关键词模糊匹配）；
 /// - 排序：更新时间（默认，取 `book_meta.updated_at`）或 A-Z（拼音）；
 /// - 排列：方格（默认）或列表；
-/// - 方格卡片：默认封面（2:3）+ 最多三行标题 + 灰色分类；
+/// - 方格卡片：封面（有自定义封面就显示它，否则用「默认封面」；固定 2:3）
+///   + 最多三行标题 + 灰色分类；
 /// - 点击书籍进入对话页；方格长按 / 右键、列表「更多操作」都只提供「删除」；
 /// - 「新建书籍」入口在首页顶栏的加号。
 class BookListScreen extends StatefulWidget {
@@ -236,6 +237,7 @@ class _BookListScreenState extends State<BookListScreen> {
         radius: 8,
         title: book.title,
         style: coverStyle,
+        coverImg: book.bookCoverImg,
       ),
       title: Text(
         book.title,

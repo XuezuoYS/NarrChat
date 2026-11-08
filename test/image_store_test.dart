@@ -87,6 +87,34 @@ void main() {
     expect(ImageStore.fileNameOf(rel), endsWith('.jpeg'));
   });
 
+  test('resolveAbsoluteSync：注入根目录后可同步解析，结果与异步版本一致', () async {
+    expect(ImageStore.canResolveSync, isTrue, reason: '已注入 testUserDataRoot');
+    final rel = await ImageStore.saveBytes(
+      Uint8List.fromList([9, 8, 7]),
+      filename: 'sync.png',
+    );
+    expect(
+      ImageStore.resolveAbsoluteSync(rel),
+      await ImageStore.resolveAbsolute(rel),
+    );
+    expect(File(ImageStore.resolveAbsoluteSync(rel)).existsSync(), isTrue);
+  });
+
+  test('resolveAbsoluteSync：路径逃逸 / 空值照旧按非法路径抛异常', () {
+    expect(
+      () => ImageStore.resolveAbsoluteSync('../evil.png'),
+      throwsA(isA<ImageFormatException>()),
+    );
+    expect(
+      () => ImageStore.resolveAbsoluteSync('other/x.png'),
+      throwsA(isA<ImageFormatException>()),
+    );
+    expect(
+      () => ImageStore.resolveAbsoluteSync(''),
+      throwsA(isA<ImageFormatException>()),
+    );
+  });
+
   test('exists：缺失 / 非法路径返回 false', () async {
     expect(await ImageStore.exists('img/nope.png'), isFalse);
     expect(await ImageStore.exists(''), isFalse);

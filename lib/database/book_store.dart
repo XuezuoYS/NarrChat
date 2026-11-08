@@ -90,6 +90,12 @@ abstract class RoundStore {
   ///
   /// 只读一列聚合，不拉全书正文。
   Future<DateTime?> lastRoundAt();
+
+  /// 是否有任何一代的图片列（`user_images` / `ai_images`）引用了 [imagePath]。
+  ///
+  /// 供「封面被清掉 / 换掉后回收孤儿图片」判断：历史代、非活动分支都算引用，
+  /// 宁可多留一张图，也不删别的剧情还在用的图。
+  Future<bool> containsImage(String imagePath);
 }
 
 /// 分支（`branches`，默认分支不记表）。

@@ -557,6 +557,11 @@ void main() {
       expect(byId['g2']!.hasImages, isTrue);
       expect(byId['g1']!.hasImages, isFalse);
 
+      // 图片引用查询：轮次附图也算「有人用」（供封面回收判断）。
+      expect(await book.rounds.containsImage('img/a.png'), isTrue);
+      expect(await book.rounds.containsImage('img/b.png'), isFalse);
+      expect(await book.rounds.containsImage(''), isFalse);
+
       await book.rounds.insert(gen('g3', 2, father: 'g2'));
       final window = await book.rounds.listGenerations(
         firstRoundIndex: 2,
@@ -792,6 +797,74 @@ void main() {
 
       await cache.removeIndex('b3');
       expect(await cache.allIndex(), isEmpty);
+      await cache.close();
+    });
+
+    test('版本 2：book_index 带封面列，写入 / 读出 / 清空都正确', () async {
+      expect(localCacheDbVersion, 2);
+      final path = newTempPath('v3_cache_cover_', 'library_cache.db');
+      final cache = CacheDb(pathOverride: path);
+
+      await cache.putIndex(
+        const BookIndexRow(
+          bookUuid: 'b1',
+          title: '甲',
+          bookCoverImg: 'img/a.png',
+        ),
+      );
+      expect((await cache.indexOf('b1'))!.bookCoverImg, 'img/a.png');
+
+      // 空串等价于没有封面（模型边界收敛，不把 '' 当路径）。
+      await cache.putIndex(
+        const BookIndexRow(bookUuid: 'b2', title: '乙', bookCoverImg: ''),
+      );
+      expect((await cache.indexOf('b2'))!.bookCoverImg, isNull);
+
+      // 清空封面：写 NULL、读回 null。
+      await cache.putIndex(
+        const BookIndexRow(bookUuid: 'b1', title: '甲'),
+      );
+      expect((await cache.indexOf('b1'))!.bookCoverImg, isNull);
+      await cache.close();
+
+      // 建表语句里确实有这一列（防止只改了模型、没改 DDL）。
+      final db = await databaseFactory.openDatabase(path);
+      expect(await columnsOf(db, 'book_index'), contains('book_cover_img'));
+      expect(await readUserVersion(db), localCacheDbVersion);
+      await db.close();
+    });
+
+    test('旧版本缓存库（版本 1）：升级即整表重建，封面列自动出现', () async {
+      final path = newTempPath('v3_cache_v1_', 'library_cache.db');
+      // 造一个 v1 时代的缓存库：book_index 只有两列，user_version = 1。
+      final legacy = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 1,
+          onCreate: (db, version) async {
+            await db.execute('''
+              CREATE TABLE book_index (
+                book_uuid TEXT PRIMARY KEY,
+                title     TEXT NOT NULL DEFAULT ''
+              )
+            ''');
+          },
+        ),
+      );
+      await legacy.insert('book_index', {'book_uuid': 'old', 'title': '老索引'});
+      await legacy.close();
+
+      final cache = CacheDb(pathOverride: path);
+      // 缓存是纯派生数据：升级直接丢弃旧行，等 listBooks 重建。
+      expect(await cache.allIndex(), isEmpty);
+      await cache.putIndex(
+        const BookIndexRow(
+          bookUuid: 'b1',
+          title: '新',
+          bookCoverImg: 'img/new.png',
+        ),
+      );
+      expect((await cache.indexOf('b1'))!.bookCoverImg, 'img/new.png');
       await cache.close();
     });
   });

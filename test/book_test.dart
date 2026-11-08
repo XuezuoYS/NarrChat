@@ -90,4 +90,56 @@ void main() {
       expect(book.copyWith(memorySummaryRounds: 0).memorySummaryRounds, 0);
     });
   });
+
+  group('封面列', () {
+    test('fromMap：读出封面路径，缺列 / NULL / 空白一律收敛成 null', () {
+      expect(
+        Book.fromMap(const {
+          'uuid': 'u-1',
+          'title': '书A',
+          'book_cover_img': 'img/a.png',
+        }).bookCoverImg,
+        'img/a.png',
+      );
+      expect(
+        Book.fromMap(const {'uuid': 'u-1', 'title': '书A'}).bookCoverImg,
+        isNull,
+        reason: '老库没有这一列',
+      );
+      expect(
+        Book.fromMap(const {
+          'uuid': 'u-1',
+          'title': '书A',
+          'book_cover_img': null,
+        }).bookCoverImg,
+        isNull,
+      );
+      expect(
+        Book.fromMap(const {
+          'uuid': 'u-1',
+          'title': '书A',
+          'book_cover_img': '   ',
+        }).bookCoverImg,
+        isNull,
+        reason: '空白串等价于没有封面，不能当成路径',
+      );
+    });
+
+    test('toMap：原样写出封面路径（NULL 就写 NULL）', () {
+      expect(
+        const Book(title: '书A', bookCoverImg: 'img/a.png')
+            .toMap()['book_cover_img'],
+        'img/a.png',
+      );
+      expect(const Book(title: '书A').toMap()['book_cover_img'], isNull);
+    });
+
+    test('copyWith：未指定保留，指定替换，clearBookCoverImg 清空', () {
+      const book = Book(title: '书A', bookCoverImg: 'img/a.png');
+      expect(book.copyWith().bookCoverImg, 'img/a.png');
+      expect(book.copyWith(title: '书B').bookCoverImg, 'img/a.png');
+      expect(book.copyWith(bookCoverImg: 'img/b.png').bookCoverImg, 'img/b.png');
+      expect(book.copyWith(clearBookCoverImg: true).bookCoverImg, isNull);
+    });
+  });
 }

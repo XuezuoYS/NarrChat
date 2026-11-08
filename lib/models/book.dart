@@ -1,4 +1,5 @@
 import '../utils/constants.dart';
+import '../utils/image_path_utils.dart';
 import 'role_category.dart';
 
 /// 书籍模型，对应数据库 `books` 表。
@@ -42,6 +43,12 @@ class Book {
   /// 角色类别及其详细描述格式模板（存储于 role_hierarchy_detail 列，JSON）。
   final List<RoleCategory> roleCategories;
 
+  /// 自定义封面的图片相对路径（`img/<哈希>.<扩展名>`，相对 `user_data/`）。
+  ///
+  /// 与 `book_meta.book_cover_img` 同源，列表页从 `library_cache.book_index`
+  /// 读到的也是同一个值；`null` = 没有自定义封面（首页走默认封面样式）。
+  final String? bookCoverImg;
+
   const Book({
     this.uuid = '',
     required this.title,
@@ -55,6 +62,7 @@ class Book {
     this.memorySummaryRounds = 0,
     this.roleHierarchy = '',
     this.roleCategories = const [],
+    this.bookCoverImg,
   });
 
   factory Book.fromMap(Map<String, Object?> map) {
@@ -74,6 +82,7 @@ class Book {
       roleHierarchy: (map['role_hierarchy'] as String?) ?? '',
       roleCategories:
           Constants.decodeRoleCategories(map['role_hierarchy_detail'] as String?),
+      bookCoverImg: cleanImagePath(map['book_cover_img']),
     );
   }
 
@@ -91,6 +100,7 @@ class Book {
       'memory_summary_rounds': normalizeMemorySummaryRounds(memorySummaryRounds),
       'role_hierarchy': roleHierarchy,
       'role_hierarchy_detail': Constants.encodeRoleCategories(roleCategories),
+      'book_cover_img': bookCoverImg,
     };
   }
 
@@ -107,6 +117,8 @@ class Book {
     int? memorySummaryRounds,
     String? roleHierarchy,
     List<RoleCategory>? roleCategories,
+    String? bookCoverImg,
+    bool clearBookCoverImg = false,
   }) {
     return Book(
       uuid: uuid ?? this.uuid,
@@ -121,6 +133,10 @@ class Book {
       memorySummaryRounds: memorySummaryRounds ?? this.memorySummaryRounds,
       roleHierarchy: roleHierarchy ?? this.roleHierarchy,
       roleCategories: roleCategories ?? this.roleCategories,
+      // 可空字段要靠显式开关才能表达「清空封面」。
+      bookCoverImg: clearBookCoverImg
+          ? null
+          : (bookCoverImg ?? this.bookCoverImg),
     );
   }
 }

@@ -504,6 +504,18 @@ class _RoundStoreImpl implements RoundStore {
     return raw is String ? parseTimestamp(raw) : null;
   }
 
+  @override
+  Future<bool> containsImage(String imagePath) async {
+    if (imagePath.isEmpty) return false;
+    // JSON 文本里找子串：封面文件名是哈希，不会出现转义问题。
+    final rows = await _db.rawQuery(
+      'SELECT 1 FROM round_stack '
+      'WHERE instr(user_images, ?) > 0 OR instr(ai_images, ?) > 0 LIMIT 1',
+      [imagePath, imagePath],
+    );
+    return rows.isNotEmpty;
+  }
+
   /// 把同组（分支 + 轮号 + 父代）的其它代 `is_using` 清零。
   static Future<void> _clearUsingInGroup(
     DatabaseExecutor e,

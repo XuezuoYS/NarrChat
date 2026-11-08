@@ -114,26 +114,63 @@ void main() {
     expect(fresh.baseSetting, '新设定');
   });
 
-  test('保存设置：书库里的封面原样保留，不被设置写入冲掉', () async {
-    final uuid = await repository.createBook(sample());
-    final db = await pool.open(uuid);
-    await db.meta.writeSettings(
-      (await db.meta.read()).copyWith(bookCoverImg: 'img/keep.png'),
+  test('封面：新建时落库并进缓存副本，保存设置时可换可清', () async {
+    final uuid = await repository.createBook(
+      sample().copyWith(bookCoverImg: 'img/first.png'),
     );
-    await db.close();
-    await pool.close(uuid);
 
+    expect((await repository.loadBook(uuid))!.bookCoverImg, 'img/first.png');
+    expect(
+      (await repository.listBooks()).single.bookCoverImg,
+      'img/first.png',
+      reason: '首页读缓存副本，副本里也得有封面',
+    );
+
+    // 换封面。
     final loaded = (await repository.loadBook(uuid))!;
     await repository.saveBook(
-      loaded.copyWith(title: '改名', baseSetting: '换设定'),
+      loaded.copyWith(bookCoverImg: 'img/second.png'),
     );
+    expect((await repository.loadBook(uuid))!.bookCoverImg, 'img/second.png');
+    expect((await cache.indexOf(uuid))!.bookCoverImg, 'img/second.png');
 
-    final after = await pool.open(uuid);
-    final meta = await after.meta.read();
-    expect(meta.title, '改名');
-    expect(meta.baseSetting, '换设定');
-    expect(meta.bookCoverImg, 'img/keep.png', reason: '保存设置不得清掉封面');
-    await after.close();
+    // 移除封面：以传入的 Book 为准（clearBookCoverImg 显式清空）。
+    final fresh = (await repository.loadBook(uuid))!;
+    await repository.saveBook(fresh.copyWith(clearBookCoverImg: true));
+    expect((await repository.loadBook(uuid))!.bookCoverImg, isNull);
+    expect((await cache.indexOf(uuid))!.bookCoverImg, isNull);
+  });
+
+  test('图片引用：封面 / 轮次附图都算「还有人用」，空库返回 false', () async {
+    final withCover = await repository.createBook(
+      sample(title: '甲').copyWith(bookCoverImg: 'img/cover.png'),
+    );
+    final other = await repository.createBook(sample(title: '乙'));
+
+    expect(await repository.isImageReferenced('img/cover.png'), isTrue);
+
+    // 清掉封面：这本书不再引用 → 全库没人用了。
+    final loaded = (await repository.loadBook(withCover))!;
+    await repository.saveBook(loaded.copyWith(clearBookCoverImg: true));
+    expect(await repository.isImageReferenced('img/cover.png'), isFalse);
+
+    // 轮次附图也算引用（历史代 / 非活动分支都算）。
+    final db = await pool.open(other);
+    await db.rounds.insert(
+      RoundGeneration(
+        meta: RoundMeta(
+          uuid: 'r1',
+          roundIndex: 1,
+          roundSerialNum: 1,
+          isUsing: true,
+          operatedAt: DateTime.utc(2026, 2, 1),
+        ),
+        userImages: const ['img/round.png'],
+      ),
+    );
+    expect(await repository.isImageReferenced('img/round.png'), isTrue);
+    expect(await repository.isImageReferenced('img/none.png'), isFalse);
+    expect(await repository.isImageReferenced(''), isFalse);
   });
 
   test('删除：墓碑留在目录，书库文件 / 连接 / 缓存行 / 高度 / 图片引用全清掉', () async {

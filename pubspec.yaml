@@ -105,7 +105,7 @@ flutter:
     - assets/app_icon_rounded.png
     # GitHub 徽章（「关于」页 GitHub 入口；primer/octicons 官方 mark）。
     - assets/github_mark.png
-    # 首页书籍封面默认图（2:3；书籍还没有自定义封面字段，先统一兜底）。
+    # 首页书籍封面默认图（2:3；书籍没设自定义封面时用它兜底）。
     - assets/girl1.png
     # 手动补充的开放源代码许可证清单（开发者维护，「开放源代码许可」页读取）。
     - assets/manual_licenses.json

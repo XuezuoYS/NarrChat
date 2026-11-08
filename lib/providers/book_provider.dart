@@ -156,4 +156,11 @@ class BookProvider extends ChangeNotifier {
     _currentBook = fresh;
     notifyListeners();
   }
+
+  /// 图片是否仍被某本书引用（封面 / 轮次附图）。
+  ///
+  /// 封面被清掉或换掉后，用它决定能否回收旧图；查询失败会抛出，
+  /// 调用方按「不删」处理（宁可留一张孤儿图，也不误删别处在用的图）。
+  Future<bool> isImageReferenced(String relPath) =>
+      _repo.isImageReferenced(relPath);
 }

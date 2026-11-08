@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
@@ -8,14 +10,20 @@ import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/world_book_provider.dart';
 import 'package:narrchat/screens/book_settings_screen.dart';
 import 'package:narrchat/services/app_notice_center.dart';
+import 'package:narrchat/services/book_cover_import_service.dart';
+import 'package:narrchat/services/image_store.dart';
+import 'package:narrchat/services/sync/image_deletion.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/widgets/book_cover_image.dart';
 import 'package:narrchat/widgets/memory_summary_round_selector.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:narrchat/widgets/settings/settings_kit.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
+import 'helpers/image_fixtures.dart';
 import 'helpers/notice_harness.dart';
 
 void main() {
@@ -32,9 +40,12 @@ void main() {
     );
     bookProvider = BookProvider(repository: stack.repos.books);
     await bookProvider.loadBooks();
+    // 封面预览要读 `user_data/img/`：指到这套隔离存储的临时目录。
+    ImageStore.testUserDataRoot = p.join(stack.rootDir.path, 'user_data');
   });
 
   tearDown(() async {
+    ImageStore.testUserDataRoot = null;
     await stack.dispose();
   });
 
@@ -53,7 +64,12 @@ void main() {
   /// 以编辑模式 pump 书籍设置页（可注入一个"陈旧"的 Book 快照，模拟调用方持有旧实例）。
   ///
   /// 设置页被压在宿主路由之上：保存成功会 `pop` 回宿主，用例可断言落库结果。
-  Future<void> pumpSettings(WidgetTester tester, {Book? book}) async {
+  Future<void> pumpSettings(
+    WidgetTester tester, {
+    Book? book,
+    BookCoverImportService? coverService,
+    ImageDeletionService? imageDeletion,
+  }) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -78,6 +94,8 @@ void main() {
               books: stack.repos.books,
             ),
           ),
+          if (imageDeletion != null)
+            Provider<ImageDeletionService>.value(value: imageDeletion),
         ],
         child: MaterialApp(
           theme: NarrChatTheme.light,
@@ -88,7 +106,10 @@ void main() {
       ),
     );
     navigatorKey.currentState!.push<void>(
-      MaterialPageRoute(builder: (_) => BookSettingsScreen(book: book)),
+      MaterialPageRoute(
+        builder: (_) =>
+            BookSettingsScreen(book: book, coverService: coverService),
+      ),
     );
     await settle(tester);
   }
@@ -236,6 +257,9 @@ void main() {
     expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
     expect(tester.takeException(), isNull, reason: '窄屏布局不得溢出');
 
+    // 概览页顶部还有封面区块，窄屏下档位控件会被推到视口外：先滚到可见再点。
+    await tester.ensureVisible(find.byType(SettingsSegmented<int>));
+    await tester.pumpAndSettle();
     await tester.tap(find.descendant(
       of: find.byType(SettingsSegmented<int>),
       matching: find.text('10'),
@@ -299,5 +323,304 @@ void main() {
         reason: '「$label」页缺少 #/## 输入提示',
       );
     }
+  });
+
+  // ---------- 书籍封面 ----------
+
+  /// 当前封面预览组件（直接读它的入参，断言比翻图片树稳）。
+  BookCoverImage coverPreview(WidgetTester tester) {
+    return tester.widget<BookCoverImage>(
+      find.byKey(const ValueKey('book_settings_cover_preview')),
+    );
+  }
+
+  testWidgets('概览页：封面区块在「书籍标题」上方，未设置时显示「未设置封面」', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(find.text('书籍封面'), findsOneWidget);
+    expect(coverPreview(tester).relPath, isNull);
+    expect(find.text('未设置封面'), findsOneWidget);
+
+    final coverTop = tester.getTopLeft(find.text('书籍封面')).dy;
+    final titleTop = tester.getTopLeft(find.text('书籍标题 *')).dy;
+    expect(coverTop, lessThan(titleTop), reason: '封面必须排在标题设置上方');
+  });
+
+  testWidgets('导入封面：预览换成新图，保存后写进书库与列表缓存', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    final service = FakeBookCoverImportService(relPath: rel);
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      coverService: service,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_import')));
+    await tester.pump();
+
+    expect(service.calls, 1);
+    expect(coverPreview(tester).relPath, rel);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('book_settings_cover_preview')),
+        matching: find.byType(Image),
+      ),
+      findsOneWidget,
+      reason: '预览应显示刚导入的文件图片',
+    );
+    expect(find.byKey(const ValueKey('book_settings_cover_remove')), findsOneWidget);
+    expect(find.text('清除封面'), findsOneWidget, reason: '清除入口只保留这一个');
+
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.bookCoverImg, rel, reason: '保存时封面要落进 book_meta');
+    final listed = await tester.runAsync(() => stack.repos.books.listBooks());
+    expect(listed!.single.bookCoverImg, rel, reason: '首页读的缓存副本也要带上封面');
+  });
+
+  testWidgets('清除封面：图片没人引用时顺手删掉（走删除墓碑）', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    await patchStoredBook(tester, (b) => b.copyWith(bookCoverImg: rel));
+    final deletion = FakeImageDeletionService();
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      imageDeletion: deletion,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_remove')));
+    await tester.pump();
+    expect(coverPreview(tester).relPath, isNull);
+
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.bookCoverImg, isNull, reason: '库里变 NULL');
+    expect(
+      deletion.deleted,
+      [rel],
+      reason: '没人引用的旧封面图片要删除（本机文件 + 删除墓碑）',
+    );
+  });
+
+  testWidgets('清除封面：别的书还在用这张图 → 不删', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    await patchStoredBook(tester, (b) => b.copyWith(bookCoverImg: rel));
+    // 另一本书也拿这张图当封面。
+    await tester.runAsync(() async {
+      await stack.seedBook(uuid: 'b2', title: '另一本');
+      final other = (await stack.repos.books.loadBook('b2'))!;
+      await stack.repos.books.saveBook(other.copyWith(bookCoverImg: rel));
+    });
+    final deletion = FakeImageDeletionService();
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      imageDeletion: deletion,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_remove')));
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    expect(deletion.calls, 0, reason: '另一本书的封面还引用着它');
+    final other = await tester.runAsync(() => stack.repos.books.loadBook('b2'));
+    expect(other!.bookCoverImg, rel);
+  });
+
+  testWidgets('清除封面：剧情附图还引用着这张图 → 不删', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    await patchStoredBook(tester, (b) => b.copyWith(bookCoverImg: rel));
+    await tester.runAsync(
+      () => stack.seedRound(
+        'b1',
+        roundIndex: 1,
+        uuid: 'g-img',
+        userImages: [rel],
+      ),
+    );
+    final deletion = FakeImageDeletionService();
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      imageDeletion: deletion,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_remove')));
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    expect(deletion.calls, 0, reason: '轮次附图也算引用');
+  });
+
+  testWidgets('换封面：旧封面没人用了也会被回收，新封面保留', (tester) async {
+    final oldBytes = await makePngBytes(tester, width: 4, height: 6);
+    final newBytes = await makePngBytes(
+      tester,
+      width: 8,
+      height: 12,
+      color: const Color(0xFFAA3344),
+    );
+    final userData = Directory(p.join(stack.rootDir.path, 'user_data'));
+    final oldRel = (await tester.runAsync(
+      () => writeImageFixture(userData, oldBytes, fileName: 'old.png'),
+    ))!;
+    final newRel = (await tester.runAsync(
+      () => writeImageFixture(userData, newBytes, fileName: 'new.png'),
+    ))!;
+    await patchStoredBook(tester, (b) => b.copyWith(bookCoverImg: oldRel));
+    final deletion = FakeImageDeletionService();
+    final service = FakeBookCoverImportService(relPath: newRel);
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      coverService: service,
+      imageDeletion: deletion,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_import')));
+    await tester.pump();
+    expect(coverPreview(tester).relPath, newRel);
+
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.bookCoverImg, newRel);
+    expect(deletion.deleted, [oldRel], reason: '旧封面没人用了就回收');
+  });
+
+  testWidgets('清了封面但不保存：旧图片不删（草稿语义）', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    await patchStoredBook(tester, (b) => b.copyWith(bookCoverImg: rel));
+    final deletion = FakeImageDeletionService();
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      imageDeletion: deletion,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_remove')));
+    await tester.pump();
+    expect(coverPreview(tester).relPath, isNull);
+
+    // 直接关掉设置页（不保存）。
+    await tester.tap(find.byTooltip('关闭'));
+    await settle(tester);
+
+    expect(deletion.calls, 0, reason: '没保存就不算删除封面');
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.bookCoverImg, rel, reason: '库里封面原样保留');
+  });
+
+  testWidgets('没有封面时不显示清除按钮', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(
+      find.byKey(const ValueKey('book_settings_cover_remove')),
+      findsNothing,
+    );
+    expect(find.text('清除封面'), findsNothing);
+  });
+
+  testWidgets('云同步落地：用户刚选的封面不被远端旧值冲掉', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(
+        Directory(p.join(stack.rootDir.path, 'user_data')),
+        bytes,
+      ),
+    ))!;
+    final service = FakeBookCoverImportService(relPath: rel);
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      coverService: service,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_import')));
+    await tester.pump();
+
+    // 远端落地：改了标题，同时书库里还有另一个封面。
+    await patchStoredBook(
+      tester,
+      (b) => b.copyWith(title: '远端标题', bookCoverImg: 'img/remote.png'),
+    );
+    await tester.pump();
+
+    expect(find.widgetWithText(TextField, '远端标题'), findsOneWidget,
+        reason: '未编辑字段跟随远端');
+    expect(coverPreview(tester).relPath, rel, reason: '用户刚选的封面保留草稿');
+  });
+
+  testWidgets('导入失败：提示原因，封面保持原样', (tester) async {
+    final service = FakeBookCoverImportService(
+      error: const BookCoverImportException('图片超过 20MB，请压缩后重试'),
+    );
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      coverService: service,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_import')));
+    await settle(tester);
+
+    expect(service.calls, 1);
+    expect(find.textContaining('图片超过 20MB'), findsOneWidget);
+    expect(coverPreview(tester).relPath, isNull);
+    expect(find.text('未设置封面'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  testWidgets('取消导入（返回 null）：不提示、封面不变', (tester) async {
+    final service = FakeBookCoverImportService();
+    await pumpSettings(
+      tester,
+      book: bookProvider.currentBook,
+      coverService: service,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_cover_import')));
+    await settle(tester);
+
+    expect(service.calls, 1);
+    expect(coverPreview(tester).relPath, isNull);
+    expect(tester.takeException(), isNull);
   });
 }

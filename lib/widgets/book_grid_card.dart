@@ -83,6 +83,7 @@ class BookGridCard extends StatelessWidget {
               radius: _kCoverRadius,
               title: book.title,
               style: coverStyle,
+              coverImg: book.bookCoverImg,
             ),
             const SizedBox(height: _kCoverTextGap),
             Text(

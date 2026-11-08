@@ -22,7 +22,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 const int userDataDbVersion = 24;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。
-const int localCacheDbVersion = 1;
+///
+/// 2：`book_index` 增加 `book_cover_img`（书籍自定义封面，供首页列表显示）。
+const int localCacheDbVersion = 2;
 
 /// 本地云备份库 `sync.db` 的 schema 版本（本地库单独管理）。
 const int localSyncDbVersion = 1;
@@ -233,7 +235,9 @@ Future<void> createCacheSchema(Database db) async {
       history_rounds          INTEGER NOT NULL DEFAULT 1,
       memory_summary_rounds   INTEGER NOT NULL DEFAULT 0,
       role_hierarchy          TEXT NOT NULL DEFAULT '',
-      role_hierarchy_detail   TEXT NOT NULL DEFAULT ''
+      role_hierarchy_detail   TEXT NOT NULL DEFAULT '',
+      -- 封面是书库 book_meta.book_cover_img 的副本：可为 NULL（= 没有封面）。
+      book_cover_img          TEXT
     )
   ''');
   await db.execute('''

@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../models/default_cover_style.dart';
+import 'book_cover_image.dart';
 
 /// 默认书籍封面资源（2:3 比例）。
 ///
-/// 当前书籍还没有自定义封面字段，所有书先用这张图兜底；
-/// 后续接入真实封面时只需替换 [BookCover.asset] 的来源。
+/// 书籍没有自定义封面（`book_meta.book_cover_img` 为 NULL）时用它兜底；
+/// 有自定义封面时显示用户裁好的那张图（见 [BookCover.coverImg]）。
 const String kDefaultBookCoverAsset = 'assets/girl1.png';
 
 /// 生成封面的纸感底色（上浅下深）。
@@ -17,13 +18,13 @@ const Color _kInk = Color(0xFF34373B);
 
 /// 书籍封面：固定 2:3、圆角。
 ///
-/// 根据 [style] 展示：
-/// - [DefaultCoverStyle.illustration1]：默认插画（按显示宽度限制解码尺寸）；
-/// - [DefaultCoverStyle.noIllustration]：程序生成的纸感封面（细内框、小字品牌、
-///   书名与装饰线），内容为书名。
-///
-/// 当前书籍还没有自定义封面字段，首页所有书都走后两种默认样式；
-/// 后续接入真实封面时只需替换这里的选择来源。
+/// 显示优先级：
+/// - 有 [coverImg]（自定义封面的图片相对路径）→ 显示用户裁好的图；图丢了或
+///   解码失败时**回落默认封面**（首页不出现灰块）；
+/// - 没有自定义封面 → 按 [style] 展示默认封面：
+///   - [DefaultCoverStyle.illustration1]：默认插画（按显示宽度限制解码尺寸）；
+///   - [DefaultCoverStyle.noIllustration]：程序生成的纸感封面（细内框、小字品牌、
+///     书名与装饰线），内容为书名。
 class BookCover extends StatelessWidget {
   /// 显示宽度（高度固定为宽度的 1.5 倍）。
   final double width;
@@ -37,8 +38,11 @@ class BookCover extends StatelessWidget {
   /// 书名（生成封面时显示；插画封面不使用）。
   final String title;
 
-  /// 默认封面样式。
+  /// 默认封面样式（仅在没有自定义封面时生效）。
   final DefaultCoverStyle style;
+
+  /// 自定义封面的图片相对路径（`img/<哈希>.<扩展名>`）；null = 没有自定义封面。
+  final String? coverImg;
 
   const BookCover({
     super.key,
@@ -47,21 +51,40 @@ class BookCover extends StatelessWidget {
     this.asset = kDefaultBookCoverAsset,
     this.title = '',
     this.style = DefaultCoverStyle.illustration1,
+    this.coverImg,
   });
 
   @override
   Widget build(BuildContext context) {
+    final cover = coverImg;
+    final Widget inner;
+    if (cover == null || cover.isEmpty) {
+      inner = _buildDefaultCover(context);
+    } else {
+      inner = BookCoverImage(
+        relPath: cover,
+        width: width,
+        radius: 0,
+        // 封面读不出来时退回默认封面：首页宁可看默认封面，也不看灰块。
+        fallback: _buildDefaultCover(context),
+      );
+    }
     return SizedBox(
       width: width,
       height: width * 3 / 2,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(radius),
         clipBehavior: Clip.antiAlias,
-        child: style == DefaultCoverStyle.noIllustration
-            ? _buildGeneratedCover()
-            : _buildIllustration(context),
+        child: inner,
       ),
     );
+  }
+
+  /// 默认封面（没有自定义封面 / 自定义封面读不出来时使用）。
+  Widget _buildDefaultCover(BuildContext context) {
+    return style == DefaultCoverStyle.noIllustration
+        ? _buildGeneratedCover()
+        : _buildIllustration(context);
   }
 
   /// 默认插画；资源缺失时退化为生成封面，不露破图。
