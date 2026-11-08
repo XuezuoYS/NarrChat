@@ -47,6 +47,12 @@ class SettingsShell extends StatefulWidget {
   final Widget Function(BuildContext context, int index) contentBuilder;
   final List<Widget>? actions;
 
+  /// 顶栏关闭按钮的行为；null = 直接返回上一页。
+  ///
+  /// 书籍设置页用它把「有未保存草稿时先确认」接进关闭按钮；系统返回键 /
+  /// 顶栏自动返回箭头由页面自己的 [PopScope] 处理。
+  final VoidCallback? onClose;
+
   /// 初始选中的面板序号（默认 0；越界时钳制到合法范围）。
   final int initialIndex;
 
@@ -57,6 +63,7 @@ class SettingsShell extends StatefulWidget {
     required this.navItems,
     required this.contentBuilder,
     this.actions,
+    this.onClose,
     this.initialIndex = 0,
   });
 
@@ -121,7 +128,7 @@ class _SettingsShellState extends State<SettingsShell> {
           IconButton(
             icon: const Icon(Icons.close),
             tooltip: '关闭',
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: widget.onClose ?? () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 8),
         ],

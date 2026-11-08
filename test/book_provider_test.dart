@@ -130,4 +130,37 @@ void main() {
     expect(provider.currentBook!.memorySummaryRounds, 5);
     expect(provider.books.length, 2);
   });
+
+  test('triggerSync: false 时建书 / 改书不触发同步', () async {
+    final cloud = FakeCloudSyncProvider();
+    final cloudProvider = BookProvider(
+      repository: stack.repos.books,
+      cloudSyncProvider: cloud,
+    );
+    await cloudProvider.loadBooks();
+
+    expect(
+      await cloudProvider.createBook(
+        const Book(title: '新书'),
+        triggerSync: false,
+      ),
+      isTrue,
+    );
+    expect(cloud.triggers, 0, reason: '建书后由调用方统一触发同步');
+
+    expect(
+      await cloudProvider.updateBook(
+        cloudProvider.currentBook!.copyWith(title: '改后'),
+        triggerSync: false,
+      ),
+      isTrue,
+    );
+    expect(cloud.triggers, 0);
+
+    // 默认行为不变：单点保存仍立即触发一次。
+    await cloudProvider.updateBook(
+      cloudProvider.currentBook!.copyWith(title: '再改'),
+    );
+    expect(cloud.triggers, 1);
+  });
 }

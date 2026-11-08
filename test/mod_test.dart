@@ -115,8 +115,14 @@ void main() {
     test('关键词拆分', () {
       const entry = ModWorldBookEntry(keyword: '青云宗, 山门、道场；古寺', content: 'x');
       expect(entry.keywords, ['青云宗', '山门', '道场', '古寺']);
-      expect(const ModWorldBookEntry(keyword: '', content: 'x').keywords, isEmpty);
-      expect(const ModWorldBookEntry(keyword: '   ', content: 'x').keywords, isEmpty);
+      expect(
+        const ModWorldBookEntry(keyword: '', content: 'x').keywords,
+        isEmpty,
+      );
+      expect(
+        const ModWorldBookEntry(keyword: '   ', content: 'x').keywords,
+        isEmpty,
+      );
     });
 
     test('encodeList / decodeList 往返', () {
@@ -177,9 +183,10 @@ void main() {
       );
       expect(const BookModConfig(bookUuid: 'b1', modUuid: 'm9').ref, 'user:m9');
       expect(
-        const BookModConfig(bookUuid: 'b1', modUuid: 'm9')
-            .copyWith(isEnabled: true)
-            .isEnabled,
+        const BookModConfig(
+          bookUuid: 'b1',
+          modUuid: 'm9',
+        ).copyWith(isEnabled: true).isEnabled,
         isTrue,
       );
     });
@@ -227,27 +234,27 @@ void main() {
   group('ModProvider 世界书解析', () {
     test('关键词命中才注入，恒定条目始终注入', () async {
       final provider = await seededProvider(
-          mods: const [
-            Mod(
-              uuid: 'm1',
-              name: '测试 Mod',
-              prePrompt: 'PRE',
-              postPrompt: 'POST',
-              systemPrompt: 'SYS',
-              worldBookEntries: [
-                ModWorldBookEntry(keyword: '青云宗, 山门', content: '宗门设定内容'),
-                ModWorldBookEntry(content: '恒定生效内容'),
-              ],
-            ),
-          ],
-          configs: const [
-            BookModConfig(
-              bookUuid: 'b1',
-              modUuid: 'm1',
-              isEnabled: true,
-              sortOrder: 0,
-            ),
-          ],
+        mods: const [
+          Mod(
+            uuid: 'm1',
+            name: '测试 Mod',
+            prePrompt: 'PRE',
+            postPrompt: 'POST',
+            systemPrompt: 'SYS',
+            worldBookEntries: [
+              ModWorldBookEntry(keyword: '青云宗, 山门', content: '宗门设定内容'),
+              ModWorldBookEntry(content: '恒定生效内容'),
+            ],
+          ),
+        ],
+        configs: const [
+          BookModConfig(
+            bookUuid: 'b1',
+            modUuid: 'm1',
+            isEnabled: true,
+            sortOrder: 0,
+          ),
+        ],
       );
 
       // 命中关键词：恒定条目 + 命中条目都注入
@@ -289,26 +296,28 @@ void main() {
 
     test('未启用或引用不存在的 Mod 被忽略', () async {
       final provider = await seededProvider(
-          mods: const [
-            Mod(uuid: 'm1', name: 'A', worldBookEntries: [
-              ModWorldBookEntry(content: 'A 恒定'),
-            ]),
-          ],
-          configs: const [
-            BookModConfig(
-              bookUuid: 'b1',
-              modUuid: 'm1',
-              isEnabled: false,
-              sortOrder: 0,
-            ),
-            // 引用不存在的 Mod uuid：即使启用也忽略。
-            BookModConfig(
-              bookUuid: 'b1',
-              modUuid: 'm999',
-              isEnabled: true,
-              sortOrder: 1,
-            ),
-          ],
+        mods: const [
+          Mod(
+            uuid: 'm1',
+            name: 'A',
+            worldBookEntries: [ModWorldBookEntry(content: 'A 恒定')],
+          ),
+        ],
+        configs: const [
+          BookModConfig(
+            bookUuid: 'b1',
+            modUuid: 'm1',
+            isEnabled: false,
+            sortOrder: 0,
+          ),
+          // 引用不存在的 Mod uuid：即使启用也忽略。
+          BookModConfig(
+            bookUuid: 'b1',
+            modUuid: 'm999',
+            isEnabled: true,
+            sortOrder: 1,
+          ),
+        ],
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -320,18 +329,22 @@ void main() {
 
     test('同名不同 uuid 的 Mod 是两台独立实体：只按 uuid 命中', () async {
       final provider = await seededProvider(
-          mods: const [
-            Mod(uuid: 'm1', name: '同名', worldBookEntries: [
-              ModWorldBookEntry(content: 'm1 的内容'),
-            ]),
-            Mod(uuid: 'm2', name: '同名', worldBookEntries: [
-              ModWorldBookEntry(content: 'm2 的内容'),
-            ]),
-          ],
-          // 书 b1 只引用 m2；m1 即便同名同内容也不会被拉进来。
-          configs: const [
-            BookModConfig(bookUuid: 'b1', modUuid: 'm2', isEnabled: true),
-          ],
+        mods: const [
+          Mod(
+            uuid: 'm1',
+            name: '同名',
+            worldBookEntries: [ModWorldBookEntry(content: 'm1 的内容')],
+          ),
+          Mod(
+            uuid: 'm2',
+            name: '同名',
+            worldBookEntries: [ModWorldBookEntry(content: 'm2 的内容')],
+          ),
+        ],
+        // 书 b1 只引用 m2；m1 即便同名同内容也不会被拉进来。
+        configs: const [
+          BookModConfig(bookUuid: 'b1', modUuid: 'm2', isEnabled: true),
+        ],
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -354,37 +367,37 @@ void main() {
   group('ModProvider · 多 Mod 文案拼接（块间空行 + 归一化）', () {
     test('不同 Mod 的同类文案之间恰好空一行，且不信任 Mod 文本自带的空白', () async {
       final provider = await seededProvider(
-          mods: const [
-            // 第一个 Mod 故意在行尾留空格、块尾留多余空行（拼合端必须自行归一化）。
-            Mod(
-              uuid: 'm1',
-              name: 'A',
-              prePrompt: '前置 A\n',
-              postPrompt: '后置 A   ',
-              systemPrompt: 'A 段首行\nA 段末行  \n\n\n',
-            ),
-            Mod(
-              uuid: 'm2',
-              name: 'B',
-              prePrompt: '前置 B',
-              postPrompt: '后置 B',
-              systemPrompt: 'B 段首行\nB 段规则',
-            ),
-          ],
-          configs: const [
-            BookModConfig(
-              bookUuid: 'b1',
-              modUuid: 'm1',
-              isEnabled: true,
-              sortOrder: 0,
-            ),
-            BookModConfig(
-              bookUuid: 'b1',
-              modUuid: 'm2',
-              isEnabled: true,
-              sortOrder: 1,
-            ),
-          ],
+        mods: const [
+          // 第一个 Mod 故意在行尾留空格、块尾留多余空行（拼合端必须自行归一化）。
+          Mod(
+            uuid: 'm1',
+            name: 'A',
+            prePrompt: '前置 A\n',
+            postPrompt: '后置 A   ',
+            systemPrompt: 'A 段首行\nA 段末行  \n\n\n',
+          ),
+          Mod(
+            uuid: 'm2',
+            name: 'B',
+            prePrompt: '前置 B',
+            postPrompt: '后置 B',
+            systemPrompt: 'B 段首行\nB 段规则',
+          ),
+        ],
+        configs: const [
+          BookModConfig(
+            bookUuid: 'b1',
+            modUuid: 'm1',
+            isEnabled: true,
+            sortOrder: 0,
+          ),
+          BookModConfig(
+            bookUuid: 'b1',
+            modUuid: 'm2',
+            isEnabled: true,
+            sortOrder: 1,
+          ),
+        ],
       );
       final bundle = await provider.resolveModsBundle(
         bookUuid: 'b1',
@@ -419,12 +432,12 @@ void main() {
     const lastRound = Round(id: 1, bookUuid: 'b1', roundIndex: 1);
 
     PromptRequest requestOf({ModsBundle? mods}) => PromptRequest(
-          book: book,
-          mode: PromptMode.chat,
-          lastRound: lastRound,
-          userInput: '输入',
-          mods: mods,
-        );
+      book: book,
+      mode: PromptMode.chat,
+      lastRound: lastRound,
+      userInput: '输入',
+      mods: mods,
+    );
 
     test('启用 Mod 时注入前置词/后置词/系统提示词/世界书', () {
       const mods = ModsBundle(
@@ -441,10 +454,7 @@ void main() {
       expect(system, contains('MOD_SYS'));
       expect(system, contains('MOD_WB'));
       expect(system.indexOf('MOD_SYS'), lessThan(system.indexOf('# 总协议：')));
-      expect(
-        system.indexOf('MOD_WB'),
-        greaterThan(system.indexOf('# 世界书：')),
-      );
+      expect(system.indexOf('MOD_WB'), greaterThan(system.indexOf('# 世界书：')));
 
       // User：Mod 前置 / 后置词直接内联（v2 不给前后置词加标签）。
       expect(user, contains('MOD_PRE'));
@@ -467,5 +477,36 @@ void main() {
       }
     });
   });
-}
 
+  group('ModProvider 保存启用清单的同步触发', () {
+    test('triggerSync: false 不触发，默认触发一次', () async {
+      final stack = await TestStack.create();
+      addTearDown(stack.dispose);
+      await stack.seedBook(uuid: 'b1', title: '书');
+      final cloud = FakeCloudSyncProvider();
+      final provider = ModProvider(
+        repository: stack.repos.mod,
+        cloudSyncProvider: cloud,
+      );
+      final presetKey = PresetMods.all.first.presetKey!;
+      final config = BookModConfig(
+        bookUuid: 'b1',
+        presetKey: presetKey,
+        isEnabled: true,
+        sortOrder: 0,
+      );
+
+      expect(
+        await provider.saveBookModConfigs('b1', [config], triggerSync: false),
+        isTrue,
+      );
+      expect(cloud.triggers, 0, reason: '由书籍设置页统一触发同步');
+      expect(await stack.repos.mod.useModUuids('b1'), [
+        Mod.presetRef(presetKey),
+      ]);
+
+      expect(await provider.saveBookModConfigs('b1', [config]), isTrue);
+      expect(cloud.triggers, 1, reason: '默认行为仍然立即触发一次');
+    });
+  });
+}

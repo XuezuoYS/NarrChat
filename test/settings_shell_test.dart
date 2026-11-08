@@ -245,4 +245,27 @@ void main() {
     expect(find.text('面板 1'), findsOneWidget);
     expect(chip(tester, 'UI 设置').selected, isTrue);
   });
+
+  testWidgets('传入 onClose 时关闭按钮走回调，不直接退出', (tester) async {
+    var closed = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: NarrChatTheme.light,
+        home: SettingsShell(
+          title: '设置',
+          icon: Icons.settings,
+          navItems: navItems,
+          onClose: () => closed++,
+          contentBuilder: _buildPage,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+
+    expect(closed, 1, reason: '给未保存确认留出入口');
+    expect(find.text('面板 0'), findsOneWidget, reason: '由回调决定是否退出');
+  });
 }

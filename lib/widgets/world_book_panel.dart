@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
 import '../models/world_book_entry.dart';
-import '../providers/world_book_provider.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
 import 'markdown_editing_controller.dart';
@@ -14,22 +12,17 @@ import 'settings/settings_kit.dart';
 /// 世界书条目由「关键词 + 注入内容」组成：发送剧情指令时，
 /// App 会扫描本轮输入与最近历史轮次，命中关键词的条目内容将注入 System Prompt。
 /// 支持新增、编辑、启用/停用与删除。
+///
+/// 本面板是**纯草稿组件**：所有增删改只改本地列表并通过 [onChanged] 回传，
+/// 不直接读写数据库；真正落库由书籍设置页在点「保存」时统一整体提交。
 class WorldBookPanel extends StatefulWidget {
-  /// 所属书籍 uuid；为 null 表示新建书籍草稿模式（条目保存在内存，
-  /// 保存书籍后由外层统一落库）。
-  final String? bookUuid;
+  /// 当前草稿条目（父级持有；外部刷新时传新的列表进来）。
+  final List<WorldBookEntry> entries;
 
-  /// 草稿模式（[bookUuid] 为 null）下当前的世界书条目；改动后通过
-  /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
-  final List<WorldBookEntry>? pendingEntries;
-  final ValueChanged<List<WorldBookEntry>>? onPendingChanged;
+  /// 草稿变化回调（每次变化回传完整的条目快照）。
+  final ValueChanged<List<WorldBookEntry>>? onChanged;
 
-  const WorldBookPanel({
-    super.key,
-    this.bookUuid,
-    this.pendingEntries,
-    this.onPendingChanged,
-  });
+  const WorldBookPanel({super.key, this.entries = const [], this.onChanged});
 
   @override
   State<WorldBookPanel> createState() => _WorldBookPanelState();
@@ -37,32 +30,25 @@ class WorldBookPanel extends StatefulWidget {
 
 class _WorldBookPanelState extends State<WorldBookPanel> {
   final TextEditingController _keywordController = TextEditingController();
-  final MarkdownEditingController _contentController = MarkdownEditingController();
+  final MarkdownEditingController _contentController =
+      MarkdownEditingController();
 
-  /// 草稿模式下的本地条目（仅 [WorldBookPanel.bookUuid] 为 null 时使用）。
+  /// 面板本地草稿（父级列表是它的初始值 / 外部刷新来源）。
   late List<WorldBookEntry> _pending;
-
-  bool get _isDraft => widget.bookUuid == null;
 
   @override
   void initState() {
     super.initState();
-    _pending = List.of(widget.pendingEntries ?? const []);
-    final bookUuid = widget.bookUuid;
-    if (bookUuid != null) {
-      // 进入时加载该书籍的世界书条目。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        context.read<WorldBookProvider>().loadEntries(bookUuid);
-      });
-    }
+    _pending = List.of(widget.entries);
   }
 
   @override
   void didUpdateWidget(covariant WorldBookPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 草稿模式下外层状态可能在切换标签后重建本面板，同步最新条目。
-    if (_isDraft && oldWidget.pendingEntries != widget.pendingEntries) {
-      _pending = List.of(widget.pendingEntries ?? const []);
+    // 父级外部刷新（云同步落地等）提供的新列表与内部草稿内容不同 → 采纳；
+    // 内容一致时保留内部状态（父级回传自己的回声不重置用户操作）。
+    if (!WorldBookEntry.sameList(widget.entries, _pending)) {
+      setState(() => _pending = List.of(widget.entries));
     }
   }
 
@@ -73,43 +59,27 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
     super.dispose();
   }
 
-  Future<void> _addEntry() async {
+  void _addEntry() {
     final keyword = _keywordController.text.trim();
     final content = _contentController.text.trim();
     if (keyword.isEmpty || content.isEmpty) {
       _showMessage('关键词与内容不能为空', kind: NoticeKind.warning);
       return;
     }
-    if (_isDraft) {
-      setState(() {
-        _pending.add(
-          WorldBookEntry(
-            bookUuid: '',
-            keyword: keyword,
-            content: content,
-            isActive: true,
-            createdAt: DateTime.now(),
-          ),
-        );
-      });
-      _keywordController.clear();
-      _contentController.clear();
-      _notifyPendingChanged();
-      return;
-    }
-    final ok = await context.read<WorldBookProvider>().addEntry(
+    setState(() {
+      _pending.add(
+        WorldBookEntry(
+          bookUuid: '',
           keyword: keyword,
           content: content,
-        );
-    if (ok && mounted) {
-      _keywordController.clear();
-      _contentController.clear();
-    } else if (mounted) {
-      _showMessage(
-        '添加失败：${context.read<WorldBookProvider>().error}',
-        kind: NoticeKind.error,
+          isActive: true,
+          createdAt: DateTime.now(),
+        ),
       );
-    }
+    });
+    _keywordController.clear();
+    _contentController.clear();
+    _notifyChanged();
   }
 
   Future<void> _editEntry(WorldBookEntry entry) async {
@@ -118,65 +88,39 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
       builder: (_) => _WorldBookEntryDialog(entry: entry),
     );
     if (result == null || !mounted) return;
-    if (_isDraft) {
-      final index = _pending.indexWhere((e) => identical(e, entry));
-      if (index == -1) return;
-      setState(() {
-        _pending[index] = _pending[index].copyWith(
-          keyword: result.keyword,
-          content: result.content,
-          isActive: result.isActive,
-        );
-      });
-      _notifyPendingChanged();
-      return;
-    }
-    final ok = await context.read<WorldBookProvider>().updateEntry(
-          entry.copyWith(
-            keyword: result.keyword,
-            content: result.content,
-            isActive: result.isActive,
-          ),
-        );
-    if (!ok && mounted) {
-      _showMessage(
-        '保存失败：${context.read<WorldBookProvider>().error}',
-        kind: NoticeKind.error,
+    final index = _pending.indexWhere((e) => identical(e, entry));
+    if (index == -1) return;
+    setState(() {
+      _pending[index] = _pending[index].copyWith(
+        keyword: result.keyword,
+        content: result.content,
+        isActive: result.isActive,
       );
-    }
+    });
+    _notifyChanged();
   }
 
-  /// 草稿模式下将最新条目回传外层。
-  void _notifyPendingChanged() {
-    widget.onPendingChanged?.call(List.of(_pending));
+  /// 草稿变化后回传外层快照。
+  void _notifyChanged() {
+    widget.onChanged?.call(List.of(_pending));
   }
 
   /// 切换条目启用状态。
-  Future<void> _toggleEntry(WorldBookEntry entry, bool active) async {
-    if (_isDraft) {
-      final index = _pending.indexWhere((e) => identical(e, entry));
-      if (index == -1) return;
-      setState(() {
-        _pending[index] = _pending[index].copyWith(isActive: active);
-      });
-      _notifyPendingChanged();
-      return;
-    }
-    await context.read<WorldBookProvider>().updateEntry(
-          entry.copyWith(isActive: active),
-        );
+  void _toggleEntry(WorldBookEntry entry, bool active) {
+    final index = _pending.indexWhere((e) => identical(e, entry));
+    if (index == -1) return;
+    setState(() {
+      _pending[index] = _pending[index].copyWith(isActive: active);
+    });
+    _notifyChanged();
   }
 
-  /// 删除条目。
-  Future<void> _deleteEntry(WorldBookEntry entry) async {
-    if (_isDraft) {
-      setState(() {
-        _pending.removeWhere((e) => identical(e, entry));
-      });
-      _notifyPendingChanged();
-      return;
-    }
-    await context.read<WorldBookProvider>().removeEntry(entry.uuid);
+  /// 删除条目（草稿态；保存后才写库）。
+  void _deleteEntry(WorldBookEntry entry) {
+    setState(() {
+      _pending.removeWhere((e) => identical(e, entry));
+    });
+    _notifyChanged();
   }
 
   void _showMessage(String message, {NoticeKind kind = NoticeKind.info}) {
@@ -186,17 +130,14 @@ class _WorldBookPanelState extends State<WorldBookPanel> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // 草稿模式使用面板本地内存条目；编辑模式使用全局 Provider 的条目。
-    final entries = _isDraft
-        ? List.unmodifiable(_pending)
-        : context.watch<WorldBookProvider>().entries;
+    final entries = List<WorldBookEntry>.unmodifiable(_pending);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SettingsPageHeader(
           title: '世界书',
-          description: '关键词命中后自动注入 System Prompt。',
+          description: '关键词命中后自动注入 System Prompt；改动在点击顶栏「保存」后生效。',
         ),
         // 新增条目表单
         SettingsTextField(
@@ -290,10 +231,7 @@ class _EntryTile extends StatelessWidget {
       opacity: inactive ? 0.55 : 1,
       // 整行点击 = 切换启用；开关本体、编辑/删除按钮各自处理手势，不误触。
       child: SettingsRow(
-        leading: Switch(
-          value: entry.isActive,
-          onChanged: onToggle,
-        ),
+        leading: Switch(value: entry.isActive, onChanged: onToggle),
         title: entry.keyword,
         subtitle: entry.content,
         onTap: () => onToggle(!entry.isActive),
@@ -412,10 +350,7 @@ class _WorldBookEntryDialogState extends State<_WorldBookEntryDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('取消'),
         ),
-        FilledButton(
-          onPressed: _save,
-          child: const Text('保存'),
-        ),
+        FilledButton(onPressed: _save, child: const Text('保存')),
       ],
     );
   }

@@ -84,7 +84,9 @@ class BookProvider extends ChangeNotifier {
   }
 
   /// 新建书籍，成功后自动选中。
-  Future<bool> createBook(Book book) async {
+  ///
+  /// [triggerSync] 为 false 时由调用方（书籍设置页）在全部设置写完后统一触发一次同步。
+  Future<bool> createBook(Book book, {bool triggerSync = true}) async {
     try {
       final uuid = await _repo.createBook(book);
       await loadBooks();
@@ -93,7 +95,7 @@ class BookProvider extends ChangeNotifier {
         orElse: () => _books.isNotEmpty ? _books.first : book,
       );
       notifyListeners();
-      _cloudSyncProvider?.triggerSync();
+      if (triggerSync) _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();
@@ -103,14 +105,16 @@ class BookProvider extends ChangeNotifier {
   }
 
   /// 更新书籍。
-  Future<bool> updateBook(Book book) async {
+  ///
+  /// [triggerSync] 为 false 时由调用方（书籍设置页）在全部设置写完后统一触发一次同步。
+  Future<bool> updateBook(Book book, {bool triggerSync = true}) async {
     try {
       await _repo.saveBook(book);
       await loadBooks();
       // 保持选中同一本书（以最新列表中的实例为准）。
       _currentBook = _refreshCurrent(book) ?? book;
       notifyListeners();
-      _cloudSyncProvider?.triggerSync();
+      if (triggerSync) _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

@@ -29,6 +29,7 @@ import 'helpers/notice_harness.dart';
 void main() {
   late TestStack stack;
   late BookProvider bookProvider;
+  late FakeCloudSyncProvider cloud;
 
   setUp(() async {
     stack = await TestStack.create();
@@ -64,12 +65,15 @@ void main() {
   /// 以编辑模式 pump 书籍设置页（可注入一个"陈旧"的 Book 快照，模拟调用方持有旧实例）。
   ///
   /// 设置页被压在宿主路由之上：保存成功会 `pop` 回宿主，用例可断言落库结果。
+  /// 云同步一律注入 [FakeCloudSyncProvider]（只记录 `triggerSync`，不打网络）。
   Future<void> pumpSettings(
     WidgetTester tester, {
     Book? book,
     BookCoverImportService? coverService,
     ImageDeletionService? imageDeletion,
+    FakeCloudSyncProvider? cloudSync,
   }) async {
+    cloud = cloudSync ?? FakeCloudSyncProvider();
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -87,7 +91,7 @@ void main() {
           ChangeNotifierProvider(
             create: (_) => ModProvider(repository: stack.repos.mod),
           ),
-          ChangeNotifierProvider(create: (_) => CloudSyncProvider()),
+          ChangeNotifierProvider<CloudSyncProvider>.value(value: cloud),
           ChangeNotifierProvider(
             create: (_) => RoundProvider(
               rounds: stack.repos.rounds,
@@ -116,7 +120,10 @@ void main() {
 
   testWidgets('打开时以 Provider 最新实例为准：陈旧快照不决定展示值', (tester) async {
     // 库中已有最新设置（模拟云同步落地后重载过）。
-    await patchStoredBook(tester, (b) => b.copyWith(title: '云端新标题', category: '云端新分类'));
+    await patchStoredBook(
+      tester,
+      (b) => b.copyWith(title: '云端新标题', category: '云端新分类'),
+    );
 
     // 调用方传入陈旧快照（同步落地前打开的对话页遗留引用）。
     await pumpSettings(
@@ -124,8 +131,11 @@ void main() {
       book: const Book(uuid: 'b1', title: '陈旧标题', category: '旧分类'),
     );
 
-    expect(find.widgetWithText(TextField, '云端新标题'), findsOneWidget,
-        reason: '打开即解析 Provider 最新实例');
+    expect(
+      find.widgetWithText(TextField, '云端新标题'),
+      findsOneWidget,
+      reason: '打开即解析 Provider 最新实例',
+    );
     expect(find.widgetWithText(TextField, '云端新分类'), findsOneWidget);
     expect(find.widgetWithText(TextField, '陈旧标题'), findsNothing);
   });
@@ -134,24 +144,27 @@ void main() {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     // 用户正在编辑「书籍总类别」。
-    await tester.enterText(
-      find.widgetWithText(TextField, '当前分类'),
-      '用户草稿',
-    );
+    await tester.enterText(find.widgetWithText(TextField, '当前分类'), '用户草稿');
     await tester.pump();
     expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget);
 
     // 云同步落地：标题 / 分类均被远端修改。
-    await patchStoredBook(tester, (b) => b.copyWith(
-      title: '远端新标题',
-      category: '远端新分类',
-    ));
+    await patchStoredBook(
+      tester,
+      (b) => b.copyWith(title: '远端新标题', category: '远端新分类'),
+    );
     await tester.pump();
 
-    expect(find.widgetWithText(TextField, '远端新标题'), findsOneWidget,
-        reason: '未编辑字段跟随远端最新值');
-    expect(find.widgetWithText(TextField, '用户草稿'), findsOneWidget,
-        reason: '用户编辑中的字段保留草稿');
+    expect(
+      find.widgetWithText(TextField, '远端新标题'),
+      findsOneWidget,
+      reason: '未编辑字段跟随远端最新值',
+    );
+    expect(
+      find.widgetWithText(TextField, '用户草稿'),
+      findsOneWidget,
+      reason: '用户编辑中的字段保留草稿',
+    );
     expect(find.widgetWithText(TextField, '远端新分类'), findsNothing);
 
     // 再次落地：已编辑字段仍不被覆盖。
@@ -171,16 +184,19 @@ void main() {
     await tester.tap(find.text('保存'));
     await settle(tester);
 
-    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.title, '改后标题');
     expect(
-      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds,
+      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.title,
+      '改后标题',
+    );
+    expect(
+      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!
+          .memorySummaryRounds,
       10,
       reason: '用户未改档位，保存必须沿用既有值（不得重置为 0）',
     );
   });
 
-  testWidgets('概览页：记忆总结轮次合并控件在历史轮次数下方，含标题 / 小字注释 / 0-5-10 三档',
-      (tester) async {
+  testWidgets('概览页：记忆总结轮次合并控件在历史轮次数下方，含标题 / 小字注释 / 0-5-10 三档', (tester) async {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     expect(find.text(MemorySummaryRoundSelector.label), findsOneWidget);
@@ -202,10 +218,12 @@ void main() {
   testWidgets('选中 5 档并保存：库内落为 5', (tester) async {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
-    await tester.tap(find.descendant(
-      of: find.byType(SettingsSegmented<int>),
-      matching: find.text('5'),
-    ));
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SettingsSegmented<int>),
+        matching: find.text('5'),
+      ),
+    );
     await tester.pump();
     expect(
       tester
@@ -217,7 +235,11 @@ void main() {
 
     await tester.tap(find.text('保存'));
     await settle(tester);
-    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds, 5);
+    expect(
+      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!
+          .memorySummaryRounds,
+      5,
+    );
   });
 
   testWidgets('库内为非三档位（7）：控件按 0 展示，保存后按 0 落库', (tester) async {
@@ -243,8 +265,12 @@ void main() {
 
     await tester.tap(find.text('保存'));
     await settle(tester);
-    expect((await tester.runAsync(() => stack.repos.books.loadBook('b1')))!.memorySummaryRounds, 0,
-        reason: '落库只会是受支持档位');
+    expect(
+      (await tester.runAsync(() => stack.repos.books.loadBook('b1')))!
+          .memorySummaryRounds,
+      0,
+      reason: '落库只会是受支持档位',
+    );
   });
 
   testWidgets('窄屏（手机宽度）下档位控件不溢出且仍可选中', (tester) async {
@@ -260,10 +286,12 @@ void main() {
     // 概览页顶部还有封面区块，窄屏下档位控件会被推到视口外：先滚到可见再点。
     await tester.ensureVisible(find.byType(SettingsSegmented<int>));
     await tester.pumpAndSettle();
-    await tester.tap(find.descendant(
-      of: find.byType(SettingsSegmented<int>),
-      matching: find.text('10'),
-    ));
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SettingsSegmented<int>),
+        matching: find.text('10'),
+      ),
+    );
     await tester.pump();
     expect(
       tester
@@ -306,14 +334,7 @@ void main() {
     await pumpSettings(tester, book: bookProvider.currentBook);
 
     // 「其它设置」是维护页，没有文本输入，刻意不要求该提示，不在此列。
-    const pages = [
-      '书籍概览',
-      '角色类别与描述格式',
-      '基础设定',
-      '世界书',
-      '文笔参考段落',
-      'Mod 管理',
-    ];
+    const pages = ['书籍概览', '角色类别与描述格式', '基础设定', '世界书', '文笔参考段落', 'Mod 管理'];
     for (final label in pages) {
       await tester.tap(find.text(label).first);
       await settle(tester);
@@ -374,7 +395,10 @@ void main() {
       findsOneWidget,
       reason: '预览应显示刚导入的文件图片',
     );
-    expect(find.byKey(const ValueKey('book_settings_cover_remove')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('book_settings_cover_remove')),
+      findsOneWidget,
+    );
     expect(find.text('清除封面'), findsOneWidget, reason: '清除入口只保留这一个');
 
     await tester.tap(find.text('保存'));
@@ -411,11 +435,7 @@ void main() {
 
     final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
     expect(saved!.bookCoverImg, isNull, reason: '库里变 NULL');
-    expect(
-      deletion.deleted,
-      [rel],
-      reason: '没人引用的旧封面图片要删除（本机文件 + 删除墓碑）',
-    );
+    expect(deletion.deleted, [rel], reason: '没人引用的旧封面图片要删除（本机文件 + 删除墓碑）');
   });
 
   testWidgets('清除封面：别的书还在用这张图 → 不删', (tester) async {
@@ -539,8 +559,11 @@ void main() {
     await tester.pump();
     expect(coverPreview(tester).relPath, isNull);
 
-    // 直接关掉设置页（不保存）。
+    // 直接关掉设置页（不保存）：有未保存改动，先确认。
     await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    expect(find.text('有设置未保存'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('book_settings_exit_discard')));
     await settle(tester);
 
     expect(deletion.calls, 0, reason: '没保存就不算删除封面');
@@ -583,8 +606,11 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.widgetWithText(TextField, '远端标题'), findsOneWidget,
-        reason: '未编辑字段跟随远端');
+    expect(
+      find.widgetWithText(TextField, '远端标题'),
+      findsOneWidget,
+      reason: '未编辑字段跟随远端',
+    );
     expect(coverPreview(tester).relPath, rel, reason: '用户刚选的封面保留草稿');
   });
 
@@ -622,5 +648,217 @@ void main() {
     expect(service.calls, 1);
     expect(coverPreview(tester).relPath, isNull);
     expect(tester.takeException(), isNull);
+  });
+
+  // ---------- 延迟保存 / 未保存提示 / 退出确认 ----------
+
+  testWidgets('未改动时顶栏不显示未保存提示', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    expect(
+      find.byKey(const ValueKey('book_settings_unsaved_hint')),
+      findsNothing,
+    );
+    expect(find.text('存在变更未保存'), findsNothing);
+  });
+
+  testWidgets('Mod 开关只改草稿：不落库、不触发同步；保存后统一落库并只同步一次', (tester) async {
+    final modUuid = (await tester.runAsync(
+      () => stack.seedMod(name: '去AI味', postPrompt: '后置词'),
+    ))!;
+    await tester.runAsync(
+      () => stack.repos.mod.setUseModUuids('b1', [modUuid]),
+    );
+    await pumpSettings(tester, book: bookProvider.currentBook);
+    final baseTriggers = cloud.triggers;
+
+    await tester.tap(find.text('Mod 管理').first);
+    await settle(tester);
+    expect(find.text('去AI味'), findsOneWidget, reason: '编辑态先读库里的启用清单');
+
+    await tester.tap(find.byType(Switch));
+    await settle(tester);
+
+    expect(find.text('存在变更未保存'), findsOneWidget);
+    expect(await tester.runAsync(() => stack.repos.mod.useModUuids('b1')), [
+      modUuid,
+    ], reason: '开关只改草稿，保存前不写库');
+    expect(cloud.triggers, baseTriggers, reason: '开关不触发云同步');
+
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    expect(
+      await tester.runAsync(() => stack.repos.mod.useModUuids('b1')),
+      isEmpty,
+      reason: '保存时整体提交启用清单',
+    );
+    expect(cloud.triggers, baseTriggers + 1, reason: '一次保存只触发一次同步');
+  });
+
+  testWidgets('世界书只改草稿：不落库、不触发同步；保存后落库并刷新 updated_at', (tester) async {
+    await tester.runAsync(() async {
+      await stack.seedWorldBookEntry('b1', keyword: '旧关键词', content: '旧内容');
+      // 把 updated_at 拨到过去，保存后必须刷新。
+      final db = await stack.stores.books.open('b1');
+      await db.meta.setUpdatedAt(DateTime.utc(2020, 1, 1));
+    });
+    await pumpSettings(tester, book: bookProvider.currentBook);
+    final baseTriggers = cloud.triggers;
+
+    await tester.tap(find.text('世界书').first);
+    await settle(tester);
+    expect(find.text('旧关键词'), findsOneWidget);
+
+    await tester.tap(find.text('旧关键词'));
+    await settle(tester);
+    expect(find.text('存在变更未保存'), findsOneWidget);
+
+    final before = (await tester.runAsync(
+      () => stack.repos.worldBook.list('b1'),
+    ))!;
+    expect(before.single.isActive, isTrue, reason: '保存前库内条目原样');
+    expect(cloud.triggers, baseTriggers, reason: '世界书改动不立即触发同步');
+
+    await tester.tap(find.text('保存'));
+    await settle(tester);
+
+    final after = (await tester.runAsync(
+      () => stack.repos.worldBook.list('b1'),
+    ))!;
+    expect(after.single.isActive, isFalse, reason: '保存时整体提交世界书');
+    final updatedAt = (await tester.runAsync(() async {
+      final db = await stack.stores.books.open('b1');
+      return (await db.meta.read()).updatedAt;
+    }))!;
+    expect(
+      updatedAt.isAfter(DateTime.utc(2020, 1, 1)),
+      isTrue,
+      reason: '保存设置要刷新 book_meta.updated_at',
+    );
+    expect(cloud.triggers, baseTriggers + 1, reason: '一次保存只触发一次同步');
+  });
+
+  testWidgets('关闭时有未保存改动：弹窗三选项；继续编辑留在页内；系统返回只关弹窗', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    await tester.enterText(find.widgetWithText(TextField, '当前标题'), '草稿标题');
+    await tester.pump();
+    expect(find.text('存在变更未保存'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('book_settings_exit_dialog')),
+      findsOneWidget,
+    );
+    expect(find.text('保存并退出设置'), findsOneWidget);
+    expect(find.text('继续编辑'), findsOneWidget);
+    expect(find.text('仍然退出'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('book_settings_exit_continue')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('book_settings_exit_dialog')),
+      findsNothing,
+    );
+    expect(find.byTooltip('关闭'), findsOneWidget, reason: '继续编辑留在设置页');
+
+    // 再打开弹窗，按系统返回：只关弹窗，不返回上一页。
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('book_settings_exit_dialog')),
+      findsOneWidget,
+    );
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('book_settings_exit_dialog')),
+      findsNothing,
+    );
+    expect(find.byTooltip('关闭'), findsOneWidget, reason: '系统返回只关弹窗');
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.title, '当前标题', reason: '未保存的草稿不落库');
+  });
+
+  testWidgets('弹窗选「仍然退出」：丢弃草稿、不落库、不触发同步', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+    final baseTriggers = cloud.triggers;
+
+    await tester.enterText(find.widgetWithText(TextField, '当前标题'), '丢弃的标题');
+    await tester.pump();
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('book_settings_exit_discard')));
+    await settle(tester);
+
+    expect(find.byTooltip('关闭'), findsNothing, reason: '已经退出设置页');
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.title, '当前标题');
+    expect(cloud.triggers, baseTriggers, reason: '丢弃草稿不触发同步');
+  });
+
+  testWidgets('弹窗选「保存并退出设置」：保存后退出且只同步一次', (tester) async {
+    await pumpSettings(tester, book: bookProvider.currentBook);
+    final baseTriggers = cloud.triggers;
+
+    await tester.enterText(find.widgetWithText(TextField, '当前标题'), '保存的标题');
+    await tester.pump();
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('book_settings_exit_save')));
+    await settle(tester);
+
+    expect(find.byTooltip('关闭'), findsNothing, reason: '保存成功后退出');
+    final saved = await tester.runAsync(() => stack.repos.books.loadBook('b1'));
+    expect(saved!.title, '保存的标题');
+    expect(cloud.triggers, baseTriggers + 1);
+  });
+
+  testWidgets('新建书籍：输入标题后出现未保存提示；保存并退出设置创建成功', (tester) async {
+    await pumpSettings(tester);
+
+    expect(find.text('新建书籍'), findsOneWidget);
+    expect(find.text('存在变更未保存'), findsNothing);
+
+    await tester.enterText(find.widgetWithText(TextField, '书籍标题 *'), '新书');
+    await tester.pump();
+    expect(find.text('存在变更未保存'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('book_settings_exit_save')));
+    await settle(tester);
+
+    expect(find.byTooltip('关闭'), findsNothing, reason: '保存成功后退出');
+    final books = (await tester.runAsync(() => stack.repos.books.listBooks()))!;
+    expect(books.map((b) => b.title), contains('新书'));
+  });
+
+  testWidgets('云同步落地：未编辑的世界书 / Mod 草稿跟随刷新', (tester) async {
+    final modUuid = (await tester.runAsync(
+      () => stack.seedMod(name: '远端启用的 Mod'),
+    ))!;
+    await pumpSettings(tester, book: bookProvider.currentBook);
+
+    // 模拟打开期间远端改了世界书与启用 Mod，并落地到本机。
+    await tester.runAsync(() async {
+      await stack.seedWorldBookEntry('b1', keyword: '远端条目', content: '远端内容');
+      await stack.repos.mod.setUseModUuids('b1', [modUuid]);
+      await bookProvider.loadBooks();
+    });
+    await settle(tester);
+
+    await tester.tap(find.text('世界书').first);
+    await settle(tester);
+    expect(find.text('远端条目'), findsOneWidget, reason: '未编辑的世界书跟随远端');
+
+    await tester.tap(find.text('Mod 管理').first);
+    await settle(tester);
+    expect(find.text('远端启用的 Mod'), findsOneWidget, reason: '未编辑的 Mod 草稿跟随远端');
   });
 }

@@ -5,9 +5,11 @@ import '../repositories/world_book_repository.dart';
 import '../services/app_repositories.dart';
 import 'cloud_sync_provider.dart';
 
-/// 世界书状态管理：加载/新增/更新/删除当前书籍的世界书条目。
+/// 世界书状态管理：加载当前书籍的世界书条目。
 ///
-/// 世界书属「书籍设置部件」，修改后同样触发全自动同步。
+/// 世界书属「书籍设置部件」：设置页里的增删改都先留在页面草稿，
+/// 点「保存」时由 [saveEntries] 一次整体提交（一个事务、一次同步触发），
+/// 组件本身不再逐条写库。
 class WorldBookProvider extends ChangeNotifier {
   WorldBookProvider({
     WorldBookRepository? repository,
@@ -18,7 +20,7 @@ class WorldBookProvider extends ChangeNotifier {
 
   final WorldBookRepository _repo;
 
-  /// 云同步 Provider：世界书修改后触发全自动同步（null = 未接入，如测试）。
+  /// 云同步 Provider：世界书保存后触发全自动同步（null = 未接入，如测试）。
   final CloudSyncProvider? _cloudSyncProvider;
 
   List<WorldBookEntry> _entries = [];
@@ -35,6 +37,8 @@ class WorldBookProvider extends ChangeNotifier {
 
   Future<void> loadEntries(String bookUuid) async {
     _bookUuid = bookUuid;
+    // 只有本次读取失败才算失败：调用方（书籍设置页）靠它区分“空书”与“读不出来”。
+    _error = null;
     try {
       _entries = await _repo.list(bookUuid);
     } catch (e) {
@@ -49,56 +53,22 @@ class WorldBookProvider extends ChangeNotifier {
     await loadEntries(_bookUuid);
   }
 
-  Future<bool> addEntry({
-    required String keyword,
-    required String content,
-    bool isActive = true,
+  /// 用 [entries] 整体替换某本书的世界书（保存书籍设置时调用）。
+  ///
+  /// - 新条目（uuid 为空）由仓储补 uuid；
+  /// - 只做一次事务写入，`book_meta.updated_at` 只刷新一次；
+  /// - [triggerSync] 为 false 时由调用方在全部设置写完后统一触发一次同步。
+  Future<bool> saveEntries(
+    String bookUuid,
+    List<WorldBookEntry> entries, {
+    bool triggerSync = true,
   }) async {
-    final bookUuid = _bookUuid;
     if (bookUuid.isEmpty) return false;
+    _error = null;
     try {
-      await _repo.upsert(
-        bookUuid,
-        WorldBookEntry(
-          bookUuid: bookUuid,
-          keyword: keyword.trim(),
-          content: content,
-          isActive: isActive,
-          createdAt: DateTime.now(),
-        ),
-      );
+      await _repo.replaceAll(bookUuid, entries);
       await loadEntries(bookUuid);
-      _cloudSyncProvider?.triggerSync();
-      return true;
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return false;
-    }
-  }
-
-  Future<bool> updateEntry(WorldBookEntry entry) async {
-    final bookUuid = entry.bookUuid.isEmpty ? _bookUuid : entry.bookUuid;
-    if (bookUuid.isEmpty) return false;
-    try {
-      await _repo.upsert(bookUuid, entry);
-      await loadEntries(_bookUuid);
-      _cloudSyncProvider?.triggerSync();
-      return true;
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return false;
-    }
-  }
-
-  /// 删除一条：身份是 uuid（不再是 R2 的本地自增 id）。
-  Future<bool> removeEntry(String uuid) async {
-    if (uuid.isEmpty) return false;
-    try {
-      await _repo.delete(_bookUuid, uuid);
-      await loadEntries(_bookUuid);
-      _cloudSyncProvider?.triggerSync();
+      if (triggerSync) _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

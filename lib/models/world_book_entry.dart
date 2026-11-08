@@ -46,6 +46,23 @@ class WorldBookEntry {
       .where((k) => k.isNotEmpty)
       .toList();
 
+  /// 两组草稿在**会落库的字段**（uuid / keyword / content / isActive）上是否相同。
+  ///
+  /// 世界书面板用它判断“父级回传的是不是自己的回声”，书籍设置页用它做脏判定：
+  /// 改了又改回去不算未保存变更。
+  static bool sameList(List<WorldBookEntry> a, List<WorldBookEntry> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].uuid != b[i].uuid ||
+          a[i].keyword != b[i].keyword ||
+          a[i].content != b[i].content ||
+          a[i].isActive != b[i].isActive) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   factory WorldBookEntry.fromMap(Map<String, Object?> map) {
     return WorldBookEntry(
       id: map['id'] as int?,

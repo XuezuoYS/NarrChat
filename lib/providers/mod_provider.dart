@@ -139,11 +139,13 @@ class ModProvider extends ChangeNotifier {
     return null;
   }
 
-  /// 获取某本书**已启用**的 Mod 配置（按置入顺序）。
+  /// 获取某本书**已启用**的 Mod 配置（按置入顺序）；读取失败返回 null。
   ///
   /// 只回启用项：`use_mods` 里根本不存在"配置了但禁用"的行，未启用项由界面
   /// 用「全部 Mod 减去已启用」补齐（见 `book_mod_panel.dart`）。
-  Future<List<BookModConfig>> getBookModConfigs(String bookUuid) async {
+  /// 返回 null 让调用方（书籍设置页）能区分“这本书没启用 Mod”与“库读不出来”，
+  /// 后者不会拿空配置去覆盖库。
+  Future<List<BookModConfig>?> getBookModConfigs(String bookUuid) async {
     try {
       final refs = await _repo.useModUuids(bookUuid);
       final result = <BookModConfig>[];
@@ -155,15 +157,18 @@ class ModProvider extends ChangeNotifier {
     } catch (e) {
       _error = e.toString();
       notifyListeners();
-      return [];
+      return null;
     }
   }
 
   /// 保存某本书的完整 Mod 配置：只把**已启用**的按顺序落成启用清单。
+  ///
+  /// [triggerSync] 为 false 时由调用方在全部设置写完后统一触发一次同步。
   Future<bool> saveBookModConfigs(
     String bookUuid,
-    List<BookModConfig> configs,
-  ) async {
+    List<BookModConfig> configs, {
+    bool triggerSync = true,
+  }) async {
     try {
       final enabled = [
         for (final config in configs)
@@ -175,7 +180,7 @@ class ModProvider extends ChangeNotifier {
         if (ref != null) refs.add(ref);
       }
       await _repo.setUseModUuids(bookUuid, refs);
-      _cloudSyncProvider?.triggerSync();
+      if (triggerSync) _cloudSyncProvider?.triggerSync();
       return true;
     } catch (e) {
       _error = e.toString();

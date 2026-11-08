@@ -52,7 +52,10 @@ class WorldBookRepository {
     await db.worldBook.delete(uuid);
   }
 
-  /// 整体替换（同步还原 / 导入用）。
+  /// 整体替换（书籍设置保存 / 同步还原 / 导入用）。
+  ///
+  /// 设置页的草稿里，新条目没有 uuid（界面还不该关心身份）；这里统一补一个，
+  /// 保证 `world_book_entries.uuid` 主键非空且多条新条目不会互相撞键。
   Future<void> replaceAll(String bookUuid, List<WorldBookEntry> entries) async {
     if (bookUuid.isEmpty) return;
     final db = await books.open(bookUuid);
@@ -60,7 +63,7 @@ class WorldBookRepository {
     await db.worldBook.replaceAll([
       for (final entry in entries)
         WorldBookRow(
-          uuid: entry.uuid,
+          uuid: entry.uuid.isEmpty ? UuidUtils.generateUuidV4() : entry.uuid,
           keyword: entry.keyword,
           content: entry.content,
           isUsing: entry.isActive,

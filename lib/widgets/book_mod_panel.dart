@@ -7,7 +7,6 @@ import '../theme/app_theme.dart';
 import '../utils/pinyin_sort.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
-import 'app_notice_overlay.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'settings/settings_kit.dart';
@@ -18,25 +17,29 @@ import 'type_badge.dart';
 /// - 分为「已启用」与「未启用」两个标签（默认打开已启用）；
 /// - 「已启用」：可拖动排序调整置入顺序（自上而下）；
 /// - 「未启用」：按名称拼音 a~z 排序，不可拖动；
-/// - 通过开关启用/禁用，改动即时保存：发送请求时，本书启用中的 Mod 将
-///   按顺序自动置入前置词、后置词、系统提示词与世界书；
+/// - 通过开关启用/禁用；发送请求时，本书启用中的 Mod 将按顺序自动置入
+///   前置词、后置词、系统提示词与世界书；
 /// - 点击条目主体（非开关、非拖动柄区域）打开【预览 mod】只读对话框。
+///
+/// 本面板是**纯草稿组件**：开关与拖动只改本地列表，并通过 [onChanged]
+/// 回传完整配置；真正落库由书籍设置页在点「保存」时统一提交。
 class BookModPanel extends StatefulWidget {
-  /// 所属书籍 uuid；为 null 表示新建书籍草稿模式（改动保存在内存，
-  /// 保存书籍后由外层统一落库）。
+  /// 所属书籍 uuid；为 null 表示新建书籍草稿模式。
   final String? bookUuid;
 
-  /// 草稿模式（[bookUuid] 为 null）下完整的 Mod 配置（已启用 + 未启用），
-  /// 为 null 时首次进入按「全部未启用」初始化；改动后通过
-  /// [onPendingChanged] 回传，供外层在保存书籍时统一落库。
-  final List<BookModConfig>? pendingConfigs;
-  final ValueChanged<List<BookModConfig>>? onPendingChanged;
+  /// 父级持有的当前草稿（启用在前、未启用在后，带 `sortOrder`）。
+  ///
+  /// 首次加载与外部刷新时作为初始值；用户操作后由 [onChanged] 回传新快照。
+  final List<BookModConfig> initialConfigs;
+
+  /// 草稿变化回调（完整配置快照，启用在前按置入顺序）。
+  final ValueChanged<List<BookModConfig>>? onChanged;
 
   const BookModPanel({
     super.key,
     this.bookUuid,
-    this.pendingConfigs,
-    this.onPendingChanged,
+    this.initialConfigs = const [],
+    this.onChanged,
   });
 
   @override
@@ -56,6 +59,10 @@ class _BookModPanelState extends State<BookModPanel> {
   Map<String, Mod> _modByRef = {};
   bool _loaded = false;
 
+  /// 最近一次回传给父级的配置签名：父级把自己的回声传回来时据此跳过重建，
+  /// 只有真正的外部刷新（云同步落地等）才采纳新的初始值。
+  String _lastEmittedSignature = '';
+
   /// 当前选项卡（默认「已启用」）。
   _BookModsTab _tab = _BookModsTab.enabled;
 
@@ -69,6 +76,15 @@ class _BookModPanelState extends State<BookModPanel> {
   }
 
   @override
+  void didUpdateWidget(covariant BookModPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_loaded) return;
+    if (identical(oldWidget.initialConfigs, widget.initialConfigs)) return;
+    if (_signatureOf(widget.initialConfigs) == _lastEmittedSignature) return;
+    setState(() => _applySaved(widget.initialConfigs));
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
@@ -77,38 +93,36 @@ class _BookModPanelState extends State<BookModPanel> {
   Future<void> _load() async {
     final provider = context.read<ModProvider>();
     await provider.loadUserMods();
-    final bookUuid = widget.bookUuid;
-    // 草稿模式（bookUuid 为 null）读取外层暂存的配置；编辑模式从数据库读取。
-    final saved = bookUuid != null
-        ? await provider.getBookModConfigs(bookUuid)
-        : widget.pendingConfigs;
     if (!mounted) return;
+    _modByRef = {for (final mod in provider.allMods) mod.ref: mod};
+    _applySaved(widget.initialConfigs);
+    _lastEmittedSignature = _signatureOf(widget.initialConfigs);
+    setState(() => _loaded = true);
+  }
 
-    final allMods = provider.allMods;
-    _modByRef = {for (final mod in allMods) mod.ref: mod};
+  /// 按父级草稿重建启用 / 未启用列表；尚未配置的 Mod 追加为未启用。
+  void _applySaved(List<BookModConfig> saved) {
     final result = <BookModConfig>[];
     final seen = <String>{};
 
     // 1. 已保存 / 草稿的配置按置入顺序排列（引用已不存在的 Mod 则跳过）。
-    if (saved != null) {
-      final sorted = List.of(saved)
-        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-      for (final c in sorted) {
-        if (seen.contains(c.ref)) continue;
-        seen.add(c.ref);
-        if (_modByRef.containsKey(c.ref)) {
-          result.add(c.copyWith(bookUuid: bookUuid ?? ''));
-        }
+    final sorted = List.of(saved)
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    for (final c in sorted) {
+      if (seen.contains(c.ref)) continue;
+      seen.add(c.ref);
+      if (_modByRef.containsKey(c.ref)) {
+        result.add(c.copyWith(bookUuid: widget.bookUuid ?? ''));
       }
     }
     // 2. 尚未配置的 Mod 追加到末尾（默认禁用）。
-    for (final mod in allMods) {
+    for (final mod in _modByRef.values) {
       final ref = mod.ref;
       if (seen.contains(ref)) continue;
       seen.add(ref);
       result.add(
         BookModConfig(
-          bookUuid: bookUuid ?? '',
+          bookUuid: widget.bookUuid ?? '',
           presetKey: mod.presetKey,
           // 预置 Mod 没有 uuid（[Mod.uuid] 为空串）：引用必须写 NULL 而非空串，
           // 否则 book_mods 的 mod_uuid 外键（FK → mods.uuid）匹配失败。
@@ -122,12 +136,8 @@ class _BookModPanelState extends State<BookModPanel> {
     final enabled = result.where((c) => c.isEnabled).toList();
     final disabled = result.where((c) => !c.isEnabled).toList();
     _sortDisabledByPinyin(disabled);
-
-    setState(() {
-      _enabled = enabled;
-      _disabled = disabled;
-      _loaded = true;
-    });
+    _enabled = enabled;
+    _disabled = disabled;
   }
 
   /// 未启用列表按名称拼音 a~z 排序。
@@ -140,38 +150,12 @@ class _BookModPanelState extends State<BookModPanel> {
     );
   }
 
-  /// 是否正在保存（防止快速连续操作并发整体替换 book_mods）。
-  bool _saving = false;
-
-  /// 保存进行中又发生了新操作：置位后待当前保存完成再补一次，保证最终落库一致。
-  bool _saveQueued = false;
-
-  Future<void> _save() async {
-    if (_saving) {
-      _saveQueued = true;
-      return;
-    }
-    _saving = true;
-    try {
-      await _doSave();
-    } finally {
-      _saving = false;
-    }
-    if (_saveQueued) {
-      _saveQueued = false;
-      await _save();
-    }
-  }
-
-  Future<void> _doSave() async {
+  /// 把本地完整配置（启用在前 + 未启用在后）回传给父级。
+  void _notifyChanged() {
     final bookUuid = widget.bookUuid ?? '';
     final configs = <BookModConfig>[
       for (var i = 0; i < _enabled.length; i++)
-        _enabled[i].copyWith(
-          bookUuid: bookUuid,
-          sortOrder: i,
-          isEnabled: true,
-        ),
+        _enabled[i].copyWith(bookUuid: bookUuid, sortOrder: i, isEnabled: true),
       for (var i = 0; i < _disabled.length; i++)
         _disabled[i].copyWith(
           bookUuid: bookUuid,
@@ -179,17 +163,13 @@ class _BookModPanelState extends State<BookModPanel> {
           isEnabled: false,
         ),
     ];
-    if (widget.bookUuid == null) {
-      // 草稿模式：仅回传内存配置，由外层在保存书籍后统一落库。
-      widget.onPendingChanged?.call(configs);
-      return;
-    }
-    final provider = context.read<ModProvider>();
-    final ok = await provider.saveBookModConfigs(bookUuid, configs);
-    if (!ok && mounted) {
-      context.notices.error('保存失败：${provider.error ?? '未知错误'}');
-    }
+    _lastEmittedSignature = _signatureOf(configs);
+    widget.onChanged?.call(configs);
   }
+
+  /// 配置签名：启用标志 + 引用 + 列表顺序（不含 bookUuid 等展示字段）。
+  static String _signatureOf(List<BookModConfig> configs) =>
+      configs.map((c) => '${c.isEnabled ? 1 : 0}:${c.ref}').join('|');
 
   /// 启用某个 Mod：从未启用移入已启用（追加到末尾）。
   void _enable(int index) {
@@ -197,7 +177,7 @@ class _BookModPanelState extends State<BookModPanel> {
       final config = _disabled.removeAt(index);
       _enabled.add(config.copyWith(isEnabled: true));
     });
-    _save();
+    _notifyChanged();
   }
 
   /// 禁用某个 Mod：移入未启用（按拼音重排）。
@@ -207,7 +187,7 @@ class _BookModPanelState extends State<BookModPanel> {
       _disabled.add(config.copyWith(isEnabled: false));
       _sortDisabledByPinyin(_disabled);
     });
-    _save();
+    _notifyChanged();
   }
 
   /// 已启用列表拖动排序。
@@ -217,7 +197,7 @@ class _BookModPanelState extends State<BookModPanel> {
       final item = _enabled.removeAt(oldIndex);
       _enabled.insert(newIndex, item);
     });
-    _save();
+    _notifyChanged();
   }
 
   @override
@@ -227,8 +207,7 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         const SettingsPageHeader(
           title: 'Mod 管理',
-          description:
-              '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。',
+          description: '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。改动在点击顶栏「保存」后生效。',
         ),
         SettingsCard(
           padding: const EdgeInsets.all(12),
@@ -311,9 +290,7 @@ class _BookModPanelState extends State<BookModPanel> {
     if (filtered.isEmpty) {
       return AppEmptyHint(
         icon: Icons.check_circle_outline,
-        text: _enabled.isEmpty
-            ? '暂无启用中的 Mod\n可在「未启用」标签中打开开关以启用'
-            : '未找到匹配的 Mod',
+        text: _enabled.isEmpty ? '暂无启用中的 Mod\n可在「未启用」标签中打开开关以启用' : '未找到匹配的 Mod',
       );
     }
     return Column(
@@ -387,7 +364,6 @@ class _BookModPanelState extends State<BookModPanel> {
       ],
     );
   }
-
 }
 
 /// 单条书籍 Mod 配置（启用开关 + 名称/简介 + 可选的拖动柄）。
@@ -485,19 +461,13 @@ class _BookModTile extends StatelessWidget {
     return ListTile(
       dense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      leading: Switch(
-        value: config.isEnabled,
-        onChanged: onToggle,
-      ),
+      leading: Switch(value: config.isEnabled, onChanged: onToggle),
       title: _buildTitle(name, isPreset),
       subtitle: Text(
         description,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 12,
-          color: context.narrColors.textSecondary,
-        ),
+        style: TextStyle(fontSize: 12, color: context.narrColors.textSecondary),
       ),
       trailing: showDragHandle ? _buildDragHandle() : null,
     );
@@ -516,10 +486,7 @@ class _BookModTile extends StatelessWidget {
         children: [
           Row(
             children: [
-              Switch(
-                value: config.isEnabled,
-                onChanged: onToggle,
-              ),
+              Switch(value: config.isEnabled, onChanged: onToggle),
               const SizedBox(width: 4),
               Expanded(
                 child: Column(
@@ -543,10 +510,7 @@ class _BookModTile extends StatelessWidget {
             ],
           ),
           if (showDragHandle)
-            Align(
-              alignment: Alignment.centerRight,
-              child: _buildDragHandle(),
-            ),
+            Align(alignment: Alignment.centerRight, child: _buildDragHandle()),
         ],
       ),
     );

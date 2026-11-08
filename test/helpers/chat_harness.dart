@@ -7,6 +7,7 @@ import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
+import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/providers/sidebar_provider.dart';
@@ -140,6 +141,10 @@ Future<RoundProvider> pumpChatScreen(
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(repository: store.repos.worldBook),
         ),
+        // 书籍设置页读取 / 提交启用的 Mod 清单。
+        ChangeNotifierProvider(
+          create: (_) => ModProvider(repository: store.repos.mod),
+        ),
         ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
         // 云同步（ChatScreen 进入书籍时触发自动同步；未配置时内部忽略）。
@@ -225,6 +230,10 @@ Future<BookProvider> pumpHomeScreen(
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(repository: store.repos.worldBook),
         ),
+        // 对话页可经顶栏书名进入书籍设置页，设置页读取 Mod 草稿。
+        ChangeNotifierProvider(
+          create: (_) => ModProvider(repository: store.repos.mod),
+        ),
         ChangeNotifierProvider(
           create: (_) => RoundProvider(
             rounds: store.repos.rounds,
@@ -298,6 +307,10 @@ Future<({BookProvider books, RoundProvider rounds})> pumpNotificationHost(
         ChangeNotifierProvider<BookProvider>.value(value: bookProvider),
         ChangeNotifierProvider(
           create: (_) => WorldBookProvider(repository: stack.repos.worldBook),
+        ),
+        // 通知跳转进入的对话页可打开书籍设置（设置页读取 Mod 草稿）。
+        ChangeNotifierProvider(
+          create: (_) => ModProvider(repository: stack.repos.mod),
         ),
         ChangeNotifierProvider<RoundProvider>.value(value: roundProvider),
         ChangeNotifierProvider(create: (_) => SidebarProvider()),
