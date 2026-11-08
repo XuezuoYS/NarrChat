@@ -131,13 +131,13 @@ void main() {
       await old.close();
     }
 
-    test('建库：表齐全 / user_version 23 / meta 单行 / 目录读写与墓碑过滤', () async {
+    test('建库：表齐全 / user_version 24 / meta 单行 / 目录读写与墓碑过滤', () async {
       final path = newTempPath('v3_library_', 'narrchat_library.db');
       final store = LibraryDb(pathOverride: path);
 
       expect(await store.masterUuid(), isNotEmpty);
       expect(await store.databaseVersion(), userDataDbVersion);
-      expect(userDataDbVersion, 23);
+      expect(userDataDbVersion, 24);
 
       await store.putBook(const LibraryBookRow(bookUuid: 'b1', title: '甲'));
       await store.putBook(const LibraryBookRow(bookUuid: 'b2', title: '乙'));
@@ -186,7 +186,7 @@ void main() {
 
       final store = LibraryDb(pathOverride: path);
       final rows = await store.books(includeDeleted: true);
-      expect(await store.databaseVersion(), 23);
+      expect(await store.databaseVersion(), userDataDbVersion);
       expect(rows.map((row) => row.bookUuid).toList(), ['gone', 'live']);
       final gone = rows.singleWhere((row) => row.bookUuid == 'gone');
       expect(gone.isDeleted, isTrue);
@@ -234,7 +234,7 @@ void main() {
       );
 
       final store = LibraryDb(pathOverride: path);
-      expect(await store.databaseVersion(), 23);
+      expect(await store.databaseVersion(), userDataDbVersion);
       expect((await store.book('gone'))!.deletedRoundIndex, 5);
       await store.close();
     });
@@ -314,6 +314,58 @@ void main() {
       memorySummaryRounds: 2,
     );
 
+    /// 造一个 v23 的书库：`book_meta` 还没有 `book_cover_img`。
+    ///
+    /// [withCoverColumn] = true 模拟「列已加、user_version 还停在 23」的遗留状态
+    /// （升级必须跳过重复加列），与目录库的 v22 用例同一套路。
+    Future<void> createV23Book(
+      String path, {
+      bool withCoverColumn = false,
+      String? cover,
+    }) async {
+      final old = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 23,
+          onCreate: (db, version) async {
+            final coverColumn = withCoverColumn
+                ? ',\n                book_cover_img TEXT'
+                : '';
+            await db.execute('''
+              CREATE TABLE book_meta (
+                master_uuid            TEXT NOT NULL,
+                database_version       INTEGER NOT NULL,
+                book_uuid              TEXT PRIMARY KEY,
+                title                  TEXT NOT NULL,
+                category               TEXT DEFAULT '',
+                created_at             TEXT NOT NULL,
+                updated_at             TEXT NOT NULL,
+                base_setting           TEXT DEFAULT '',
+                writing_requirements   TEXT DEFAULT '',
+                writing_style          TEXT DEFAULT '',
+                global_pre_prompt      TEXT DEFAULT '',
+                global_post_prompt     TEXT DEFAULT '',
+                history_rounds         INTEGER NOT NULL DEFAULT 1,
+                memory_summary_rounds  INTEGER NOT NULL DEFAULT 0,
+                role_hierarchy         TEXT DEFAULT '',
+                role_hierarchy_detail  TEXT DEFAULT ''$coverColumn
+              )
+            ''');
+            await db.insert('book_meta', {
+              'master_uuid': 'master-1',
+              'database_version': 23,
+              'book_uuid': 'b1',
+              'title': '老书',
+              'created_at': '2026-01-01T00:00:00.000Z',
+              'updated_at': '2026-01-02T00:00:00.000Z',
+              if (withCoverColumn) 'book_cover_img': cover,
+            });
+          },
+        ),
+      );
+      await old.close();
+    }
+
     test('建库：五张表齐全，book_meta 单行且可读回', () async {
       path = newTempPath('v3_book_', 'narrbook_b1.db');
       final book = await BookDb.create(
@@ -335,7 +387,8 @@ void main() {
         onCreate: createBookSchema,
       );
       expect(await readUserVersion(db), userDataDbVersion);
-      expect((await columnsOf(db, 'book_meta')).take(8), [
+      final metaColumns = await columnsOf(db, 'book_meta');
+      expect(metaColumns.take(8), [
         'master_uuid',
         'database_version',
         'book_uuid',
@@ -345,6 +398,7 @@ void main() {
         'updated_at',
         'base_setting',
       ]);
+      expect(metaColumns.last, 'book_cover_img', reason: 'v24 新加的封面列在表尾');
       expect((await columnsOf(db, 'round_stack')).take(8), [
         'uuid',
         'father_uuid',
@@ -386,6 +440,81 @@ void main() {
         ),
         throwsA(isA<DbIntegrityException>()),
       );
+    });
+
+    test('v23 书库升级：补 book_cover_img，老书封面保持 NULL 且立即可写', () async {
+      final path = newTempPath('v3_book_upgrade_', 'narrbook_b1.db');
+      await createV23Book(path);
+
+      final book = await BookDb.open(bookUuid: 'b1', pathOverride: path);
+      final migrated = await book.meta.read();
+      expect(migrated.bookCoverImg, isNull, reason: '老书没有自定义封面');
+      await book.meta.writeSettings(
+        migrated.copyWith(bookCoverImg: 'img/new.png'),
+      );
+      expect((await book.meta.read()).bookCoverImg, 'img/new.png');
+      await book.close();
+
+      final db = await openAppDatabase(
+        path: path,
+        version: userDataDbVersion,
+        onCreate: createBookSchema,
+      );
+      expect(await columnsOf(db, 'book_meta'), contains('book_cover_img'));
+      expect(await readUserVersion(db), userDataDbVersion);
+      final row = (await db.query('book_meta')).single;
+      expect(row['database_version'], userDataDbVersion, reason: '版本镜像跟着升级');
+      expect(row['title'], '老书');
+      await db.close();
+    });
+
+    test('v23 库已带 book_cover_img：升级跳过加列，不报 duplicate column', () async {
+      final path = newTempPath('v3_book_upgrade2_', 'narrbook_b1.db');
+      await createV23Book(path, withCoverColumn: true, cover: 'img/old.png');
+
+      final book = await BookDb.open(bookUuid: 'b1', pathOverride: path);
+      expect((await book.meta.read()).bookCoverImg, 'img/old.png');
+      await book.close();
+    });
+
+    test('封面列：新书为 NULL，写入能读回，清空回到 NULL', () async {
+      final path = newTempPath('v3_book_cover_', 'narrbook_b1.db');
+      final book = await BookDb.create(
+        meta: sampleMeta('b1'),
+        pathOverride: path,
+      );
+      expect((await book.meta.read()).bookCoverImg, isNull, reason: '新书没有封面');
+
+      await book.meta.writeSettings(
+        (await book.meta.read()).copyWith(bookCoverImg: 'img/cover.png'),
+      );
+      expect((await book.meta.read()).bookCoverImg, 'img/cover.png');
+
+      // 只改别的设置列时封面跟着模型拷贝走，不能被 NULL 覆盖。
+      await book.meta.writeSettings(
+        (await book.meta.read()).copyWith(title: '改过名'),
+      );
+      final renamed = await book.meta.read();
+      expect(renamed.title, '改过名');
+      expect(renamed.bookCoverImg, 'img/cover.png');
+
+      await book.meta.writeSettings(
+        (await book.meta.read()).copyWith(clearBookCoverImg: true),
+      );
+      expect((await book.meta.read()).bookCoverImg, isNull);
+      await book.close();
+
+      // 库里落的是真正的 NULL，不是空串。
+      final db = await openAppDatabase(
+        path: path,
+        version: userDataDbVersion,
+        onCreate: createBookSchema,
+      );
+      final raw = await db.rawQuery(
+        'SELECT book_cover_img AS v FROM book_meta',
+      );
+      expect(raw.single['v'], isNull);
+      await db.close();
     });
 
     test('轮次：插入时同组归一化 / 轻量索引带图片标记 / 区间取正文', () async {

@@ -329,6 +329,9 @@ class BookRepositorySqlite implements BookRepository {
       memorySummaryRounds: book.memorySummaryRounds,
       roleHierarchy: book.roleHierarchy,
       roleHierarchyDetail: Constants.encodeRoleCategories(book.roleCategories),
+      // 封面还没进 `Book` 模型：保存设置时原样继承书库里的值，
+      // 否则每次保存设置都会把 `book_cover_img` 写成 NULL。
+      bookCoverImg: existing.bookCoverImg,
     );
     await db.meta.writeSettings(meta);
     // 目录行只回写书名：不能整行覆盖，否则会把墓碑清掉。

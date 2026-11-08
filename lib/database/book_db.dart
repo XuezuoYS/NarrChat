@@ -112,15 +112,31 @@ class BookDb implements BookStore {
       path: path,
       version: userDataDbVersion,
       onCreate: createBookSchema,
-      onUpgrade: (db, oldVersion, newVersion) async {
-        await writeDatabaseVersion(db, 'book_meta', newVersion);
-      },
+      onUpgrade: _upgradeSchema,
     );
     await db.insert('book_meta', {
       ...meta.toRow(),
       'database_version': userDataDbVersion,
     });
     return BookDb._(meta.bookUuid, db);
+  }
+
+  /// 书库升级：从 24 起 `book_meta` 多了 `book_cover_img`。
+  ///
+  /// 书库是「一本书一个文件」，老书在**各自首次打开时**补列；加列前先查
+  /// `PRAGMA table_info`，进度领先于版本号的库重复执行也不会报 duplicate column。
+  static Future<void> _upgradeSchema(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 24 &&
+        !await columnExists(db, 'book_meta', 'book_cover_img')) {
+      await db.execute(
+        'ALTER TABLE book_meta ADD COLUMN book_cover_img TEXT',
+      );
+    }
+    await writeDatabaseVersion(db, 'book_meta', newVersion);
   }
 
   /// 打开并做完整性校验（`open` 与迁移共用）。
@@ -131,9 +147,7 @@ class BookDb implements BookStore {
       path: path,
       version: userDataDbVersion,
       onCreate: createBookSchema,
-      onUpgrade: (db, oldVersion, newVersion) async {
-        await writeDatabaseVersion(db, 'book_meta', newVersion);
-      },
+      onUpgrade: _upgradeSchema,
     );
     try {
       if (!await tableExists(db, 'book_meta')) {

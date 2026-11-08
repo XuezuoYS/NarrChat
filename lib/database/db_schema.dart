@@ -18,7 +18,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 ///
 /// 3.0 是软件大版本号，数据库版本继续沿用旧编号，从 22 起算。
 /// 23：library 增加删除时的轮号（回收站展示用）。
-const int userDataDbVersion = 23;
+/// 24：书库 `book_meta` 增加 `book_cover_img`（书籍自定义封面）。
+const int userDataDbVersion = 24;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。
 const int localCacheDbVersion = 1;
@@ -108,7 +109,8 @@ Future<void> createBookSchema(Database db) async {
       history_rounds         INTEGER NOT NULL DEFAULT 1,
       memory_summary_rounds  INTEGER NOT NULL DEFAULT 0,
       role_hierarchy         TEXT DEFAULT '',
-      role_hierarchy_detail  TEXT DEFAULT ''
+      role_hierarchy_detail  TEXT DEFAULT '',
+      book_cover_img         TEXT
     )
   ''');
   await db.execute('''

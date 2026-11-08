@@ -1,4 +1,4 @@
-# 数据库（R3，schema 23）
+# 数据库（R3，schema 24）
 
 > 本文是当前数据库设计指南。上一个版本（单库 `narrchat.db`）已归档到
 > [`docs/old/database_r2.md`](old/database_r2.md)。
@@ -21,7 +21,7 @@ R3 随 v3.0 做破坏性更新，升级后的结构不能交给 1.x / 2.x 使用
   `lib/utils/timestamp_format.dart`，不要自行拼接，也不要用 `datetime()` / `strftime()`
   参与索引查询。
 - 布尔一律用 INTEGER 的 `0` / `1`，并声明 `NOT NULL`。
-- `user_data/` 下各库共用 `PRAGMA user_version = 23`；`local_config/` 下各库独立管理版本。
+- `user_data/` 下各库共用 `PRAGMA user_version = 24`；`local_config/` 下各库独立管理版本。
   `meta` / `book_meta` 里的 `database_version` 只是迁移后写入的调试镜像，不能用来判断版本。
 - 索引按实际查询在 DDL 中建设和调整，本文不逐项列索引。
 - 下文是结构和行为指南；具体 DDL 的唯一来源是 `lib/database/db_schema.dart`。
@@ -136,6 +136,7 @@ local_config/local_db/              ← 本地数据（不云备份）
 | `memory_summary_rounds` | INTEGER | NOT NULL DEFAULT 0 | 记忆总结压缩档位，0 = 关闭 |
 | `role_hierarchy` | TEXT | DEFAULT `''` | 角色层级 |
 | `role_hierarchy_detail` | TEXT | DEFAULT `''` | 角色层级详细描述格式 |
+| `book_cover_img` | TEXT | NULL | 书籍自定义封面的图片相对路径（`img/<哈希>.<扩展名>`，与 `user_images` 的元素同格式）；NULL = 没有自定义封面 |
 
 #### `world_book_entries`
 

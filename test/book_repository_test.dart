@@ -114,6 +114,28 @@ void main() {
     expect(fresh.baseSetting, '新设定');
   });
 
+  test('保存设置：书库里的封面原样保留，不被设置写入冲掉', () async {
+    final uuid = await repository.createBook(sample());
+    final db = await pool.open(uuid);
+    await db.meta.writeSettings(
+      (await db.meta.read()).copyWith(bookCoverImg: 'img/keep.png'),
+    );
+    await db.close();
+    await pool.close(uuid);
+
+    final loaded = (await repository.loadBook(uuid))!;
+    await repository.saveBook(
+      loaded.copyWith(title: '改名', baseSetting: '换设定'),
+    );
+
+    final after = await pool.open(uuid);
+    final meta = await after.meta.read();
+    expect(meta.title, '改名');
+    expect(meta.baseSetting, '换设定');
+    expect(meta.bookCoverImg, 'img/keep.png', reason: '保存设置不得清掉封面');
+    await after.close();
+  });
+
   test('删除：墓碑留在目录，书库文件 / 连接 / 缓存行 / 高度 / 图片引用全清掉', () async {
     final uuid = await repository.createBook(sample());
     final db = await pool.open(uuid);

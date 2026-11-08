@@ -3,7 +3,31 @@
 > 本文件只记**数据结构**的变更。功能层面的更新见 `update_log.md`。
 > R2 及更早的账号在 [`docs/old/database_update_log_r2.md`](old/database_update_log_r2.md)。
 
-## schema 23 —— 删除书籍回收站（当前）
+## schema 24 —— 书籍自定义封面（当前）
+
+`user_data` 下的库版本从 23 升到 24。
+
+### 新增字段
+
+- 书库的 `book_meta` 增加 `book_cover_img TEXT`：书籍自定义封面的图片相对路径，
+  格式与 `round_stack.user_images` 数组里的元素一致（`img/<哈希>.<扩展名>`）。
+  允许为 NULL，NULL = 没有自定义封面，首页继续走默认封面样式。
+  目前只落库，不进内容摘要、也不进列表缓存。
+
+### 迁移
+
+- `BookDb` 打开旧书库时执行
+  `ALTER TABLE book_meta ADD COLUMN book_cover_img TEXT`；老书这一列保持 NULL。
+- 书库是一本一个文件，所以每本老书在第一次打开时各自补一次列；加列前先查
+  `PRAGMA table_info`，重复执行不会报 duplicate column。
+- 目录库 / Mod 库的表结构没变，只把 `database_version` 镜像写成 24。
+
+### 行为变化
+
+- 保存书籍设置时沿用书库里已有的封面，不会把它冲成 NULL（封面进模型，
+  但界面选择封面还没做）。
+
+## schema 23 —— 删除书籍回收站（上一版）
 
 `user_data` 下四个库的版本从 22 升到 23。
 

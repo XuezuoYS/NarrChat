@@ -24,6 +24,7 @@ class BookMeta {
     this.memorySummaryRounds = 0,
     this.roleHierarchy = '',
     this.roleHierarchyDetail = '',
+    this.bookCoverImg,
   });
 
   /// 与文件名、`library.books.book_uuid` 一致，用于校验。
@@ -47,6 +48,12 @@ class BookMeta {
   final String roleHierarchy;
   final String roleHierarchyDetail;
 
+  /// 自定义封面的图片相对路径，格式与 `user_images` 的元素一致
+  /// （`img/<哈希>.<扩展名>`，相对 `user_data/`）。
+  ///
+  /// `null` = 没有自定义封面，首页走默认封面样式；库里这一列允许为 NULL。
+  final String? bookCoverImg;
+
   factory BookMeta.fromRow(Map<String, Object?> row) {
     final now = DateTime.now().toUtc();
     return BookMeta(
@@ -65,6 +72,7 @@ class BookMeta {
       memorySummaryRounds: (row['memory_summary_rounds'] as int?) ?? 0,
       roleHierarchy: (row['role_hierarchy'] as String?) ?? '',
       roleHierarchyDetail: (row['role_hierarchy_detail'] as String?) ?? '',
+      bookCoverImg: _cleanImagePath(row['book_cover_img']),
     );
   }
 
@@ -95,6 +103,7 @@ class BookMeta {
       'memory_summary_rounds': memorySummaryRounds,
       'role_hierarchy': roleHierarchy,
       'role_hierarchy_detail': roleHierarchyDetail,
+      'book_cover_img': bookCoverImg,
     };
   }
 
@@ -113,6 +122,8 @@ class BookMeta {
     int? memorySummaryRounds,
     String? roleHierarchy,
     String? roleHierarchyDetail,
+    String? bookCoverImg,
+    bool clearBookCoverImg = false,
   }) {
     return BookMeta(
       bookUuid: bookUuid,
@@ -130,6 +141,16 @@ class BookMeta {
       memorySummaryRounds: memorySummaryRounds ?? this.memorySummaryRounds,
       roleHierarchy: roleHierarchy ?? this.roleHierarchy,
       roleHierarchyDetail: roleHierarchyDetail ?? this.roleHierarchyDetail,
+      bookCoverImg: clearBookCoverImg
+          ? null
+          : (bookCoverImg ?? this.bookCoverImg),
     );
   }
+}
+
+/// 封面列归一化：NULL / 空白都表示「没有自定义封面」，统一收敛成 null。
+String? _cleanImagePath(Object? raw) {
+  if (raw is! String) return null;
+  final trimmed = raw.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
