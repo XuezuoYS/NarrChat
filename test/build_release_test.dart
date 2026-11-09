@@ -1,5 +1,6 @@
-// tool/build_release.dart 纯函数的单元测试（版本解析 / 自增 / pubspec 同步）。
+// tool/build_release.dart 纯函数的单元测试（版本解析 / 自增 / pubspec 同步 / 目录布局）。
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
 import '../tool/build_release.dart';
 
@@ -130,6 +131,44 @@ build: 7
     });
   });
 
+  group('staleWindowsArtifactNames（旧产物清理）', () {
+    const config = ReleaseConfig(version: '1.2.3', build: 57);
+
+    test('完整构建清理 ZIP、setup 与 Inno 临时包', () {
+      expect(staleWindowsArtifactNames(config, withInstaller: true), [
+        'NarrChat_1.2.3-57_windows_x64.zip',
+        'NarrChat_1.2.3-57_windows_x64-setup.exe',
+        'NarrChatSetupPayload.exe',
+      ]);
+    });
+
+    test('仅 ZIP 时保留 setup.exe', () {
+      expect(staleWindowsArtifactNames(config, withInstaller: false), [
+        'NarrChat_1.2.3-57_windows_x64.zip',
+      ]);
+    });
+  });
+
+  group('ReleaseLayout（目录布局）', () {
+    test('产物目录为项目根下的 release，而非 build/release', () {
+      final layout = ReleaseLayout(r'C:\project');
+      expect(layout.outputDir, p.join(r'C:\project', 'release'));
+      expect(
+        layout.outputDir,
+        isNot(p.join(r'C:\project', 'build', 'release')),
+      );
+    });
+
+    test('临时目录位于 .dart_tool 下，不混入产物目录', () {
+      final layout = ReleaseLayout(r'C:\project');
+      expect(
+        layout.workDir,
+        p.join(r'C:\project', '.dart_tool', 'narrchat_build'),
+      );
+      expect(p.isWithin(layout.outputDir, layout.workDir), isFalse);
+    });
+  });
+
   group('pascalString', () {
     test('普通文本原样返回', () {
       expect(pascalString('abc'), 'abc');
@@ -160,7 +199,7 @@ build: 7
       config: config,
       appDirPath: r'C:\build\Release',
       iconPath: r'C:\project\app_icon.ico',
-      outputDirPath: r'C:\project\build\release',
+      outputDirPath: r'C:\project\release',
       updateNotes: notes,
       languageFilePath: r'C:\project\tool\inno\ChineseSimplified.isl',
     );
@@ -199,6 +238,10 @@ build: 7
       expect(out, contains('创建开始菜单快捷方式'));
       expect(out, contains('{autoprograms}'));
       expect(out, contains('{autodesktop}'));
+    });
+
+    test('Inno 产物输出到传入目录', () {
+      expect(build(), contains(r'OutputDir=C:\project\release'));
     });
 
     test('AppId 与卸载注册键一致', () {

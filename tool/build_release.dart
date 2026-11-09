@@ -7,14 +7,17 @@
 //   dart run tool/build_release.dart --zip-only     # Windows 仅 ZIP 便携包
 //   dart run tool/build_release.dart --all          # Android + Windows
 //   dart run tool/build_release.dart --no-bump      # 跳过 build 号自增
+//   dart run tool/build_release.dart --no-clean     # 跳过构建前的缓存清理（快速增量构建）
 //   dart run tool/build_release.dart --version 1.2.0  # 构建前设置版本号（x.y.z）
 //
 // 流程：
 //   1. 读取 release.yaml（版本号唯一来源：version 显示用 / build = Android versionCode）
 //   2. 选定构建目标后，第一步自动把 build 号 +1 写回 release.yaml，
 //      并同步 pubspec.yaml 的 version 字段为 `{version}+{build}`
-//   3. 执行 flutter build ...
-//   4. 产物统一输出到 build/release/
+//   3. 默认先执行 flutter clean + flutter pub get，彻底清掉构建缓存
+//      （增量缓存的引擎包装源码缺失等报错就是这样避免的；--no-clean 可跳过）
+//   4. 执行 flutter build ...
+//   5. 产物统一输出到项目根目录的 release/（不再是 build/release/）
 //      - Android: NarrChat_{version}-{build}_android_arm64.apk
 //      - Windows: NarrChat_{version}-{build}_windows_x64.zip
 //                 + NarrChat_{version}-{build}_windows_x64-setup.exe
@@ -120,6 +123,36 @@ String artifactBaseName(
   required String arch,
 }) => 'NarrChat_${config.version}-${config.build}_${device}_$arch';
 
+/// 构建 Windows 前需要清理的旧产物文件名。
+///
+/// 只做 ZIP 时保留已有的 setup.exe，避免顺手删掉上次构建好的安装包。
+List<String> staleWindowsArtifactNames(
+  ReleaseConfig config, {
+  required bool withInstaller,
+}) {
+  final base = artifactBaseName(config, device: 'windows', arch: 'x64');
+  return [
+    '$base.zip',
+    if (withInstaller) '$base-setup.exe',
+    if (withInstaller) 'NarrChatSetupPayload.exe',
+  ];
+}
+
+/// 构建目录布局：产物放项目根目录的 `release/`，临时文件放 `.dart_tool/` 下。
+///
+/// 拆成纯路径类便于单元测试，也避免临时文件混进产物目录。
+class ReleaseLayout {
+  ReleaseLayout(String projectRoot) : projectRoot = p.normalize(projectRoot);
+
+  final String projectRoot;
+
+  /// 发布产物目录：`<项目根>/release`（不再是 `build/release`）。
+  String get outputDir => p.join(projectRoot, 'release');
+
+  /// 构建期间的临时目录（ZIP 暂存 / Inno 输出等），构建结束即删除。
+  String get workDir => p.join(projectRoot, '.dart_tool', 'narrchat_build');
+}
+
 // ---------------------------------------------------------------------------
 // 控制台输出
 // ---------------------------------------------------------------------------
@@ -219,6 +252,7 @@ class _TtySpinner {
 
 late final Directory _root;
 late final Directory _releaseDir;
+late final Directory _workDir;
 final List<String> _artifacts = [];
 
 /// Flutter 版本号解析结果缓存（见 [_resolveFlutterVersion]）。
@@ -238,8 +272,9 @@ enum _MenuChoice { android, windows, zipOnly, all, setVersion, exit }
 
 Future<void> main(List<String> args) async {
   _root = _findProjectRoot();
-  _releaseDir = Directory(p.join(_root.path, 'build', 'release'))
-    ..createSync(recursive: true);
+  final layout = ReleaseLayout(_root.path);
+  _releaseDir = Directory(layout.outputDir)..createSync(recursive: true);
+  _workDir = Directory(layout.workDir);
 
   final cli = _parseArgs(args);
   if (cli == null) return; // 帮助 / 参数错误已处理
@@ -247,9 +282,19 @@ Future<void> main(List<String> args) async {
   if (cli.target != null) {
     final target = cli.target!;
     if (target == BuildTarget.all) {
-      await _runBuild(BuildTarget.all, bump: cli.bump, newVersion: cli.version);
+      await _runBuild(
+        BuildTarget.all,
+        bump: cli.bump,
+        clean: cli.clean,
+        newVersion: cli.version,
+      );
     } else {
-      await _runBuild(target, bump: cli.bump, newVersion: cli.version);
+      await _runBuild(
+        target,
+        bump: cli.bump,
+        clean: cli.clean,
+        newVersion: cli.version,
+      );
     }
     _waitForExit();
     return;
@@ -271,6 +316,7 @@ Future<void> main(List<String> args) async {
         await _runBuild(
           BuildTarget.android,
           bump: bump,
+          clean: true,
           newVersion: newVersion,
         );
         _waitForExit();
@@ -279,6 +325,7 @@ Future<void> main(List<String> args) async {
         await _runBuild(
           BuildTarget.windows,
           bump: bump,
+          clean: true,
           newVersion: newVersion,
         );
         _waitForExit();
@@ -287,12 +334,18 @@ Future<void> main(List<String> args) async {
         await _runBuild(
           BuildTarget.zipOnly,
           bump: bump,
+          clean: true,
           newVersion: newVersion,
         );
         _waitForExit();
         return;
       case _MenuChoice.all:
-        await _runBuild(BuildTarget.all, bump: bump, newVersion: newVersion);
+        await _runBuild(
+          BuildTarget.all,
+          bump: bump,
+          clean: true,
+          newVersion: newVersion,
+        );
         _waitForExit();
         return;
     }
@@ -304,9 +357,15 @@ Future<void> main(List<String> args) async {
 // ---------------------------------------------------------------------------
 
 class _CliArgs {
-  const _CliArgs({this.target, this.bump = true, this.version});
+  const _CliArgs({
+    this.target,
+    this.bump = true,
+    this.clean = true,
+    this.version,
+  });
   final BuildTarget? target;
   final bool bump;
+  final bool clean;
   final String? version;
 }
 
@@ -314,6 +373,7 @@ _CliArgs? _parseArgs(List<String> args) {
   if (args.isEmpty) return const _CliArgs();
   BuildTarget? target;
   var bump = true;
+  var clean = true;
   String? version;
   for (var i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -327,6 +387,8 @@ _CliArgs? _parseArgs(List<String> args) {
         target = BuildTarget.all;
       case '--no-bump':
         bump = false;
+      case '--no-clean':
+        clean = false;
       case '--version':
         if (i + 1 >= args.length) {
           _error('--version 需要一个参数（如 --version 1.2.0）');
@@ -346,7 +408,7 @@ _CliArgs? _parseArgs(List<String> args) {
         exit(2);
     }
   }
-  return _CliArgs(target: target, bump: bump, version: version);
+  return _CliArgs(target: target, bump: bump, clean: clean, version: version);
 }
 
 void _printUsage() {
@@ -359,7 +421,11 @@ NarrChat 发布构建脚本
   dart run tool/build_release.dart --zip-only      Windows 仅 ZIP 便携包
   dart run tool/build_release.dart --all           Android + Windows
   dart run tool/build_release.dart --no-bump       跳过 build 号自增
+  dart run tool/build_release.dart --no-clean      跳过构建前的缓存清理
   dart run tool/build_release.dart --version 1.2.0 构建前设置版本号（x.y.z）
+
+产物输出目录：<项目根>/release
+每次构建默认先执行 flutter clean + flutter pub get；需要快速增量构建时加 --no-clean。
 ''');
 }
 
@@ -381,6 +447,7 @@ Future<_MenuChoice> _promptMenu({String? newVersion}) async {
     _print('  0. 退出');
     _print('============================================');
     _print('  产物输出目录：${_releaseDir.path}');
+    _print('  每次构建前自动清理 Flutter 缓存（--no-clean 可跳过）');
     _print('  当前版本：${cfg.version}  (build ${cfg.build})');
     // 已设置新版本号时，展示构建后即将使用的版本（交互模式下 build 恒会 +1）。
     if (newVersion != null && newVersion.isNotEmpty) {
@@ -472,6 +539,7 @@ ReleaseConfig _prepareVersion({required bool bump, String? newVersion}) {
 Future<void> _runBuild(
   BuildTarget target, {
   required bool bump,
+  required bool clean,
   String? newVersion,
 }) async {
   // 第一步：版本号准备（build +1 并同步 pubspec）。
@@ -480,19 +548,45 @@ Future<void> _runBuild(
   _info('本次构建版本：${config.version} (build ${config.build})');
   _print('');
 
-  switch (target) {
-    case BuildTarget.android:
-      await _buildAndroid(config);
-    case BuildTarget.zipOnly:
-      await _buildWindows(config, withInstaller: false);
-    case BuildTarget.windows:
-      await _buildWindows(config, withInstaller: true);
-    case BuildTarget.all:
-      await _buildAndroid(config);
-      await _buildWindows(config, withInstaller: true);
+  if (clean) {
+    await _cleanBuildCache();
+  } else {
+    _step('跳过缓存清理（--no-clean），使用现有增量缓存');
+    _deleteDirIfExists(_workDir);
+  }
+  _workDir.createSync(recursive: true);
+
+  try {
+    switch (target) {
+      case BuildTarget.android:
+        await _buildAndroid(config);
+      case BuildTarget.zipOnly:
+        await _buildWindows(config, withInstaller: false);
+      case BuildTarget.windows:
+        await _buildWindows(config, withInstaller: true);
+      case BuildTarget.all:
+        await _buildAndroid(config);
+        await _buildWindows(config, withInstaller: true);
+    }
+  } finally {
+    _deleteDirIfExists(_workDir);
   }
 
   _printSummary();
+}
+
+/// 构建前彻底清理 Flutter / Dart 缓存。
+///
+/// 增量缓存损坏时，`flutter build windows` 会报 C1083（找不到
+/// `windows/flutter/ephemeral/cpp_client_wrapper/*.cc`）之类的错误；
+/// 每次构建前 `flutter clean` 是最省心的规避方式。`--no-clean` 可跳过。
+Future<void> _cleanBuildCache() async {
+  _step('清理构建缓存：flutter clean + flutter pub get');
+  final cleanCode = await _runFlutterLive(const ['clean'], label: '清理缓存');
+  if (cleanCode != 0) _fail('flutter clean 失败（退出码 $cleanCode）。');
+  final pubCode = await _runFlutterLive(const ['pub', 'get'], label: '获取依赖');
+  if (pubCode != 0) _fail('flutter pub get 失败（退出码 $pubCode）。');
+  _success('构建缓存已清理。');
 }
 
 Future<void> _buildAndroid(ReleaseConfig config) async {
@@ -554,14 +648,15 @@ Future<void> _buildWindows(
     _fail('未找到构建产物：${p.join(srcDir.path, 'narrchat.exe')}');
   }
 
-  _cleanWindowsArtifacts(config);
+  _cleanWindowsArtifacts(config, withInstaller: withInstaller);
 
   // --- ZIP 便携包 ---
   final zipName =
       '${artifactBaseName(config, device: 'windows', arch: 'x64')}.zip';
   final zipPath = p.join(_releaseDir.path, zipName);
   // 暂存目录：ZIP 顶层统一为 Narrchat 文件夹（解压即得干净程序目录）。
-  final staging = Directory(p.join(_releaseDir.path, 'Narrchat'));
+  // 放在临时目录里，避免产物目录出现构建中间物。
+  final staging = Directory(p.join(_workDir.path, 'Narrchat'));
   _copyDirContents(srcDir, staging);
 
   _step('打包 ZIP：$zipName');
@@ -585,19 +680,21 @@ Future<void> _buildWindows(
     return;
   }
 
-  final issPath = _writeIss(config, appDir: srcDir);
+  final innoOut = Directory(p.join(_workDir.path, 'inno'))
+    ..createSync(recursive: true);
+  final issPath = _writeIss(config, appDir: srcDir, outputDir: innoOut);
   _step('Inno Setup：编译内嵌安装包');
   final result = await Process.run(iscc, [
     issPath,
   ], workingDirectory: _root.path);
   if (result.exitCode != 0) {
     _error('Inno Setup 输出：\n${result.stdout}${result.stderr}');
-    _warn('已保留调试脚本：$issPath（修复后可手动删除 iss_tmp 目录）');
+    _warn('已保留调试脚本：$issPath（修复后可手动删除临时目录）');
     _fail('Inno 安装包生成失败（ISCC 退出码 ${result.exitCode}）。');
   }
   _deleteDirIfExists(Directory(p.dirname(issPath)));
 
-  final rawSetup = File(p.join(_releaseDir.path, 'NarrChatSetupPayload.exe'));
+  final rawSetup = File(p.join(innoOut.path, 'NarrChatSetupPayload.exe'));
   if (!rawSetup.existsSync()) {
     _fail('未找到 Inno Setup 产物：${rawSetup.path}');
   }
@@ -701,6 +798,8 @@ void _checkWindowsEphemeralHealth() {
   final wrapper = Directory(
     p.join(_root.path, 'windows', 'flutter', 'ephemeral', 'cpp_client_wrapper'),
   );
+  // 缓存刚被整体清理时目录本就不存在，构建会重新解包，无需报警。
+  if (!wrapper.existsSync()) return;
   final missing = required
       .where((f) => !File(p.join(wrapper.path, f)).existsSync())
       .toList();
@@ -824,14 +923,14 @@ Future<int> _runCargoLive(
 }
 
 /// 实时输出 flutter 构建日志，返回退出码。
-Future<int> _runFlutterLive(List<String> args) async {
+Future<int> _runFlutterLive(List<String> args, {String label = '构建中'}) async {
   final Process process;
   try {
     process = await _startFlutter(args);
   } on ProcessException catch (e) {
     _fail('无法启动 flutter 命令：${e.message}（请确认 Flutter 已加入 PATH）');
   }
-  return _runLiveProcess(process);
+  return _runLiveProcess(process, label: label);
 }
 
 /// 把子进程 stdout/stderr 实时转发；长时间无输出时显示转圈。
@@ -889,12 +988,20 @@ void _deleteDirIfExists(Directory dir) {
 }
 
 /// 清理 Windows 旧产物（同名 ZIP / setup.exe）与 NarrChat* 暂存目录残留。
-void _cleanWindowsArtifacts(ReleaseConfig config) {
-  final base = artifactBaseName(config, device: 'windows', arch: 'x64');
-  final names = ['$base.zip', '$base-setup.exe', 'NarrChatSetupPayload.exe'];
-  for (final name in names) {
+///
+/// 只做 ZIP 时保留已有的 setup.exe，避免把上次构建好的安装包顺手删掉。
+void _cleanWindowsArtifacts(
+  ReleaseConfig config, {
+  required bool withInstaller,
+}) {
+  for (final name in staleWindowsArtifactNames(
+    config,
+    withInstaller: withInstaller,
+  )) {
     _deleteIfExists(File(p.join(_releaseDir.path, name)));
   }
+  // 旧版脚本把 ZIP 暂存 / Inno 输出放在产物目录，顺手清掉。
+  _deleteDirIfExists(Directory(p.join(_releaseDir.path, 'iss_tmp')));
   if (!_releaseDir.existsSync()) return;
   for (final entity in _releaseDir.listSync()) {
     if (entity is Directory && p.basename(entity.path).startsWith('NarrChat')) {
@@ -981,11 +1088,19 @@ String? _findIscc() {
 }
 
 /// 生成并写入 Inno Setup 脚本（.iss，UTF-8 BOM 保证中文正常）。
-String _writeIss(ReleaseConfig config, {required Directory appDir}) {
-  final issDir = Directory(p.join(_releaseDir.path, 'iss_tmp'))
+String _writeIss(
+  ReleaseConfig config, {
+  required Directory appDir,
+  required Directory outputDir,
+}) {
+  final issDir = Directory(p.join(_workDir.path, 'iss_tmp'))
     ..createSync(recursive: true);
   final issFile = File(p.join(issDir.path, 'installer.iss'));
-  final content = _buildIssContent(config, appDir: appDir);
+  final content = _buildIssContent(
+    config,
+    appDir: appDir,
+    outputDir: outputDir,
+  );
   issFile.writeAsBytesSync([0xEF, 0xBB, 0xBF, ...utf8.encode(content)]);
   return issFile.path;
 }
@@ -1116,7 +1231,11 @@ end;
 }
 
 /// 组装当前构建的 Inno Setup 脚本（注入项目实际路径与更新说明）。
-String _buildIssContent(ReleaseConfig config, {required Directory appDir}) {
+String _buildIssContent(
+  ReleaseConfig config, {
+  required Directory appDir,
+  required Directory outputDir,
+}) {
   final iconPath = p.join(
     _root.path,
     'windows',
@@ -1128,7 +1247,7 @@ String _buildIssContent(ReleaseConfig config, {required Directory appDir}) {
     config: config,
     appDirPath: appDir.path,
     iconPath: iconPath,
-    outputDirPath: _releaseDir.path,
+    outputDirPath: outputDir.path,
     updateNotes: _loadUpdateNotes(config),
     // 中文语言文件随项目一起管理（来自 jrsoftware/issrc，Inno Setup License），
     // 避免依赖本机 Inno Setup 是否随附 ChineseSimplified.isl。

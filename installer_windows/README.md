@@ -27,8 +27,9 @@ cargo run --release -- --setup payload\narrchat-setup.exe
 ## 发布
 
 默认走 [`tool/build_release.dart`](../tool/build_release.dart) 的 `--windows`：
-它会构建 Flutter → 生成 Inno 原始安装包 → 放进 `payload/` → `cargo build --release`
-把安装包内嵌进壳 → 输出 `build/release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
+它会先清理 Flutter 缓存（`--no-clean` 跳过），再构建 Flutter → 生成 Inno 原始安装包 →
+放进 `payload/` → `cargo build --release` 把安装包内嵌进壳 →
+输出项目根目录下的 `release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
 
 `payload/narrchat-setup.exe` 会保留（已被 gitignore），方便调试或做 sidecar；最终发布只需要壳。
 

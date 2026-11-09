@@ -134,15 +134,19 @@ dart run tool/build_release.dart --windows
 
 现在 `--windows` 会：
 
-1. `flutter build windows`；
-2. 打 ZIP 便携包；
-3. Inno 生成原始安装包 `build/release/NarrChatSetupPayload.exe`；
-4. 复制到 `installer_windows/payload/narrchat-setup.exe`；
-5. `cargo build --release` 把 payload 内嵌进 Rust 壳；
-6. 输出最终 `build/release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
+1. 默认先 `flutter clean` + `flutter pub get` 清缓存（`--no-clean` 可跳过）；
+2. `flutter build windows`；
+3. 打 ZIP 便携包；
+4. Inno 在临时目录 `.dart_tool/narrchat_build/inno/` 生成原始安装包 `NarrChatSetupPayload.exe`；
+5. 复制到 `installer_windows/payload/narrchat-setup.exe`；
+6. `cargo build --release` 把 payload 内嵌进 Rust 壳；
+7. 输出最终产物到项目根目录的 `release/`：
+   `release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
 
 细节：
 
+- 产物目录固定为 `<项目根>/release/`，不再是 `build/release/`；
+- 临时文件（ZIP 暂存、Inno 输出、.iss）都在 `.dart_tool/narrchat_build/`，构建结束即清理；
 - 未装 Inno Setup：只产出 ZIP；
 - 未装 cargo：回退为原始 Inno `setup.exe`，并给出警告；
 - `installer_windows/payload/narrchat-setup.exe` 会保留（已被 gitignore），方便调试或做 sidecar；

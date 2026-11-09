@@ -58,6 +58,9 @@ app.*.map.json
 *.aab
 *.ipa
 
+# 发布产物（tool/build_release.dart 输出到项目根目录）
+/release/
+
 # ==================== Android ====================
 /android/app/debug
 /android/app/profile

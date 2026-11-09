@@ -189,7 +189,7 @@ docs/
 
 ## 构建
 
-使用一键构建脚本（自动完成版本号自增、构建与打包，产物输出到 `build/release/`）：
+使用一键构建脚本（自动完成版本号自增、构建与打包，产物输出到项目根目录的 `release/`）：
 
 ```bash
 dart run tool/build_release.dart                 # 交互菜单
@@ -198,6 +198,7 @@ dart run tool/build_release.dart --android       # 仅 Android arm64 APK
 dart run tool/build_release.dart --windows       # Windows（Rust 壳 setup.exe + ZIP 便携包）
 dart run tool/build_release.dart --zip-only      # Windows 仅 ZIP 便携包
 dart run tool/build_release.dart --no-bump       # 跳过 build 号自增
+dart run tool/build_release.dart --no-clean      # 跳过构建前的缓存清理（快速增量构建）
 dart run tool/build_release.dart --version 1.2.0 # 构建前设置版本号（x.y.z）
 ```
 
@@ -208,7 +209,11 @@ dart run tool/build_release.dart --version 1.2.0 # 构建前设置版本号（x.
   [Inno Setup](https://jrsoftware.org/isdl.php) 生成的安装包；构建机需要 Rust/cargo 和
   Inno Setup，未装 Inno 时只产出 ZIP，未装 cargo 时回退为原始 Inno setup.exe。
   设计与参数见 [`docs/installer-rust-windows.md`](docs/installer-rust-windows.md)。
-- 构建脚本会修复 Windows 增量构建常见的引擎包装源码缺失问题（自动清理缓存重解包）。
+- 构建脚本默认在每次构建前执行 `flutter clean` + `flutter pub get`，彻底清掉
+  Flutter / Dart 增量缓存，避免「Windows 引擎包装源码缺失」之类的缓存报错；
+  需要快速增量构建时加 `--no-clean` 跳过。
+- 临时文件（ZIP 暂存、Inno 输出）放在 `.dart_tool/narrchat_build/`，构建结束即删除，
+  `release/` 只保留最终产物。
 
 ## License
 
