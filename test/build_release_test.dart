@@ -86,7 +86,8 @@ build: 7
     });
 
     test('syncPubspecVersion 更新 version 行', () {
-      const raw = 'name: narrchat\nversion: 1.0.0+1\nenvironment:\n  sdk: ^3.12.2\n';
+      const raw =
+          'name: narrchat\nversion: 1.0.0+1\nenvironment:\n  sdk: ^3.12.2\n';
       final out = syncPubspecVersion(raw, '1.1.3', 8);
       expect(out, contains('name: narrchat'));
       expect(out, contains('version: 1.1.3+8'));
@@ -94,10 +95,14 @@ build: 7
     });
 
     test('syncPubspecVersion 不误伤注释行', () {
-      const raw = '# The following defines the version and build number\n'
+      const raw =
+          '# The following defines the version and build number\n'
           'version: 1.0.0+1\n';
       final out = syncPubspecVersion(raw, '2.0.0', 3);
-      expect(out, contains('# The following defines the version and build number'));
+      expect(
+        out,
+        contains('# The following defines the version and build number'),
+      );
       expect(out, contains('version: 2.0.0+3'));
     });
 
@@ -111,13 +116,17 @@ build: 7
     const config = ReleaseConfig(version: '1.2.3', build: 57);
 
     test('Windows x64 命名', () {
-      expect(artifactBaseName(config, device: 'windows', arch: 'x64'),
-          'NarrChat_1.2.3-57_windows_x64');
+      expect(
+        artifactBaseName(config, device: 'windows', arch: 'x64'),
+        'NarrChat_1.2.3-57_windows_x64',
+      );
     });
 
     test('Android arm64 命名', () {
-      expect(artifactBaseName(config, device: 'android', arch: 'arm64'),
-          'NarrChat_1.2.3-57_android_arm64');
+      expect(
+        artifactBaseName(config, device: 'android', arch: 'arm64'),
+        'NarrChat_1.2.3-57_android_arm64',
+      );
     });
   });
 
@@ -148,13 +157,13 @@ build: 7
     const notes = 'NarrChat v1.1.3\n【更新】\n- 修复若干问题';
 
     String build() => buildIssContent(
-          config: config,
-          appDirPath: r'C:\build\Release',
-          iconPath: r'C:\project\app_icon.ico',
-          outputDirPath: r'C:\project\build\release',
-          updateNotes: notes,
-          languageFilePath: r'C:\project\tool\inno\ChineseSimplified.isl',
-        );
+      config: config,
+      appDirPath: r'C:\build\Release',
+      iconPath: r'C:\project\app_icon.ico',
+      outputDirPath: r'C:\project\build\release',
+      updateNotes: notes,
+      languageFilePath: r'C:\project\tool\inno\ChineseSimplified.isl',
+    );
 
     test('包含中文语言配置', () {
       final out = build();
@@ -177,12 +186,15 @@ build: 7
       expect(out, contains('您正在升级到新版本'));
       expect(out, contains('感谢选择 NarrChat'));
       // 更新说明多行文本以 Pascal 表达式内嵌
-      expect(out, contains("'NarrChat v1.1.3' + #13#10 + '【更新】' + #13#10 + '- 修复若干问题'"));
+      expect(
+        out,
+        contains("'NarrChat v1.1.3' + #13#10 + '【更新】' + #13#10 + '- 修复若干问题'"),
+      );
     });
 
-    test('产物命名与快捷方式任务', () {
+    test('Inno payload 命名与快捷方式任务', () {
       final out = build();
-      expect(out, contains('OutputBaseFilename=NarrChat_1.1.3-8_windows_x64-setup'));
+      expect(out, contains('OutputBaseFilename=NarrChatSetupPayload'));
       expect(out, contains('创建桌面快捷方式'));
       expect(out, contains('创建开始菜单快捷方式'));
       expect(out, contains('{autoprograms}'));
@@ -192,8 +204,12 @@ build: 7
     test('AppId 与卸载注册键一致', () {
       final out = build();
       expect(out, contains('AppId={{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}'));
-      expect(out,
-          contains(r"'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}_is1'"));
+      expect(
+        out,
+        contains(
+          r"'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}_is1'",
+        ),
+      );
     });
   });
 }

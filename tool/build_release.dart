@@ -3,7 +3,7 @@
 // 用法（在项目根目录执行）：
 //   dart run tool/build_release.dart                # 交互菜单
 //   dart run tool/build_release.dart --android      # 仅 Android（CI / 非交互）
-//   dart run tool/build_release.dart --windows      # Windows（setup.exe 安装包 + ZIP 便携包）
+//   dart run tool/build_release.dart --windows      # Windows（setup.exe 壳 + ZIP 便携包）
 //   dart run tool/build_release.dart --zip-only     # Windows 仅 ZIP 便携包
 //   dart run tool/build_release.dart --all          # Android + Windows
 //   dart run tool/build_release.dart --no-bump      # 跳过 build 号自增
@@ -17,10 +17,13 @@
 //   4. 产物统一输出到 build/release/
 //      - Android: NarrChat_{version}-{build}_android_arm64.apk
 //      - Windows: NarrChat_{version}-{build}_windows_x64.zip
-//                 + NarrChat_{version}-{build}_windows_x64-setup.exe（安装包）
+//                 + NarrChat_{version}-{build}_windows_x64-setup.exe
+//                   （Rust + egui 壳，内嵌 Inno Setup 生成的安装包）
 //
-// Windows 安装包依赖 Inno Setup（免费开源，https://jrsoftware.org/isdl.php）。
-// 未安装时自动降级为仅产出 ZIP 便携包。
+// Windows 安装包需要两套工具：
+//   - Inno Setup（免费，https://jrsoftware.org/isdl.php）：生成内嵌用的安装包；
+//   - Rust/cargo（https://rustup.rs）：编译 installer_windows/ 下的壳。
+// 未装 Inno 时只产出 ZIP；未装 cargo 时回退为原始 Inno setup.exe。
 //
 // 依赖：dev_dependencies 中的 archive 包（纯 Dart 打 ZIP，无需系统工具）。
 import 'dart:async';
@@ -101,8 +104,10 @@ String buildPubspecVersion(String version, int build) => '$version+$build';
 String syncPubspecVersion(String pubspec, String version, int build) {
   final line = RegExp(r'^version\s*:\s*.*$', multiLine: true);
   if (!line.hasMatch(pubspec)) return pubspec;
-  return pubspec
-      .replaceAllMapped(line, (m) => 'version: ${buildPubspecVersion(version, build)}');
+  return pubspec.replaceAllMapped(
+    line,
+    (m) => 'version: ${buildPubspecVersion(version, build)}',
+  );
 }
 
 /// 生成发布产物的统一基础名，格式：`NarrChat_{version}-{build}_{device}_{arch}`。
@@ -113,8 +118,7 @@ String artifactBaseName(
   ReleaseConfig config, {
   required String device,
   required String arch,
-}) =>
-    'NarrChat_${config.version}-${config.build}_${device}_$arch';
+}) => 'NarrChat_${config.version}-${config.build}_${device}_$arch';
 
 // ---------------------------------------------------------------------------
 // 控制台输出
@@ -264,15 +268,27 @@ Future<void> main(List<String> args) async {
         newVersion = _promptVersion();
         continue;
       case _MenuChoice.android:
-        await _runBuild(BuildTarget.android, bump: bump, newVersion: newVersion);
+        await _runBuild(
+          BuildTarget.android,
+          bump: bump,
+          newVersion: newVersion,
+        );
         _waitForExit();
         return;
       case _MenuChoice.windows:
-        await _runBuild(BuildTarget.windows, bump: bump, newVersion: newVersion);
+        await _runBuild(
+          BuildTarget.windows,
+          bump: bump,
+          newVersion: newVersion,
+        );
         _waitForExit();
         return;
       case _MenuChoice.zipOnly:
-        await _runBuild(BuildTarget.zipOnly, bump: bump, newVersion: newVersion);
+        await _runBuild(
+          BuildTarget.zipOnly,
+          bump: bump,
+          newVersion: newVersion,
+        );
         _waitForExit();
         return;
       case _MenuChoice.all:
@@ -339,7 +355,7 @@ NarrChat 发布构建脚本
 用法：
   dart run tool/build_release.dart                 交互菜单
   dart run tool/build_release.dart --android       仅 Android arm64 APK
-  dart run tool/build_release.dart --windows       Windows（setup.exe 安装包 + ZIP）
+  dart run tool/build_release.dart --windows       Windows（Rust 壳 setup.exe + ZIP）
   dart run tool/build_release.dart --zip-only      Windows 仅 ZIP 便携包
   dart run tool/build_release.dart --all           Android + Windows
   dart run tool/build_release.dart --no-bump       跳过 build 号自增
@@ -358,7 +374,7 @@ Future<_MenuChoice> _promptMenu({String? newVersion}) async {
     _print('  NarrChat Release 构建脚本', color: _ansiCyan, bold: true);
     _print('============================================', color: _ansiCyan);
     _print('  1. Android arm64 APK');
-    _print('  2. Windows（setup.exe 安装包 + ZIP 便携包）');
+    _print('  2. Windows（Rust 壳 setup.exe + ZIP 便携包）');
     _print('  3. Windows ZIP 便携包（免安装）');
     _print('  4. 全部构建');
     _print('  5. 设置版本号');
@@ -433,14 +449,18 @@ ReleaseConfig _prepareVersion({required bool bump, String? newVersion}) {
   }
 
   releaseFile.writeAsStringSync(text);
-  _success('已更新 release.yaml → version: ${config.version}, build: ${config.build}');
+  _success(
+    '已更新 release.yaml → version: ${config.version}, build: ${config.build}',
+  );
 
   // 同步 pubspec.yaml 的 version 字段，保持与 release.yaml 一致。
   final pubspec = pubspecFile.readAsStringSync();
   final synced = syncPubspecVersion(pubspec, config.version, config.build);
   if (synced != pubspec) {
     pubspecFile.writeAsStringSync(synced);
-    _dim('已同步 pubspec.yaml version → ${buildPubspecVersion(config.version, config.build)}');
+    _dim(
+      '已同步 pubspec.yaml version → ${buildPubspecVersion(config.version, config.build)}',
+    );
   }
   return config;
 }
@@ -476,8 +496,10 @@ Future<void> _runBuild(
 }
 
 Future<void> _buildAndroid(ReleaseConfig config) async {
-  _step('Android：编译 arm64 Release APK '
-      '(build-name=${config.version}, build-number=${config.build})');
+  _step(
+    'Android：编译 arm64 Release APK '
+    '(build-name=${config.version}, build-number=${config.build})',
+  );
   final code = await _runFlutterLive([
     'build',
     'apk',
@@ -490,8 +512,16 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
   ]);
   if (code != 0) _fail('Android 构建失败（flutter 退出码 $code）。');
 
-  final src = File(p.join(_root.path, 'build', 'app', 'outputs', 'flutter-apk',
-      'app-release.apk'));
+  final src = File(
+    p.join(
+      _root.path,
+      'build',
+      'app',
+      'outputs',
+      'flutter-apk',
+      'app-release.apk',
+    ),
+  );
   if (!src.existsSync()) _fail('未找到构建产物：${src.path}');
 
   final name =
@@ -503,7 +533,10 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
   _artifacts.add(dst.path);
 }
 
-Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) async {
+Future<void> _buildWindows(
+  ReleaseConfig config, {
+  required bool withInstaller,
+}) async {
   _checkWindowsEphemeralHealth();
   _step('Windows：编译 x64 Release');
   final code = await _runFlutterLive([
@@ -514,8 +547,9 @@ Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) 
   ]);
   if (code != 0) _fail('Windows 构建失败（flutter 退出码 $code）。');
 
-  final srcDir = Directory(p.join(
-      _root.path, 'build', 'windows', 'x64', 'runner', 'Release'));
+  final srcDir = Directory(
+    p.join(_root.path, 'build', 'windows', 'x64', 'runner', 'Release'),
+  );
   if (!File(p.join(srcDir.path, 'narrchat.exe')).existsSync()) {
     _fail('未找到构建产物：${p.join(srcDir.path, 'narrchat.exe')}');
   }
@@ -542,7 +576,7 @@ Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) 
   // 清理暂存目录。
   _deleteDirIfExists(staging);
 
-  // --- setup.exe 安装包（Inno Setup） ---
+  // --- setup.exe 安装包（Rust 壳 + 内嵌 Inno） ---
   if (!withInstaller) return;
   final iscc = _findIscc();
   if (iscc == null) {
@@ -552,23 +586,98 @@ Future<void> _buildWindows(ReleaseConfig config, {required bool withInstaller}) 
   }
 
   final issPath = _writeIss(config, appDir: srcDir);
-  _step('Inno Setup：编译安装包');
-  final result = await Process.run(iscc, [issPath], workingDirectory: _root.path);
+  _step('Inno Setup：编译内嵌安装包');
+  final result = await Process.run(iscc, [
+    issPath,
+  ], workingDirectory: _root.path);
   if (result.exitCode != 0) {
     _error('Inno Setup 输出：\n${result.stdout}${result.stderr}');
     _warn('已保留调试脚本：$issPath（修复后可手动删除 iss_tmp 目录）');
-    _fail('setup.exe 生成失败（ISCC 退出码 ${result.exitCode}）。');
+    _fail('Inno 安装包生成失败（ISCC 退出码 ${result.exitCode}）。');
   }
   _deleteDirIfExists(Directory(p.dirname(issPath)));
+
+  final rawSetup = File(p.join(_releaseDir.path, 'NarrChatSetupPayload.exe'));
+  if (!rawSetup.existsSync()) {
+    _fail('未找到 Inno Setup 产物：${rawSetup.path}');
+  }
+  _success('Inno 安装包已生成：${rawSetup.path}');
 
   final setupName =
       '${artifactBaseName(config, device: 'windows', arch: 'x64')}-setup.exe';
   final setupPath = p.join(_releaseDir.path, setupName);
-  if (!File(setupPath).existsSync()) {
-    _fail('未找到 Inno Setup 产物：$setupPath');
+
+  // 没装 Rust 时回退为原始 Inno 安装包，至少还能出安装器。
+  if (!_hasCargo()) {
+    _warn('未检测到 cargo，无法构建 Rust 壳。');
+    _warn('请安装 Rust（https://rustup.rs）后重试；本次回退为原始 Inno setup.exe。');
+    _deleteIfExists(File(setupPath));
+    try {
+      rawSetup.copySync(setupPath);
+    } on FileSystemException catch (e) {
+      _fail('写出 setup.exe 失败（可能被占用）：$e');
+    }
+    _deleteIfExists(rawSetup);
+    _success('setup.exe（Inno 回退）已生成：$setupPath');
+    _artifacts.add(setupPath);
+    return;
   }
-  _success('setup.exe 已生成：$setupPath');
+
+  final installerDir = Directory(p.join(_root.path, 'installer_windows'));
+  final cargoToml = File(p.join(installerDir.path, 'Cargo.toml'));
+  if (!cargoToml.existsSync()) {
+    _fail('未找到 Rust 安装器工程：${cargoToml.path}');
+  }
+
+  _step('Rust 壳：把 Inno 安装包放到 payload');
+  final payloadDir = Directory(p.join(installerDir.path, 'payload'))
+    ..createSync(recursive: true);
+  final payloadPath = p.join(payloadDir.path, 'narrchat-setup.exe');
+  _deleteIfExists(File(payloadPath));
+  rawSetup.copySync(payloadPath);
+
+  final shellExe = File(
+    p.join(installerDir.path, 'target', 'release', 'narrchat-installer.exe'),
+  );
+  _deleteIfExists(shellExe);
+  _step('Rust 壳：清理旧构建');
+  _cleanRustShellArtifacts(installerDir);
+
+  _step('Rust 壳：编译 release（内嵌 Inno）');
+  final shellCode = await _runCargoLive(
+    ['build', '--release', '--locked'],
+    environment: {'NARRCHAT_APP_VERSION': config.version},
+  );
+  if (shellCode != 0) {
+    _fail(
+      'Rust 壳构建失败（cargo 退出码 $shellCode）。'
+      '原始 Inno 安装包保留在：${rawSetup.path}',
+    );
+  }
+  if (!shellExe.existsSync()) {
+    _fail('未找到 Rust 壳产物：${shellExe.path}');
+  }
+  if (shellExe.lengthSync() <= rawSetup.lengthSync()) {
+    _fail(
+      'Rust 壳没有内嵌安装包（壳 ${shellExe.lengthSync()} B <= '
+      '安装包 ${rawSetup.lengthSync()} B）。'
+      '请检查 installer_windows/build.rs 与 payload。',
+    );
+  }
+
+  _deleteIfExists(File(setupPath));
+  try {
+    shellExe.copySync(setupPath);
+  } on FileSystemException catch (e) {
+    _fail('写出 setup.exe 失败（可能被占用）：$e');
+  }
+  _success('setup.exe（Rust 壳，内嵌 Inno）已生成：$setupPath');
   _artifacts.add(setupPath);
+
+  // 发布产物只需要壳；release 根目录的临时 payload 清掉，
+  // installer_windows/payload 下的保留给调试 / sidecar 用（已被 gitignore）。
+  _deleteIfExists(rawSetup);
+  _dim('调试用 Inno payload 保留在：$payloadPath');
 }
 
 // ---------------------------------------------------------------------------
@@ -589,19 +698,26 @@ void _checkWindowsEphemeralHealth() {
     'plugin_registrar.cc',
     'standard_codec.cc',
   ];
-  final wrapper = Directory(p.join(
-      _root.path, 'windows', 'flutter', 'ephemeral', 'cpp_client_wrapper'));
-  final missing =
-      required.where((f) => !File(p.join(wrapper.path, f)).existsSync()).toList();
+  final wrapper = Directory(
+    p.join(_root.path, 'windows', 'flutter', 'ephemeral', 'cpp_client_wrapper'),
+  );
+  final missing = required
+      .where((f) => !File(p.join(wrapper.path, f)).existsSync())
+      .toList();
   if (missing.isEmpty) return;
 
-  _warn('检测到 Windows 引擎包装源码缺失（${missing.join(', ')}），'
-      '可能是增量构建缓存损坏，正在清理后重新构建...');
+  _warn(
+    '检测到 Windows 引擎包装源码缺失（${missing.join(', ')}），'
+    '可能是增量构建缓存损坏，正在清理后重新构建...',
+  );
   // 1) 删除残缺的 ephemeral，触发重新解包。
   _deleteDirIfExists(
-      Directory(p.join(_root.path, 'windows', 'flutter', 'ephemeral')));
+    Directory(p.join(_root.path, 'windows', 'flutter', 'ephemeral')),
+  );
   // 2) 删除 flutter assemble 的 depfile，防止增量跳过解包。
-  final flutterBuild = Directory(p.join(_root.path, '.dart_tool', 'flutter_build'));
+  final flutterBuild = Directory(
+    p.join(_root.path, '.dart_tool', 'flutter_build'),
+  );
   if (flutterBuild.existsSync()) {
     for (final dir in flutterBuild.listSync().whereType<Directory>()) {
       _deleteIfExists(File(p.join(dir.path, 'windows_engine_sources.d')));
@@ -618,7 +734,9 @@ void _checkWindowsEphemeralHealth() {
 
 /// 启动 flutter 进程。Windows 下 `flutter` 无法直接启动（.bat）时回退 `flutter.bat`。
 Future<Process> _startFlutter(List<String> args) async {
-  final candidates = Platform.isWindows ? const ['flutter', 'flutter.bat'] : const ['flutter'];
+  final candidates = Platform.isWindows
+      ? const ['flutter', 'flutter.bat']
+      : const ['flutter'];
   ProcessException? last;
   for (final cmd in candidates) {
     try {
@@ -638,15 +756,15 @@ Future<Process> _startFlutter(List<String> args) async {
 String? _resolveFlutterVersion() {
   if (_cachedFlutterVersion != null) return _cachedFlutterVersion;
   String? version;
-  final candidates =
-      Platform.isWindows ? const ['flutter', 'flutter.bat'] : const ['flutter'];
+  final candidates = Platform.isWindows
+      ? const ['flutter', 'flutter.bat']
+      : const ['flutter'];
   for (final cmd in candidates) {
     try {
-      final result = Process.runSync(
-        cmd,
-        ['--version', '--machine'],
-        workingDirectory: _root.path,
-      );
+      final result = Process.runSync(cmd, [
+        '--version',
+        '--machine',
+      ], workingDirectory: _root.path);
       if (result.exitCode != 0) continue;
       final map = jsonDecode((result.stdout as String).trim());
       final v = (map as Map<String, dynamic>)['frameworkVersion'];
@@ -673,10 +791,39 @@ List<String> _flutterVersionDefine() {
       : ['--dart-define=NARRCHAT_FLUTTER_VERSION=$version'];
 }
 
+/// 开发机是否装了 cargo（Rust 壳构建需要）。
+bool _hasCargo() {
+  try {
+    final result = Process.runSync('cargo', [
+      '--version',
+    ], workingDirectory: _root.path);
+    return result.exitCode == 0;
+  } on ProcessException {
+    return false;
+  }
+}
+
+/// 实时输出 cargo 构建日志，返回退出码。
+Future<int> _runCargoLive(
+  List<String> args, {
+  Map<String, String>? environment,
+}) async {
+  final Process process;
+  try {
+    process = await Process.start(
+      'cargo',
+      args,
+      workingDirectory: p.join(_root.path, 'installer_windows'),
+      environment: environment,
+      includeParentEnvironment: true,
+    );
+  } on ProcessException catch (e) {
+    _fail('无法启动 cargo 命令：${e.message}（请确认 Rust 已加入 PATH）');
+  }
+  return _runLiveProcess(process, label: 'Rust 壳构建中');
+}
+
 /// 实时输出 flutter 构建日志，返回退出码。
-///
-/// 构建可能长时间无输出，用 `\|/-` 转圈指示仍在运行（仅真实终端启用；
-/// CI / 管道输出时自动禁用，不污染日志）。
 Future<int> _runFlutterLive(List<String> args) async {
   final Process process;
   try {
@@ -684,8 +831,12 @@ Future<int> _runFlutterLive(List<String> args) async {
   } on ProcessException catch (e) {
     _fail('无法启动 flutter 命令：${e.message}（请确认 Flutter 已加入 PATH）');
   }
+  return _runLiveProcess(process);
+}
 
-  final spinner = stdout.hasTerminal ? _TtySpinner('构建中') : null;
+/// 把子进程 stdout/stderr 实时转发；长时间无输出时显示转圈。
+Future<int> _runLiveProcess(Process process, {String label = '构建中'}) async {
+  final spinner = stdout.hasTerminal ? _TtySpinner(label) : null;
   spinner?.start();
 
   void emit(Stream<List<int>> stream, IOSink out) {
@@ -740,10 +891,7 @@ void _deleteDirIfExists(Directory dir) {
 /// 清理 Windows 旧产物（同名 ZIP / setup.exe）与 NarrChat* 暂存目录残留。
 void _cleanWindowsArtifacts(ReleaseConfig config) {
   final base = artifactBaseName(config, device: 'windows', arch: 'x64');
-  final names = [
-    '$base.zip',
-    '$base-setup.exe',
-  ];
+  final names = ['$base.zip', '$base-setup.exe', 'NarrChatSetupPayload.exe'];
   for (final name in names) {
     _deleteIfExists(File(p.join(_releaseDir.path, name)));
   }
@@ -751,6 +899,37 @@ void _cleanWindowsArtifacts(ReleaseConfig config) {
   for (final entity in _releaseDir.listSync()) {
     if (entity is Directory && p.basename(entity.path).startsWith('NarrChat')) {
       _deleteDirIfExists(entity);
+    }
+  }
+}
+
+/// 清理 Rust 壳自己的 release 产物，保留依赖缓存，确保 payload 变化会触发重编。
+void _cleanRustShellArtifacts(Directory installerDir) {
+  final release = Directory(p.join(installerDir.path, 'target', 'release'));
+  if (!release.existsSync()) return;
+
+  for (final name in [
+    'narrchat-installer.exe',
+    'narrchat-installer.pdb',
+    'narrchat-installer.d',
+  ]) {
+    _deleteIfExists(File(p.join(release.path, name)));
+  }
+
+  for (final sub in ['deps', 'build', '.fingerprint']) {
+    final dir = Directory(p.join(release.path, sub));
+    if (!dir.existsSync()) continue;
+    for (final entity in dir.listSync()) {
+      final name = p.basename(entity.path);
+      final matches = sub == 'deps'
+          ? name.startsWith('narrchat_installer')
+          : name.startsWith('narrchat-installer');
+      if (!matches) continue;
+      if (entity is Directory) {
+        _deleteDirIfExists(entity);
+      } else if (entity is File) {
+        _deleteIfExists(entity);
+      }
     }
   }
 }
@@ -782,7 +961,9 @@ Future<void> _zipDir(Directory dir, String zipPath) async {
 
 /// 查找 ISCC.exe（Inno Setup 编译器）。
 String? _findIscc() {
-  final which = Process.runSync(Platform.isWindows ? 'where' : 'which', ['ISCC']);
+  final which = Process.runSync(Platform.isWindows ? 'where' : 'which', [
+    'ISCC',
+  ]);
   if (which.exitCode == 0) {
     final line = (which.stdout as String).trim().split('\n').first.trim();
     if (line.isNotEmpty && !line.toLowerCase().contains('could not find')) {
@@ -862,7 +1043,7 @@ UsePreviousAppDir=yes
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 OutputDir=$outputDirPath
-OutputBaseFilename=NarrChat_${config.version}-${config.build}_windows_x64-setup
+OutputBaseFilename=NarrChatSetupPayload
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile=$iconPath
@@ -936,8 +1117,13 @@ end;
 
 /// 组装当前构建的 Inno Setup 脚本（注入项目实际路径与更新说明）。
 String _buildIssContent(ReleaseConfig config, {required Directory appDir}) {
-  final iconPath =
-      p.join(_root.path, 'windows', 'runner', 'resources', 'app_icon.ico');
+  final iconPath = p.join(
+    _root.path,
+    'windows',
+    'runner',
+    'resources',
+    'app_icon.ico',
+  );
   return buildIssContent(
     config: config,
     appDirPath: appDir.path,
@@ -946,8 +1132,12 @@ String _buildIssContent(ReleaseConfig config, {required Directory appDir}) {
     updateNotes: _loadUpdateNotes(config),
     // 中文语言文件随项目一起管理（来自 jrsoftware/issrc，Inno Setup License），
     // 避免依赖本机 Inno Setup 是否随附 ChineseSimplified.isl。
-    languageFilePath:
-        p.join(_root.path, 'tool', 'inno', 'ChineseSimplified.isl'),
+    languageFilePath: p.join(
+      _root.path,
+      'tool',
+      'inno',
+      'ChineseSimplified.isl',
+    ),
   );
 }
 
