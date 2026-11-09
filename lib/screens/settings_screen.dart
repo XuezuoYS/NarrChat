@@ -330,6 +330,22 @@ class _AboutRow extends StatelessWidget {
         color: context.narrColors.textPrimary,
       ),
     );
+    // 值可能是很长的版本号（beta / 构建号 / 本地标记）：整行给值留出
+    // 剩余宽度并允许换行，避免把 Row 撑爆（曾经在关于页出现黄黑条纹）。
+    final Widget valueChild;
+    if (onTap != null) {
+      valueChild = GestureDetector(
+        key: valueKey,
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: valueText,
+        ),
+      );
+    } else {
+      valueChild = valueText;
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -343,18 +359,7 @@ class _AboutRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          if (onTap != null)
-            GestureDetector(
-              key: valueKey,
-              behavior: HitTestBehavior.opaque,
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                child: valueText,
-              ),
-            )
-          else
-            valueText,
+          Flexible(child: valueChild),
         ],
       ),
     );

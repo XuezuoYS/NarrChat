@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 
 /// 从打包进应用的 `release.yaml` 读取版本信息。
@@ -18,10 +19,19 @@ class ReleaseInfo {
   static const String flutterVersion =
       String.fromEnvironment('NARRCHAT_FLUTTER_VERSION');
 
+  /// 测试用：覆盖 `release.yaml` 的解析结果（null 走真实资源）。
+  ///
+  /// 真实版本号随发版变化，不适合当「长版本号布局」用例的固定夹具；
+  /// 覆盖值优先于缓存，测试结束后请清回 null。
+  @visibleForTesting
+  static Map<String, String>? testInfoOverride;
+
   static Map<String, String>? _info;
 
   /// 读取 `release.yaml` 中的版本信息（异步，带缓存）。
   static Future<Map<String, String>> _load() async {
+    final override = testInfoOverride;
+    if (override != null) return override;
     if (_info != null) return _info!;
     try {
       final raw = await rootBundle.loadString('release.yaml');

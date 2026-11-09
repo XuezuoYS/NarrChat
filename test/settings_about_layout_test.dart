@@ -4,6 +4,7 @@ import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/screens/settings_screen.dart';
 import 'package:narrchat/theme/app_theme.dart';
+import 'package:narrchat/utils/release_info.dart';
 import 'package:narrchat/widgets/brand_logo.dart';
 import 'package:narrchat/widgets/settings/settings_kit.dart';
 import 'package:provider/provider.dart';
@@ -66,6 +67,36 @@ void main() {
 
     // 品牌图标所在的信息卡撑满内容列，其实测宽度即内容列限宽 400
     // （而非靠左面板的 860）。
+    final card = tester.getRect(
+      find.ancestor(
+        of: find.byType(BrandLogo),
+        matching: find.byType(SettingsCard),
+      ),
+    );
+    expect(card.width, closeTo(400, 0.5));
+  });
+
+  testWidgets('长版本号换行展示，信息卡不溢出（回归）', (tester) async {
+    // 真实 release.yaml 随发版变短变长，不适合当固定夹具：注入一份长版本号。
+    ReleaseInfo.testInfoOverride = {
+      'version': '3.0.0-beta.1+exp.sha.5114f85',
+      'build': '107',
+    };
+    addTearDown(() => ReleaseInfo.testInfoOverride = null);
+
+    await openAboutWide(tester);
+
+    expect(tester.takeException(), isNull, reason: '不允许 RenderFlex overflow');
+    final label = '3.0.0-beta.1+exp.sha.5114f85 (build.107)';
+    final versionText = find.text(label);
+    expect(versionText, findsOneWidget);
+    expect(
+      tester.getSize(versionText).height,
+      greaterThan(20),
+      reason: '一行放不下应自动换行，而不是把 Row 撑爆',
+    );
+
+    // 换行不影响信息卡限宽。
     final card = tester.getRect(
       find.ancestor(
         of: find.byType(BrandLogo),
