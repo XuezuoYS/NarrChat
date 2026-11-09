@@ -33,6 +33,7 @@ class WebDavException implements Exception {
 ///
 /// 仅实现云同步所需的最小操作集：
 /// - `ensureCollection`：建目录（MKCOL，已存在则忽略）；
+/// - `ensurePath`：逐级建目录（`a/b` 会先建 `a`）；
 /// - `list`：列目录（PROPFIND Depth:1）；
 /// - `put`：上传（PUT）；
 /// - `get`：下载（GET）；
@@ -128,6 +129,21 @@ class WebDavService {
         statusCode: res.statusCode,
         body: res.body,
       );
+    }
+  }
+
+  /// 逐级确保目录存在（`a/b/c` 会把 `a`、`a/b`、`a/b/c` 依次建出来）。
+  ///
+  /// 为什么不能只建最后一级：MKCOL 不会自动创建父目录，父级缺失时服务器
+  /// 返回 409。云同步的目录只有一两级，逐级建最省事也最可靠。空段
+  /// （首尾斜杠 / 重复斜杠）直接跳过。
+  Future<void> ensurePath(String path) async {
+    await ensureCollection('');
+    var current = '';
+    for (final segment in path.split('/')) {
+      if (segment.isEmpty) continue;
+      current = current.isEmpty ? segment : '$current/$segment';
+      await ensureCollection(current);
     }
   }
 

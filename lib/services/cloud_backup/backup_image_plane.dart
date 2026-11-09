@@ -21,10 +21,14 @@ class BackupImageReport {
   final String? error;
 }
 
-/// 图片平面：云端根目录与 `user_data/img/` 之间的双向同步。
+/// 图片平面：云端图片目录（`<folder>/img/`，默认 `narrchat/img/`）与本地
+/// `user_data/img/` 之间的双向同步。
 ///
 /// 与数据单元的关系：数据单元是"整库快照"，图片是**共享资产池**——同一张图
 /// 可能被多本书引用，所以必须独立同步，不能跟着某本书的快照走。
+///
+/// 云端位置由外面的 [remote] 决定：provider 会给它一个指向 `<folder>/img`
+/// 的远端，所以图片与数据快照各在各的目录里，这里只管文件名。
 ///
 /// 刻意**不做引用回收**：
 /// - 删除只由墓碑驱动（用户明确删过才删云端）；
@@ -51,9 +55,8 @@ class BackupImagePlane {
 
   /// 图片平面只认这些扩展名。
   ///
-  /// **必须过滤**：云端根目录同时放着各库快照（`*.db`）与清单（`*.json`），
-  /// 不筛的话图片平面会把它们当图片下载进 `user_data/img/`（既脏又可能因目录
-  /// 不存在直接失败）。与 `ImageStore.allowedExtensions` 保持一致。
+  /// 图片已经有独立目录（`<folder>/img/`），理论上不会再有快照 / 清单混进来；
+  /// 但仍然要筛：服务器上可能有手工放进去的杂项，也顺手兜住历史混放时期的残留。
   static const Set<String> imageExtensions = {'png', 'jpg', 'jpeg'};
 
   static bool isImageName(String name) =>
@@ -72,6 +75,9 @@ class BackupImagePlane {
   }
 
   Future<BackupImageReport> _sync({bool Function()? isCancelled}) async {
+    // 图片面可能单独触发（只改了图，没动数据），所以自己把云端图片目录建出来。
+    await remote.ensureReady();
+
     final now = _clock().toUtc();
     final nowMs = now.millisecondsSinceEpoch;
 

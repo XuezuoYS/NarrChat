@@ -15,7 +15,7 @@ enum SyncState { idle, syncing, success, error }
 ///
 /// - [data]：manifest / 快照 / 共基（唯一的代数迭代通道）；
 /// - [images]：`img/*` 内容寻址 blob + `img_tombstones.json` 墓碑文件
-///   （无代数概念，按「本地盘 ⊕ 云端 blob ⊕ 墓碑」收敛）。
+///   （云端落在 `<folder>/img/`；无代数概念，按「本地盘 ⊕ 云端 blob ⊕ 墓碑」收敛）。
 ///
 /// 两平面各自规划、各自失败重试、各自 UI 指示；仅在同设备上经统一协调层
 /// （`SyncCoordinator` 单执行道）**串行**派发（共享同一 WebDAV 目录与软锁）。

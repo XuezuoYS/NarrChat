@@ -308,6 +308,9 @@ library（目录库）→ book（书库）→ branch（分支）→ round（逻�
 
 - **单位 = 一个 DB 文件 = 一代**：`<base>_shot-g<N>.db` + `manifest_<base>.json`。
   文件名不含时间，时间以 WebDAV 返回的信息为准。
+- **云端目录**：数据文件（快照 / 清单 / `sync_config.json`）放在设置里的文件夹
+  （默认 `narrchat`），图片 blob 与 `img_tombstones.json` 放在它的 `img` 子目录
+  （默认 `narrchat/img`）。WebDAV 根目录不放任何文件；文件夹在首次同步时自动建出。
 - Library、Mods 和每本书分别持有同步代数，互不影响；数据库同步队列按先来后到处理。
 - **备份列表按库分组**：顶层固定 `Library 库` → `Mod 库` → `书籍《书名》库`，
   书籍按最新一代上传时间从新到旧排列。点进二级页才列代次、做整份还原。

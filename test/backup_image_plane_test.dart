@@ -10,9 +10,9 @@ import 'helpers/backup_fakes.dart';
 
 /// 图片平面（`BackupImagePlane`）单元测试。
 ///
-/// 云端根目录是**混放**的：各库快照（`*_shot-gN.db`）与清单
-/// （`manifest_*.json`）和图片在同一个目录里。图片平面必须只碰图片，
-/// 否则会把数据库快照当图片下载进 `img/`（曾经的真 bug）。
+/// 云端图片已经有独立目录（`<folder>/img/`），但扩展名过滤仍然保留：服务器上
+/// 可能有手工放进去的杂项，也要防住历史上「图片和快照混放」时期的残留——
+/// 图片平面绝不能把数据库快照 / 清单当图片下载进 `img/`（曾经的真 bug）。
 void main() {
   late Directory root;
   late Directory imagesDir;
@@ -52,6 +52,11 @@ void main() {
   bool localHas(String name) => File(p.join(imagesDir.path, name)).existsSync();
 
   group('扩展名过滤', () {
+    test('同步前先确保云端图片目录存在（图片面可能单独触发）', () async {
+      await plane.sync();
+      expect(remote.ready, isTrue, reason: 'sync 入口要自己 ensureReady');
+    });
+
     test('云端快照与清单不会被当成图片下载（回归哨兵）', () async {
       remote.put('a.png', const [1, 1, 1]);
       remote.put('b.jpg', const [2, 2, 2]);

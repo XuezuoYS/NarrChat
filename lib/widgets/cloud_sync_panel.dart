@@ -426,7 +426,8 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.link,
       title: '连接设置',
-      subtitle: '填写你的 WebDAV 服务器。密码存入系统安全存储，不明文落盘。',
+      subtitle: '填写你的 WebDAV 服务器与存储文件夹。数据放该文件夹，图片放它的 img 子目录；'
+          '密码存入系统安全存储，不明文落盘。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

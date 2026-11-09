@@ -11,6 +11,7 @@ import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/backup_fakes.dart' hide MemoryTombstoneStore;
@@ -556,5 +557,77 @@ void main() {
       reason: '彻底删除只删云端备份，墓碑保留',
     );
     expect(provider.deletedBackupUnits, isEmpty);
+  });
+
+  // 云端目录分层：真实 `WebDavBackupRemote` + 按目录存文件的 WebDAV 替身。
+  // 回归点：曾经数据面与图片面都把目录传成 `''`，全部文件堆在根目录。
+  group('云端目录：数据与图片各进各的文件夹', () {
+    /// 跑一次真实同步（真实数据库 + 内存 WebDAV），返回云端与 provider。
+    Future<({FakeWebDavService dav, String bookUuid})> syncOnce({
+      String? folder,
+    }) async {
+      final dav = FakeWebDavService(pathScoped: true);
+      final sync = CloudSyncProvider(
+        repositories: stack.repos,
+        webDavFactory: () => dav,
+        tombstoneStore: tombstones,
+      )..debugSetConfigured();
+      if (folder != null) sync.debugSetFolder(folder);
+      addTearDown(sync.dispose);
+
+      final bookUuid = await stack.seedBook(title: '书A');
+      await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '正文');
+      final imagesDir = Directory(p.join(stack.paths.userDataDir, 'img'))
+        ..createSync(recursive: true);
+      File(p.join(imagesDir.path, 'pic.png')).writeAsBytesSync([1, 2, 3]);
+
+      final ok = await sync.sync();
+      expect(ok, isTrue, reason: '同步失败：${sync.error}');
+      expect(sync.dataError, isNull);
+      expect(sync.imageError, isNull);
+      return (dav: dav, bookUuid: bookUuid);
+    }
+
+    /// 断言一次同步的落盘位置：[folder] 放数据，[folder]/img 放图片。
+    void expectLayout(FakeWebDavService dav, {required String folder}) {
+      final data = '$folder/';
+      final images = '$folder/img/';
+      expect(dav.files.keys, contains('${data}narrchat_library_shot-g1.db'));
+      expect(dav.files.keys, contains('${data}manifest_narrchat_library.json'));
+      expect(dav.files.keys, contains('${data}narrchat_mods_shot-g1.db'));
+      expect(dav.files.keys, contains('${images}pic.png'));
+      expect(dav.files.keys, contains('${images}img_tombstones.json'));
+      expect(
+        dav.files.keys.where((key) => !key.contains('/')),
+        isEmpty,
+        reason: 'WebDAV 根目录不能留任何应用文件',
+      );
+      expect(
+        dav.writes.map((write) => write.path).toSet(),
+        {folder, '$folder/img'},
+        reason: '数据只写数据目录，图片只写 img 子目录',
+      );
+      expect(dav.listPaths, containsAll([folder, '$folder/img']));
+    }
+
+    test('默认：数据进 narrchat/，图片进 narrchat/img/', () async {
+      final result = await syncOnce();
+
+      expectLayout(result.dav, folder: 'narrchat');
+      expect(
+        result.dav.files.keys,
+        contains('narrchat/narrbook_${result.bookUuid}_shot-g1.db'),
+      );
+    });
+
+    test('用户指定文件夹：数据与图片都跟着走', () async {
+      final result = await syncOnce(folder: 'my-backup');
+
+      expectLayout(result.dav, folder: 'my-backup');
+      expect(
+        result.dav.files.keys,
+        contains('my-backup/narrbook_${result.bookUuid}_shot-g1.db'),
+      );
+    });
   });
 }

@@ -30,17 +30,21 @@ import '../utils/timestamp_format.dart';
 /// - 触发队列（自动 / 手动 / 生命周期恢复）；
 /// - 两个平面（数据 / 图片）的状态、进度与提示。
 ///
-/// 云端文件约定（R3）：
-/// - `narrchat_library_shot-g<N>.db` / `narrchat_mods_shot-g<N>.db` /
-///   `narrbook_<uuid>_shot-g<N>.db`：各库快照；
-/// - `manifest_<基名>.json`：每个库一份清单（代数 / 摘要 / 设备 / 引用图片）；
-/// - `<hash>.<ext>`：图片 blob；`img_tombstones.json`：图片删除墓碑；
-/// - `sync_config.json`：云备份设置（保留份数）。
+/// 云端目录约定（R3）——**数据与图片各进各的目录**：
+/// - 数据面：用户设定的文件夹（默认 `narrchat`）下放各库快照
+///   `narrchat_library_shot-g<N>.db` / `narrchat_mods_shot-g<N>.db` /
+///   `narrbook_<uuid>_shot-g<N>.db`、清单 `manifest_<基名>.json` 与
+///   `sync_config.json`；
+/// - 图片面：同一文件夹下的 `img` 子目录（默认 `narrchat/img`）里放图片 blob
+///   `<hash>.<ext>` 与图片墓碑 `img_tombstones.json`。
+///
+/// WebDAV 根目录不放任何应用文件；文件夹在首次同步 / 保存保留份数时自动建出。
 class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// - [repositories]：注入仓储（测试传 `TestStack.repos`；生产不传，懒取全局单例）。
   /// - [backupRemoteFactory]：注入云端读写实现（测试传内存替身，不碰真实 WebDAV）。
-  /// - [webDavFactory]：注入云端目录读写（备份列表 / `sync_config.json` 用；
-  ///   测试传内存替身，不碰网络）。
+  ///   替身不区分数据 / 图片目录；生产实现由 [WebDavBackupRemote.folder] 分层。
+  /// - [webDavFactory]：注入云端目录读写（备份列表 / `sync_config.json` /
+  ///   测试连接用；测试传内存替身，不碰网络）。
   /// - [tombstoneStore]：注入图片墓碑工作副本（测试传内存替身，不写真实 local_config）。
   ///
   /// 全都**构造注入**而不是 `debugSetXxx`：显式依赖一目了然，也不会出现
@@ -67,8 +71,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   AppRepositories get _repos =>
       _injectedRepositories ?? AppRepositories.instance;
 
-  BackupRemote _newRemote() =>
-      _remoteFactory?.call() ?? WebDavBackupRemote(_createDav());
+  BackupRemote _newRemote(String folder) =>
+      _remoteFactory?.call() ??
+      WebDavBackupRemote(_createDav(), folder: folder);
 
   SyncTombstoneStore get _tombstones =>
       _injectedTombstoneStore ?? FileTombstoneStore();
@@ -87,6 +92,22 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const String _legacyKeyKeepVersions = 'webdavKeepVersions';
 
   static const String defaultFolder = 'narrchat';
+
+  /// 把用户输入的文件夹规范成云端相对路径。
+  ///
+  /// 去空白、去首尾 / 重复斜杠，丢掉 `.` 与 `..` 段（避免拼到基础地址外面），
+  /// 空值回落 [defaultFolder]。
+  static String normalizeFolder(String raw) {
+    final segments = [
+      for (final segment in raw.trim().split('/'))
+        if (segment.isNotEmpty && segment != '.' && segment != '..') segment,
+    ];
+    return segments.isEmpty ? defaultFolder : segments.join('/');
+  }
+
+  /// 图片面的云端目录：数据目录下的 `img` 子目录（默认 `narrchat/img`）。
+  static String imagesFolderOf(String folder) =>
+      '${normalizeFolder(folder)}/img';
 
   String _webdavUrl = '';
   String _webdavUsername = '';
@@ -312,7 +333,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       final stores = _repos.stores;
-      final remote = _newRemote();
+      final remote = _newRemote(_folder);
       // 修剪份数以云端 sync_config.json 为唯一权威：冷启动的自动同步若直接用
       // 内存默认值，会把用户要求的更早快照误删（R2 同款保证）。
       final keepVersions = await _readKeepVersionsForSync(remote);
@@ -415,7 +436,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final stores = _repos.stores;
       final plane = BackupImagePlane(
-        remote: _newRemote(),
+        remote: _newRemote(imagesFolderOf(_folder)),
         imagesDir: p.join(stores.paths.userDataDir, 'img'),
         tombstoneStore: _tombstones,
       );
@@ -476,9 +497,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _webdavUrl = await LocalConfigService.readValue<String>(_keyUrl) ?? '';
       _webdavUsername =
           await LocalConfigService.readValue<String>(_keyUsername) ?? '';
-      _folder =
-          await LocalConfigService.readValue<String>(_keyFolder) ??
-          defaultFolder;
+      _folder = normalizeFolder(
+        await LocalConfigService.readValue<String>(_keyFolder) ?? defaultFolder,
+      );
       _autoUpload =
           await LocalConfigService.readValue<bool>(_keyAutoUpload) ?? false;
       _syncMode = SyncMode.auto;
@@ -516,7 +537,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _webdavUrl = webdavUrl.trim();
       _webdavUsername = webdavUsername.trim();
       _webdavPassword = webdavPassword;
-      _folder = folder.trim().isEmpty ? defaultFolder : folder.trim();
+      _folder = normalizeFolder(folder);
       if (autoUpload != null) _autoUpload = autoUpload;
       if (syncMode != null) _syncMode = syncMode;
 
@@ -588,7 +609,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (!isConfigured) return '尚未配置云备份';
     final dav = _createDav();
     try {
-      _applyCloudSyncConfig(await dav.get('', SyncConfig.remoteFileName));
+      _applyCloudSyncConfig(await dav.get(_folder, SyncConfig.remoteFileName));
       return null;
     } on WebDavException catch (error) {
       if (error.statusCode == 404) {
@@ -612,9 +633,9 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     final dav = _createDav();
     try {
-      await dav.ensureCollection('');
+      await dav.ensurePath(_folder);
       await dav.put(
-        '',
+        _folder,
         SyncConfig.remoteFileName,
         utf8.encode(jsonEncode({'keepVersions': clamped})),
       );
@@ -636,7 +657,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 按默认值处理。
   Future<void> _syncKeepVersionsFromCloud(WebDavService dav) async {
     try {
-      _applyCloudSyncConfig(await dav.get('', SyncConfig.remoteFileName));
+      _applyCloudSyncConfig(await dav.get(_folder, SyncConfig.remoteFileName));
     } on WebDavException catch (error) {
       if (error.statusCode == 404) _applyMissingCloudSyncConfig();
     } catch (_) {
@@ -694,15 +715,16 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     final targetPass = password ?? _webdavPassword;
     if (targetUrl.isEmpty) return '请填写服务器地址';
     try {
-      final dav = WebDavService(
-        baseUrl: targetUrl,
-        username: targetUser,
-        password: targetPass,
-      );
-      final dir = (folder ?? _folder).trim();
-      await dav.ensureCollection('');
-      if (dir.isNotEmpty) await dav.ensureCollection(dir);
-      await dav.list('');
+      // 生产按表单里的地址 / 账号临时建一个客户端；测试注入内存替身（不碰网络）。
+      final dav = _davFactory?.call() ??
+          WebDavService(
+            baseUrl: targetUrl,
+            username: targetUser,
+            password: targetPass,
+          );
+      final dir = normalizeFolder(folder ?? _folder);
+      await dav.ensurePath(dir);
+      await dav.list(dir);
       dav.close();
       return null;
     } catch (error) {
@@ -729,7 +751,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _loadBackups(WebDavService dav) async {
-    final files = await dav.list('');
+    final files = await _listCloudFolder(dav);
     _backups = [
       for (final file in files)
         if (BackupUnit.fromSnapshotName(file.name) != null) file,
@@ -739,6 +761,19 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     _deletedBookMarks = snapshot.deleted;
     _rebuildBackupCatalog();
     _backupsLoaded = true;
+  }
+
+  /// 列云端数据目录；目录还不存在（404）按空处理。
+  ///
+  /// 第一次配置后、首次同步前，文件夹本来就不存在。这时打开面板应该显示
+  /// 「云端暂无备份」，而不是弹「列出失败」；真正建目录交给同步入口。
+  Future<List<WebDavFile>> _listCloudFolder(WebDavService dav) async {
+    try {
+      return await dav.list(_folder);
+    } on WebDavException catch (error) {
+      if (error.statusCode == 404) return const [];
+      rethrow;
+    }
   }
 
   /// 一次读目录库，同时拿到「书 uuid → 书名」与「墓碑书 → 删除信息」。
@@ -817,7 +852,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final stores = _repos.stores;
       final locator = BackupLocator(userDataDir: stores.paths.userDataDir);
-      final remote = _newRemote();
+      final remote = _newRemote(_folder);
       final bytes = await remote.read(snapshotName);
       await _closeForReplace(unit);
 
@@ -848,7 +883,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (choice == BackupConflictChoice.skip) return null;
     final stores = _repos.stores;
     final locator = BackupLocator(userDataDir: stores.paths.userDataDir);
-    final remote = _newRemote();
+    final remote = _newRemote(_folder);
     try {
       if (choice == BackupConflictChoice.remote) {
         final manifest = plan.remote;
@@ -921,7 +956,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 下一次数据面同步会重试。
   Future<String?> retainDeletedBookBackup(String bookUuid) async {
     if (bookUuid.isEmpty || !isConfigured) return null;
-    final remote = _newRemote();
+    final remote = _newRemote(_folder);
     try {
       await remote.ensureReady();
       await retainLatestRemoteBookSnapshot(
@@ -944,7 +979,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 仍可重试。
   Future<String?> purgeDeletedBookBackup(String bookUuid) async {
     if (bookUuid.isEmpty || !isConfigured) return null;
-    final remote = _newRemote();
+    final remote = _newRemote(_folder);
     try {
       await remote.ensureReady();
       await purgeRemoteBook(
@@ -1149,6 +1184,15 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   void debugSetKeepVersions(int value) {
     _keepVersions = value;
     _keepVersionsLoaded = true;
+    notifyListeners();
+  }
+
+  /// 直接改「存储文件夹」（测试用，验证云端目录分层）。
+  ///
+  /// 生产里这个值只能从本地配置读（[load]）或经 [save] 写；测试不想碰
+  /// flutter_secure_storage / 真实配置目录，用这个钩子注入指定文件夹。
+  void debugSetFolder(String value) {
+    _folder = normalizeFolder(value);
     notifyListeners();
   }
 

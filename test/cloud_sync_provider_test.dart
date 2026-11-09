@@ -311,6 +311,98 @@ void main() {
     });
   });
 
+  group('云端目录（数据 / 图片分层）', () {
+    CloudSyncProvider providerWith(FakeWebDavService dav) =>
+        CloudSyncProvider(webDavFactory: () => dav)..debugSetConfigured();
+
+    test('normalizeFolder：去空白与多余斜杠、空值回默认、丢掉 ..', () {
+      expect(
+        CloudSyncProvider.normalizeFolder(''),
+        CloudSyncProvider.defaultFolder,
+      );
+      expect(
+        CloudSyncProvider.normalizeFolder('   '),
+        CloudSyncProvider.defaultFolder,
+      );
+      expect(CloudSyncProvider.normalizeFolder(' /narrchat/ '), 'narrchat');
+      expect(CloudSyncProvider.normalizeFolder('a//b/'), 'a/b');
+      expect(
+        CloudSyncProvider.normalizeFolder('/'),
+        CloudSyncProvider.defaultFolder,
+      );
+      expect(CloudSyncProvider.normalizeFolder('../x'), 'x');
+    });
+
+    test('imagesFolderOf：图片在数据目录的 img 子目录', () {
+      expect(CloudSyncProvider.imagesFolderOf(''), 'narrchat/img');
+      expect(CloudSyncProvider.imagesFolderOf('/my-backup/'), 'my-backup/img');
+    });
+
+    test('testConnection：建出并列出用户指定的文件夹', () async {
+      final dav = FakeWebDavService();
+      final provider = providerWith(dav);
+
+      final result = await provider.testConnection(
+        url: 'https://dav.example.invalid/',
+        username: 'user',
+        password: 'secret',
+        folder: ' /my-backup/ ',
+      );
+
+      expect(result, isNull);
+      expect(dav.ensureCalls, ['', 'my-backup']);
+      expect(dav.listPaths, ['my-backup'], reason: '要列目标文件夹而不是根目录');
+    });
+
+    test('testConnection：文件夹留空按默认 narrchat 处理', () async {
+      final dav = FakeWebDavService();
+      final provider = providerWith(dav);
+
+      final result = await provider.testConnection(
+        url: 'https://dav.example.invalid/',
+        username: 'user',
+        folder: '',
+      );
+
+      expect(result, isNull);
+      expect(dav.ensureCalls, ['', 'narrchat']);
+      expect(dav.listPaths, ['narrchat']);
+    });
+
+    test('云端文件夹还不存在（404）：备份列表按空处理，不报错', () async {
+      final dav = FakeWebDavService(
+        listError: '列出云端备份失败',
+        listErrorStatus: 404,
+      );
+      final provider = providerWith(dav);
+
+      await provider.refreshBackups();
+
+      expect(provider.error, isNull, reason: '文件夹没建过不该弹刷新失败');
+      expect(provider.backupUnits, isEmpty);
+      expect(
+        provider.keepVersionsLoaded,
+        isTrue,
+        reason: '云端没有 sync_config → 按默认值',
+      );
+      expect(dav.listPaths, ['narrchat']);
+    });
+
+    test('refreshBackups：列表读的是数据目录', () async {
+      final dav = FakeWebDavService(
+        files: {
+          'narrchat_library_shot-g2.db': [1, 2, 3],
+        },
+      );
+      final provider = providerWith(dav);
+
+      await provider.refreshBackups();
+
+      expect(dav.listPaths, ['narrchat']);
+      expect(provider.backupUnits.single.displayName, 'Library 库');
+    });
+  });
+
   group('整本二选一（冲突状态）', () {
     test('初始没有待裁决冲突', () {
       final provider = CloudSyncProvider();
