@@ -27,7 +27,6 @@ pub struct InstallerApp {
     pub(crate) install_dir: String,
     pub(crate) desktop_shortcut: bool,
     pub(crate) start_menu_shortcut: bool,
-    pub(crate) launch_after: bool,
     pub(crate) upgrade: bool,
     pub(crate) session: Option<InstallSession>,
     pub(crate) log_tail: String,
@@ -53,6 +52,7 @@ impl InstallerApp {
             .map(|app| app.dir.display().to_string())
             .unwrap_or_else(|| installer::default_install_dir().display().to_string());
         let upgrade = installed.is_some();
+        let (desktop_shortcut, start_menu_shortcut) = shortcut_flags(installed.as_ref());
         let dark = installer::system_prefers_dark();
         theme::apply(&cc.egui_ctx, dark);
 
@@ -64,9 +64,8 @@ impl InstallerApp {
             installed,
             running: installer::is_app_running(),
             install_dir,
-            desktop_shortcut: false,
-            start_menu_shortcut: true,
-            launch_after: true,
+            desktop_shortcut,
+            start_menu_shortcut,
             upgrade,
             session: None,
             log_tail: String::new(),
@@ -94,6 +93,9 @@ impl InstallerApp {
         self.running = installer::is_app_running();
         self.installed = installer::installed_app();
         self.upgrade = self.installed.is_some();
+        let (desktop_shortcut, start_menu_shortcut) = shortcut_flags(self.installed.as_ref());
+        self.desktop_shortcut = desktop_shortcut;
+        self.start_menu_shortcut = start_menu_shortcut;
         if let Some(app) = &self.installed {
             self.install_dir = app.dir.display().to_string();
         }
@@ -150,7 +152,6 @@ impl InstallerApp {
             install_dir,
             desktop_shortcut: self.desktop_shortcut,
             start_menu_shortcut: self.start_menu_shortcut,
-            upgrade: self.upgrade,
         };
 
         match installer::start_install(&setup, &options) {
@@ -256,13 +257,33 @@ impl InstallerApp {
         if let Some(setup) = &self.setup_path {
             installer::cleanup_materialized(setup);
         }
-        if self.launch_after && !self.launched {
-            match installer::launch_app(Path::new(&self.install_dir)) {
-                Ok(()) => self.launched = true,
-                Err(error) => self.launch_error = Some(error),
+    }
+
+    /// 安装成功页的「打开 NarrChat」；安装期间不再自动拉起应用。
+    pub(crate) fn open_app(&mut self) {
+        if self.launched {
+            return;
+        }
+        match installer::launch_app(Path::new(&self.install_dir)) {
+            Ok(()) => {
+                self.launched = true;
+                self.launch_error = None;
             }
+            Err(error) => self.launch_error = Some(error),
         }
     }
+}
+
+fn shortcut_flags(installed: Option<&installer::InstalledApp>) -> (bool, bool) {
+    let Some(app) = installed else {
+        return (false, true);
+    };
+    let has = |name: &str| {
+        app.selected_tasks
+            .split(',')
+            .any(|task| task.trim().eq_ignore_ascii_case(name))
+    };
+    (has("desktopicon"), has("startmenuicon"))
 }
 
 impl eframe::App for InstallerApp {

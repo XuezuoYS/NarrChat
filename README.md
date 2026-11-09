@@ -61,7 +61,7 @@
 从 [Releases](https://github.com/XuezuoYS/NarrChat/releases) 下载对应版本：
 
 - **Windows**：解压 ZIP 便携包直接运行，或使用 `setup.exe`
-  （默认按用户目录安装、免管理员权限）。
+  （安装器启动时会请求管理员权限，默认按用户目录安装）。
 - **Android**：安装 APK（arm64）；首次使用请开启系统通知权限，
   并在「设置 → API 设置」中配置 API Key。
 

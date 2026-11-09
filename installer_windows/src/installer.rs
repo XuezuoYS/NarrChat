@@ -24,13 +24,12 @@ pub const APP_EXE: &str = "narrchat.exe";
 /// Inno 卸载键（与 `tool/build_release.dart` 的 AppId 对应）。
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}_is1";
 
-/// 安装选项；升级时目录和快捷方式沿用旧安装。
+/// 安装选项；安装目录和快捷方式由调用方先确定。
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
     pub install_dir: PathBuf,
     pub desktop_shortcut: bool,
     pub start_menu_shortcut: bool,
-    pub upgrade: bool,
 }
 
 impl InstallOptions {
@@ -209,34 +208,29 @@ pub fn prepare_setup(explicit: Option<&Path>) -> Result<PathBuf, String> {
     )
 }
 
-/// 拼 Inno 命令行。升级时不传 `/DIR` 和 `/TASKS`，让 Inno 沿用上次的选择。
+/// 拼 Inno 命令行。升级也显式传 `/DIR` 和 `/TASKS`：
+/// 管理员授权后进程可能处于另一个用户上下文，不能只依赖 Inno 自己记住上次选择。
 pub fn build_args(options: &InstallOptions, log_path: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "/VERYSILENT".into(),
         "/SUPPRESSMSGBOXES".into(),
         "/NORESTART".into(),
     ];
-    if !options.upgrade {
-        args.push(format!("/DIR={}", options.install_dir.display()).into());
-        args.push(format!("/TASKS={}", options.tasks()).into());
-    }
+    args.push(format!("/DIR={}", options.install_dir.display()).into());
+    args.push(format!("/TASKS={}", options.tasks()).into());
     args.push(format!("/LOG={}", log_path.display()).into());
     args
 }
 
-/// 找一个可写的安装临时目录：本地应用数据 → 壳同目录 → %TEMP%。
+/// 找一个可写的安装临时目录：本地应用数据 → %TEMP%。
 ///
-/// Inno Setup 初始化时必须在 `%TEMP%` 下创建 `is-*.tmp`。部分环境（权限/安全软件）
-/// 会拒绝这个操作，所以壳自己先找出可写目录，再把它作为子进程的 TEMP/TMP。
+/// 只使用用户数据/临时目录，**绝不在安装包所在目录创建文件夹或文件**。
+/// Inno Setup 初始化时必须在 `%TEMP%` 下创建 `is-*.tmp`；这里选好的目录
+/// 同时作为 Inno 的 TEMP/TMP，避免权限受限环境里初始化失败。
 pub fn prepare_work_dir() -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         candidates.push(PathBuf::from(local).join("NarrChat").join("setup-work"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("NarrChat-setup-work"));
-        }
     }
     candidates.push(std::env::temp_dir().join("NarrChatSetup"));
 
@@ -265,6 +259,9 @@ pub fn prepare_work_dir() -> Result<PathBuf, String> {
 }
 
 /// 启动 Inno；安装日志和工作目录都在 [prepare_work_dir] 选出的目录里。
+///
+/// 壳的 exe 清单已经 `requireAdministrator`，启动时只弹一次 UAC；
+/// 这里直接 `spawn`，Inno 继承管理员令牌，不会再二次提权。
 pub fn start_install(setup: &Path, options: &InstallOptions) -> Result<InstallSession, String> {
     let work_dir = prepare_work_dir()?;
     let log_path = work_dir.join("install.log");
@@ -419,18 +416,17 @@ fn read_log_text(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn options(upgrade: bool) -> InstallOptions {
+    fn options() -> InstallOptions {
         InstallOptions {
             install_dir: PathBuf::from(r"C:\Users\Test\NarrChat"),
             desktop_shortcut: true,
             start_menu_shortcut: false,
-            upgrade,
         }
     }
 
     #[test]
     fn fresh_install_passes_dir_and_tasks() {
-        let args: Vec<String> = build_args(&options(false), Path::new(r"C:\Temp\install.log"))
+        let args: Vec<String> = build_args(&options(), Path::new(r"C:\Temp\install.log"))
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
@@ -441,19 +437,19 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_keeps_previous_dir_and_tasks() {
-        let args: Vec<String> = build_args(&options(true), Path::new(r"C:\Temp\install.log"))
+    fn upgrade_passes_known_dir_and_tasks() {
+        let args: Vec<String> = build_args(&options(), Path::new(r"C:\Temp\install.log"))
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
-        assert!(!args.iter().any(|value| value.starts_with("/DIR=")));
-        assert!(!args.iter().any(|value| value.starts_with("/TASKS=")));
+        assert!(args.contains(&r"/DIR=C:\Users\Test\NarrChat".to_owned()));
+        assert!(args.contains(&"/TASKS=desktopicon".to_owned()));
         assert!(args.contains(&"/LOG=C:\\Temp\\install.log".to_owned()));
     }
 
     #[test]
     fn tasks_are_joined_with_comma() {
-        let mut value = options(false);
+        let mut value = options();
         value.start_menu_shortcut = true;
         assert_eq!(value.tasks(), "desktopicon,startmenuicon");
     }

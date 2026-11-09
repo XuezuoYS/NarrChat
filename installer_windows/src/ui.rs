@@ -108,7 +108,11 @@ impl InstallerApp {
         );
 
         ui.add_space(16.0);
-        bullet(ui, p, "默认安装到当前用户目录，不需要管理员权限。");
+        bullet(
+            ui,
+            p,
+            "安装器启动时会请求管理员权限，默认安装到当前用户目录。",
+        );
         bullet(
             ui,
             p,
@@ -256,14 +260,6 @@ impl InstallerApp {
                     )
                     .wrap(),
                 );
-                ui.add_space(4.0);
-                checkbox_row(
-                    ui,
-                    p,
-                    &mut self.launch_after,
-                    "安装完成后启动 NarrChat",
-                    true,
-                );
             } else {
                 checkbox_row(ui, p, &mut self.desktop_shortcut, "创建桌面快捷方式", true);
                 checkbox_row(
@@ -271,14 +267,6 @@ impl InstallerApp {
                     p,
                     &mut self.start_menu_shortcut,
                     "创建开始菜单快捷方式",
-                    true,
-                );
-                ui.add_space(2.0);
-                checkbox_row(
-                    ui,
-                    p,
-                    &mut self.launch_after,
-                    "安装完成后启动 NarrChat",
                     true,
                 );
             }
@@ -411,7 +399,10 @@ impl InstallerApp {
         ui.separator();
         ui.add_space(12.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(theme::primary_button(p, "完成")).clicked() {
+            if !self.launched && ui.add(theme::primary_button(p, "打开 NarrChat")).clicked() {
+                self.open_app();
+            }
+            if ui.add(theme::secondary_button("完成")).clicked() {
                 self.close(ui.ctx());
             }
             if ui.add(theme::secondary_button("打开安装目录")).clicked() {

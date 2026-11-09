@@ -57,6 +57,23 @@ fn embed_windows_resources(version: &str) {
             version_u64(version),
         )
         .set_language(0x0804); // 简体中文
+
+    // 测试/调试二进制不要求管理员，否则 cargo test 无法在普通终端启动；
+    // 发布壳必须 requireAdministrator，保证 UAC 只在启动时弹一次。
+    if env::var("PROFILE").as_deref() == Ok("release") {
+        res.set_manifest(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>"#,
+        );
+    }
     if let Err(error) = res.compile() {
         panic!("Windows 资源编译失败：{error}");
     }

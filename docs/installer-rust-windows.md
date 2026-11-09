@@ -5,22 +5,22 @@
 
 ## 为什么这样做
 
-- 现有 [`tool/build_release.dart`](../tool/build_release.dart) 已经能产出免管理员的 Inno `setup.exe`，文件复制、快捷方式、卸载注册、升级覆盖都是现成的。
+- 现有 [`tool/build_release.dart`](../tool/build_release.dart) 已经能产出 Inno `setup.exe`，文件复制、快捷方式、卸载注册、升级覆盖都是现成的。
 - 壳只补两块：**完全自定义的 UI** 和 **安装前后的编排**。不重写安装引擎，也不碰用户「文档」目录下 `NarrChat` 里的用户数据。
-- Rust + egui 是纯 Cargo 依赖，编译进 exe；不需要 WebView2、Electron、GTK 或额外的 UI 运行时。壳本身约 11MB；内嵌 Inno 后的最终 setup 约 29MB。
+- Rust + egui 是纯 Cargo 依赖，编译进 exe；不需要 WebView2、Electron、GTK 或额外的 UI 运行时。壳本身约 11MB；内嵌 Inno 后的最终 setup 约 29MB。壳带 `requireAdministrator` 清单，启动时统一请求一次 UAC，Inno 继承管理员权限，不再二次提权。
 
 ## 结构
 
 ```
-NarrChatSetup.exe（Rust + egui，签名）
+NarrChatSetup.exe（Rust + egui，签名，requireAdministrator）
   ├─ 预检：是否已安装、NarrChat 是否在运行、安装包是否存在
-  ├─ 选项：安装位置、桌面/开始菜单快捷方式、安装后启动
+  ├─ 选项：安装位置、桌面/开始菜单快捷方式
   ├─ 启动 Inno Setup（内嵌 payload 或同目录 sidecar）
   │    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=...
-  │    全新安装：/DIR=... /TASKS=...
-  │    升级安装：不传 /DIR 和 /TASKS，沿用上次
+  │    /DIR=... /TASKS=...（升级也按上次选择显式传）
+  │    TEMP/TMP 指向壳选出的可写工作目录
   ├─ 轮询退出码 + 读日志尾部（Spinner，不伪造百分比）
-  └─ 成功：启动应用 / 失败：显示退出码和日志入口
+  └─ 成功：打开 NarrChat / 失败：显示退出码和日志入口
 ```
 
 ## 目录
@@ -45,9 +45,9 @@ installer_windows/
 - 固定窗口 `720×640`，不可缩放，隐藏最小化/最大化按钮；跟随 Windows 明暗主题，右上角可手动切换。
 - 五屏：
   1. **欢迎**：版本、数据位置说明、已安装/运行中/安装包缺失提示；
-  2. **选项**：安装位置、快捷方式、安装后启动；升级时路径和快捷方式只读；
+  2. **选项**：安装位置、快捷方式；升级时路径和快捷方式只读；
   3. **安装中**：Spinner + 状态 + 可选日志尾部，关闭窗口会被取消；
-  4. **完成**：安装目录、启动结果、打开目录/日志；
+  4. **完成**：安装目录、打开 NarrChat 按钮、打开目录/日志；
   5. **失败**：错误、Inno 退出码、日志入口、重试/退出。
 - 中文靠 egui 0.37 的 `system_fonts` 系统字体回退，不打包字体；品牌色跟主应用 `lib/theme/app_theme.dart` 的 `#4D6BFE` 对齐。
 
@@ -70,28 +70,27 @@ installer_windows/
 3. 壳同目录的 `narrchat-setup.exe`、`NarrChatSetup.exe`、`NarrChat_*_windows_x64-setup.exe`（sidecar，推荐）；
 4. 编译时内嵌的 `payload/narrchat-setup.exe`（单文件发布用）。
 
-内嵌模式不会直接运行内存里的字节，会先释放成 exe：
+内嵌模式不会直接运行内存里的字节，会在**启动时**释放成 exe：
 
-- 优先 `%LOCALAPPDATA%\NarrChat\setup-cache\`；
-- 不行退 `%TEMP%`；
-- 再不行退壳同目录的 `NarrChat-setup-cache\`；
-- 安装成功后删除释放出来的临时 exe。
+- 释放到壳选出的可写工作目录（`%LOCALAPPDATA%\NarrChat\setup-work` → `%TEMP%\NarrChatSetup`）；
+- **不会在安装包所在目录创建任何文件夹或文件**；
+- 安装成功后删除释放出来的临时 exe（日志保留在工作目录）。
 
-如果三处都写不进去（安全软件/只读目录），会提示改用 sidecar 或 `--setup`。找不到安装包时欢迎页会显示提示，并给一个「选择 Inno 安装包…」入口。
+如果 AppData 和 `%TEMP%` 都写不进去（安全软件/只读环境），会提示改用 sidecar 或 `--setup`。找不到安装包时欢迎页会显示提示，并给一个「选择 Inno 安装包…」入口。
 
 ### 3. Inno 参数
 
 | 场景 | 参数 |
 | --- | --- |
-| 全部 | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="%TEMP%\NarrChatSetup\install.log"` |
+| 全部 | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=<工作目录>\install.log` |
 | 全新安装 | 额外 `/DIR=<安装位置>`、`/TASKS=desktopicon,startmenuicon`（只传勾选的） |
-| 升级安装 | **不传** `/DIR`、`/TASKS`，让 Inno 沿用上次的目录和任务 |
+| 升级安装 | 同样传 `/DIR`、`/TASKS`（从注册表还原上次选择），避免管理员上下文变化后装错 |
 
 当前 Inno 脚本 [`tool/build_release.dart`](../tool/build_release.dart) 里：
 
-- `PrivilegesRequired=lowest`：按用户安装，不弹 UAC；
+- `PrivilegesRequired=lowest`：按用户安装；UAC 由壳的 `requireAdministrator` 清单统一请求，Inno 继承管理员令牌，自身不再弹 UAC；
 - `UsePreviousAppDir=yes`：升级沿用旧目录；
-- `[Run]` 的「立即运行」带 `skipifsilent`：静默安装不会自动拉起应用，所以**由壳在成功后启动**；
+- `[Run]` 的「立即运行」带 `skipifsilent`：静默安装不会自动拉起应用；壳在完成页提供「打开 NarrChat」按钮，由用户决定何时启动；
 - 卸载仍由 Inno 生成的 `Uninstall NarrChat.exe` 负责，壳不重复写卸载项。
 
 ### 4. 进度与日志
@@ -99,13 +98,16 @@ installer_windows/
 Inno 静默模式**没有进度回调**，所以壳不显示假百分比：
 
 - 安装中显示 Spinner、已运行秒数和可选日志尾部；
-- 壳先找一个可写工作目录（`%LOCALAPPDATA%\NarrChat\setup-work` → 壳同目录 `NarrChat-setup-work` → `%TEMP%\NarrChatSetup`），日志写在该目录的 `install.log`；
+- 壳先找一个可写工作目录（`%LOCALAPPDATA%\NarrChat\setup-work` → `%TEMP%\NarrChatSetup`），日志写在该目录的 `install.log`；**不会在安装包所在目录创建任何文件或文件夹**；
+- 内嵌安装包在壳启动、界面出现前释放到该工作目录；不会等点击安装后才在安装包旁边解压；
 - **同一个目录会作为 Inno 进程的 `TEMP`/`TMP`**：Inno 初始化时必须在临时目录里创建 `is-*.tmp`，部分环境（权限/安全软件）会拒绝这一步，直接表现为退出码 1 且没有日志。壳自己先探测可写目录，避免这个问题；
 - 日志按 UTF-8/UTF-16 读取；失败时显示 Inno 退出码和日志目录。
 
 ### 5. 升级和关闭
 
-- 升级时安装路径只读；快捷方式不再显示成“点不动的复选框”，而是显示上次的选择摘要（例如「桌面 无 · 开始菜单 有」），壳不传 `/DIR`、`/TASKS`，避免重置；
+- 升级时安装路径只读；快捷方式不再显示成“点不动的复选框”，而是显示上次的选择摘要（例如「桌面 无 · 开始菜单 有」）；
+- 壳 exe 带 `requireAdministrator` 清单，**启动时统一请求一次 UAC**；Inno 继承管理员权限，不再二次提权，避免连续两次签名/授权提示；
+- Inno 仍显式收到 `/DIR` 和 `/TASKS`，不会因为管理员上下文变化而装错位置或丢快捷方式；
 - 全新安装才显示「桌面快捷方式 / 开始菜单快捷方式」两个可勾选项；
 - 安装进行中关闭窗口会被 `ViewportCommand::CancelClose` 取消；安装完成后才能关闭；
 - 安装失败后「重试」回到选项页；安装包缺失时回到欢迎页重新选择。
@@ -113,7 +115,7 @@ Inno 静默模式**没有进度回调**，所以壳不显示假百分比：
 ## 排障
 
 - **退出码 1，日志文件不存在**：Inno 初始化失败，最常见是它在 `TEMP` 下创建 `is-*.tmp` 被拒（错误 5）。先看壳是否把 TEMP/TMP 指到了可写工作目录；再检查安全软件是否拦了临时目录创建。
-- **退出码 5，日志里有 `Trying to create file ... unins000.exe ... 拒绝访问`**：目标目录里的旧卸载器/文件被锁或被安全软件拦。确认 NarrChat 没在运行、目标目录可写；必要时用管理员身份运行安装器。
+- **退出码 5，日志里有 `Trying to create file ... unins000.exe ... 拒绝访问`**：安装器启动时已经请求管理员权限；如果仍失败，确认 NarrChat 没在运行、目标目录的旧卸载器没有被安全软件锁定，或换一个可写目录。
 - **界面没有滚动/按钮被裁**：窗口固定 720×640，正常情况下错误态也能放下；如果系统缩放特别大，先确认显示缩放，再考虑改窗口尺寸。
 
 ## 构建
@@ -181,18 +183,18 @@ sidecar 不在运行时写 exe，受限环境最稳；代价是分发两个文�
 ## 测试清单
 
 - `cd installer_windows && cargo test`：Inno 参数、升级参数、目录校验；
-- 干净 Windows 10/11 虚拟机：全新安装、升级安装、无管理员权限；
+- 干净 Windows 10/11 虚拟机：全新安装、升级安装、取消 UAC、用非管理员账户配合管理员凭据；
 - 运行中安装：壳应拦住，退出 NarrChat 后能继续；
 - 中文路径、带空格路径、长路径；
 - 100%/125%/150%/200% DPI、浅色/深色、高对比度；
 - 安装包缺失、安装包损坏、Inno 返回失败：错误提示、退出码、日志入口；
 - 杀软/ SmartScreen：壳和安装包都已签名；
-- 安装完成后启动应用；卸载后用户数据仍在用户「文档」目录下的 `NarrChat`。
+- 安装完成后点击「打开 NarrChat」；卸载后用户数据仍在用户「文档」目录下的 `NarrChat`。
 
 ## 后续可做
 
 - 单实例互斥，避免同时开两个壳；
-- 把壳接进 `tool/build_release.dart`，自动复制/签名/打包；
+- 把壳的签名步骤接进 `tool/build_release.dart`，自动签壳/签内嵌 Inno；
 - 需要更细进度时，在 Inno 侧用自定义进度页，或解析 `/LOG`（脆弱，不优先）；
 - 如果确实需要完全自由布局/动画，再评估自定义 bootstrapper；当前壳已经覆盖品牌化安装器的需求。
 

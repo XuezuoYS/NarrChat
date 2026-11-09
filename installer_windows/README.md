@@ -20,6 +20,8 @@ cargo build --release
 cargo run --release -- --setup payload\narrchat-setup.exe
 ```
 
+`--release` 的壳带管理员清单，运行时会弹 UAC；调试预览用 `cargo run -- --setup payload\narrchat-setup.exe`（debug 不带清单，不弹 UAC）。
+
 也可以把任意 Inno 安装包命名为 `narrchat-setup.exe` 放到壳的同目录；壳会自动找 sidecar。
 
 ## 发布
@@ -29,6 +31,8 @@ cargo run --release -- --setup payload\narrchat-setup.exe
 把安装包内嵌进壳 → 输出 `build/release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
 
 `payload/narrchat-setup.exe` 会保留（已被 gitignore），方便调试或做 sidecar；最终发布只需要壳。
+
+壳 exe 带 `requireAdministrator` 清单，启动时统一请求一次 UAC；Inno 继承管理员权限，不再二次提权。安装临时目录只使用 `%LOCALAPPDATA%` / `%TEMP%`，不会在安装包所在目录创建文件。
 
 签名顺序：如果只签最终壳，内嵌的 Inno 原始安装包本身仍未签名；要让内嵌安装包也带签名，
 需要在构建脚本嵌入之前先签 Inno（当前脚本不自动签名，手动做或后续加签名步骤）。
