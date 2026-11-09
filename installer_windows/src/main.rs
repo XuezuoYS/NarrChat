@@ -35,7 +35,7 @@ fn main() -> eframe::Result {
             other => {
                 eprintln!("未知参数：{other}");
                 print_help();
-                return Ok(());
+                std::process::exit(2);
             }
         }
     }

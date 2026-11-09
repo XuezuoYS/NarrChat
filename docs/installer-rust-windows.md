@@ -68,8 +68,10 @@ installer_windows/
 
 1. 命令行 `--setup <setup.exe>`；
 2. 环境变量 `NARRCHAT_INNO_SETUP`；
-3. 壳同目录的 `narrchat-setup.exe`、`NarrChatSetup.exe`、`NarrChat_*_windows_x64-setup.exe`（sidecar，推荐）；
+3. 壳同目录的 `narrchat-setup.exe`、`NarrChatSetup.exe`、`NarrChatSetupPayload.exe`（Inno 原始包，推荐）；
 4. 编译时内嵌的 `payload/narrchat-setup.exe`（单文件发布用）。
+
+壳会排除当前 exe；不要把另一个最终 `NarrChat_*_windows_x64-setup.exe` 放在旁边当 sidecar，它不是 Inno 包。
 
 内嵌模式不会直接运行内存里的字节，会在**启动时**释放成 exe：
 
@@ -83,9 +85,12 @@ installer_windows/
 
 | 场景 | 参数 |
 | --- | --- |
-| 全部 | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=<工作目录>\install.log` |
+| 全部 | `/SP- /VERYSILENT /NORESTART /LOG=<工作目录>\install.log` |
 | 全新安装 | 额外 `/DIR=<安装位置>`、`/TASKS=desktopicon,startmenuicon`（只传勾选的） |
 | 升级安装 | 同样传 `/DIR`、`/TASKS`（从注册表还原上次选择），避免管理员上下文变化后装错 |
+
+`/SP-` 用来关掉 SetupLdr 的启动确认框（`/VERYSILENT` 本身不会关）；不再传
+`/SUPPRESSMSGBOXES`，安装成功仍然全静默，但初始化失败时 Inno 会把真实错误弹出来。
 
 当前 Inno 脚本 [`tool/build_release.dart`](../tool/build_release.dart) 里：
 
@@ -101,7 +106,7 @@ Inno 静默模式**没有进度回调**，所以壳不显示假百分比：
 - 安装中显示 Spinner、已运行秒数和可选日志尾部；
 - 壳先找一个可写工作目录（`%LOCALAPPDATA%\NarrChat\setup-work` → `%TEMP%\NarrChatSetup`），日志写在该目录的 `install.log`；**不会在安装包所在目录创建任何文件或文件夹**；
 - 内嵌安装包在壳启动、界面出现前释放到该工作目录；不会等点击安装后才在安装包旁边解压；
-- **同一个目录会作为 Inno 进程的 `TEMP`/`TMP`**：Inno 初始化时必须在临时目录里创建 `is-*.tmp`，部分环境（权限/安全软件）会拒绝这一步，直接表现为退出码 1 且没有日志。壳自己先探测可写目录，避免这个问题；
+- Inno 使用**系统临时目录**，壳不再强制覆盖 `TEMP`/`TMP`：管理员/标准用户混合上下文里，自定义目录可能对 Inno 不可写，表现为退出码 1 且没有日志；
 - 日志按 UTF-8/UTF-16 读取；失败时显示 Inno 退出码和日志目录。
 
 ### 5. 升级和关闭
@@ -115,7 +120,8 @@ Inno 静默模式**没有进度回调**，所以壳不显示假百分比：
 
 ## 排障
 
-- **退出码 1，日志文件不存在**：Inno 初始化失败，最常见是它在 `TEMP` 下创建 `is-*.tmp` 被拒（错误 5）。先看壳是否把 TEMP/TMP 指到了可写工作目录；再检查安全软件是否拦了临时目录创建。
+- **安装成功但找不到 `narrchat.exe`**：先看 `install.log` 是否存在、`%LOCALAPPDATA%\NarrChat\setup-work` 是否为空。旧版壳曾把最终 setup 自己当成 sidecar（`NarrChat_*_windows_x64-setup.exe` 命中扫描），于是启动的是壳自己，Inno 根本没运行，表现就是工作目录空、没有日志、没有程序文件；新版只认明确的 Inno 包名并排除当前 exe，未知参数也会返回非零。壳现在还会先读 `install.log` 里的 `Dest filename`，再读注册表里的安装目录，最后才用界面选择的目录；每个位置都会等 2 秒再判定。如果仍然找不到，`install.log` 会记录 Inno 是否跳过了文件，Windows 安全中心的「保护历史记录」可以确认是不是杀软隔离；这种情况需要给安装包/程序签名或加白名单。
+- **退出码 1，日志文件不存在**：Inno SetupLdr 初始化失败。壳现在不再抑制消息框，先看 Inno 弹窗里的真实错误；常见原因是安全软件拦截临时目录，或 SetupLdr 释放出来的安装引擎被拦截，也可能是 payload 损坏。壳不再强制覆盖 `TEMP`/`TMP`，让 Inno 用系统临时目录。
 - **退出码 5，日志里有 `Trying to create file ... unins000.exe ... 拒绝访问`**：安装器启动时已经请求管理员权限；如果仍失败，确认 NarrChat 没在运行、目标目录的旧卸载器没有被安全软件锁定，或换一个可写目录。
 - **界面没有滚动/按钮被裁**：窗口固定 720×640，正常情况下错误态也能放下；如果系统缩放特别大，先确认显示缩放，再考虑改窗口尺寸。
 

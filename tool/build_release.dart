@@ -1370,6 +1370,7 @@ AppId={{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}
 AppName=NarrChat
 AppVersion=${config.version}
 AppPublisher=NarrChat
+DisableStartupPrompt=yes
 DefaultDirName={code:GetDefaultDir}
 UsePreviousAppDir=yes
 PrivilegesRequired=lowest

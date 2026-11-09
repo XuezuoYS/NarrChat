@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
@@ -163,6 +163,11 @@ pub fn is_app_running() -> bool {
     }
 }
 
+/// 清理用户输入的安装目录：去掉首尾空白，避免和 Inno 实际创建的目录只差一个空格。
+pub fn normalize_install_dir(input: &str) -> PathBuf {
+    PathBuf::from(input.trim())
+}
+
 /// 校验收到的安装目录：绝对路径、非根目录、不含 `..`、不是已有文件。
 pub fn validate_install_dir(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() {
@@ -210,23 +215,33 @@ pub fn prepare_setup(explicit: Option<&Path>) -> Result<PathBuf, String> {
 
 /// 拼 Inno 命令行。升级也显式传 `/DIR` 和 `/TASKS`：
 /// 管理员授权后进程可能处于另一个用户上下文，不能只依赖 Inno 自己记住上次选择。
+///
+/// - `/SP-` 关掉 SetupLdr 的“This will install...”启动确认框；`/VERYSILENT`
+///   本身不会关它，干净虚拟机上很容易卡在这里。
+/// - 不再传 `/SUPPRESSMSGBOXES`：安装成功仍然全静默，初始化失败时让 Inno
+///   把真实错误弹出来，而不是只剩一个退出码 1。
+/// - 路径没有空格时保持原样（和已验证可用的命令一致），有空格才加引号。
 pub fn build_args(options: &InstallOptions, log_path: &Path) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![
-        "/VERYSILENT".into(),
-        "/SUPPRESSMSGBOXES".into(),
-        "/NORESTART".into(),
-    ];
-    args.push(format!("/DIR={}", options.install_dir.display()).into());
+    let mut args: Vec<OsString> = vec!["/SP-".into(), "/VERYSILENT".into(), "/NORESTART".into()];
+    args.push(format!("/DIR={}", quote_if_needed(&options.install_dir)).into());
     args.push(format!("/TASKS={}", options.tasks()).into());
-    args.push(format!("/LOG={}", log_path.display()).into());
+    args.push(format!("/LOG={}", quote_if_needed(log_path)).into());
     args
+}
+
+fn quote_if_needed(path: &Path) -> String {
+    let value = path.display().to_string();
+    if value.chars().any(char::is_whitespace) {
+        format!("\"{value}\"")
+    } else {
+        value
+    }
 }
 
 /// 找一个可写的安装临时目录：本地应用数据 → %TEMP%。
 ///
 /// 只使用用户数据/临时目录，**绝不在安装包所在目录创建文件夹或文件**。
-/// Inno Setup 初始化时必须在 `%TEMP%` 下创建 `is-*.tmp`；这里选好的目录
-/// 同时作为 Inno 的 TEMP/TMP，避免权限受限环境里初始化失败。
+/// 内嵌 payload 和 `install.log` 放在这里；Inno 自己使用系统临时目录。
 pub fn prepare_work_dir() -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
@@ -269,8 +284,9 @@ pub fn start_install(setup: &Path, options: &InstallOptions) -> Result<InstallSe
 
     let mut command = Command::new(setup);
     command.args(build_args(options, &log_path));
-    // Inno 初始化时会在 GetTempPath() 下创建 is-*.tmp；这里强制用壳已验证可写的目录。
-    command.env("TEMP", &work_dir).env("TMP", &work_dir);
+    // 不再强制把 TEMP/TMP 指到用户目录：干净虚拟机/管理员上下文里，自定义
+    // 临时目录可能不可写，Inno 会直接退出 1 且没有日志。让 Inno 用系统临时
+    // 目录；壳自己的 payload 和日志仍放在 work_dir。
     let child = command
         .spawn()
         .map_err(|error| format!("无法启动 Inno 安装程序：{error}"))?;
@@ -280,6 +296,47 @@ pub fn start_install(setup: &Path, options: &InstallOptions) -> Result<InstallSe
         log_path,
         started: Instant::now(),
     })
+}
+
+/// 从 Inno 安装日志里找实际写入 `narrchat.exe` 的目录（取最后一次）。
+///
+/// 管理员上下文、旧安装记录或杀软干预都可能让实际目录和壳里选的目录不同，
+/// 日志里的 `Dest filename` 是 Inno 真正写盘的位置，比任何推测都可靠。
+pub fn install_dir_from_log(log_path: &Path) -> Option<PathBuf> {
+    let text = read_log_text(log_path);
+    let mut found = None;
+    for line in text.lines() {
+        let Some((_, rest)) = line.split_once("Dest filename:") else {
+            continue;
+        };
+        let path_text = rest.trim().trim_matches('"');
+        let path = Path::new(path_text);
+        let is_app = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(APP_EXE));
+        if is_app {
+            if let Some(parent) = path.parent() {
+                found = Some(parent.to_path_buf());
+            }
+        }
+    }
+    found
+}
+
+/// 等主程序出现；杀软扫描或文件系统延迟时，Inno 退出后文件可能晚一点可见。
+pub fn wait_for_app(dir: &Path, timeout: Duration) -> bool {
+    let exe = dir.join(APP_EXE);
+    let deadline = Instant::now() + timeout;
+    loop {
+        if exe.is_file() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// 启动安装好的应用。
@@ -341,26 +398,51 @@ fn ensure_exe(path: &Path, source: &str) -> Result<PathBuf, String> {
 }
 
 fn find_sidecar() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let dev_payload = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("payload")
+        .join("narrchat-setup.exe");
+    find_sidecar_in(exe_dir, &exe, Some(&dev_payload))
+}
+
+/// 查找同目录的 Inno 原始安装包。
+///
+/// 只认明确的 Inno payload 名字；**不能**把 `NarrChat_*_windows_x64-setup.exe`
+/// 这类最终壳当成 sidecar，否则壳会启动自己，子进程遇到未知参数直接返回 0，
+/// 父进程就会误以为 Inno 安装成功。
+fn find_sidecar_in(
+    exe_dir: &Path,
+    current_exe: &Path,
+    dev_payload: Option<&Path>,
+) -> Option<PathBuf> {
     let mut candidates = vec![
         exe_dir.join("narrchat-setup.exe"),
         exe_dir.join("NarrChatSetup.exe"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("payload")
-            .join("narrchat-setup.exe"),
+        exe_dir.join("NarrChatSetupPayload.exe"),
     ];
-
-    if let Ok(entries) = fs::read_dir(&exe_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("NarrChat_") && name.ends_with("-setup.exe") {
-                candidates.push(entry.path());
-            }
+    if let Some(path) = dev_payload {
+        if path.is_file() {
+            candidates.push(path.to_path_buf());
         }
     }
 
-    candidates.into_iter().find(|path| path.is_file())
+    candidates
+        .into_iter()
+        .find(|path| path.is_file() && !same_file(path, current_exe))
+}
+
+/// 判断两个路径是否指向同一个文件（Windows 大小写不敏感）。
+fn same_file(a: &Path, b: &Path) -> bool {
+    fn canonical(path: &Path) -> Option<String> {
+        fs::canonicalize(path)
+            .ok()
+            .map(|path| path.to_string_lossy().to_lowercase())
+    }
+    match (canonical(a), canonical(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn materialize_embedded(bytes: &[u8]) -> Result<PathBuf, String> {
@@ -430,7 +512,9 @@ mod tests {
             .into_iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
+        assert!(args.contains(&"/SP-".to_owned()));
         assert!(args.contains(&"/VERYSILENT".to_owned()));
+        assert!(!args.contains(&"/SUPPRESSMSGBOXES".to_owned()));
         assert!(args.contains(&r"/DIR=C:\Users\Test\NarrChat".to_owned()));
         assert!(args.contains(&"/TASKS=desktopicon".to_owned()));
         assert!(args.contains(&r"/LOG=C:\Temp\install.log".to_owned()));
@@ -444,7 +528,19 @@ mod tests {
             .collect();
         assert!(args.contains(&r"/DIR=C:\Users\Test\NarrChat".to_owned()));
         assert!(args.contains(&"/TASKS=desktopicon".to_owned()));
-        assert!(args.contains(&"/LOG=C:\\Temp\\install.log".to_owned()));
+        assert!(args.contains(&r"/LOG=C:\Temp\install.log".to_owned()));
+    }
+
+    #[test]
+    fn paths_with_spaces_are_quoted() {
+        let mut value = options();
+        value.install_dir = PathBuf::from(r"C:\Program Files\NarrChat");
+        let args: Vec<String> = build_args(&value, Path::new(r"C:\Users\Test User\install.log"))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"/DIR=\"C:\\Program Files\\NarrChat\"".to_owned()));
+        assert!(args.contains(&"/LOG=\"C:\\Users\\Test User\\install.log\"".to_owned()));
     }
 
     #[test]
@@ -460,5 +556,76 @@ mod tests {
         assert!(validate_install_dir(Path::new(r"NarrChat")).is_err());
         assert!(validate_install_dir(Path::new(r"C:\")).is_err());
         assert!(validate_install_dir(Path::new(r"C:\Users\..\NarrChat")).is_err());
+    }
+
+    #[test]
+    fn install_dir_input_is_trimmed() {
+        assert_eq!(
+            normalize_install_dir("  C:\\Users\\Test\\NarrChat  "),
+            PathBuf::from(r"C:\Users\Test\NarrChat")
+        );
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-tmp")
+            .join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sidecar_skips_current_exe() {
+        let dir = test_dir("sidecar-self");
+        let current = dir.join("narrchat-setup.exe");
+        fs::write(&current, b"shell").unwrap();
+        assert_eq!(find_sidecar_in(&dir, &current, None), None);
+
+        let payload = dir.join("NarrChatSetupPayload.exe");
+        fs::write(&payload, b"inno").unwrap();
+        assert_eq!(find_sidecar_in(&dir, &current, None), Some(payload));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_setup_name_is_not_sidecar() {
+        let dir = test_dir("sidecar-final");
+        let current = dir.join("shell.exe");
+        fs::write(&current, b"shell").unwrap();
+        let other = dir.join("NarrChat_3.0.0-beta.1-101_windows_x64-setup.exe");
+        fs::write(&other, b"other").unwrap();
+        assert_eq!(find_sidecar_in(&dir, &current, None), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_dir_from_log_uses_last_narrchat_dest() {
+        let dir = test_dir("install-log");
+        let path = dir.join("install.log");
+        fs::write(
+            &path,
+            "Dest filename: C:\\Old\\NarrChat\\narrchat.exe\r\n\
+             Dest filename: C:\\Users\\Test\\NarrChat\\narrchat.exe\r\n\
+             Dest filename: C:\\Users\\Test\\NarrChat\\data\\app.so\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_dir_from_log(&path),
+            Some(PathBuf::from(r"C:\Users\Test\NarrChat"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_for_app_detects_file_and_timeout() {
+        let dir = test_dir("wait-app");
+        assert!(!wait_for_app(&dir, Duration::from_millis(0)));
+        fs::write(dir.join(APP_EXE), b"fake").unwrap();
+        assert!(wait_for_app(&dir, Duration::from_millis(10)));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

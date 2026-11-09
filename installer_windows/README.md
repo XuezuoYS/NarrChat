@@ -22,7 +22,7 @@ cargo run --release -- --setup payload\narrchat-setup.exe
 
 `--release` 的壳带管理员清单，运行时会弹 UAC；调试预览用 `cargo run -- --setup payload\narrchat-setup.exe`（debug 不带清单，不弹 UAC）。
 
-也可以把任意 Inno 安装包命名为 `narrchat-setup.exe` 放到壳的同目录；壳会自动找 sidecar。
+也可以把任意 Inno 安装包命名为 `narrchat-setup.exe` 放到壳的同目录；壳会自动找 sidecar。不要把另一个最终 `NarrChat_*_windows_x64-setup.exe` 当 sidecar——它不是 Inno 包，壳会把它当成自己并排除。
 
 ## 发布
 

@@ -214,6 +214,10 @@ build: 7
       expect(out, contains('ShowLanguageDialog=no'));
     });
 
+    test('关闭 SetupLdr 启动确认框', () {
+      expect(build(), contains('DisableStartupPrompt=yes'));
+    });
+
     test('包含已安装跳过目录选择逻辑', () {
       final out = build();
       expect(out, contains('DefaultDirName={code:GetDefaultDir}'));

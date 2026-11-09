@@ -142,6 +142,9 @@ impl InstallerApp {
             self.screen = Screen::Failed;
             return;
         };
+        self.install_dir = installer::normalize_install_dir(&self.install_dir)
+            .display()
+            .to_string();
         let install_dir = PathBuf::from(&self.install_dir);
         if let Err(error) = installer::validate_install_dir(&install_dir) {
             self.error = Some(error);
@@ -252,17 +255,76 @@ impl InstallerApp {
     }
 
     fn finish_success(&mut self) {
-        self.screen = Screen::Done;
-        self.error = None;
-        if let Some(setup) = &self.setup_path {
-            installer::cleanup_materialized(setup);
+        let selected = installer::normalize_install_dir(&self.install_dir);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        // Inno 日志里的实际落盘目录最可靠；其次是注册表记录的安装目录；
+        // 最后才回退到界面上选的目录。
+        if let Some(dir) = self
+            .log_path
+            .as_deref()
+            .and_then(installer::install_dir_from_log)
+        {
+            candidates.push(dir);
         }
+        if let Some(app) = installer::installed_app() {
+            if !candidates.contains(&app.dir) {
+                candidates.push(app.dir.clone());
+            }
+            self.installed = Some(app);
+        }
+        if !candidates.contains(&selected) {
+            candidates.push(selected);
+        }
+
+        let mut resolved = None;
+        for dir in &candidates {
+            if installer::wait_for_app(dir, Duration::from_secs(2)) {
+                resolved = Some(dir.clone());
+                break;
+            }
+        }
+
+        if let Some(dir) = resolved {
+            self.install_dir = dir.display().to_string();
+            self.installed = installer::installed_app();
+            self.screen = Screen::Done;
+            self.error = None;
+            if let Some(setup) = &self.setup_path {
+                installer::cleanup_materialized(setup);
+            }
+            return;
+        }
+
+        let checked = candidates
+            .first()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_else(|| self.install_dir.clone());
+        self.exit_code = None;
+        self.error = Some(format!(
+            "Inno 报告安装成功，但在 {} 没有找到 {}。请点『打开日志』确认 Inno 是否跳过了文件，并检查杀毒软件的隔离记录。",
+            checked,
+            installer::APP_EXE
+        ));
+        self.screen = Screen::Failed;
     }
 
     /// 安装成功页的「打开 NarrChat」；安装期间不再自动拉起应用。
     pub(crate) fn open_app(&mut self) {
         if self.launched {
             return;
+        }
+        // 注册表路径比界面里的选择更接近实际安装位置，但只在文件确实存在时才采用。
+        if !Path::new(&self.install_dir)
+            .join(installer::APP_EXE)
+            .is_file()
+        {
+            if let Some(app) = installer::installed_app() {
+                if app.dir.join(installer::APP_EXE).is_file() {
+                    self.install_dir = app.dir.display().to_string();
+                    self.installed = Some(app);
+                }
+            }
         }
         match installer::launch_app(Path::new(&self.install_dir)) {
             Ok(()) => {
