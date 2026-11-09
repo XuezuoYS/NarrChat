@@ -60,7 +60,7 @@
 
 从 [Releases](https://github.com/XuezuoYS/NarrChat/releases) 下载对应版本：
 
-- **Windows**：解压 ZIP 便携包直接运行，或使用 `setup.exe`
+- **Windows**：解压 ZIP 便携包直接运行（已自带 VC++ 运行库），或使用 `setup.exe`
   （安装器启动时会请求管理员权限，默认按用户目录安装）。
 - **Android**：安装 APK（arm64）；首次使用请开启系统通知权限，
   并在「设置 → API 设置」中配置 API Key。
@@ -209,6 +209,9 @@ dart run tool/build_release.dart --version 1.2.0 # 构建前设置版本号（x.
   [Inno Setup](https://jrsoftware.org/isdl.php) 生成的安装包；构建机需要 Rust/cargo 和
   Inno Setup，未装 Inno 时只产出 ZIP，未装 cargo 时回退为原始 Inno setup.exe。
   设计与参数见 [`docs/installer-rust-windows.md`](docs/installer-rust-windows.md)。
+- **VC++ 运行库**：构建脚本会把 MSVC 运行库 DLL 复制到 `narrchat.exe` 同目录
+  （ZIP 和安装包都包含），Rust 安装壳也静态链接了 CRT；用户不需要另装
+  VC++ Redistributable。
 - 构建脚本默认在每次构建前执行 `flutter clean` + `flutter pub get`，彻底清掉
   Flutter / Dart 增量缓存，避免「Windows 引擎包装源码缺失」之类的缓存报错；
   需要快速增量构建时加 `--no-clean` 跳过。

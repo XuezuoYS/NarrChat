@@ -1,4 +1,7 @@
-// tool/build_release.dart 纯函数的单元测试（版本解析 / 自增 / pubspec 同步 / 目录布局）。
+// tool/build_release.dart 纯函数 / 文件工具的单元测试
+// （版本解析 / 自增 / pubspec 同步 / 目录布局 / VC++ 运行库）。
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
@@ -244,6 +247,10 @@ build: 7
       expect(build(), contains(r'OutputDir=C:\project\release'));
     });
 
+    test('Inno 从应用目录复制全部文件（含运行库 DLL）', () {
+      expect(build(), contains(r'Source: "C:\build\Release\*"'));
+    });
+
     test('AppId 与卸载注册键一致', () {
       final out = build();
       expect(out, contains('AppId={{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}'));
@@ -253,6 +260,87 @@ build: 7
           r"'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}_is1'",
         ),
       );
+    });
+  });
+
+  group('pickLatestMsvcVersionDir（VC++ 运行库定位）', () {
+    test('按数字段选择最新版本', () {
+      expect(
+        pickLatestMsvcVersionDir(['14.9.1', '14.10.2', 'v145', '14.10.1']),
+        '14.10.2',
+      );
+    });
+
+    test('忽略非数字别名', () {
+      expect(pickLatestMsvcVersionDir(['v145', '']), isNull);
+    });
+
+    test('不同位数版本按数值比较', () {
+      expect(
+        pickLatestMsvcVersionDir(['14.44.35207', '14.51.36231']),
+        '14.51.36231',
+      );
+    });
+  });
+
+  group('copyVcRuntimeTo（内置 VC++ 运行库）', () {
+    late Directory tempRoot;
+    late Directory source;
+    late Directory app;
+
+    setUp(() {
+      tempRoot = Directory.systemTemp.createTempSync('narrchat_vc_runtime_');
+      source = Directory(p.join(tempRoot.path, 'source'))..createSync();
+      app = Directory(p.join(tempRoot.path, 'app'))..createSync();
+    });
+
+    tearDown(() {
+      if (tempRoot.existsSync()) tempRoot.deleteSync(recursive: true);
+    });
+
+    void writeDll(String name) {
+      File(p.join(source.path, name)).writeAsBytesSync([0x4D, 0x5A]);
+    }
+
+    test('复制 CRT 目录里的全部 DLL', () {
+      writeDll('msvcp140.dll');
+      writeDll('vcruntime140.dll');
+      writeDll('vcruntime140_1.dll');
+      writeDll('concrt140.dll');
+
+      final copied = copyVcRuntimeTo(app, sourceDir: source);
+
+      expect(copied, [
+        'concrt140.dll',
+        'msvcp140.dll',
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+      ]);
+      for (final name in copied) {
+        expect(File(p.join(app.path, name)).existsSync(), isTrue);
+      }
+    });
+
+    test('缺少必需 DLL 时抛错', () {
+      writeDll('msvcp140.dll');
+      writeDll('vcruntime140.dll');
+
+      expect(
+        () => copyVcRuntimeTo(app, sourceDir: source),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+
+  group('Rust 安装壳运行库', () {
+    test('启用静态 CRT，setup.exe 不依赖 VC++ 运行库', () {
+      final config = File(
+        p.join('installer_windows', '.cargo', 'config.toml'),
+      );
+      expect(config.existsSync(), isTrue);
+      final text = config.readAsStringSync();
+      expect(text, contains('x86_64-pc-windows-msvc'));
+      expect(text, contains('+crt-static'));
     });
   });
 }

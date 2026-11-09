@@ -17,7 +17,8 @@
 //   3. 默认先执行 flutter clean + flutter pub get，彻底清掉构建缓存
 //      （增量缓存的引擎包装源码缺失等报错就是这样避免的；--no-clean 可跳过）
 //   4. 执行 flutter build ...
-//   5. 产物统一输出到项目根目录的 release/（不再是 build/release/）
+//   5. Windows 构建时把 MSVC 运行库 DLL 复制到应用目录（ZIP / 安装包都会带上）
+//   6. 产物统一输出到项目根目录的 release/（不再是 build/release/）
 //      - Android: NarrChat_{version}-{build}_android_arm64.apk
 //      - Windows: NarrChat_{version}-{build}_windows_x64.zip
 //                 + NarrChat_{version}-{build}_windows_x64-setup.exe
@@ -27,6 +28,9 @@
 //   - Inno Setup（免费，https://jrsoftware.org/isdl.php）：生成内嵌用的安装包；
 //   - Rust/cargo（https://rustup.rs）：编译 installer_windows/ 下的壳。
 // 未装 Inno 时只产出 ZIP；未装 cargo 时回退为原始 Inno setup.exe。
+//
+// VC++ 运行库：Windows 构建会从 Visual Studio 的 VC\Redist 目录把运行库 DLL
+// 复制进应用目录，ZIP 和安装包都自带，不需要用户另装 VC++ Redistributable。
 //
 // 依赖：dev_dependencies 中的 archive 包（纯 Dart 打 ZIP，无需系统工具）。
 import 'dart:async';
@@ -136,6 +140,43 @@ List<String> staleWindowsArtifactNames(
     if (withInstaller) '$base-setup.exe',
     if (withInstaller) 'NarrChatSetupPayload.exe',
   ];
+}
+
+/// 应用目录必须自带的 VC++ 运行库 DLL。
+///
+/// 这里只校验基础三项；其余 CRT DLL 一并复制，避免插件以后用到
+/// `msvcp140_1.dll` / `concrt140.dll` 之类时又缺文件。
+const requiredVcRuntimeDlls = <String>[
+  'msvcp140.dll',
+  'vcruntime140.dll',
+  'vcruntime140_1.dll',
+];
+
+/// 从候选目录名里挑最新的 MSVC 版本目录。
+///
+/// 只接受纯数字版本（如 `14.51.36231`），`v145` 这种别名会被忽略。
+String? pickLatestMsvcVersionDir(Iterable<String> names) {
+  final versions = names
+      .where((name) => RegExp(r'^\d+(?:\.\d+)+$').hasMatch(name))
+      .toList();
+  if (versions.isEmpty) return null;
+  versions.sort(
+    (a, b) => _compareVersionParts(
+      a.split('.').map(int.parse).toList(),
+      b.split('.').map(int.parse).toList(),
+    ),
+  );
+  return versions.last;
+}
+
+int _compareVersionParts(List<int> a, List<int> b) {
+  final length = a.length > b.length ? a.length : b.length;
+  for (var i = 0; i < length; i++) {
+    final left = i < a.length ? a[i] : 0;
+    final right = i < b.length ? b[i] : 0;
+    if (left != right) return left.compareTo(right);
+  }
+  return 0;
 }
 
 /// 构建目录布局：产物放项目根目录的 `release/`，临时文件放 `.dart_tool/` 下。
@@ -627,6 +668,26 @@ Future<void> _buildAndroid(ReleaseConfig config) async {
   _artifacts.add(dst.path);
 }
 
+void _stageVcRuntime(Directory appDir) {
+  _step('Windows：内置 VC++ 运行库');
+  final source = findVcRuntimeSourceDir();
+  if (source == null) {
+    _fail(
+      '未找到 Visual Studio 的 VC++ Redist 目录，无法内置运行库。'
+      '请安装「使用 C++ 的桌面开发」工作负载后重试。',
+    );
+  }
+  try {
+    final copied = copyVcRuntimeTo(appDir, sourceDir: source);
+    _success(
+      '已内置 VC++ 运行库：${p.basename(source.path)}（${copied.length} 个 DLL）',
+    );
+    _dim('  来源：${source.path}');
+  } catch (e) {
+    _fail('内置 VC++ 运行库失败：$e');
+  }
+}
+
 Future<void> _buildWindows(
   ReleaseConfig config, {
   required bool withInstaller,
@@ -647,6 +708,8 @@ Future<void> _buildWindows(
   if (!File(p.join(srcDir.path, 'narrchat.exe')).existsSync()) {
     _fail('未找到构建产物：${p.join(srcDir.path, 'narrchat.exe')}');
   }
+
+  _stageVcRuntime(srcDir);
 
   _cleanWindowsArtifacts(config, withInstaller: withInstaller);
 
@@ -1052,6 +1115,160 @@ void _copyDirContents(Directory from, Directory to) {
       entity.copySync(p.join(to.path, name));
     }
   }
+}
+
+/// 查找 Visual Studio 的 x64 VC++ Redist CRT 目录。
+///
+/// 依次尝试环境变量 `VCToolsRedistDir`、`vswhere.exe` 和
+/// `Program Files` 下已安装的 VS；找不到返回 null。
+Directory? findVcRuntimeSourceDir() {
+  final crtDirs = <String>{};
+  final env = Platform.environment['VCToolsRedistDir'];
+  if (env != null && env.trim().isNotEmpty) {
+    crtDirs.addAll(_crtDirsUnder(env.trim()));
+  }
+  crtDirs.addAll(_vswhereCrtDirs());
+  if (crtDirs.isEmpty) crtDirs.addAll(_scanInstalledVcRedist());
+
+  final byVersion = <String, String>{};
+  for (final dir in crtDirs) {
+    final version = _msvcVersionOfCrtDir(dir);
+    if (version != null) byVersion[version] = dir;
+  }
+
+  final latest = pickLatestMsvcVersionDir(byVersion.keys);
+  return latest == null ? null : Directory(byVersion[latest]!);
+}
+
+Iterable<String> _vswhereCrtDirs() sync* {
+  final vswhere = p.join(
+    Platform.environment['ProgramFiles(x86)'] ?? r'C:\Program Files (x86)',
+    'Microsoft Visual Studio',
+    'Installer',
+    'vswhere.exe',
+  );
+  if (!File(vswhere).existsSync()) return;
+
+  ProcessResult result;
+  try {
+    result = Process.runSync(vswhere, [
+      '-latest',
+      '-products',
+      '*',
+      '-find',
+      r'VC\Redist\MSVC\**\x64\Microsoft.VC*.CRT\msvcp140.dll',
+    ]);
+  } on ProcessException {
+    return;
+  }
+  if (result.exitCode != 0) return;
+
+  for (final line in (result.stdout as String).split(RegExp(r'\r?\n'))) {
+    final path = line.trim();
+    if (path.endsWith('msvcp140.dll')) yield p.dirname(path);
+  }
+}
+
+Iterable<String> _scanInstalledVcRedist() sync* {
+  final roots = <String>{};
+  for (final base in [
+    Platform.environment['ProgramFiles'],
+    Platform.environment['ProgramFiles(x86)'],
+    r'C:\Program Files',
+    r'C:\Program Files (x86)',
+  ]) {
+    if (base == null || base.isEmpty) continue;
+    final vsRoot = Directory(p.join(base, 'Microsoft Visual Studio'));
+    if (!vsRoot.existsSync()) continue;
+    for (final versionDir in vsRoot.listSync().whereType<Directory>()) {
+      for (final editionDir in versionDir.listSync().whereType<Directory>()) {
+        roots.add(p.join(editionDir.path, 'VC', 'Redist', 'MSVC'));
+      }
+    }
+  }
+  for (final root in roots) {
+    yield* _crtDirsUnder(root);
+  }
+}
+
+Iterable<String> _crtDirsUnder(String root) sync* {
+  final dir = Directory(root);
+  if (!dir.existsSync()) return;
+  if (_isCrtDir(root)) {
+    yield root;
+    return;
+  }
+
+  // root 既可能是 <ver>/x64/Microsoft.VC*.CRT，也可能是 <ver>/ 或 MSVC/。
+  final bases = <String>[root];
+  if (!Directory(p.join(root, 'x64')).existsSync()) {
+    bases.addAll(dir.listSync().whereType<Directory>().map((d) => d.path));
+  }
+  for (final base in bases) {
+    final x64 = Directory(p.join(base, 'x64'));
+    if (!x64.existsSync()) continue;
+    for (final child in x64.listSync().whereType<Directory>()) {
+      if (_isCrtDir(child.path)) yield child.path;
+    }
+  }
+}
+
+bool _isCrtDir(String path) {
+  final name = p.basename(path);
+  return name.startsWith('Microsoft.VC') && name.endsWith('.CRT');
+}
+
+String? _msvcVersionOfCrtDir(String crtDir) {
+  final versionDir = p.dirname(p.dirname(crtDir));
+  final name = p.basename(versionDir);
+  return RegExp(r'^\d+(?:\.\d+)+$').hasMatch(name) ? name : null;
+}
+
+/// 把 VC++ 运行库 DLL 复制到 [appDir]。
+///
+/// [sourceDir] 可注入测试；默认自动查找 VS 的 Redist CRT 目录。
+/// 返回复制过去的文件名（已排序）。
+List<String> copyVcRuntimeTo(
+  Directory appDir, {
+  Directory? sourceDir,
+}) {
+  final source = sourceDir ?? findVcRuntimeSourceDir();
+  if (source == null) {
+    throw StateError(
+      '未找到 VC++ Redist 目录；请安装 Visual Studio 的「使用 C++ 的桌面开发」工作负载。',
+    );
+  }
+
+  final dlls = source
+      .listSync()
+      .whereType<File>()
+      .where((file) => p.extension(file.path).toLowerCase() == '.dll')
+      .toList();
+  if (dlls.isEmpty) {
+    throw StateError('VC++ Redist 目录里没有 DLL：${source.path}');
+  }
+
+  final names = dlls
+      .map((file) => p.basename(file.path).toLowerCase())
+      .toSet();
+  final missing = requiredVcRuntimeDlls
+      .where((name) => !names.contains(name))
+      .toList();
+  if (missing.isNotEmpty) {
+    throw StateError(
+      'VC++ Redist 缺少必需文件：${missing.join(', ')}（${source.path}）',
+    );
+  }
+
+  appDir.createSync(recursive: true);
+  final copied = <String>[];
+  for (final dll in dlls) {
+    final name = p.basename(dll.path);
+    dll.copySync(p.join(appDir.path, name));
+    copied.add(name);
+  }
+  copied.sort();
+  return copied;
 }
 
 /// 用 archive 包把目录打成 ZIP（顶层包含目录名，流式写盘不占内存）。

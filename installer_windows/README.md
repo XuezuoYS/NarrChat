@@ -33,6 +33,10 @@ cargo run --release -- --setup payload\narrchat-setup.exe
 
 `payload/narrchat-setup.exe` 会保留（已被 gitignore），方便调试或做 sidecar；最终发布只需要壳。
 
+壳用静态 CRT（[`.cargo/config.toml`](.cargo/config.toml) 的 `+crt-static`），
+最终 `setup.exe` 不依赖用户安装 VC++ 运行库；主程序目录的 VC++ 运行库 DLL
+由构建脚本自动复制，ZIP 和安装包都会带上。
+
 壳 exe 带 `requireAdministrator` 清单，启动时统一请求一次 UAC；Inno 继承管理员权限，不再二次提权。安装临时目录只使用 `%LOCALAPPDATA%` / `%TEMP%`，不会在安装包所在目录创建文件。
 
 签名顺序：如果只签最终壳，内嵌的 Inno 原始安装包本身仍未签名；要让内嵌安装包也带签名，
@@ -43,6 +47,7 @@ cargo run --release -- --setup payload\narrchat-setup.exe
 ## 目录
 
 ```
+.cargo/config.toml  静态 CRT（+crt-static）
 src/main.rs       入口、窗口、命令行
 src/app.rs        状态机（欢迎/选项/安装/完成/失败）
 src/ui.rs         页面布局

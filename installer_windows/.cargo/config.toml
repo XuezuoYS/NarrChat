@@ -1,0 +1,4 @@
+# 发布壳静态链接 MSVC 运行库：setup.exe 不再依赖 vcruntime140.dll，
+# 用户没装 VC++ Redistributable 也能直接启动安装器。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

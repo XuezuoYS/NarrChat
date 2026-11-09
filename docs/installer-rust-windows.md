@@ -7,7 +7,7 @@
 
 - 现有 [`tool/build_release.dart`](../tool/build_release.dart) 已经能产出 Inno `setup.exe`，文件复制、快捷方式、卸载注册、升级覆盖都是现成的。
 - 壳只补两块：**完全自定义的 UI** 和 **安装前后的编排**。不重写安装引擎，也不碰用户「文档」目录下 `NarrChat` 里的用户数据。
-- Rust + egui 是纯 Cargo 依赖，编译进 exe；不需要 WebView2、Electron、GTK 或额外的 UI 运行时。壳本身约 11MB；内嵌 Inno 后的最终 setup 约 29MB。壳带 `requireAdministrator` 清单，启动时统一请求一次 UAC，Inno 继承管理员权限，不再二次提权。
+- Rust + egui 是纯 Cargo 依赖，编译进 exe；不需要 WebView2、Electron、GTK 或额外的 UI 运行时。壳本身约 11MB；内嵌 Inno 后的最终 setup 约 31MB（含主程序自带 VC++ 运行库的增量）。壳带 `requireAdministrator` 清单，启动时统一请求一次 UAC，Inno 继承管理员权限，不再二次提权。
 
 ## 结构
 
@@ -28,6 +28,7 @@ NarrChatSetup.exe（Rust + egui，签名，requireAdministrator）
 ```
 installer_windows/
   Cargo.toml
+  .cargo/config.toml    静态 CRT（+crt-static），setup.exe 不依赖 VC++ 运行库
   build.rs              读 release.yaml 版本；可选内嵌 payload；写 Windows 图标/版本资源
   assets/icon.png       窗口图标（来自主应用图标）
   assets/app_icon.ico   exe 文件图标
@@ -136,11 +137,12 @@ dart run tool/build_release.dart --windows
 
 1. 默认先 `flutter clean` + `flutter pub get` 清缓存（`--no-clean` 可跳过）；
 2. `flutter build windows`；
-3. 打 ZIP 便携包；
-4. Inno 在临时目录 `.dart_tool/narrchat_build/inno/` 生成原始安装包 `NarrChatSetupPayload.exe`；
-5. 复制到 `installer_windows/payload/narrchat-setup.exe`；
-6. `cargo build --release` 把 payload 内嵌进 Rust 壳；
-7. 输出最终产物到项目根目录的 `release/`：
+3. 把 VC++ 运行库 DLL 复制到构建输出目录（ZIP / Inno 都会带上）；
+4. 打 ZIP 便携包；
+5. Inno 在临时目录 `.dart_tool/narrchat_build/inno/` 生成原始安装包 `NarrChatSetupPayload.exe`；
+6. 复制到 `installer_windows/payload/narrchat-setup.exe`；
+7. `cargo build --release` 把 payload 内嵌进 Rust 壳；
+8. 输出最终产物到项目根目录的 `release/`：
    `release/NarrChat_{version}-{build}_windows_x64-setup.exe`。
 
 细节：
@@ -151,6 +153,20 @@ dart run tool/build_release.dart --windows
 - 未装 cargo：回退为原始 Inno `setup.exe`，并给出警告；
 - `installer_windows/payload/narrchat-setup.exe` 会保留（已被 gitignore），方便调试或做 sidecar；
 - 构建脚本不自动签名。发布前至少签最终壳；要让内嵌的 Inno 也带签名，需要在嵌入之前签原始安装包（手动，或后续给构建脚本加签名步骤）。
+
+### VC++ 运行库
+
+Windows 产物不要求用户另装 VC++ Redistributable，两条链路各自解决：
+
+- **主程序**：构建脚本从 Visual Studio 的 `VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT`
+  复制运行库 DLL 到 `narrchat.exe` 同目录；ZIP 和安装包都会带上。只复制文件，
+  不改系统目录、不需要管理员权限。
+- **Rust 安装壳**：[`installer_windows/.cargo/config.toml`](../installer_windows/.cargo/config.toml)
+  给 `x86_64-pc-windows-msvc` 开了 `+crt-static`，最终 `setup.exe` 静态链接 CRT，
+  不会因为用户没装运行库而启动失败。
+
+构建脚本会校验 `msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`
+三个基础文件；找不到 VS Redist 目录时直接报错，不会悄悄产出缺运行库的包。
 
 ### 开发预览
 
@@ -192,6 +208,8 @@ sidecar 不在运行时写 exe，受限环境最稳；代价是分发两个文�
 - 中文路径、带空格路径、长路径；
 - 100%/125%/150%/200% DPI、浅色/深色、高对比度；
 - 安装包缺失、安装包损坏、Inno 返回失败：错误提示、退出码、日志入口；
+- 干净 Windows 10/11 虚拟机（未装 VC++ Redistributable）：`setup.exe` 能启动，
+  安装后 `narrchat.exe` 能运行；
 - 杀软/ SmartScreen：壳和安装包都已签名；
 - 安装完成后点击「打开 NarrChat」；卸载后用户数据仍在用户「文档」目录下的 `NarrChat`。
 
