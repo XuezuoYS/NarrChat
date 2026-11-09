@@ -52,6 +52,7 @@ impl InstallOptions {
 pub struct InstalledApp {
     pub dir: PathBuf,
     pub version: String,
+    pub selected_tasks: String,
 }
 
 /// 一次已经启动的安装。
@@ -92,6 +93,10 @@ impl InstallSession {
     pub fn elapsed_secs(&self) -> u64 {
         self.started.elapsed().as_secs()
     }
+
+    pub fn log_path(&self) -> &Path {
+        &self.log_path
+    }
 }
 
 /// 应用版本：优先用构建时注入的 `NARRCHAT_APP_VERSION`，否则用壳自己的版本。
@@ -118,9 +123,13 @@ pub fn installed_app() -> Option<InstalledApp> {
         return None;
     }
     let version: String = key.get_value("DisplayVersion").unwrap_or_default();
+    let selected_tasks: String = key
+        .get_value("Inno Setup: Selected Tasks")
+        .unwrap_or_default();
     Some(InstalledApp {
         dir: PathBuf::from(dir),
         version,
+        selected_tasks,
     })
 }
 
@@ -215,38 +224,65 @@ pub fn build_args(options: &InstallOptions, log_path: &Path) -> Vec<OsString> {
     args
 }
 
-/// 启动 Inno；安装日志写到 `%TEMP%\NarrChatSetup\install.log`。
-pub fn start_install(
-    setup: &Path,
-    options: &InstallOptions,
-    log_path: &Path,
-) -> Result<InstallSession, String> {
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建日志目录失败：{error}"))?;
-        let _ = fs::remove_file(log_path);
+/// 找一个可写的安装临时目录：本地应用数据 → 壳同目录 → %TEMP%。
+///
+/// Inno Setup 初始化时必须在 `%TEMP%` 下创建 `is-*.tmp`。部分环境（权限/安全软件）
+/// 会拒绝这个操作，所以壳自己先找出可写目录，再把它作为子进程的 TEMP/TMP。
+pub fn prepare_work_dir() -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(local).join("NarrChat").join("setup-work"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("NarrChat-setup-work"));
+        }
+    }
+    candidates.push(std::env::temp_dir().join("NarrChatSetup"));
+
+    let mut failures = Vec::new();
+    for dir in candidates {
+        if let Err(error) = fs::create_dir_all(&dir) {
+            failures.push(format!("{}（{error}）", dir.display()));
+            continue;
+        }
+        let probe_dir = dir.join(format!(".probe-{}", std::process::id()));
+        let probe_file = probe_dir.join("write-test");
+        let result = fs::create_dir_all(&probe_dir)
+            .and_then(|()| fs::write(&probe_file, b"ok"))
+            .and_then(|()| fs::remove_file(&probe_file))
+            .and_then(|()| fs::remove_dir(&probe_dir));
+        match result {
+            Ok(()) => return Ok(dir),
+            Err(error) => failures.push(format!("{}（{error}）", dir.display())),
+        }
     }
 
+    Err(format!(
+        "找不到可写的安装临时目录，已尝试：{}",
+        failures.join("；")
+    ))
+}
+
+/// 启动 Inno；安装日志和工作目录都在 [prepare_work_dir] 选出的目录里。
+pub fn start_install(setup: &Path, options: &InstallOptions) -> Result<InstallSession, String> {
+    let work_dir = prepare_work_dir()?;
+    let log_path = work_dir.join("install.log");
+    let _ = fs::remove_file(&log_path);
+
     let mut command = Command::new(setup);
-    command.args(build_args(options, log_path));
+    command.args(build_args(options, &log_path));
+    // Inno 初始化时会在 GetTempPath() 下创建 is-*.tmp；这里强制用壳已验证可写的目录。
+    command.env("TEMP", &work_dir).env("TMP", &work_dir);
     let child = command
         .spawn()
         .map_err(|error| format!("无法启动 Inno 安装程序：{error}"))?;
 
     Ok(InstallSession {
         child,
-        log_path: log_path.to_path_buf(),
+        log_path,
         started: Instant::now(),
     })
-}
-
-/// 安装日志路径。`%TEMP%\NarrChatSetup` 建不出来时退回 `%TEMP%` 下的单文件。
-pub fn new_log_path() -> PathBuf {
-    let dir = std::env::temp_dir().join("NarrChatSetup");
-    if fs::create_dir_all(&dir).is_ok() {
-        dir.join("install.log")
-    } else {
-        std::env::temp_dir().join("NarrChat-install.log")
-    }
 }
 
 /// 启动安装好的应用。
@@ -335,37 +371,11 @@ fn materialize_embedded(bytes: &[u8]) -> Result<PathBuf, String> {
         return Err("内嵌安装包为空".to_owned());
     }
 
-    // 依次尝试：本地应用数据目录 → %TEMP% → 壳所在目录。
-    // 受限环境（安全软件/容器）可能只允许其中一处写 exe。
-    let mut candidates = Vec::new();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local).join("NarrChat").join("setup-cache"));
-    }
-    candidates.push(std::env::temp_dir());
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("NarrChat-setup-cache"));
-        }
-    }
-
-    let mut failures = Vec::new();
-    for dir in candidates {
-        let dir_ready = fs::create_dir_all(&dir).is_ok();
-        if !dir_ready {
-            failures.push(format!("{}（无法创建目录）", dir.display()));
-            continue;
-        }
-        let path = dir.join(format!("NarrChatSetup-{}.exe", std::process::id()));
-        match fs::write(&path, bytes) {
-            Ok(()) => return Ok(path),
-            Err(error) => failures.push(format!("{}（{error}）", path.display())),
-        }
-    }
-
-    Err(format!(
-        "写出内嵌安装包失败，已尝试：{}。可以改用同目录 sidecar 或 --setup。",
-        failures.join("；")
-    ))
+    let work_dir = prepare_work_dir()?;
+    let path = work_dir.join(format!("NarrChatSetup-{}.exe", std::process::id()));
+    fs::write(&path, bytes)
+        .map_err(|error| format!("写出内嵌安装包失败（{}）：{error}", path.display()))?;
+    Ok(path)
 }
 
 /// 安装成功后清理内嵌安装包释放出来的临时 exe；sidecar 不会被删。

@@ -146,7 +146,6 @@ impl InstallerApp {
             return;
         }
 
-        let log_path = installer::new_log_path();
         let options = InstallOptions {
             install_dir,
             desktop_shortcut: self.desktop_shortcut,
@@ -154,10 +153,10 @@ impl InstallerApp {
             upgrade: self.upgrade,
         };
 
-        match installer::start_install(&setup, &options, &log_path) {
+        match installer::start_install(&setup, &options) {
             Ok(session) => {
+                self.log_path = Some(session.log_path().to_path_buf());
                 self.session = Some(session);
-                self.log_path = Some(log_path);
                 self.log_tail.clear();
                 self.last_log_poll = Instant::now();
                 self.error = None;

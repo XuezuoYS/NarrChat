@@ -232,12 +232,56 @@ impl InstallerApp {
 
         ui.add_space(14.0);
         theme::soft_frame(p).show(ui, |ui| {
-            ui.add_enabled_ui(!self.upgrade, |ui| {
-                ui.checkbox(&mut self.desktop_shortcut, "创建桌面快捷方式");
-                ui.checkbox(&mut self.start_menu_shortcut, "创建开始菜单快捷方式");
-            });
-            ui.add_space(2.0);
-            ui.checkbox(&mut self.launch_after, "安装完成后启动 NarrChat");
+            if self.upgrade {
+                let tasks = self
+                    .installed
+                    .as_ref()
+                    .map(|app| app.selected_tasks.as_str())
+                    .unwrap_or("");
+                let has = |name: &str| {
+                    tasks
+                        .split(',')
+                        .any(|task| task.trim().eq_ignore_ascii_case(name))
+                };
+                ui.label(egui::RichText::new("快捷方式").size(13.0).color(p.text));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "升级沿用上次设置：桌面 {} · 开始菜单 {}",
+                            if has("desktopicon") { "有" } else { "无" },
+                            if has("startmenuicon") { "有" } else { "无" },
+                        ))
+                        .size(13.0)
+                        .color(p.muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(4.0);
+                checkbox_row(
+                    ui,
+                    p,
+                    &mut self.launch_after,
+                    "安装完成后启动 NarrChat",
+                    true,
+                );
+            } else {
+                checkbox_row(ui, p, &mut self.desktop_shortcut, "创建桌面快捷方式", true);
+                checkbox_row(
+                    ui,
+                    p,
+                    &mut self.start_menu_shortcut,
+                    "创建开始菜单快捷方式",
+                    true,
+                );
+                ui.add_space(2.0);
+                checkbox_row(
+                    ui,
+                    p,
+                    &mut self.launch_after,
+                    "安装完成后启动 NarrChat",
+                    true,
+                );
+            }
         });
 
         if let Some(error) = &self.error {
@@ -477,6 +521,34 @@ fn bullet(ui: &mut egui::Ui, p: &Palette, text: &str) {
         theme::dot(ui, p.accent);
         ui.add(egui::Label::new(egui::RichText::new(text).size(14.0).color(p.text)).wrap());
     });
+}
+
+/// 比 egui 默认复选框更清楚：未选中是“卡片底 + 明显描边”，选中是深色对勾。
+fn checkbox_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    checked: &mut bool,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let visuals = &mut ui.style_mut().visuals;
+        visuals.widgets.inactive.bg_fill = if enabled { p.card } else { p.input };
+        visuals.widgets.inactive.bg_stroke =
+            egui::Stroke::new(1.5, if enabled { p.muted } else { p.border });
+        visuals.widgets.inactive.fg_stroke.color = if enabled { p.text } else { p.muted };
+        visuals.widgets.hovered.bg_fill = p.hover;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, p.accent);
+        visuals.widgets.hovered.fg_stroke.color = p.text;
+        visuals.widgets.active.bg_fill = p.accent;
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, p.accent);
+        visuals.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+        ui.spacing_mut().icon_width = 20.0;
+        ui.spacing_mut().icon_width_inner = 10.0;
+        ui.spacing_mut().icon_spacing = 10.0;
+        ui.add_enabled(enabled, egui::Checkbox::new(checked, label))
+    })
+    .inner
 }
 
 fn notice(ui: &mut egui::Ui, p: &Palette, text: &str, color: egui::Color32) {
