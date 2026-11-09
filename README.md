@@ -177,11 +177,14 @@ tool/
   build_release.dart  发布构建脚本
   preview_prompt.dart 提示词预览
   inno/               Inno Setup 中文语言文件
+installer_windows/
+  Rust + egui 安装器薄壳（内嵌 Inno 生成的安装包）
 test/
   helpers/      公共替身与页面脚手架（fakes.dart / chat_harness.dart）
   * _test.dart  模块化单元 / Widget 测试
 docs/
-  sync_auto_triggers.md  云同步设计文档（触发时机、合并与并发策略）
+  sync_auto_triggers.md       云同步设计文档（触发时机、合并与并发策略）
+  installer-rust-windows.md   Windows 安装器薄壳设计
 ```
 
 ## 构建
@@ -192,7 +195,7 @@ docs/
 dart run tool/build_release.dart                 # 交互菜单
 dart run tool/build_release.dart --all           # Android + Windows
 dart run tool/build_release.dart --android       # 仅 Android arm64 APK
-dart run tool/build_release.dart --windows       # Windows（setup.exe + ZIP 便携包）
+dart run tool/build_release.dart --windows       # Windows（Rust 壳 setup.exe + ZIP 便携包）
 dart run tool/build_release.dart --zip-only      # Windows 仅 ZIP 便携包
 dart run tool/build_release.dart --no-bump       # 跳过 build 号自增
 dart run tool/build_release.dart --version 1.2.0 # 构建前设置版本号（x.y.z）
@@ -201,8 +204,10 @@ dart run tool/build_release.dart --version 1.2.0 # 构建前设置版本号（x.
 - **版本号唯一来源**：[`release.yaml`](release.yaml)；构建时自动将 `build` +1
   并同步 `pubspec.yaml` 的 `version` 为 `{version}+{build}`（Android versionCode）。
 - **产物命名**：`NarrChat_{version}-{build}_{device}_{arch}[.apk | .zip | -setup.exe]`。
-- **Windows 安装包**：依赖 [Inno Setup](https://jrsoftware.org/isdl.php)（免费开源），
-  未安装时自动降级为仅产出 ZIP 便携包；中文语言文件随仓库维护。
+- **Windows 安装包**：Rust + egui 薄壳（[`installer_windows/`](installer_windows/)）内嵌
+  [Inno Setup](https://jrsoftware.org/isdl.php) 生成的安装包；构建机需要 Rust/cargo 和
+  Inno Setup，未装 Inno 时只产出 ZIP，未装 cargo 时回退为原始 Inno setup.exe。
+  设计与参数见 [`docs/installer-rust-windows.md`](docs/installer-rust-windows.md)。
 - 构建脚本会修复 Windows 增量构建常见的引擎包装源码缺失问题（自动清理缓存重解包）。
 
 ## License

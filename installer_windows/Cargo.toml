@@ -1,0 +1,20 @@
+[package]
+name = "narrchat-installer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "NarrChat Windows installer shell: egui UI + Inno Setup engine"
+
+[dependencies]
+eframe = "0.37"
+rfd = "0.18"
+winreg = "0.56"
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
