@@ -166,9 +166,12 @@ pub fn is_app_running() -> bool {
     }
 }
 
-/// 清理用户输入的安装目录：去掉首尾空白，避免和 Inno 实际创建的目录只差一个空格。
+/// 清理用户输入的安装目录：去掉首尾空白，并把正斜杠统一成反斜杠。
+///
+/// Windows 和 Inno 两种斜杠都认；统一之后界面显示、日志和实际安装目录
+/// 不会因为混用斜杠而看起来不一致。
 pub fn normalize_install_dir(input: &str) -> PathBuf {
-    PathBuf::from(input.trim())
+    PathBuf::from(input.trim().replace('/', "\\"))
 }
 
 /// 让安装目录以 `NarrChat` 文件夹结尾；空路径原样返回。
@@ -240,22 +243,14 @@ pub fn prepare_setup(explicit: Option<&Path>) -> Result<PathBuf, String> {
 ///   本身不会关它，干净虚拟机上很容易卡在这里。
 /// - 不再传 `/SUPPRESSMSGBOXES`：安装成功仍然全静默，初始化失败时让 Inno
 ///   把真实错误弹出来，而不是只剩一个退出码 1。
-/// - 路径没有空格时保持原样（和已验证可用的命令一致），有空格才加引号。
+/// - 参数值不要自己加引号：Windows 的 `Command` 会按需给整条参数加引号。
+///   自己加引号会变成路径里的普通字符，带空格的路径会被 Inno 判为非法字符。
 pub fn build_args(options: &InstallOptions, log_path: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["/SP-".into(), "/VERYSILENT".into(), "/NORESTART".into()];
-    args.push(format!("/DIR={}", quote_if_needed(&options.install_dir)).into());
+    args.push(format!("/DIR={}", options.install_dir.display()).into());
     args.push(format!("/TASKS={}", options.tasks()).into());
-    args.push(format!("/LOG={}", quote_if_needed(log_path)).into());
+    args.push(format!("/LOG={}", log_path.display()).into());
     args
-}
-
-fn quote_if_needed(path: &Path) -> String {
-    let value = path.display().to_string();
-    if value.chars().any(char::is_whitespace) {
-        format!("\"{value}\"")
-    } else {
-        value
-    }
 }
 
 /// 找一个可写的安装临时目录：本地应用数据 → %TEMP%。
@@ -552,15 +547,17 @@ mod tests {
     }
 
     #[test]
-    fn paths_with_spaces_are_quoted() {
+    fn paths_with_spaces_are_left_to_command_quoting() {
         let mut value = options();
         value.install_dir = PathBuf::from(r"C:\Program Files\NarrChat");
         let args: Vec<String> = build_args(&value, Path::new(r"C:\Users\Test User\install.log"))
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert!(args.contains(&"/DIR=\"C:\\Program Files\\NarrChat\"".to_owned()));
-        assert!(args.contains(&"/LOG=\"C:\\Users\\Test User\\install.log\"".to_owned()));
+        assert!(args.contains(&r"/DIR=C:\Program Files\NarrChat".to_owned()));
+        assert!(args.contains(&r"/LOG=C:\Users\Test User\install.log".to_owned()));
+        // 自己加引号会被 Inno 当成路径里的字符；带空格路径会因此报非法字符。
+        assert!(args.iter().all(|arg| !arg.contains('"')));
     }
 
     #[test]
@@ -586,8 +583,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn install_dir_forward_slashes_are_normalized() {
+        assert_eq!(
+            normalize_install_dir("D:/Apps/NarrChat"),
+            PathBuf::from(r"D:\Apps\NarrChat")
+        );
+        assert_eq!(
+            normalize_install_dir("  D:/My Apps/NarrChat  "),
+            PathBuf::from(r"D:\My Apps\NarrChat")
+        );
+    }
+
     fn suffixed(input: &str) -> String {
-        ensure_narrchat_dir(Path::new(input))
+        ensure_narrchat_dir(&normalize_install_dir(input))
             .display()
             .to_string()
             .trim_end_matches(|c| c == '\\' || c == '/')
@@ -599,6 +608,7 @@ mod tests {
         assert_eq!(suffixed(r"D:\Apps"), r"D:\Apps\NarrChat");
         assert_eq!(suffixed(r"D:\Apps\"), r"D:\Apps\NarrChat");
         assert_eq!(suffixed(r"D:\"), r"D:\NarrChat");
+        assert_eq!(suffixed("D:/Apps"), r"D:\Apps\NarrChat");
         assert_eq!(
             suffixed(r"D:\Apps\NarrChat2"),
             r"D:\Apps\NarrChat2\NarrChat"
@@ -610,9 +620,21 @@ mod tests {
     fn install_dir_keeps_existing_narrchat_folder() {
         assert_eq!(suffixed(r"D:\Apps\NarrChat"), r"D:\Apps\NarrChat");
         assert_eq!(suffixed(r"D:\Apps\NarrChat\"), r"D:\Apps\NarrChat");
+        assert_eq!(suffixed("D:/Apps/NarrChat"), r"D:\Apps\NarrChat");
         assert_eq!(suffixed(r"D:\Apps\narrchat"), r"D:\Apps\narrchat");
         assert_eq!(suffixed(r"D:\Apps\NARRCHAT"), r"D:\Apps\NARRCHAT");
         assert_eq!(suffixed(""), "");
+    }
+
+    #[test]
+    fn inno_receives_backslash_install_dir() {
+        let mut value = options();
+        value.install_dir = normalize_install_dir("D:/My Apps/NarrChat");
+        let args: Vec<String> = build_args(&value, Path::new(r"C:\Temp\install.log"))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&r"/DIR=D:\My Apps\NarrChat".to_owned()));
     }
 
     fn test_dir(name: &str) -> PathBuf {

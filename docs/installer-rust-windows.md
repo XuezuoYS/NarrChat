@@ -51,6 +51,7 @@ installer_windows/
   4. **完成**：安装目录、打开 NarrChat 按钮、打开目录/日志；
   5. **失败**：错误、Inno 退出码、日志入口、重试/退出。
 - 中文靠 egui 0.37 的 `system_fonts` 系统字体回退，不打包字体；品牌色跟主应用 `lib/theme/app_theme.dart` 的 `#4D6BFE` 对齐。
+- 安装路径里的 `/` 会在输入结束、选完文件夹、开始安装时统一转成 `\`，让界面显示和实际安装目录保持一致。
 
 ## 关键行为
 
@@ -91,6 +92,9 @@ installer_windows/
 
 `/SP-` 用来关掉 SetupLdr 的启动确认框（`/VERYSILENT` 本身不会关）；不再传
 `/SUPPRESSMSGBOXES`，安装成功仍然全静默，但初始化失败时 Inno 会把真实错误弹出来。
+
+带空格的路径不要自己加引号：`std::process::Command` 会按需给整条参数加引号。
+壳里手动加引号会变成 `/DIR` 值里的普通字符，Inno 会报“文件夹名称不能包含非法字符”。
 
 当前 Inno 脚本 [`tool/build_release.dart`](../tool/build_release.dart) 里：
 
