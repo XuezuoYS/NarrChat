@@ -16,9 +16,9 @@ NarrChatSetup.exe（Rust + egui，签名，requireAdministrator）
   ├─ 预检：是否已安装、NarrChat 是否在运行、安装包是否存在
   ├─ 选项：安装位置、桌面/开始菜单快捷方式
   ├─ 启动 Inno Setup（内嵌 payload 或同目录 sidecar）
-  │    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=...
+  │    /SP- /VERYSILENT /NORESTART /LOG=...
   │    /DIR=... /TASKS=...（升级也按上次选择显式传）
-  │    TEMP/TMP 指向壳选出的可写工作目录
+  │    Inno 使用系统临时目录
   ├─ 轮询退出码 + 读日志尾部（Spinner，不伪造百分比）
   └─ 成功：打开 NarrChat / 失败：显示退出码和日志入口
 ```
@@ -46,7 +46,7 @@ installer_windows/
 - 固定窗口 `720×640`，不可缩放，隐藏最小化/最大化按钮；跟随 Windows 明暗主题，右上角可手动切换。
 - 五屏：
   1. **欢迎**：版本、数据位置说明、已安装/运行中/安装包缺失提示；
-  2. **选项**：安装位置、快捷方式；升级时路径和快捷方式只读；
+  2. **选项**：安装位置、快捷方式；升级时路径和快捷方式只读；全新安装时路径最后一段不是 `NarrChat` 会自动补上（输入结束、选完文件夹、开始安装时各检查一次，输入过程中不改）；
   3. **安装中**：Spinner + 状态 + 可选日志尾部，关闭窗口会被取消；
   4. **完成**：安装目录、打开 NarrChat 按钮、打开目录/日志；
   5. **失败**：错误、Inno 退出码、日志入口、重试/退出。

@@ -21,6 +21,9 @@ mod embedded {
 /// 主应用 exe 名。
 pub const APP_EXE: &str = "narrchat.exe";
 
+/// 全新安装时，安装目录最后一段固定用这个名字；升级沿用旧路径。
+const APP_DIR_NAME: &str = "NarrChat";
+
 /// Inno 卸载键（与 `tool/build_release.dart` 的 AppId 对应）。
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F2E1A3C-5B6D-4E7F-9A8B-0C1D2E3F4A5B}_is1";
 
@@ -110,7 +113,7 @@ pub fn default_install_dir() -> PathBuf {
     let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Users\Public"));
-    local.join("Programs").join("NarrChat")
+    local.join("Programs").join(APP_DIR_NAME)
 }
 
 /// 读已安装实例；读不到就当全新安装。
@@ -166,6 +169,23 @@ pub fn is_app_running() -> bool {
 /// 清理用户输入的安装目录：去掉首尾空白，避免和 Inno 实际创建的目录只差一个空格。
 pub fn normalize_install_dir(input: &str) -> PathBuf {
     PathBuf::from(input.trim())
+}
+
+/// 让安装目录以 `NarrChat` 文件夹结尾；空路径原样返回。
+///
+/// 只在输入框失焦、选完文件夹、开始安装这三个时机调用。**不要边输入边调用**，
+/// 否则用户每敲一个字符，路径都会被改写，输入框会变得没法用。
+pub fn ensure_narrchat_dir(path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() || ends_with_narrchat(path) {
+        return path.to_path_buf();
+    }
+    path.join(APP_DIR_NAME)
+}
+
+fn ends_with_narrchat(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(APP_DIR_NAME))
 }
 
 /// 校验收到的安装目录：绝对路径、非根目录、不含 `..`、不是已有文件。
@@ -564,6 +584,35 @@ mod tests {
             normalize_install_dir("  C:\\Users\\Test\\NarrChat  "),
             PathBuf::from(r"C:\Users\Test\NarrChat")
         );
+    }
+
+    fn suffixed(input: &str) -> String {
+        ensure_narrchat_dir(Path::new(input))
+            .display()
+            .to_string()
+            .trim_end_matches(|c| c == '\\' || c == '/')
+            .to_owned()
+    }
+
+    #[test]
+    fn install_dir_gets_narrchat_suffix() {
+        assert_eq!(suffixed(r"D:\Apps"), r"D:\Apps\NarrChat");
+        assert_eq!(suffixed(r"D:\Apps\"), r"D:\Apps\NarrChat");
+        assert_eq!(suffixed(r"D:\"), r"D:\NarrChat");
+        assert_eq!(
+            suffixed(r"D:\Apps\NarrChat2"),
+            r"D:\Apps\NarrChat2\NarrChat"
+        );
+        assert_eq!(suffixed(r"D:\NarrChat\Apps"), r"D:\NarrChat\Apps\NarrChat");
+    }
+
+    #[test]
+    fn install_dir_keeps_existing_narrchat_folder() {
+        assert_eq!(suffixed(r"D:\Apps\NarrChat"), r"D:\Apps\NarrChat");
+        assert_eq!(suffixed(r"D:\Apps\NarrChat\"), r"D:\Apps\NarrChat");
+        assert_eq!(suffixed(r"D:\Apps\narrchat"), r"D:\Apps\narrchat");
+        assert_eq!(suffixed(r"D:\Apps\NARRCHAT"), r"D:\Apps\NARRCHAT");
+        assert_eq!(suffixed(""), "");
     }
 
     fn test_dir(name: &str) -> PathBuf {

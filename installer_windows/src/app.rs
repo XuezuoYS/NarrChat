@@ -122,10 +122,22 @@ impl InstallerApp {
         let mut dialog = rfd::FileDialog::new();
         if start.is_dir() {
             dialog = dialog.set_directory(start);
+        } else if let Some(parent) = start.parent().filter(|parent| parent.is_dir()) {
+            // 路径末尾已经补过 NarrChat 时，下次浏览从它的父目录开始更顺手。
+            dialog = dialog.set_directory(parent);
         }
         if let Some(path) = dialog.pick_folder() {
             self.install_dir = path.display().to_string();
+            self.finish_install_dir_edit();
         }
+    }
+
+    /// 用户结束编辑或选完文件夹时调用：目录最后一段不是 `NarrChat` 就补上。
+    ///
+    /// 输入过程中不要调用，避免边打字边改路径。
+    pub(crate) fn finish_install_dir_edit(&mut self) {
+        let path = installer::normalize_install_dir(&self.install_dir);
+        self.install_dir = installer::ensure_narrchat_dir(&path).display().to_string();
     }
 
     pub(crate) fn begin_install(&mut self) {
@@ -142,10 +154,13 @@ impl InstallerApp {
             self.screen = Screen::Failed;
             return;
         };
-        self.install_dir = installer::normalize_install_dir(&self.install_dir)
-            .display()
-            .to_string();
-        let install_dir = PathBuf::from(&self.install_dir);
+        // 兜底：用户可能没让输入框失焦就直接点了开始安装。
+        // 升级沿用已有路径，不能追加，否则会装到旧目录下面去。
+        let mut install_dir = installer::normalize_install_dir(&self.install_dir);
+        if !self.upgrade {
+            install_dir = installer::ensure_narrchat_dir(&install_dir);
+        }
+        self.install_dir = install_dir.display().to_string();
         if let Err(error) = installer::validate_install_dir(&install_dir) {
             self.error = Some(error);
             return;

@@ -223,11 +223,15 @@ impl InstallerApp {
         } else {
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 112.0).max(260.0);
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(&mut self.install_dir)
                         .desired_width(width)
                         .hint_text(r"例如 C:\Users\你\AppData\Local\Programs\NarrChat"),
                 );
+                // 只在结束编辑时补 NarrChat；输入过程中不改，免得打断用户。
+                if response.lost_focus() {
+                    self.finish_install_dir_edit();
+                }
                 if ui.add(theme::secondary_button("浏览…")).clicked() {
                     self.choose_install_dir();
                 }
