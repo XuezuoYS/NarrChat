@@ -142,6 +142,26 @@ void main() {
     expect(find.text('应用决策（1）'), findsOneWidget);
   });
 
+  testWidgets('按 PK 建议：轮/代一致时按时间选较新的一侧', (tester) async {
+    final timeWins = buildBookConflict(
+      localLatestRound: 2,
+      localGenerationCount: 3,
+      localUpdatedAt: DateTime.utc(2026, 1, 1),
+      remoteLatestRound: 2,
+      remoteGenerationCount: 3,
+      remoteUpdatedAt: DateTime.utc(2026, 3, 1),
+    );
+    await pumpPage(tester, conflicts: [timeWins]);
+
+    expect(find.textContaining('按时间采用云端'), findsOneWidget);
+
+    await tester.tap(find.text('按 PK 建议'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已选云端'), findsOneWidget);
+    expect(find.text('应用决策（1）'), findsOneWidget);
+  });
+
   testWidgets('全部稍后处理：不产生决策、按钮禁用', (tester) async {
     await pumpPage(tester);
 

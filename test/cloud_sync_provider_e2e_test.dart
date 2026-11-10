@@ -524,6 +524,123 @@ void main() {
     expect(chain.rounds, hasLength(2));
   });
 
+  test('轮/代一致、仅云端时间更近：按时间自动采用云端，不弹窗', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    final generation = await stack.seedRound(
+      bookUuid,
+      roundIndex: 1,
+      aiNarrative: '原文',
+    );
+    await provider.sync();
+
+    // 本地改正文（轮数 / 代数都不变，摘要变了）。
+    await stack.repos.rounds.updateContent(
+      bookUuid: bookUuid,
+      generationUuid: generation.uuid,
+      fields: {'ai_narrative': '本地改过'},
+    );
+
+    // 云端也改过同一轮同一代，时间更近。
+    final other = await TestStack.create(prefix: 'sync_e2e_time_');
+    await other.seedBook(uuid: bookUuid, title: '本地书');
+    await other.seedRound(bookUuid, roundIndex: 1, aiNarrative: '云端改过');
+    final otherBytes = await File(
+      '${other.paths.booksDir}/narrbook_$bookUuid.db',
+    ).readAsBytes();
+    addTearDown(other.dispose);
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(unit.snapshotName(2), otherBytes);
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.now().toUtc().add(
+          const Duration(minutes: 5),
+        ),
+        latestRoundIndex: 1,
+        roundGenerationCount: 1,
+      ).encode(),
+    );
+
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+
+    final ok = await provider.sync();
+
+    expect(ok, isTrue);
+    expect(promptCalls, 0, reason: '轮/代一致时按时间裁决，不打扰用户');
+    expect(provider.conflicts, isEmpty);
+    expect(
+      await File('${stack.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
+      otherBytes,
+      reason: '采用云端 = 整份替换本地',
+    );
+    expect(
+      provider.resultToasts.map((toast) => toast.message).join('\n'),
+      contains('采用云端 1 项'),
+    );
+  });
+
+  test('轮/代一致、仅本地时间更近：按时间保留本地并上传，不弹窗', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    final generation = await stack.seedRound(
+      bookUuid,
+      roundIndex: 1,
+      aiNarrative: '原文',
+    );
+    await provider.sync();
+
+    await stack.repos.rounds.updateContent(
+      bookUuid: bookUuid,
+      generationUuid: generation.uuid,
+      fields: {'ai_narrative': '本地改过'},
+    );
+    // 云端那份也改过，但时间更旧。
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.utc(2020, 1, 1),
+        latestRoundIndex: 1,
+        roundGenerationCount: 1,
+      ).encode(),
+    );
+
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+
+    final ok = await provider.sync();
+
+    expect(ok, isTrue);
+    expect(promptCalls, 0);
+    expect(provider.conflicts, isEmpty);
+    final pushed = BackupManifest.decode(
+      remote.files['manifest_narrbook_b1.json']!,
+    );
+    expect(pushed.generation, 3, reason: '本地时间更近 → 推成新的一代');
+    expect(pushed.latestRoundIndex, 1);
+    expect(pushed.roundGenerationCount, 1);
+    expect(
+      provider.resultToasts.map((toast) => toast.message).join('\n'),
+      contains('保留本地 1 项'),
+    );
+    final chain = await stack.repos.rounds.loadChain(bookUuid);
+    expect(chain.rounds, hasLength(1), reason: '本地内容没有被替换');
+  });
+
   test('applyConflictDecisions(local)：把本地推成云端新的一代', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
     await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '本地正文');

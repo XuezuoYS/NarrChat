@@ -94,12 +94,48 @@ class SyncPkResult {
     return first;
   }
 
+  /// 是否属于「轮次与代数都持平、只有更新时间有分歧」。
+  ///
+  /// 用户口径：内容规模打平时，谁的时间更近就采用谁——这种情况不该再打扰用户。
+  /// 只对书籍三轴成立；Mod 单轴、书架空轴都不会命中。
+  bool get decidedByTimeOnly {
+    if (axes.length != 3) return false;
+    final generation = axisOf(SyncPkAxis.generationCount);
+    final rounds = axisOf(SyncPkAxis.latestRound);
+    final updated = axisOf(SyncPkAxis.updatedAt);
+    if (generation == null || rounds == null || updated == null) return false;
+    if (generation.outcome != SyncPkOutcome.tie) return false;
+    if (rounds.outcome != SyncPkOutcome.tie) return false;
+    return updated.outcome == SyncPkOutcome.local ||
+        updated.outcome == SyncPkOutcome.remote;
+  }
+
+  /// 自动裁决结果（Provider / UI 的「按 PK 建议」都用它）：
+  ///
+  /// - 三轴一致 → 该侧；
+  /// - 轮次与代数一致、仅时间更新 → 时间较新的一侧；
+  /// - 其余（含时间也持平 / 缺数据）→ null，需要用户选择。
+  SyncPkOutcome? get autoDecision {
+    final strict = winner;
+    if (strict != null) return strict;
+    if (!decidedByTimeOnly) return null;
+    return axisOf(SyncPkAxis.updatedAt)!.outcome;
+  }
+
+  /// 取某一条轴的结果；没有这条轴时返回 null。
+  SyncPkAxisResult? axisOf(SyncPkAxis axis) {
+    for (final item in axes) {
+      if (item.axis == axis) return item;
+    }
+    return null;
+  }
+
   /// 是否有轴因为缺数据而无法比较。
   bool get hasUnknown =>
       axes.any((axis) => axis.outcome == SyncPkOutcome.unknown);
 
-  /// 胜者文案（没有一致结果时为 null）。
-  String? get winnerLabel => switch (winner) {
+  /// 自动裁决的胜者文案（没有可自动裁决的结果时为 null）。
+  String? get winnerLabel => switch (autoDecision) {
     SyncPkOutcome.local => '本地',
     SyncPkOutcome.remote => '云端',
     _ => null,
@@ -108,8 +144,11 @@ class SyncPkResult {
 
 /// 冲突 PK：**纯逻辑、无 I/O**。
 ///
-/// 书籍三条轴、Mod 库一条轴；只有「全部轴一致」才算自动裁决，其余一律交回
-/// 上层（弹对话框 / 冲突决策页）。书架不做 PK（见 `LibraryMerger`）。
+/// 书籍三条轴、Mod 库一条轴。自动裁决规则：
+/// - 全部轴一致 → 采用该侧；
+/// - 轮次与代数一致、只有更新时间不同 → 按时间采用较新的一侧（不打扰用户）；
+/// - 其余（含时间持平 / 缺数据）→ 交回上层（弹对话框 / 冲突决策页）。
+/// 书架不做 PK（见 `LibraryMerger`）。
 class BackupPk {
   BackupPk._();
 
@@ -168,7 +207,9 @@ class BackupPk {
   );
 
   static SyncPkResult _result(List<SyncPkAxisResult> axes) {
-    return SyncPkResult(axes: axes, explanation: _explain(axes));
+    // 先构造一次拿到判定结果，再补解释文案（解释要用 unanimous / 时间裁决）。
+    final draft = SyncPkResult(axes: axes, explanation: '');
+    return SyncPkResult(axes: axes, explanation: _explain(draft));
   }
 
   static SyncPkAxisResult _compareNumbers({
@@ -229,17 +270,22 @@ class BackupPk {
 
   static DateTime? _parse(String? raw) => parseTimestamp(raw);
 
-  /// 拼一句人话解释：`代数指向本地，最新轮次与更新时间指向云端` / `三项都指向云端`。
-  static String _explain(List<SyncPkAxisResult> axes) {
+  /// 拼一句人话解释：`代数指向本地，最新轮次与更新时间指向云端` / `三项都指向云端`
+  /// / `轮次与代数一致，云端更新时间更近，按时间采用云端`。
+  static String _explain(SyncPkResult result) {
+    final axes = result.axes;
     if (axes.isEmpty) return '无法比较两侧内容，请选择保留哪一侧。';
+    if (result.unanimous) {
+      final side = result.winner == SyncPkOutcome.local ? '本地' : '云端';
+      return '三项都指向$side：$side更新，可自动采用。';
+    }
+    if (result.decidedByTimeOnly) {
+      final side = result.autoDecision == SyncPkOutcome.local ? '本地' : '云端';
+      return '轮次与代数都一致，$side更新时间更近，按时间采用$side。';
+    }
     final labels = <SyncPkOutcome, List<String>>{};
     for (final axis in axes) {
       labels.putIfAbsent(axis.outcome, () => <String>[]).add(axis.axis.label);
-    }
-    final winner = _winnerOf(axes);
-    if (winner != null) {
-      final side = winner == SyncPkOutcome.local ? '本地' : '云端';
-      return '三项都指向$side：$side更新，可自动采用。';
     }
     final parts = <String>[
       for (final entry in labels.entries)
@@ -253,13 +299,5 @@ class BackupPk {
           '${entry.value.join('、')}缺少数据',
     ];
     return '${parts.join('，')}，无法自动判定，需要你选择。';
-  }
-
-  static SyncPkOutcome? _winnerOf(List<SyncPkAxisResult> axes) {
-    final first = axes.first.outcome;
-    if (first != SyncPkOutcome.local && first != SyncPkOutcome.remote) {
-      return null;
-    }
-    return axes.every((axis) => axis.outcome == first) ? first : null;
   }
 }

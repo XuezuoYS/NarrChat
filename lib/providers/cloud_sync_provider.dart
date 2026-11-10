@@ -511,8 +511,10 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final conflict = _buildConflict(plan);
-    if (conflict.pk.unanimous) {
-      if (conflict.pk.winner == SyncPkOutcome.remote) {
+    // 自动裁决：三轴一致，或轮/代一致、仅时间更新时按时间取较新一侧。
+    final decision = conflict.pk.autoDecision;
+    if (decision != null) {
+      if (decision == SyncPkOutcome.remote) {
         _runAutoRemote++;
         return BackupConflictChoice.remote;
       }
@@ -707,10 +709,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _autoOpenConflicts = true;
-    showSyncResult(
-      '有 ${_conflicts.length} 项冲突需要你选择',
-      NoticeKind.warning,
-    );
+    showSyncResult('有 ${_conflicts.length} 项冲突需要你选择', NoticeKind.warning);
   }
 
   /// 本轮有残留冲突时自动打开决策页。

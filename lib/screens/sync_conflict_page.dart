@@ -71,10 +71,10 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
           case _BulkRule.allRemote:
             _choices[key] = BackupConflictChoice.remote;
           case _BulkRule.followPk:
-            final winner = conflict.pk.winner;
-            _choices[key] = winner == SyncPkOutcome.local
+            final decision = conflict.pk.autoDecision;
+            _choices[key] = decision == SyncPkOutcome.local
                 ? BackupConflictChoice.local
-                : winner == SyncPkOutcome.remote
+                : decision == SyncPkOutcome.remote
                 ? BackupConflictChoice.remote
                 : BackupConflictChoice.skip;
           case _BulkRule.allLater:
@@ -298,8 +298,9 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
               children: [
                 Text(
                   '书籍按三条轴比较：代数（round_stack 行数）、最新轮次（最大轮号）、'
-                  '更新时间（book_meta.updated_at）。三轴全部指向同一侧时自动采用，'
-                  '有一轴持平、未知或相反才交给你决定。\n'
+                  '更新时间（book_meta.updated_at）。三轴全部指向同一侧时自动采用；'
+                  '如果轮次与代数都一致、只有更新时间不同，就按时间采用较新的一边；'
+                  '其余情况（有轴相反 / 时间也持平 / 缺少数据）才交给你决定。\n'
                   'Mod 库按较新的修改时间自动采用；书架按行自动合并（保留两侧的书、'
                   '墓碑取较新者），合并不了才会出现在这里。',
                   style: TextStyle(

@@ -165,6 +165,115 @@ void main() {
     });
   });
 
+  group('轮/代一致、仅时间更新（按时间裁决）', () {
+    test('云端时间更近：自动采用云端，不需要用户决定', () {
+      final result = BackupPk.decideBook(
+        local: localOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+        remote: remoteOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          contentUpdatedAt: '2026-02-01T00:00:00.000Z',
+        ),
+      );
+
+      expect(result.axes, hasLength(3));
+      expect(result.unanimous, isFalse, reason: '代数与轮次只是持平，不算三轴一致');
+      expect(result.decidedByTimeOnly, isTrue);
+      expect(result.autoDecision, SyncPkOutcome.remote);
+      expect(result.winnerLabel, '云端');
+      expect(result.explanation, contains('按时间采用云端'));
+    });
+
+    test('本地时间更近：自动保留本地', () {
+      final result = BackupPk.decideBook(
+        local: localOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          updatedAt: DateTime.utc(2026, 3, 1),
+        ),
+        remote: remoteOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          contentUpdatedAt: '2026-02-01T00:00:00.000Z',
+        ),
+      );
+
+      expect(result.decidedByTimeOnly, isTrue);
+      expect(result.autoDecision, SyncPkOutcome.local);
+      expect(result.explanation, contains('按时间采用本地'));
+    });
+
+    test('轮/代一致、时间也持平：不自动，仍需用户选择', () {
+      final result = BackupPk.decideBook(
+        local: localOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          updatedAt: DateTime.utc(2026, 2, 1),
+        ),
+        remote: remoteOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          contentUpdatedAt: '2026-02-01T00:00:00.000Z',
+        ),
+      );
+
+      expect(result.decidedByTimeOnly, isFalse);
+      expect(result.autoDecision, isNull);
+      expect(result.explanation, contains('两边一样'));
+    });
+
+    test('只有代数持平、轮次不同：不走时间裁决', () {
+      final result = BackupPk.decideBook(
+        local: localOf(
+          latestRoundIndex: 4,
+          roundGenerationCount: 5,
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+        remote: remoteOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          contentUpdatedAt: '2026-02-01T00:00:00.000Z',
+        ),
+      );
+
+      expect(result.decidedByTimeOnly, isFalse);
+      expect(result.autoDecision, isNull);
+      expect(result.unanimous, isFalse);
+    });
+
+    test('轮/代一致但云端缺时间：未知轴不能拿来裁决', () {
+      final result = BackupPk.decideBook(
+        local: localOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+        remote: remoteOf(
+          latestRoundIndex: 3,
+          roundGenerationCount: 5,
+          contentUpdatedAt: '',
+        ),
+      );
+
+      expect(result.decidedByTimeOnly, isFalse);
+      expect(result.autoDecision, isNull);
+      expect(result.hasUnknown, isTrue);
+    });
+
+    test('Mod 单轴不受时间裁决影响', () {
+      final result = BackupPk.decideMods(
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
+        remote: remoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+      );
+      expect(result.decidedByTimeOnly, isFalse);
+      expect(result.autoDecision, SyncPkOutcome.remote);
+    });
+  });
+
   group('Mod 单轴', () {
     test('云端修改时间更新：自动采用云端', () {
       final result = BackupPk.decideMods(
