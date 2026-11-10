@@ -122,7 +122,8 @@ void main() {
   });
 
   testWidgets('窄屏：无左栏、品牌进顶栏、动态列数', (tester) async {
-    await pumpHomeScreen(tester, books: books, size: const Size(400, 800));
+    // 常规手机竖屏：360dp 宽，一行应放 3 本。
+    await pumpHomeScreen(tester, books: books, size: const Size(360, 800));
 
     expect(find.byKey(kHomeRailKey), findsNothing);
     expect(
@@ -134,19 +135,41 @@ void main() {
     );
     expect(find.byTooltip('新建书籍'), findsOneWidget);
     expect(find.byTooltip('设置'), findsOneWidget);
-    expect(firstRowCount(tester), 3, reason: '400 窄屏应排 3 列');
+    expect(firstRowCount(tester), 3, reason: '360 手机竖屏一行应排 3 列');
 
     // 窄屏没有左侧品牌栏，顶栏不应出现附加色条。
     final bar = tester.widget<NarrChatAppBar>(find.byType(NarrChatAppBar));
     expect(bar.leadingBackgroundColor, isNull);
     expect(bar.leadingBackgroundWidth, 0);
 
-    // 窄屏保持紧凑间距。
+    // 窄屏保持紧凑间距，卡片均分内容区（360 - 左右 32 - 两处间距 32）/ 3。
     final grid = tester.widget<GridView>(find.byType(GridView));
     final delegate =
         grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+    expect(delegate.crossAxisCount, 3);
     expect(delegate.crossAxisSpacing, kBookGridSpacing);
     expect(delegate.mainAxisSpacing, kBookGridSpacing);
+    final cardWidth = tester.getSize(find.byType(BookGridCard).first).width;
+    expect(
+      cardWidth,
+      closeTo((360 - 16 * 2 - 2 * kBookGridSpacing) / 3, 0.5),
+    );
+  });
+
+  testWidgets('平板竖屏：列数跟着宽度走，不锁死在 3 列', (tester) async {
+    // 800dp 仍走窄屏布局（宽屏断点 900），内容区 768dp 够放 7 列。
+    await pumpHomeScreen(tester, books: books, size: const Size(800, 1200));
+
+    expect(find.byKey(kHomeRailKey), findsNothing);
+    expect(firstRowCount(tester), 7, reason: '平板竖屏要按宽度加列，不能锁死 3 列');
+
+    // 卡片仍是手机上的量级，不会被拉成大卡。
+    final cardWidth = tester.getSize(find.byType(BookGridCard).first).width;
+    expect(
+      cardWidth,
+      closeTo((800 - 16 * 2 - 6 * kBookGridSpacing) / 7, 0.5),
+      reason: '卡片宽度按内容区均分到 7 列',
+    );
   });
 
   testWidgets('深色宽屏：左栏比内容面浅，并铺到顶栏', (tester) async {

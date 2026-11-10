@@ -46,9 +46,16 @@ enum BookSortMode {
 
 /// 首页方格排列的目标最小卡片宽度（px）。
 ///
+/// 设计基准：常规手机竖屏（360dp 屏，两侧各 16 内边距 → 内容区 328dp）
+/// 一行放 3 本，此时卡片约 98dp 宽。这里取 96 留一点余量，让 352dp 起的
+/// 常见竖屏都稳定落在 3 列，不会因为窄一两 dp 就掉回 2 列。
+///
+/// 列数只由可用宽度决定（见 [bookGridColumns]）：屏幕变宽会继续加列，
+/// 平板 / 大屏不会被锁死在 3 列，避免卡片被拉得过大。
+///
 /// 窄屏按可用宽度把卡片均分；宽屏不再拉伸，改用 [kBookGridWideCardWidth]
 /// 作为固定宽度。
-const double kBookGridMinCardWidth = 112;
+const double kBookGridMinCardWidth = 96;
 
 /// 宽屏方格的固定卡片宽度（px）。
 ///
@@ -63,9 +70,13 @@ const double kBookGridWideSpacing = 24;
 
 /// 按可用宽度计算首页方格的每行书籍数。
 ///
+/// 设计基准是「常规手机竖屏一行 3 本」（见 [kBookGridMinCardWidth]），
+/// 但列数不写死：宽度增长时继续按 [cardWidth] 加列，平板 / 大屏不会出现
+/// 巨卡。
+///
 /// 目标是让卡片宽度尽量接近 [cardWidth]：
 /// - 手机窄屏至少 2 列（卡片略缩小，而不是单列巨卡）；
-/// - 宽屏按 `floor((可用宽 + 间距) / (卡片宽 + 间距))` 扩展。
+/// - 宽度变大后按 `floor((可用宽 + 间距) / (卡片宽 + 间距))` 扩展。
 ///
 /// [spacing] 是行列间距；宽屏传 [kBookGridWideSpacing]，窄屏用默认值。
 /// [cardWidth] 是目标卡片宽度；宽屏固定宽度时传 [kBookGridWideCardWidth]。

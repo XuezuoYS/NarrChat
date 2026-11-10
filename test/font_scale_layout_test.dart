@@ -14,11 +14,11 @@ void main() {
   const maxScale = 1.45;
   const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
-  testWidgets('首页 +45%：窄屏（400x800）无布局异常', (tester) async {
+  testWidgets('首页 +45%：窄屏（360x800）无布局异常', (tester) async {
     await pumpHomeScreen(
       tester,
       books: const [book],
-      size: const Size(400, 800),
+      size: const Size(360, 800),
       textScale: maxScale,
     );
     expect(find.text('测试书'), findsOneWidget);

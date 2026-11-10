@@ -105,19 +105,29 @@ void main() {
   });
 
   group('bookGridColumns', () {
-    test('手机窄屏保持舒适列数', () {
-      expect(bookGridColumns(368), 3);
-      expect(bookGridColumns(288), 2);
+    test('常规手机竖屏一行 3 本（设计基准）', () {
+      // 360dp 竖屏：两侧各 16 内边距 → 内容区 328dp。
+      expect(bookGridColumns(328), 3);
+      // 393dp / 411dp 这类大屏手机同样 3 本，卡片在可用宽度内变宽。
+      expect(bookGridColumns(361), 3);
+      expect(bookGridColumns(379), 3);
     });
 
-    test('随可用宽度增加列数', () {
-      expect(bookGridColumns(568), 4);
-      expect(bookGridColumns(1124), 8);
+    test('极窄屏兜底 2 列，不出现单列巨卡', () {
+      expect(bookGridColumns(288), 2);
+      expect(bookGridColumns(200), 2);
+    });
+
+    test('列数随可用宽度增长，不被锁死在 3 列', () {
+      expect(bookGridColumns(568), 5);
+      expect(bookGridColumns(1124), 10);
     });
 
     test('宽屏使用更大间距时按新间距计算列数', () {
-      expect(bookGridColumns(368, spacing: kBookGridWideSpacing), 2);
-      expect(bookGridColumns(1124, spacing: kBookGridWideSpacing), 8);
+      // 同一宽度下间距更大，能放下的列数更少。
+      expect(bookGridColumns(328), 3);
+      expect(bookGridColumns(328, spacing: kBookGridWideSpacing), 2);
+      expect(bookGridColumns(1124, spacing: kBookGridWideSpacing), 9);
     });
 
     test('宽屏固定卡宽：不够一格时留白，够了才增列', () {
