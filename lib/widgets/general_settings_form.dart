@@ -11,7 +11,8 @@ import 'ui_settings_form.dart';
 ///
 /// 三个子模块同一页面纵向分区（统一使用设置组件套件的分区头 + 卡片）：
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
-/// - 其它设置：应用行为类杂项（「检查更新」开关 + 「立即检查更新」入口）；
+/// - 其它设置：应用行为类杂项（「检查更新」开关 + 预发布版本开关 +
+///   「立即检查更新」入口）；
 /// - 实验性设置：实验性功能档位（如「Agent 模式」两档：无 / Agent Lv.1）。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
@@ -37,7 +38,8 @@ class GeneralSettingsForm extends StatelessWidget {
         SettingsSection(
           icon: Icons.system_update_alt_outlined,
           title: '其它设置',
-          // OtherSettingsSection 自身即统一卡片（开关 + 立即检查两行同卡）。
+          // OtherSettingsSection 自身即统一卡片（自动检查 / 预发布 /
+          // 立即检查三行同卡）。
           child: OtherSettingsSection(),
         ),
         SettingsSection(

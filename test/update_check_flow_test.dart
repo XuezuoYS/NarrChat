@@ -78,6 +78,35 @@ void main() {
       expect(service.checkedVersions, ['1.3.1']);
     });
 
+    test('默认只查正式版：includePrerelease 传 false', () async {
+      await buildFlow().runAtStartup(navigatorKey);
+
+      expect(service.includePrereleaseValues, [false]);
+    });
+
+    test('配置 updateCheckIncludePrerelease:true 时传给服务', () async {
+      config[UpdateCheckFlow.keyUpdateCheckIncludePrerelease] = true;
+      await buildFlow().runAtStartup(navigatorKey);
+
+      expect(service.includePrereleaseValues, [true]);
+    });
+
+    test('预发布开关取值归一化：缺失 / 非布尔按默认关闭', () {
+      expect(UpdateCheckFlow.includePrereleaseFrom({}), isFalse);
+      expect(
+        UpdateCheckFlow.includePrereleaseFrom({
+          UpdateCheckFlow.keyUpdateCheckIncludePrerelease: true,
+        }),
+        isTrue,
+      );
+      expect(
+        UpdateCheckFlow.includePrereleaseFrom({
+          UpdateCheckFlow.keyUpdateCheckIncludePrerelease: 'yes',
+        }),
+        isFalse,
+      );
+    });
+
     test('检查失败：发一条失败通知，且时间戳落盘（失败计入每天一次）', () async {
       service = FakeUpdateCheckService([const CheckFailed('网络请求失败：boom')]);
       await buildFlow().runAtStartup(navigatorKey);

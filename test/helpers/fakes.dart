@@ -932,6 +932,9 @@ class FakeUpdateCheckService extends UpdateCheckService {
   /// 每次调用传入的 forceShow（依序；默认 `false`）。
   final List<bool> forceShowValues = [];
 
+  /// 每次调用传入的 includePrerelease（依序；默认 `false`）。
+  final List<bool> includePrereleaseValues = [];
+
   /// 调用次数。
   int calls = 0;
 
@@ -939,10 +942,12 @@ class FakeUpdateCheckService extends UpdateCheckService {
   Future<UpdateCheckResult> check({
     required String currentVersion,
     bool forceShow = false,
+    bool includePrerelease = false,
   }) async {
     calls++;
     checkedVersions.add(currentVersion);
     forceShowValues.add(forceShow);
+    includePrereleaseValues.add(includePrerelease);
     return _results.removeAt(0);
   }
 }

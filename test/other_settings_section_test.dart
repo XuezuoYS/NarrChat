@@ -26,9 +26,11 @@ class _ControlledUpdateCheckService extends FakeUpdateCheckService {
   Future<UpdateCheckResult> check({
     required String currentVersion,
     bool forceShow = false,
+    bool includePrerelease = false,
   }) {
     calls++;
     checkedVersions.add(currentVersion);
+    includePrereleaseValues.add(includePrerelease);
     return completer.future;
   }
 }
@@ -150,6 +152,54 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.text('点击检查 GitHub 上是否有新版本发布'), findsOneWidget);
     expect(find.text('当前已是最新版本（1.3.1）'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  final betaSwitch = find.byKey(
+    const ValueKey('other_update_check_prerelease_switch'),
+  );
+
+  testWidgets('「包含预发布版本」默认关闭，切换后落盘', (tester) async {
+    final writes = <Map<String, dynamic>>[];
+    await _pumpSection(tester, writeConfig: (patch) async => writes.add(patch));
+
+    expect(tester.widget<Switch>(betaSwitch).value, isFalse);
+
+    await tester.tap(betaSwitch);
+    await tester.pump();
+
+    expect(tester.widget<Switch>(betaSwitch).value, isTrue);
+    expect(writes, [
+      {UpdateCheckFlow.keyUpdateCheckIncludePrerelease: true},
+    ]);
+
+    // 再切回关：同样落盘。
+    await tester.tap(betaSwitch);
+    await tester.pump();
+    expect(tester.widget<Switch>(betaSwitch).value, isFalse);
+    expect(writes, [
+      {UpdateCheckFlow.keyUpdateCheckIncludePrerelease: true},
+      {UpdateCheckFlow.keyUpdateCheckIncludePrerelease: false},
+    ]);
+  });
+
+  testWidgets('手动检查按当前预发布开关传参（默认 false，开启后 true）', (tester) async {
+    final service = FakeUpdateCheckService([
+      const UpToDate(),
+      const UpToDate(),
+    ]);
+    await _pumpSection(tester, service: service, writeConfig: (_) async {});
+
+    await tester.tap(checkRow);
+    await tester.pumpAndSettle();
+    expect(service.includePrereleaseValues, [false]);
+    await flushNotices(tester);
+
+    await tester.tap(betaSwitch);
+    await tester.pump();
+    await tester.tap(checkRow);
+    await tester.pumpAndSettle();
+    expect(service.includePrereleaseValues, [false, true]);
     await flushNotices(tester);
   });
 }

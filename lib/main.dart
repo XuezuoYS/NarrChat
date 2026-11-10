@@ -175,8 +175,9 @@ Future<void> main() async {
       unawaited(ImageViewerWindowManager.warm());
     }
     unawaited(notificationService.handleLaunchNotificationIfAny());
-    // 启动自动检查更新（GitHub Releases）：开关 / 24h 节流 / 跳过版本策略在
-    // UpdateCheckFlow 内；失败走系统通知，异常已被内部兜底，不影响启动。
+    // 启动自动检查更新（GitHub Releases）：开关 / 是否含预发布 / 24h 节流 /
+    // 跳过版本策略在 UpdateCheckFlow 内；失败走系统通知，异常已被内部兜底，
+    // 不影响启动。
     unawaited(
       UpdateCheckFlow.real(
         service: UpdateCheckService(),

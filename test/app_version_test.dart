@@ -42,4 +42,50 @@ void main() {
       expect(a, isNot(equals(b)));
     });
   });
+
+  group('AppVersion 预发布后缀', () {
+    AppVersion parse(String raw) => AppVersion.tryParse(raw)!;
+
+    test('解析 -beta.1 为预发布标识符；构建元数据忽略', () {
+      final beta = parse('v3.0.0-beta.1');
+      expect(beta.segments, [3, 0, 0]);
+      expect(beta.prerelease, ['beta', '1']);
+      expect(beta.toString(), '3.0.0-beta.1');
+
+      expect(parse('1.4.0').prerelease, isEmpty);
+      expect(parse('1.4.0').toString(), '1.4.0');
+      // `+build` 属于构建元数据，不参与比较。
+      expect(parse('1.4.0+build.5'), parse('1.4.0'));
+    });
+
+    test('同号正式版高于预发布版', () {
+      final stable = parse('1.4.0');
+      final beta = parse('v1.4.0-beta.1');
+      expect(stable > beta, isTrue);
+      expect(beta < stable, isTrue);
+      expect(beta, isNot(equals(stable)));
+      expect(beta.hashCode, isNot(stable.hashCode));
+    });
+
+    test('预发布标识符按语义化规则比较', () {
+      expect(parse('1.4.0-beta.2'), greaterThan(parse('1.4.0-beta.1')));
+      expect(parse('1.4.0-beta.10'), greaterThan(parse('1.4.0-beta.2')));
+      expect(parse('1.4.0-rc.1'), greaterThan(parse('1.4.0-beta.9')));
+      // 前缀相同时标识符更多者更高；数字标识符恒小于字母标识符。
+      expect(parse('1.4.0-beta'), lessThan(parse('1.4.0-beta.1')));
+      expect(parse('1.4.0-1'), lessThan(parse('1.4.0-beta')));
+    });
+
+    test('预发布相同即相等（忽略 v 前缀与多余 0 段）', () {
+      final beta = parse('3.0.0-beta.1');
+      expect(parse('v3.0.0-beta.1'), beta);
+      expect(parse('3.0-beta.1'), beta);
+      expect(parse('3.0-beta.1').hashCode, beta.hashCode);
+    });
+
+    test('主体版本高低优先于预发布后缀', () {
+      expect(parse('2.0.0'), greaterThan(parse('1.9.9-beta.5')));
+      expect(parse('2.0.0-beta.1'), greaterThan(parse('1.9.9')));
+    });
+  });
 }

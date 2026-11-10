@@ -9,9 +9,10 @@ import 'app_notice_overlay.dart';
 import 'settings/settings_kit.dart';
 import 'update_available_dialog.dart';
 
-/// 「通用设置 → 其它设置」卡片内容：检查更新开关 + 立即检查入口。
+/// 「通用设置 → 其它设置」卡片内容：检查更新开关 + 预发布开关 + 立即检查入口。
 ///
 /// - 开关：启动时自动检查（每天最多一次），默认开启；
+/// - 包含预发布版本：默认关闭（只检查正式版），开启后连 Beta / RC 一起检查；
 /// - 立即检查：用户主动点击，**不受开关限制**（关掉自动检查后仍可手动查），
 ///   点击期间行尾转圈并忽略重复点击。
 ///
@@ -49,25 +50,34 @@ class _OtherSettingsSectionState extends State<OtherSettingsSection> {
   /// 「检查更新」开关（默认开启；从本地配置读取，读取失败按默认值）。
   bool _updateCheckEnabled = true;
 
+  /// 「包含预发布版本」开关（默认关闭；从本地配置读取，读取失败按默认值）。
+  bool _includePrerelease = false;
+
   /// 手动检查是否进行中（用于行尾转圈 + 防重复点击）。
   bool _checking = false;
 
   @override
   void initState() {
     super.initState();
-    _loadUpdateCheckEnabled();
+    _loadSettings();
   }
 
-  /// 读取「检查更新」开关（本地明文配置文件；读取失败按默认开启）。
-  Future<void> _loadUpdateCheckEnabled() async {
+  /// 读取两个开关（本地明文配置文件；读取失败按默认值）。
+  Future<void> _loadSettings() async {
     var enabled = true;
+    var includePrerelease = false;
     try {
       final config = await LocalConfigService.read();
       enabled = UpdateCheckFlow.updateCheckEnabledFrom(config);
+      includePrerelease = UpdateCheckFlow.includePrereleaseFrom(config);
     } catch (_) {
-      // 配置不可用（如测试环境无 path_provider）时按默认开启。
+      // 配置不可用（如测试环境无 path_provider）时按默认值。
     }
-    if (mounted) setState(() => _updateCheckEnabled = enabled);
+    if (!mounted) return;
+    setState(() {
+      _updateCheckEnabled = enabled;
+      _includePrerelease = includePrerelease;
+    });
   }
 
   /// 切换「检查更新」开关：先生效再持久化，保存失败不影响本次会话。
@@ -80,6 +90,16 @@ class _OtherSettingsSectionState extends State<OtherSettingsSection> {
     );
   }
 
+  /// 切换「包含预发布版本」开关：同样先生效再持久化。
+  void _toggleIncludePrerelease(bool value) {
+    setState(() => _includePrerelease = value);
+    _writeConfig({
+      UpdateCheckFlow.keyUpdateCheckIncludePrerelease: value,
+    }).catchError((Object e) {
+      debugPrint('预发布版本开关保存失败：$e');
+    });
+  }
+
   /// 手动检查是否有新版本：按结果弹更新对话框 / 悬浮提示。
   Future<void> _checkNow() async {
     if (_checking) return;
@@ -90,7 +110,10 @@ class _OtherSettingsSectionState extends State<OtherSettingsSection> {
         widget.currentVersion ?? await ReleaseInfo.version();
     UpdateCheckResult result;
     try {
-      result = await _service.check(currentVersion: currentVersion);
+      result = await _service.check(
+        currentVersion: currentVersion,
+        includePrerelease: _includePrerelease,
+      );
     } catch (e) {
       // 服务本身承诺不抛错；这里兜底，避免一次异常把设置页的点击挂住。
       result = CheckFailed('网络请求失败：$e');
@@ -138,6 +161,16 @@ class _OtherSettingsSectionState extends State<OtherSettingsSection> {
             value: _updateCheckEnabled,
             switchKey: const ValueKey('other_update_check_switch'),
             onChanged: _toggleUpdateCheck,
+          ),
+          const Divider(height: 1, indent: 14, endIndent: 14),
+          SettingsSwitchRow(
+            icon: Icons.science_outlined,
+            title: '包含预发布版本',
+            subtitle: '默认只检查正式版；开启后连 Beta / RC 等预发布版本一起检查，'
+                '并提示版本号最高的一个。',
+            value: _includePrerelease,
+            switchKey: const ValueKey('other_update_check_prerelease_switch'),
+            onChanged: _toggleIncludePrerelease,
           ),
           const Divider(height: 1, indent: 14, endIndent: 14),
           // 手动检查：整行可点，进行中行尾转圈、副标题给出状态。

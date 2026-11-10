@@ -35,6 +35,18 @@ Map<String, dynamic> _releaseJson({
   };
 }
 
+/// 发布列表接口（`releases`）响应：JSON 数组。
+http.Response _jsonListResponse(
+  List<Map<String, dynamic>> items, {
+  int status = 200,
+}) {
+  return http.Response.bytes(
+    utf8.encode(jsonEncode(items)),
+    status,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+}
+
 /// 大小写不敏感地读取请求头（http 包内部可能归一化为小写键）。
 String? _header(http.BaseRequest request, String name) {
   for (final entry in request.headers.entries) {
@@ -210,6 +222,193 @@ void main() {
         client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.0'))),
       );
       expect(await lower.check(currentVersion: '1.3.1'), isA<UpToDate>());
+    });
+  });
+
+  group('check（includePrerelease：包含预发布版本）', () {
+    test('改用发布列表接口，且按版本号取最高（含预发布）', () async {
+      late http.Request captured;
+      final service = UpdateCheckService(
+        client: MockClient((request) async {
+          captured = request;
+          return _jsonListResponse([
+            _releaseJson(tag: 'v1.3.0', name: 'NarrChat 1.3.0'),
+            _releaseJson(tag: 'v1.4.0-beta.1', name: 'NarrChat 1.4.0 Beta 1'),
+          ]);
+        }),
+      );
+
+      final result = await service.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+
+      expect(result, isA<UpdateAvailable>());
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.4.0-beta.1');
+      expect(
+        captured.url.toString(),
+        'https://api.github.com/repos/XuezuoYS/NarrChat/releases?per_page=30',
+      );
+      expect(_header(captured, 'User-Agent'), 'NarrChat');
+      expect(_header(captured, 'Accept'), contains('vnd.github'));
+    });
+
+    test('默认（不传）仍走正式版 /releases/latest 接口', () async {
+      late Uri url;
+      final service = UpdateCheckService(
+        client: MockClient((request) async {
+          url = request.url;
+          return _jsonResponse(_releaseJson());
+        }),
+      );
+      await service.check(currentVersion: '1.3.1');
+      expect(url.path, '/repos/XuezuoYS/NarrChat/releases/latest');
+      expect(url.hasQuery, isFalse);
+    });
+
+    test('列表时间顺序与版本高低不一致：按版本号挑最高', () async {
+      final service = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([
+            _releaseJson(tag: 'v1.9.0'),
+            _releaseJson(tag: 'v1.10.0-beta.1'),
+            _releaseJson(tag: 'v1.8.0'),
+          ]),
+        ),
+      );
+      final result = await service.check(
+        currentVersion: '1.9.0',
+        includePrerelease: true,
+      );
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.10.0-beta.1');
+    });
+
+    test('本地跑 beta 构建：同号正式版优先于更高 beta，beta.2 也能提示', () async {
+      final withStable = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([
+            _releaseJson(tag: 'v3.0.0-beta.2'),
+            _releaseJson(tag: 'v3.0.0'),
+          ]),
+        ),
+      );
+      final stableResult = await withStable.check(
+        currentVersion: '3.0.0-beta.1',
+        includePrerelease: true,
+      );
+      expect((stableResult as UpdateAvailable).release.tagVersion, 'v3.0.0');
+
+      final betaOnly = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([_releaseJson(tag: 'v3.0.0-beta.2')]),
+        ),
+      );
+      final betaResult = await betaOnly.check(
+        currentVersion: '3.0.0-beta.1',
+        includePrerelease: true,
+      );
+      expect(
+        (betaResult as UpdateAvailable).release.tagVersion,
+        'v3.0.0-beta.2',
+      );
+    });
+
+    test('远端只是同号或更低预发布 → UpToDate', () async {
+      final same = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([
+            _releaseJson(tag: 'v1.4.0'),
+            _releaseJson(tag: 'v1.4.0-beta.2'),
+          ]),
+        ),
+      );
+      expect(
+        await same.check(currentVersion: '1.4.0', includePrerelease: true),
+        isA<UpToDate>(),
+      );
+
+      final lower = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([_releaseJson(tag: 'v1.4.0-beta.1')]),
+        ),
+      );
+      expect(
+        await lower.check(
+          currentVersion: '1.4.0-beta.2',
+          includePrerelease: true,
+        ),
+        isA<UpToDate>(),
+      );
+    });
+
+    test('跳过草稿（draft:true）', () async {
+      final draft = _releaseJson(tag: 'v9.0.0')..['draft'] = true;
+      final service = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([draft, _releaseJson(tag: 'v1.4.0')]),
+        ),
+      );
+      final result = await service.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.4.0');
+    });
+
+    test('空列表 → NoRelease', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonListResponse([])),
+      );
+      expect(
+        await service.check(currentVersion: '1.3.1', includePrerelease: true),
+        isA<NoRelease>(),
+      );
+    });
+
+    test('列表内 tag 全无法解析 → CheckFailed', () async {
+      final service = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([_releaseJson(tag: 'release-alpha')]),
+        ),
+      );
+      final result = await service.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+      expect(result, isA<CheckFailed>());
+      expect((result as CheckFailed).reason, contains('版本号无法解析'));
+    });
+
+    test('列表接口响应不是数组 → CheckFailed 响应格式异常', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson())),
+      );
+      final result = await service.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+      expect(result, isA<CheckFailed>());
+      expect((result as CheckFailed).reason, contains('响应格式异常'));
+    });
+
+    test('404 / 403 与正式版接口同口径', () async {
+      final notFound = UpdateCheckService(
+        client: MockClient((_) async => http.Response('Not Found', 404)),
+      );
+      expect(
+        await notFound.check(currentVersion: '1.3.1', includePrerelease: true),
+        isA<NoRelease>(),
+      );
+
+      final forbidden = UpdateCheckService(
+        client: MockClient((_) async => http.Response('rate limited', 403)),
+      );
+      final result = await forbidden.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+      expect(result, isA<CheckFailed>());
+      expect((result as CheckFailed).reason, contains('限流'));
     });
   });
 }

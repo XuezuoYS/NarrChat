@@ -15,6 +15,8 @@ import 'update_check_service.dart';
 ///
 /// 配置键存放于 `local_config/app_settings.json`（与 UI 设置同文件）：
 /// - [keyUpdateCheckEnabled]：开关，默认 `true`；
+/// - [keyUpdateCheckIncludePrerelease]：是否连 Beta / RC 预发布一起查，
+///   默认 `false`（只查正式版）；
 /// - [keyUpdateLastCheckAt]：上次检查时间（ISO8601），请求失败也计入；
 /// - [keyUpdateSkipVersion]：用户「跳过此版本」的版本号。
 class UpdateCheckFlow {
@@ -66,6 +68,10 @@ class UpdateCheckFlow {
   /// 配置键：检查更新开关（默认开启）。
   static const String keyUpdateCheckEnabled = 'updateCheckEnabled';
 
+  /// 配置键：是否把预发布版本（Beta / RC）纳入检查（默认关闭，只查正式版）。
+  static const String keyUpdateCheckIncludePrerelease =
+      'updateCheckIncludePrerelease';
+
   /// 配置键：上次检查时间（ISO8601；失败也记录）。
   static const String keyUpdateLastCheckAt = 'updateLastCheckAt';
 
@@ -99,6 +105,12 @@ class UpdateCheckFlow {
       ? config[keyUpdateCheckEnabled] as bool
       : true;
 
+  /// 是否包含预发布版本：配置为非布尔时按默认关闭处理（只看正式版）。
+  static bool includePrereleaseFrom(Map<String, dynamic> config) =>
+      config[keyUpdateCheckIncludePrerelease] is bool
+      ? config[keyUpdateCheckIncludePrerelease] as bool
+      : false;
+
   /// 启动时执行一次检查（首帧后调用；全程不抛异常，任何意外只 debugPrint）。
   Future<void> runAtStartup(GlobalKey<NavigatorState> navigatorKey) async {
     try {
@@ -113,7 +125,10 @@ class UpdateCheckFlow {
       }
       final currentVersion = _currentVersion ?? await ReleaseInfo.version();
       await _writeConfig({keyUpdateLastCheckAt: _now().toIso8601String()});
-      final result = await _service.check(currentVersion: currentVersion);
+      final result = await _service.check(
+        currentVersion: currentVersion,
+        includePrerelease: includePrereleaseFrom(config),
+      );
       switch (result) {
         case UpdateAvailable(:final release):
           // 用户已跳过该版本：不再弹窗。

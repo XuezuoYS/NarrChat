@@ -86,6 +86,10 @@ void main() {
         find.byKey(const ValueKey('other_update_check_switch')),
       );
 
+  Switch prereleaseSwitchWidget(WidgetTester tester) => tester.widget<Switch>(
+        find.byKey(const ValueKey('other_update_check_prerelease_switch')),
+      );
+
   testWidgets('无配置时开关默认开启', (tester) async {
     await openGeneralSettings(tester);
 
@@ -177,5 +181,62 @@ void main() {
       findsNothing,
     );
     expect(find.text('检查更新'), findsNothing);
+  });
+
+  testWidgets('无配置时「包含预发布版本」默认关闭', (tester) async {
+    await openGeneralSettings(tester);
+
+    expect(prereleaseSwitchWidget(tester).value, isFalse);
+  });
+
+  testWidgets('预置 updateCheckIncludePrerelease:true 时预发布开关为开', (tester) async {
+    await tester.runAsync(
+      () => LocalConfigService.update({
+        UpdateCheckFlow.keyUpdateCheckIncludePrerelease: true,
+      }),
+    );
+
+    await openGeneralSettings(tester);
+
+    expect(prereleaseSwitchWidget(tester).value, isTrue);
+  });
+
+  testWidgets('切换「包含预发布版本」生效并落盘', (tester) async {
+    await openGeneralSettings(tester);
+    final betaSwitch = find.byKey(
+      const ValueKey('other_update_check_prerelease_switch'),
+    );
+    expect(prereleaseSwitchWidget(tester).value, isFalse);
+
+    await tester.ensureVisible(betaSwitch);
+    await tester.pumpAndSettle();
+    await tester.tap(betaSwitch);
+    await tester.pump();
+    expect(prereleaseSwitchWidget(tester).value, isTrue);
+
+    await flushConfig(tester);
+    final config = await tester.runAsync(LocalConfigService.read);
+    expect(config![UpdateCheckFlow.keyUpdateCheckIncludePrerelease], isTrue);
+  });
+
+  testWidgets('「包含预发布版本」位于检查更新与立即检查更新之间', (tester) async {
+    await openGeneralSettings(tester);
+
+    final updateCheck = find.byKey(const ValueKey('other_update_check_switch'));
+    final prerelease = find.byKey(
+      const ValueKey('other_update_check_prerelease_switch'),
+    );
+    final checkNow = find.byKey(const ValueKey('other_update_check_now'));
+
+    expect(prerelease, findsOneWidget);
+    expect(find.text('包含预发布版本'), findsOneWidget);
+    expect(
+      tester.getRect(prerelease).top,
+      greaterThan(tester.getRect(updateCheck).bottom),
+    );
+    expect(
+      tester.getRect(checkNow).top,
+      greaterThan(tester.getRect(prerelease).bottom),
+    );
   });
 }
