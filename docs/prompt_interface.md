@@ -11,6 +11,10 @@
 > v1 提示词代码（`prompt_sections` / `prompt_formats` / `prompt_builder` /
 > `prompt_interface_v1` / `agent_stage_directives`）**已删除**，不再有回退路径。
 
+> Agent Lv.2（六工具 + 正文三小节）也已移除：`PromptMode` 只剩 `chat` /
+> `agentLv1`，提示词侧只有 Chat / Agent Lv.1 两套模板。多栏目工具与相关判定
+> 作为框架留在代码里，当前不注册 / 不使用。
+
 目的：把「本轮要发给 AI 什么内容」与「怎么发」（线路 / 报文 / 参数 / 图片 / 历史消息）
 彻底分开——提示词改版只落在这一层，报文与历史不受影响。
 
@@ -35,7 +39,7 @@
 |---|---|---|
 | `SystemPromptSource` | `String system(PromptRequest)` | 拼合完成的 system；调用方不得再增删改写 |
 | `UserPromptSource` | `String user(PromptRequest)` | 拼合完成的本轮 user 消息（历史消息不在此列） |
-| `StageDirectiveSource` | `stagePrepare` / `stageMemory` / `stageStory` / `stageState` | 该帧 `role: user` 消息的正文；准备 / 记忆仅 Lv.1，正文帧 Lv.2 不追加，维护帧两档共用 |
+| `StageDirectiveSource` | `stagePrepare` / `stageMemory` / `stageStory` / `stageState` | 该帧 `role: user` 消息的正文；当前唯一 Agent 档位（Lv.1）的四个阶段都用，修复帧由 `stageState` 按 `first=false` 出文案 |
 | `AgentToolSource` | `List<NarrAgentTool> tools(AgentToolsRequest)` | 本轮工具清单；**顺序即请求体 `tools` 数组顺序**（前缀一致性要求稳定） |
 
 聚合门面：`abstract interface class PromptInterface implements
@@ -43,12 +47,13 @@ SystemPromptSource, UserPromptSource, StageDirectiveSource, AgentToolSource {}`�
 
 ### 请求对象（只搬运已取好的数据，不负责取数）
 
-- `PromptRequest`：`book` / `mode`（`PromptMode`：Chat、Lv.1、Lv.2）/ `lastRound` /
+- `PromptRequest`：`book` / `mode`（`PromptMode`：Chat、Agent Lv.1）/ `lastRound` /
   `userInput` / `worldBookEntries`（已按关键词筛好）/ `mods` /
   `rewrite`（`RewriteTarget`，非 null = **修改轮**：`lastRound` 即被重写轮的上一轮，
   `userInput` 即用户填写的修改意见）；
-- `AgentStageRequest`：`level` / `workingCopy`（记忆与维护帧判定条目与合并）/ `memoryMergePlan` /
-  `first`（主帧 / 修复帧）/ `problems`（维护帧待修清单）；
+- `AgentStageRequest`：`workingCopy`（记忆与维护帧判定条目与合并）/ `memoryMergePlan` /
+  `first`（主帧 / 修复帧）/ `problems`（维护帧待修清单；档位已经由
+  `PromptMode.agentLv1` 固定，不再单独传 level）；
 - `AgentToolsRequest`：`level` / `workingCopy`（状态工具绑定对象，null = 不构造）/
   `useSearch` / `search` / `webSearch` / `fetchPage`（替身优先）/ `handlers`（过程回调）。
 
@@ -70,7 +75,7 @@ const PromptInterface promptInterface = PromptV2();
 
 | 文件 | 职责 |
 |---|---|
-| `prompt_v2_sections.dart` | **全部文案**：固定行（人设 / 沙箱位置 / 服从 / 完整性 / 收尾）、共用契约、记忆条目格式与合并策略、三模式 system 与 user 契约、阶段帧指令、状态工具契约 |
+| `prompt_v2_sections.dart` | **全部文案**：固定行（人设 / 沙箱位置 / 服从 / 完整性 / 收尾）、共用契约、记忆条目格式与合并策略、两模式（Chat / Agent Lv.1）system 与 user 契约、阶段帧指令、状态工具契约 |
 | `prompt_v2_build.dart` | **拼接顺序与空块删除**：按总模板拼 system、按新建轮 / 修改轮模板拼 user、按阶段给帧指令；实现 `prompt_text.dart` 的三个文本源（纯 Dart 依赖） |
 | `prompt_v2_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表 |
 
@@ -104,7 +109,7 @@ const PromptInterface promptInterface = PromptV2();
 | `# 角色状态栏协议：` | `book.roleHierarchy` + `book.roleCategories`（空的小节整块删除） |
 | `# 角色状态完整性要求：` / `# 执行惩罚和奖励：` | 固定文本 |
 | `# 文笔参考范文：` | `book.writingStyle`（空 → 整个板块删除） |
-| user：轮次 / 上轮时间 / 前置词 / 主人输入 / 后置词 / `# 总协议2` | `lastRound`、`book.globalPre/PostPrompt`、`mods.pre/postPrompts`、`userInput`、三模式 user 契约 |
+| user：轮次 / 上轮时间 / 前置词 / 主人输入 / 后置词 / `# 总协议2` | `lastRound`、`book.globalPre/PostPrompt`、`mods.pre/postPrompts`、`userInput`、两种模式 user 契约 |
 | user（Chat）：本轮记忆合并指令 | `planMemoryMerge(...)`（Agent 走阶段帧） |
 
 > 「修改轮」（按意见重写某一轮，见 `docs/ai_prompt_v2.md` 的修改轮注入提示词）由
@@ -118,6 +123,8 @@ const PromptInterface promptInterface = PromptV2();
 `prompt_v2_tools.dart` 的 `listPromptTools` 是唯一实现：
 
 - 状态工具：按档位栏目现构（`buildStateTools(workingCopy, sections)`），绑定本轮工作副本；
+  当前档位只注册历史一读一写，世界 / 角色两对是保留框架（`toolSections` 里不出现就
+  不会构造）；
 - 联网工具：`useSearch` 时叠加（搜索 → 打开页，`buildDefaultAgentTools`），替身优先；
 - **顺序固定**（状态工具在前、联网在后），任何变化都会改动请求前缀、使服务商上下文缓存失效；
 - 工具定义（名字 / schema / description / 参数说明）为 v2 口径：简明中文，英文只保留
@@ -168,8 +175,8 @@ system / user 文本；工具清单与阶段帧请在应用内用「预览请求
 | `test/prompt_interface_test.dart` | 绑定实现；总模板区域 / `---` 分隔 / 空块即删 / 多行保留 / 模式契约差异 / **文风口径（system 固定行、范文说明在范文之前、收口句在最前、user 侧口径位置）** / Mod 抬升与顺序 / 记忆合并档位与注入 / 工具路由与替身 / 阶段帧文案 / 请求对象 |
 | `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一（含修改轮模板） |
 | `test/prompt_v2_rewrite_test.dart` | 修改轮 user 注入：头部两处差异、与新建轮逐字同构、空时间不注入、模式合同一致、记忆合并按被重写轮号 |
-| `test/agent_tool_descriptions_test.dart` | 8 个工具的中文文案形态、联网指导落点、状态工具互指 |
-| `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态、占位、vision 图片） |
+| `test/agent_tool_descriptions_test.dart` | 各工具的中文文案形态、联网指导落点、状态工具互指（含保留框架的六状态工具） |
+| `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态，含保留框架的 `agentStoryOnly`、占位、vision 图片） |
 
 ## 八、文件一览
 
@@ -182,5 +189,5 @@ system / user 文本；工具清单与阶段帧请在应用内用「预览请求
 | `lib/services/prompt_v2_tools.dart` | 工具清单 |
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |
-| `lib/services/agent/state/state_tools.dart` | 六个状态工具（v2 中文文案） |
+| `lib/services/agent/state/state_tools.dart` | 六个状态工具（v2 中文文案；世界 / 角色两对为保留框架，当前只注册历史一读一写） |
 | `docs/ai_prompt_v2.md` | 提示词设计（总模板 / 格式模板，文案的评审真源） |
