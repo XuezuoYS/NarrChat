@@ -1,11 +1,12 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/cover_image_renderer.dart';
+import '../theme/app_theme.dart';
 import '../utils/cover_crop_geometry.dart';
 import '../widgets/app_notice_overlay.dart';
 
@@ -78,16 +79,21 @@ class _CoverCropPageState extends State<CoverCropPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF121316),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildTopBar(context),
-            Expanded(child: _buildViewport(context)),
-            _buildTools(context),
-            const SizedBox(height: 10),
-          ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // 整页深色底：状态栏图标固定浅色。否则从亮色主题的顶栏进来后会沿用
+      // 深色图标，在黑底上看不见。
+      value: NarrChatTheme.systemOverlayStyle(Brightness.dark),
+      child: Scaffold(
+        backgroundColor: const Color(0xFF121316),
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildTopBar(context),
+              Expanded(child: _buildViewport(context)),
+              _buildTools(context),
+              const SizedBox(height: 10),
+            ],
+          ),
         ),
       ),
     );

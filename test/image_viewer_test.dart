@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/sync/image_deletion.dart';
@@ -207,6 +208,24 @@ void main() {
       const Offset(0, 80),
       1500,
     );
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewerPage), findsNothing);
+  });
+
+  testWidgets('全屏黑底：状态栏图标为浅色（从亮色主题进入也看得见）', (tester) async {
+    await tester.pumpWidget(buildApp(['img/a.png']));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    final style = tester
+        .widget<AnnotatedRegion<SystemUiOverlayStyle>>(
+          find.byType(AnnotatedRegion<SystemUiOverlayStyle>),
+        )
+        .value;
+    expect(style.statusBarColor, Colors.transparent);
+    expect(style.statusBarIconBrightness, Brightness.light);
+
+    await tester.tap(find.byIcon(Icons.close));
     await tester.pumpAndSettle();
     expect(find.byType(ImageViewerPage), findsNothing);
   });

@@ -1,11 +1,11 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:provider/provider.dart';
@@ -16,6 +16,7 @@ import '../services/clipboard_image_service.dart';
 import '../services/image_store.dart';
 import '../services/sync/image_deletion.dart';
 import '../services/sync/sync_models.dart';
+import '../theme/app_theme.dart';
 import 'app_notice_overlay.dart';
 import 'image_viewer_window.dart';
 
@@ -849,7 +850,9 @@ class _ImageViewerPageState extends State<ImageViewerPage>
             0.0,
             1.0,
           );
-    return Scaffold(
+    // 黑底全屏页：状态栏图标固定浅色，避免从亮色主题的顶栏进来后沿用深色
+    // 图标，在黑底上看不见（详见 NarrChatTheme.systemOverlayStyle）。
+    final page = Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: _buildDismissGesture(
@@ -966,6 +969,11 @@ class _ImageViewerPageState extends State<ImageViewerPage>
           ),
         ),
       ),
+    );
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: NarrChatTheme.systemOverlayStyle(Brightness.dark),
+      child: page,
     );
   }
 }

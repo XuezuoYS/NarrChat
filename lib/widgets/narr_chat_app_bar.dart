@@ -163,6 +163,8 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
     required bool expanded,
   }) {
     final colors = context.narrColors;
+    // 顶栏实际底色：由外层 Container 绘制（里面的 AppBar 自身透明）。
+    final barColor = widget.backgroundColor ?? colors.surface;
     final islandOn = widget.islandEnabled && controller != null;
 
     return LayoutBuilder(
@@ -270,7 +272,7 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
           ),
           child: Container(
             decoration: BoxDecoration(
-              color: widget.backgroundColor ?? colors.surface,
+              color: barColor,
               border: widget.showBorder
                   ? Border(bottom: BorderSide(color: colors.divider))
                   : null,
@@ -294,6 +296,12 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
                   // 附加色条，同时不改变其它页面的原有观感。
                   backgroundColor: Colors.transparent,
                   surfaceTintColor: Colors.transparent,
+                  // 状态栏图标必须按顶栏实际底色反色。不能交给 AppBar 自动推导：
+                  // 它看到的是上面的透明背景，会把「透明」当成纯黑 → 永远白图标，
+                  // 安卓亮色模式下白底白图标，状态栏内容看起来像被隐藏。
+                  systemOverlayStyle: NarrChatTheme.systemOverlayStyle(
+                    ThemeData.estimateBrightnessForColor(barColor),
+                  ),
                   foregroundColor: widget.foregroundColor,
                   elevation: 0,
                   scrolledUnderElevation: 0,

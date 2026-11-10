@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// NarrChat 主题：模仿 DeepSeek Chat 的极简设计语言，支持浅色 / 深色双主题。
 ///
@@ -80,6 +81,30 @@ class NarrChatTheme {
   /// 生成深色主题；[fontFamily] 非空时作为全局字体族。
   static ThemeData darkWithFont(String? fontFamily) =>
       _build(Brightness.dark, fontFamily);
+
+  /// 系统状态栏样式：状态栏透明，图标按「背后实际底色的明暗」反色。
+  ///
+  /// [backgroundBrightness] 是状态栏背后那块区域真实的底色亮度：
+  /// 浅色底 → 深色图标；深色底 → 浅色图标。
+  ///
+  /// 为什么必须显式给：统一顶栏（`NarrChatAppBar`）的底色画在外层容器上、
+  /// 里面的 `AppBar` 是透明的，`AppBar` 自动推导会把这个「透明」当成纯黑，
+  /// 于是安卓状态栏图标**永远是白色** —— 亮色模式下白底白图标，状态栏内容
+  /// 看起来像被隐藏了（Windows 没有状态栏，所以只在安卓上暴露）。
+  ///
+  /// 只设状态栏字段、不碰底部导航栏：保持各平台 / 系统版本的导航栏现状不变。
+  static SystemUiOverlayStyle systemOverlayStyle(
+    Brightness backgroundBrightness,
+  ) {
+    final dark = backgroundBrightness == Brightness.dark;
+    return SystemUiOverlayStyle(
+      // 透明：顶栏（或深色全屏页）的底色一直铺到屏幕最上沿。
+      statusBarColor: Colors.transparent,
+      // Android 看图标明暗；iOS 看状态栏文字的明暗（语义相反，必须一起给）。
+      statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+    );
+  }
 
   /// 按 [brightness] 构建主题（浅色/深色共用同一套结构，仅配色不同）。
   static ThemeData _build(Brightness brightness, String? fontFamily) {

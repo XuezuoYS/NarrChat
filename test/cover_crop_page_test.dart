@@ -1,9 +1,9 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/screens/cover_crop_page.dart';
 import 'package:narrchat/services/cover_image_renderer.dart';
@@ -511,6 +511,22 @@ void main() {
     expect(confirm.onPressed, isNotNull);
     // 收尾：清掉悬浮通知的驻留定时器，避免「Timer is still pending」。
     await flushNotices(tester);
+  });
+
+  testWidgets('深色全屏页：状态栏图标保持浅色（从亮色主题进入也看得见）', (tester) async {
+    image = await makeImage(tester, 300, 300);
+    await pumpCropPage(tester);
+
+    final style = tester
+        .widget<AnnotatedRegion<SystemUiOverlayStyle>>(
+          find.byType(AnnotatedRegion<SystemUiOverlayStyle>),
+        )
+        .value;
+    expect(style.statusBarColor, Colors.transparent);
+    expect(style.statusBarIconBrightness, Brightness.light);
+
+    await tester.tap(find.byKey(const Key('cover_crop_cancel')));
+    await tester.pumpAndSettle();
   });
 }
 
