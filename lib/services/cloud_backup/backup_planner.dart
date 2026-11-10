@@ -142,6 +142,19 @@ class BackupPlanner {
 
     if (remoteAdvanced) {
       if (!localChanged) {
+        // 云端更新、本地没动，通常直接跟随；但**云端变少**（删轮 / 删代）
+        // 是破坏性变更："时间更新但轮次更少"不能静默跟随，交给 PK / 用户确认。
+        if (isDeletionFromRemote(local: localMetrics, remote: remote)) {
+          return BackupPlan(
+            unit: unit,
+            action: BackupAction.conflict,
+            base: base,
+            localDigest: localDigest,
+            localMetrics: localMetrics,
+            remote: remote,
+            reason: '云端删掉了轮次或代（本地内容更多），需要你确认',
+          );
+        }
         return BackupPlan(
           unit: unit,
           action: BackupAction.pull,
@@ -166,6 +179,17 @@ class BackupPlanner {
     // 云端代数没前进但内容不同（云端被回滚 / 换了目录 / 覆盖过）：
     // 本地没改就跟随云端，本地也改过就以本地为新代推上去。
     if (!localChanged) {
+      if (isDeletionFromRemote(local: localMetrics, remote: remote)) {
+        return BackupPlan(
+          unit: unit,
+          action: BackupAction.conflict,
+          base: base,
+          localDigest: localDigest,
+          localMetrics: localMetrics,
+          remote: remote,
+          reason: '云端内容被换成更少的轮次或代，需要你确认',
+        );
+      }
       return BackupPlan(
         unit: unit,
         action: BackupAction.pull,
@@ -185,5 +209,19 @@ class BackupPlanner {
       remote: remote,
       reason: '本地有改动且云端未前进',
     );
+  }
+
+  /// 云端这一代是不是「变少」了（删轮 / 删代）。
+  ///
+  /// 只看云端清单带回来的指标：旧版清单没有代数（0）时无法判断，返回 false
+  /// （维持原来的跟随逻辑，不凭猜测拦同步）。本地代数更多说明本地还有云端
+  /// 已经删掉的内容，这种破坏性变更必须交给人决定，不能静默覆盖本地。
+  static bool isDeletionFromRemote({
+    required BackupUnitMetrics? local,
+    required BackupManifest? remote,
+  }) {
+    if (local == null || remote == null) return false;
+    if (remote.roundGenerationCount <= 0) return false;
+    return local.roundGenerationCount > remote.roundGenerationCount;
   }
 }

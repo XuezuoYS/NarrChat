@@ -190,7 +190,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _runLibraryRowsLoaded = false;
   Map<String, String> _runBookTitles = const {};
   bool _autoOpenConflicts = false;
-  String _lastConflictSignature = '';
   bool _openingConflicts = false;
 
   /// 串行唤醒的导航器（提示 / 弹窗用）。
@@ -697,8 +696,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _finishConflictRun() {
     final auto = _runAutoLocal + _runAutoRemote;
     if (_conflicts.isEmpty) {
-      // 冲突清空了：下次再出现同样的冲突要能重新自动开页。
-      _lastConflictSignature = '';
       if (auto > 0 || _runLibraryMerged) {
         final parts = <String>[
           if (_runAutoRemote > 0) '采用云端 $_runAutoRemote 项',
@@ -711,20 +708,21 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _autoOpenConflicts = true;
     showSyncResult(
-      '有 ${_conflicts.length} 项冲突需要你选择，可在「冲突决策」里处理',
+      '有 ${_conflicts.length} 项冲突需要你选择',
       NoticeKind.warning,
     );
   }
 
-  /// 冲突有新增时自动打开决策页（同一批冲突只自动打开一次）。
+  /// 本轮有残留冲突时自动打开决策页。
+  ///
+  /// **每次**数据面跑完都会尝试（不再按冲突指纹去重）：用户关掉页面却没处理，
+  /// 下一次同步还会把页面叫出来，避免「拒绝同步、又不上传本地」的静默僵局。
+  /// 页面还开着时 [hook] 的 future 不会完成，`_openingConflicts` 会挡住重复开页。
   void _notifyConflictsDetected() {
     if (!_autoOpenConflicts || _conflicts.isEmpty) return;
     _autoOpenConflicts = false;
     final hook = onConflictsDetected;
     if (hook == null || _openingConflicts) return;
-    final signature = _conflictSignatureOf(_conflicts);
-    if (signature == _lastConflictSignature) return;
-    _lastConflictSignature = signature;
     _openingConflicts = true;
     unawaited(
       Future<void>.microtask(() async {
@@ -737,16 +735,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }),
     );
-  }
-
-  static String _conflictSignatureOf(List<SyncConflict> conflicts) {
-    final keys = [
-      for (final conflict in conflicts)
-        '${conflict.unit.unitKey}|'
-            '${conflict.plan.remote?.snapshotName ?? ''}|'
-            '${conflict.plan.localDigest}',
-    ]..sort();
-    return keys.join(',');
   }
 
   static String _shortUuid(String uuid) =>

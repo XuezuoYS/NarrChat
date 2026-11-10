@@ -129,7 +129,10 @@ Future<void> main() async {
   cloudSyncProvider.conflictPrompt = (pending) async {
     final binding = WidgetsBinding.instance;
     final state = binding.lifecycleState;
-    if (state != null && state != AppLifecycleState.resumed) {
+    // 只在应用真的在后台（挂起 / 分离）时跳过弹窗：此时弹了也看不到，
+    // 冲突会留给本轮结束后的自动开页。窗口未聚焦（inactive）/ 最小化仍可弹。
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       return SyncConflictPromptResult.decide;
     }
     final promptContext = notificationService.navigatorKey.currentContext;

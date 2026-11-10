@@ -70,8 +70,13 @@ class SyncConflict {
       remoteGeneration > 0 ? '第 $remoteGeneration 代' : '代次未知';
 
   /// 冲突原因的简短说明（给页面副标题用）。
+  ///
+  /// 优先级：调用方补充的 note（例如自动合并失败原因）→ 备份决策给的原因
+  /// （例如「云端删掉了轮次或代」）→ 按单元类别的兜底文案。
   String get reasonLabel {
     if (note.isNotEmpty) return note;
+    final reason = plan.reason.trim();
+    if (reason.isNotEmpty) return reason;
     return switch (unit.kind) {
       BackupUnitKind.book => '这本书本地与云端都改过，且 PK 无法判定哪边更新',
       BackupUnitKind.mods => 'Mod 库本地与云端都改过，且无法判断哪边更新',

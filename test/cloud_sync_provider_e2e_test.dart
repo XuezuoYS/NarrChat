@@ -406,6 +406,124 @@ void main() {
     );
   });
 
+  test('另一端删了轮次：本机没改也进冲突决策，不乱拉也不吞本地', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '第一轮');
+    await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '第二轮');
+    await stack.seedRound(bookUuid, roundIndex: 3, aiNarrative: '第三轮');
+    await provider.sync();
+
+    // 另一台设备删掉后两轮后推了第 2 代：时间更新、但代数/轮次都更少。
+    final other = await TestStack.create(prefix: 'sync_e2e_deleted_');
+    await other.seedBook(uuid: bookUuid, title: '本地书');
+    await other.seedRound(bookUuid, roundIndex: 1, aiNarrative: '只留第一轮');
+    final otherBytes = await File(
+      '${other.paths.booksDir}/narrbook_$bookUuid.db',
+    ).readAsBytes();
+    addTearDown(other.dispose);
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(unit.snapshotName(2), otherBytes);
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.now().toUtc().add(
+          const Duration(minutes: 5),
+        ),
+        latestRoundIndex: 1,
+        roundGenerationCount: 1,
+      ).encode(),
+    );
+
+    final prompts = <List<SyncConflict>>[];
+    provider.conflictPrompt = (pending) async {
+      prompts.add(pending);
+      return SyncConflictPromptResult.decide;
+    };
+    var opened = 0;
+    provider.onConflictsDetected = () async => opened++;
+
+    await provider.sync();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(prompts, hasLength(1), reason: '删除型变更必须弹三选一');
+    expect(provider.conflicts, hasLength(1));
+    final conflict = provider.conflicts.single;
+    expect(conflict.unit, unit);
+    expect(conflict.reasonLabel, contains('云端删掉'), reason: '说清是删除而不是普通更新');
+    expect(conflict.pk.axes, hasLength(3));
+    expect(conflict.pk.unanimous, isFalse, reason: '时间指向云端、代数/轮次指向本地');
+    expect(opened, 1, reason: '自动打开冲突决策页');
+
+    // 没决策前：本地不动（不静默删除），云端也没被本机覆盖。
+    final chain = await stack.repos.rounds.loadChain(bookUuid);
+    expect(chain.rounds, hasLength(3));
+    expect(
+      remote.files.containsKey(unit.snapshotName(3)),
+      isFalse,
+      reason: '待裁决期间不上传新代',
+    );
+  });
+
+  test('删除型冲突选「保留本地」：把本地内容推成新代，云端恢复更多轮次', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '第一轮');
+    await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '第二轮');
+    await provider.sync();
+
+    final other = await TestStack.create(prefix: 'sync_e2e_deleted2_');
+    await other.seedBook(uuid: bookUuid, title: '本地书');
+    await other.seedRound(bookUuid, roundIndex: 1, aiNarrative: '只留第一轮');
+    addTearDown(other.dispose);
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(
+      unit.snapshotName(2),
+      await File('${other.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
+    );
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.now().toUtc().add(
+          const Duration(minutes: 5),
+        ),
+        latestRoundIndex: 1,
+        roundGenerationCount: 1,
+      ).encode(),
+    );
+    provider.conflictPrompt = (pending) async =>
+        SyncConflictPromptResult.decide;
+
+    await provider.sync();
+    expect(provider.conflicts, hasLength(1));
+    final conflict = provider.conflicts.single;
+
+    final report = await provider.applyConflictDecisions([
+      SyncConflictDecision(
+        conflict: conflict,
+        choice: BackupConflictChoice.local,
+      ),
+    ]);
+
+    expect(report.localApplied, 1);
+    expect(report.errors, isEmpty);
+    expect(provider.conflicts, isEmpty);
+    final pushed = BackupManifest.decode(
+      remote.files['manifest_narrbook_b1.json']!,
+    );
+    expect(pushed.generation, 3);
+    expect(pushed.roundGenerationCount, 2, reason: '本地两轮都保留');
+    expect(pushed.latestRoundIndex, 2);
+    final chain = await stack.repos.rounds.loadChain(bookUuid);
+    expect(chain.rounds, hasLength(2));
+  });
+
   test('applyConflictDecisions(local)：把本地推成云端新的一代', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
     await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '本地正文');
