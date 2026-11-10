@@ -55,7 +55,10 @@ class AgentToolsRequest {
     this.handlers,
   });
 
-  /// 档位：`off` = 无状态工具（Chat 联网循环走这条），Lv.1 / Lv.2 决定状态栏目。
+  /// 档位：`off` = 无状态工具（Chat 联网循环走这条），`lv1` = 历史一读一写。
+  ///
+  /// 世界 / 角色的状态工具仍保留在 `state/state_tools.dart`（框架保留），
+  /// 但当前没有任何档位把它们放进 `toolSections`。
   final AgentModeLevel level;
 
   /// 状态工具绑定的工作副本；为 null 时不构造状态工具。

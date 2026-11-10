@@ -3,6 +3,9 @@
 /// 六个工具按栏目成对拆分：每个栏目一个**只读**读取器与一个**锚定式编辑**
 /// 编辑器（实现见 `state_tools.dart`）。命名遵循「`narrchat_` 前缀 + 小驼峰」
 /// 规范（见 `docs/agent_tools.md`）。
+///
+/// 当前唯一 Agent 档位（Lv.1）只注册历史一读一写；世界 / 角色两对是**保留
+/// 框架**（完整 Agent Lv.2 已移除，暂无档位注册它们）。
 library;
 
 /// 世界状态读取（只返回 `<worldState>` 块）。
@@ -37,7 +40,7 @@ const List<String> kEditStateToolNames = [
   kEditHistoryToolName,
 ];
 
-/// 六个状态工具（读取器在前）。
+/// 六个状态工具（读取器在前；当前档位只注册历史一读一写，其余为保留框架）。
 const List<String> kStateToolNames = [
   ...kReadStateToolNames,
   ...kEditStateToolNames,

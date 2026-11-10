@@ -63,7 +63,7 @@ Future<void> main() async {
   // 创建 AI 设置 Provider：API Key 从安全存储（系统密钥库）读取，
   // 其余设置从本地 JSON 配置文件（local_config/app_settings.json）读取。
   final aiSettingsProvider = AiSettingsProvider()..load();
-  // 实验性功能设置（含「Agent 模式」三档：关 / Lv.1 / Lv.2，默认关闭；
+  // 实验性功能设置（含「Agent 模式」两档：关 / Lv.1，默认关闭；
   // 独立于平台协议）。
   final experimentalSettingsProvider = ExperimentalSettingsProvider()..load();
   // UI 设置：加载本地配置；随后台扫描系统字体，

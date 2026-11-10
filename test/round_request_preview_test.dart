@@ -25,7 +25,9 @@ import 'helpers/fakes.dart';
 ///
 /// 每类入口各覆盖一次：普通新一轮 / 灰条「修改并重新提问」（先删轮再发）/
 /// 灰条「按意见修改」（修改轮）/ Agent Lv.1（首帧 = 准备帧，非正文帧）/
-/// Agent Lv.2 / 联网工具循环。
+/// 联网工具循环。
+///
+/// 完整 Agent（Lv.2）已移除：其「首帧 = 正文帧」的预览用例随档位一并删除。
 void main() {
   const book = Book(uuid: 'b1', title: '测试书', historyRounds: 2);
 
@@ -221,32 +223,6 @@ void main() {
         isTrue,
       );
       expect(env.ai.bodies.first, preview.firstFrame, reason: '实发首帧 = 预览首帧');
-    });
-
-    test('Agent Lv.2：首帧 = 正文帧，后续可用帧为维护帧', () async {
-      final env = await build(
-        settings: AiSettingsProvider(),
-        experimental: AgentModeSettings(),
-      );
-      await env.provider.loadRounds(book.uuid);
-
-      final preview = await env.provider.previewRequestBody(
-        intent: RoundSendIntent.newRound(userInput: '第一章'),
-        book: book,
-      );
-      expect(
-        preview.subsequentFrames.map((f) => f.label).toList(),
-        ['维护帧'],
-      );
-
-      expect(
-        await env.provider.sendIntent(
-          intent: RoundSendIntent.newRound(userInput: '第一章'),
-          book: book,
-        ),
-        isTrue,
-      );
-      expect(env.ai.bodies.first, preview.firstFrame);
     });
 
     test('联网工具循环：首帧一致，后续帧只含追加的消息（占位形态）', () async {

@@ -24,17 +24,17 @@ void main() {
         categoryNames: const ['主角', '女主角'],
       );
 
-  /// Lv.2 = 三个栏目全部启用（读取器在前、编辑器在后）。
-  List<NarrAgentTool> lv2Tools(AgentStateWorkingCopy working) =>
+  /// 框架（当前档位只用历史一对）：三个栏目全部启用（读取器在前、编辑器在后）。
+  List<NarrAgentTool> allSectionTools(AgentStateWorkingCopy working) =>
       buildStateTools(working, sections: AgentStateSection.values);
 
   /// 工具名 → 工具（按构建顺序）。
   Map<String, NarrAgentTool> byName(AgentStateWorkingCopy working) => {
-        for (final t in lv2Tools(working)) t.name: t,
+        for (final t in allSectionTools(working)) t.name: t,
       };
 
-  test('工具集（Lv.2）：六个工具、读取器在前、命名与活动类型', () {
-    final tools = lv2Tools(copy());
+  test('工具集（框架：三栏目全开）：六个工具、读取器在前、命名与活动类型', () {
+    final tools = allSectionTools(copy());
     expect(tools.map((t) => t.name), [
       'narrchat_readWorldState',
       'narrchat_readCharacterState',

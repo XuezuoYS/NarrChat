@@ -20,9 +20,11 @@ import 'helpers/fakes.dart';
 /// 「按意见修改」（修改轮）的 Provider 行为测试。
 ///
 /// 覆盖：同轮号新增一代（旧代保留）/ 历史 = 被修改轮生成时收到的 n 轮 + 该轮自身
-/// （n+1）/ Agent 工具读到的状态与记忆停在**上一轮** / 新版本沿用原输入与原图
-/// （意见不落库）/ 后续轮次随旧代从视图隐藏 / 失败按「重新生成」规则写失败条目 /
-/// 空意见拒绝。
+/// （n+1）/ Agent Lv.1 调研读到的历史停在**上一轮**（记忆条目按被重写轮落地）/
+/// 新版本沿用原输入与原图（意见不落库）/ 后续轮次随旧代从视图隐藏 /
+/// 失败按「重新生成」规则写失败条目 / 空意见拒绝。
+///
+/// 完整 Agent（Lv.2）已移除：它的「正文 + 三栏工具两阶段」修改轮用例随档位删除。
 void main() {
   /// 真库 Provider（TestStack：临时目录 + 五个 R3 库），绝不触碰真实用户数据。
   Future<(RoundProvider, TestStack)> build({
@@ -290,127 +292,6 @@ void main() {
           callAdded(id, agentEditToolName(section)),
           callArgs(id, {'edits': edits}),
         ];
-
-    test('Lv.2 修改第 3 轮：历史 = 第 2 轮 + 第 3 轮，读史工具返回第 2 轮记忆，新条目记第 3 轮', () async {
-      final stack = await TestStack.create();
-      await stack.seedBook(uuid: book.uuid, title: book.title, historyRounds: book.historyRounds);
-      await seed(stack, 'b1', const [
-        Round(
-          id: 1,
-          bookUuid: 'b1',
-          roundIndex: 1,
-          userInput: 'ROUND-ONE-INPUT',
-          aiNarrative: '第一轮正文',
-          worldState: '- 地点：山下',
-          characterState: '# 主角\n## 林远\n- 气血：90',
-          memorySummary: '- 1 | 第一天 | 事件一。',
-          currentTime: '第一天',
-        ),
-        Round(
-          id: 2,
-          bookUuid: 'b1',
-          roundIndex: 2,
-          userInput: 'ROUND-TWO-INPUT',
-          aiNarrative: '第二轮正文',
-          worldState: '- 地点：山门',
-          characterState: '# 主角\n## 林远\n- 气血：95',
-          memorySummary: '- 1 | 第一天 | 事件一。\n- 2 | 第二天 | 事件二。',
-          currentTime: '第二天 午时',
-        ),
-        Round(
-          id: 3,
-          bookUuid: 'b1',
-          roundIndex: 3,
-          userInput: 'ROUND-THREE-INPUT',
-          aiNarrative: '第三轮正文',
-          worldState: '- 地点：大殿',
-          characterState: '# 主角\n## 林远\n- 气血：80',
-          memorySummary: '- 1 | 第一天 | 事件一。\n- 2 | 第二天 | 事件二。\n'
-              '- 3 | 第三天 | 事件三。',
-          currentTime: '第三天 午时',
-        ),
-      ]);
-      final bodies = <Map<String, dynamic>>[];
-      final ai = AiService(
-        client: MockClient((request) async {
-          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-          if (bodies.length == 1) {
-            // 帧 1：只读史（读取器）——应用侧此刻只有「上一轮」的状态。
-            return sse([
-              callAdded('fc_read', 'narrchat_readHistory'),
-              callArgs('fc_read', {'round': 3}),
-              completed('resp_1'),
-              '',
-            ]);
-          }
-          // 帧 2：正文 + 三栏闭环（世界 / 角色声明无变化，历史追加本轮条目）。
-          return sse([
-            textDelta('## 剧情演绎\n重写后的正文。\n\n## 推荐行动\n继续。\n'
-                '\n## 当前时间\n第三天 午时'),
-            ...editLines('fc_1', AgentStateSection.worldState, [
-              {'op': 'noChange', 'reason': '世界状态本轮未变化'},
-            ]),
-            ...editLines('fc_2', AgentStateSection.characterState, [
-              {'op': 'noChange', 'reason': '角色状态本轮未变化'},
-            ]),
-            ...editLines('fc_3', AgentStateSection.memorySummary, [
-              {'op': 'append', 'newLine': '- 3 | 第三天 午时 | 重写后的事件。'},
-            ]),
-            completed('resp_2'),
-            '',
-          ]);
-        }),
-      );
-      final provider = RoundProvider(
-        rounds: stack.repos.rounds,
-        books: stack.repos.books,
-        aiService: ai,
-        aiSettingsProvider: AiSettingsProvider(),
-        experimentalSettings: AgentModeSettings(),
-        retryDelay: Duration.zero,
-      );
-      await provider.loadRounds('b1');
-
-      final ok = await provider.modifyRoundByOpinion(
-        roundOf(provider, 3),
-        '按主人意见重写：节奏加快',
-        book: book,
-      );
-
-      expect(ok, isTrue);
-      expect(bodies, hasLength(2));
-
-      // 首帧：n(=1) 轮历史 + 被修改轮自身（第 3 轮）——不含第 1 轮。
-      final first = jsonEncode(bodies.first);
-      expect(first, contains('ROUND-TWO-INPUT'));
-      expect(first, contains('ROUND-THREE-INPUT'));
-      expect(first, isNot(contains('ROUND-ONE-INPUT')));
-      expect(first, contains('重写第 3 轮：'));
-      expect(first, contains('按主人意见重写：节奏加快'));
-      expect(first, contains('此轮时间：第三天 午时'));
-      // Lv.2 历史每轮只带正文三小节：被修改轮的记忆**只能**来自工具。
-      expect(first, isNot(contains('事件三')));
-
-      // 第 2 帧：读史工具回传的 <memorySummary> = **上一轮（第 2 轮）**的内容。
-      final outputs = [
-        for (final item in (bodies[1]['input'] as List).cast<Map<String, dynamic>>())
-          if (item['type'] == 'function_call_output') '${item['output']}',
-      ];
-      expect(outputs, hasLength(1));
-      expect(outputs.single, contains('<memorySummary>'));
-      expect(outputs.single, contains('- 2 | 第二天 | 事件二。'));
-      expect(outputs.single, isNot(contains('- 3 |')));
-
-      // 落库：同轮号第 3 轮新增一代，记忆条目按被修改轮号追加（基座 = 第 2 轮记忆）。
-      final updated = roundOf(provider, 3);
-      expect(updated.aiNarrative, contains('重写后的正文'));
-      expect(updated.userInput, 'ROUND-THREE-INPUT');
-      expect(updated.memorySummary, contains('- 2 | 第二天 | 事件二。'));
-      expect(updated.memorySummary, contains('- 3 | 第三天 午时 | 重写后的事件。'));
-      expect(updated.memorySummary, isNot(contains('事件三。')));
-      expect(provider.agentWarnings, isEmpty);
-      expect(provider.rounds.last.roundIndex, 3);
-    });
 
     test('Lv.1 修改第 3 轮：调研读到的历史 = 上一轮；记忆条目按第 3 轮落地、正文 5 区块落该轮', () async {
       final stack = await TestStack.create();

@@ -12,12 +12,12 @@ import '../services/local_config_service.dart';
 ///   剧情定大纲并用 `narrchat_editHistory` 补本轮记忆条目（**先于正文**落地）→
 ///   正文阶段输出 5 个区块（排除
 ///   `## 记忆总结`）；维护轮只在记忆没落地时兜底；
-/// - **Lv.2**：完整 Agent（六个状态工具 `narrchat_readWorldState` /
-///   `narrchat_editWorldState` / `narrchat_readCharacterState` /
-///   `narrchat_editCharacterState` / `narrchat_readHistory` /
-///   `narrchat_editHistory` + 联网），正文回合只输出 3 个小节；
 ///
-/// 两档都属于实验性功能，可能产生错误或不被服务商支持（见「设置 → 通用设置 →
+/// 历史上的**完整 Agent（Lv.2）已移除**：它的世界 / 角色工具类与多栏目缺口框架
+/// 仍留在代码里作为后续档位的基础设施，但当前不注册；旧配置值 `2` 与旧布尔键
+/// 一律回落「关」（见 [load]）。
+///
+/// 该档位属于实验性功能，可能产生错误或不被服务商支持（见「设置 → 通用设置 →
 /// 实验性设置」中的声明）。档位语义的统一映射见 `AgentModeProfile`。
 ///
 /// 另含 **Agent 模式下的思考回传策略**（[reduceReasoningReplay]，默认关 =
@@ -33,9 +33,6 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 本地配置文件键名（camelCase）：现行档位键。
   static const String keyAgentModeLevel = 'agentModeLevel';
 
-  /// 历史键（**只读迁移用**）：早期版本的布尔开关（true → Lv.2）。
-  static const String keyAgentModeEnabled = 'agentModeEnabled';
-
   /// 本地配置文件键名：Agent 模式思考回传是否精简（默认关）。
   static const String keyReduceReasoningReplay = 'agentReasoningReplayReduced';
 
@@ -45,7 +42,7 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 当前 Agent 档位（默认关闭）。
   AgentModeLevel get agentModeLevel => _level;
 
-  /// Agent 流程是否开启（Lv.1 / Lv.2）。
+  /// Agent 流程是否开启（当前仅 Lv.1）。
   bool get agentModeEnabled => _level.isOn;
 
   /// Agent 模式下的思考回传是否精简（默认关 = 逐字节回传原文）。
@@ -53,22 +50,18 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
 
   /// 从本地配置读取（读取失败按默认关闭）。
   ///
-  /// 迁移规则：新键 [keyAgentModeLevel] **存在**即以其值为准（合法值 0/1/2，
-  /// 非法值按关闭处理），旧键一律忽略；新键缺失时才回退读旧布尔键
-  /// [keyAgentModeEnabled]，`true` → [AgentModeLevel.lv2]（保持旧版本行为）。
+  /// 档位规则：新键 [keyAgentModeLevel] **存在**即以其值为准（合法值 0/1；
+  /// 非法值、以及已移除的 Lv.2 旧值 `2` 一律按关闭处理）。早期版本的布尔键
+  /// `agentModeEnabled`（`true` 曾代表 Lv.2）**已废弃**：它不再作为迁移来源，
+  /// 旧用户升级后回落「关」，需要时自行在设置里重新选择 Lv.1。
   /// **读取过程不写盘**（与其它 Provider 的「load 不物化」约定一致）：
   /// 只有用户切换档位时才写入新键。
   Future<void> load() async {
     try {
       final config = await LocalConfigService.read();
-      if (config.containsKey(keyAgentModeLevel)) {
-        _level = AgentModeLevel.parse(config[keyAgentModeLevel]);
-      } else {
-        final legacy = config[keyAgentModeEnabled];
-        _level = legacy is bool && legacy
-            ? AgentModeLevel.lv2
-            : AgentModeLevel.off;
-      }
+      _level = config.containsKey(keyAgentModeLevel)
+          ? AgentModeLevel.parse(config[keyAgentModeLevel])
+          : AgentModeLevel.off;
       // 缺失 / 类型不符 ⇒ 默认**关闭**（逐字节回传原文）。
       final reduced = config[keyReduceReasoningReplay];
       _reduceReasoningReplay = reduced is bool ? reduced : false;

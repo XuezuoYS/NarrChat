@@ -188,12 +188,15 @@ class AiResponseParser {
   /// AGENT 模式正文序列化：三个小节（`## 剧情演绎` → `## 推荐行动` →
   /// `## 当前时间`，顺序与正文输出契约一致）。
   ///
-  /// 世界/角色/记忆三栏在 AGENT 模式下由工具维护，**绝不出现在 assistant
+  /// 世界/角色/记忆三栏在完整 Agent 模式下由工具维护，**绝不出现在 assistant
   /// 历史里**：历史中的 assistant 消息是模型的模仿对象，一旦那里出现
   /// `## 世界状态`，模型就会照抄 Chat 模式 6 区块输出（旧版 AGENT 不稳定的
   /// 根因之一）。状态改由 `narrchat_read*` 的**工具结果**形态提供
   /// （模型主动调用获取，工具结果不会被模仿成输出格式）。时间属于正文，
   /// 故随正文一起序列化。
+  ///
+  /// 完整 Agent（Lv.2）已移除，当前没有档位使用该形态；它与
+  /// [AssistantHistoryShape.agentStoryOnly] 一起作为后续档位的**保留框架**。
   static String serializeAgentBody(ParsedAiResponse parsed) =>
       _serializeBlocks([
         ('aiNarrative', parsed.aiNarrative),

@@ -12,7 +12,7 @@ import 'ui_settings_form.dart';
 /// 三个子模块同一页面纵向分区（统一使用设置组件套件的分区头 + 卡片）：
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
 /// - 其它设置：应用行为类杂项（「检查更新」开关 + 「立即检查更新」入口）；
-/// - 实验性设置：实验性功能档位（如「Agent 模式」三档：关 / Lv.1 / Lv.2）。
+/// - 实验性设置：实验性功能档位（如「Agent 模式」两档：无 / Agent Lv.1）。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
 class GeneralSettingsForm extends StatelessWidget {
@@ -56,9 +56,11 @@ class GeneralSettingsForm extends StatelessWidget {
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
 /// - **Lv.1**：仅历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），
 ///   每轮三段：调研（读史 + 按需联网）→ 同一回合「推演剧情 + 落记忆条目」→
-///   输出正文（维护轮只作兜底）；
-/// - **Lv.2**：完整 Agent（六个状态工具：世界 / 角色 / 历史各一读一写 + 联网）；
-///   正文只输出 3 个小节，状态全部由工具维护。
+///   输出正文（维护轮只作兜底）。
+///
+/// 历史上的完整 Agent（Lv.2，六工具 + 正文三小节）**已移除**：世界 / 角色工具
+/// 与多栏目缺口框架仍留在代码里作为后续档位的基础设施，当前不注册；旧配置值
+/// `2` 与旧布尔键回落「关」（见 `ExperimentalSettingsProvider.load`）。
 ///
 /// 交互与文案分工：
 /// - **整行任意位置可点**即可展开档位菜单（不必对准右侧箭头）；
@@ -75,10 +77,10 @@ class _ExperimentalSettingsSection extends StatefulWidget {
 
 class _ExperimentalSettingsSectionState
     extends State<_ExperimentalSettingsSection> {
-  /// 简要介绍：工具 / 两阶段 + 指示器限制 + 破坏性变更声明（细节在选项内）。
+  /// 简要介绍：工具 / 分阶段生成 + 指示器限制 + 破坏性变更声明（细节在选项内）。
   static const String _agentModeDescription =
-      '实验性功能（默认「无」）：启用后调用自定义工具（narrchat_*）走两阶段生成，'
-      '由 Agent 托管部分状态——各档位托管范围见下拉选项说明。'
+      '实验性功能（默认「无」）：启用后调用自定义工具（narrchat_*）走分阶段生成'
+      '（调研 → 记忆 → 正文），由 Agent 托管部分状态——托管范围见下拉选项说明。'
       '⚠ 档位开启期间，模型已支持的功能（思考 / 流式 / 搜索）无法通过对话页'
       '指示器关闭；未来更新可能对本功能做出破坏性变更，正确性不保证。';
 
@@ -115,7 +117,7 @@ class _ExperimentalSettingsSectionState
       title: 'Agent 模式',
       subtitle: _agentModeDescription,
       value: experimental.agentModeLevel,
-      // 行尾展示短标签（关 / Lv.1 / Lv.2），菜单里展示语义化标题与说明。
+      // 行尾展示短标签（关 / Lv.1），菜单里展示语义化标题与说明。
       labelOf: (level) => level.label,
       options: [
         for (final level in AgentModeLevel.values)

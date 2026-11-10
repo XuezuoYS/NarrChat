@@ -24,8 +24,11 @@ enum AssistantHistoryShape {
   /// 剧情正文；历史（记忆总结）改由 `narrchat_readHistory` 工具提供。
   chatWithoutMemory,
 
-  /// Agent Lv.2：**每一轮**都只带正文三小节（剧情 / 行动 / 时间），
+  /// 完整 Agent（Lv.2）：**每一轮**都只带正文三小节（剧情 / 行动 / 时间），
   /// 状态三栏一律由 `narrchat_read*` 工具提供。
+  ///
+  /// Lv.2 已移除，当前没有档位使用该形态；实现与对应序列化函数作为后续档位的
+  /// **保留框架**（`docs/agent_mode.md` 的「已移除：Agent Lv.2」一节）。
   agentStoryOnly,
 }
 

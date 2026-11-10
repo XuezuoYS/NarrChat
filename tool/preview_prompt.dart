@@ -34,7 +34,7 @@ void main() {
         '- 2 | 第三天 午时 | 主角在宗门大比中获胜，苏清月担忧其伤势。',
     currentTime: '第三天 午时',
   );
-  // 模式可改：chat / agentLv1 / agentLv2（Agent 档位的阶段帧指令在应用内查看）。
+  // 模式可改：chat / agentLv1（Agent 档位的阶段帧指令在应用内查看）。
   const mode = PromptMode.chat;
   const builder = PromptV2Build();
   final request = PromptRequest(

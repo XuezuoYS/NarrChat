@@ -3274,11 +3274,11 @@ class _ChatScreenState extends State<ChatScreen>
             key: const Key('chat_rail_area'),
             top: 0,
             // 只占**输入面板以上**的可读区域：面板与滑块都以这段居中，
-            // 命中带也不会盖住输入面板右上那排方形按钮（不需要给按钮行让位）。
+            // 滑块也不会盖住输入面板右上那排方形按钮（不需要给按钮行让位）。
             bottom: _composerHeight + 8,
             right: 0,
             child: SizedBox(
-              // 轨道占用的右侧宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）：
+              // 轨道占用的右侧宽度（滑块贴边 + 滑块 + 间隙 + 最宽的胶囊）：
               // 父级必须给够，否则展开的胶囊会落到父级边界外（实测会报 off-screen）。
               width: ChatRail.reservedWidth,
               child: ChatRail(locator: _chatLocator, handle: _railHandle),
@@ -3836,8 +3836,8 @@ class _DragToImportHint extends StatelessWidget {
 ///
 /// - **Agent 关闭**：收起时显示当前启用选项摘要（如「无」「流式 | 思考 | 搜索(BETA)」，
 ///   搜索段用警告色，不加粗）；流式/思考启用时触发按钮为主题蓝边框+文字；
-/// - **Agent 开启（Lv.1 / Lv.2）**：触发按钮改为**联网同款警告黄徽标**，
-///   文本 = `Agent Lv.1 On (BETA)` / `Agent Lv.2 On (BETA)`；菜单里
+/// - **Agent 开启（Lv.1）**：触发按钮改为**联网同款警告黄徽标**，
+///   文本 = `Agent Lv.1 On (BETA)`；菜单里
 ///   思考 / 流式 / 搜索显示为用户原配置但**置灰不可切换**（Agent 期间强制开启，
 ///   只受模型配置页的能力开关限制），并附一行小字说明；
 /// - 展开为复选菜单，切换后保持展开可连续操作；
@@ -4072,15 +4072,12 @@ class _ChatModeDropdown extends StatelessWidget {
     );
   }
 
-  /// 菜单信息块里的一行档位说明（Lv.1 / Lv.2 的契约差异）。
+  /// 菜单信息块里的一行档位说明（当前只有 Lv.1 一档）。
   static String _agentScopeNote(AgentModeLevel level) => switch (level) {
         AgentModeLevel.off => '',
         AgentModeLevel.lv1 =>
           '仅启用历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），'
               '历史由工具读写',
-        AgentModeLevel.lv2 =>
-          '启用六个状态工具（世界 / 角色 / 历史各一读一写）+ 联网；'
-              '正文输出 3 个小节，状态全部由工具维护',
       };
 }
 

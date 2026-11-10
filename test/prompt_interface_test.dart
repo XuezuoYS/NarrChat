@@ -146,22 +146,22 @@ void main() {
       expect(user, contains('文笔参考范文 > 文笔要求 > 其他'));
     });
 
-    test('模式契约：Chat 6 区块 / Lv.1 5 区块 / Lv.2 3 小节，工具契约只进 Agent', () {
+    test('模式契约：Chat 6 区块 / Lv.1 5 区块，工具契约只进 Agent', () {
       final chat = promptInterface.system(requestOf(PromptMode.chat));
       final lv1 = promptInterface.system(requestOf(PromptMode.agentLv1));
-      final lv2 = promptInterface.system(requestOf(PromptMode.agentLv2));
 
       expect(chat, contains('6 个二级标题'));
       expect(lv1, contains('5 个二级标题'));
-      expect(lv2, contains('3 个二级标题'));
+      expect(lv1, isNot(contains('6 个二级标题')));
 
       expect(chat, isNot(contains('【状态工具契约】')));
       expect(lv1, contains('【状态工具契约】'));
-      expect(lv2, contains('【状态工具契约】'));
 
       expect(lv1, contains('当前请求协议：Agent。'), reason: 'Agent 档位不写等级');
-      expect(lv2, contains('当前请求协议：Agent。'));
-      expect(lv1, isNot(contains('6 个二级标题')));
+      expect(lv1, contains(kReadHistoryToolName));
+      expect(lv1, contains(kEditHistoryToolName));
+      expect(lv1, isNot(contains(kReadWorldStateToolName)),
+          reason: '当前档位只托管历史');
     });
 
     test('空块即删：只有书名时不留空的 `#` 板块', () {
@@ -279,8 +279,9 @@ void main() {
       expect(user, contains('# 总协议2'));
       expect(user, contains('格式已经约好了，现在就动笔'));
 
-      final lv2 = promptInterface.user(requestOf(PromptMode.agentLv2));
-      expect(lv2, contains('先把三栏各读一次'));
+      final agent = promptInterface.user(requestOf(PromptMode.agentLv1));
+      expect(agent, contains(kReadHistoryToolName));
+      expect(agent, contains('5 个区块'));
     });
 
     test('前置词 / 后置词：用户 + Mod 都在，顺序正确', () {
@@ -339,7 +340,7 @@ void main() {
       // Agent 档位的合并要求走阶段帧指令，不在用户消息里
       final agentUser = promptInterface.user(PromptRequest(
         book: tier5,
-        mode: PromptMode.agentLv2,
+        mode: PromptMode.agentLv1,
         lastRound: mergeRound,
         userInput: '继续',
       ));
@@ -348,7 +349,7 @@ void main() {
   });
 
   group('v2 · 工具集与阶段帧', () {
-    test('工具路由与 v1 一致（Lv.1 两件 / Lv.2 六件 / Chat 联网两件）', () {
+    test('工具路由：Lv.1 历史两件 + Chat 联网两件；六工具框架由 buildStateTools 直接组装', () {
       final lv1 = promptInterface.tools(
         AgentToolsRequest(level: AgentModeLevel.lv1, workingCopy: copyOf()),
       );
@@ -356,17 +357,19 @@ void main() {
         kReadHistoryToolName,
         kEditHistoryToolName,
       ]);
-
-      final lv2 = promptInterface.tools(
-        AgentToolsRequest(level: AgentModeLevel.lv2, workingCopy: copyOf()),
-      );
-      expect([for (final t in lv2) t.name], kStateToolNames);
       expect(
-        fingerprint(lv2),
+        fingerprint(lv1),
         fingerprint(
-          buildStateTools(copyOf(), sections: AgentModeProfile.lv2.toolSections),
+          buildStateTools(copyOf(), sections: AgentModeProfile.lv1.toolSections),
         ),
       );
+
+      // 世界 / 角色两对工具是保留框架：当前档位不注册，直接按栏目全开组装。
+      final framework = buildStateTools(
+        copyOf(),
+        sections: AgentStateSection.values,
+      );
+      expect([for (final t in framework) t.name], kStateToolNames);
 
       final chatSearch = promptInterface.tools(
         AgentToolsRequest(
@@ -385,12 +388,19 @@ void main() {
       final web = WebSearchTool();
       final fetch = FetchPageTool();
       final tools = promptInterface.tools(AgentToolsRequest(
-        level: AgentModeLevel.lv2,
+        level: AgentModeLevel.lv1,
         workingCopy: copyOf(),
         useSearch: true,
         webSearch: web,
         fetchPage: fetch,
       ));
+      // 状态工具在前、联网工具在后（顺序即请求体 tools 数组顺序）。
+      expect([for (final t in tools) t.name], [
+        kReadHistoryToolName,
+        kEditHistoryToolName,
+        'narrchat_webSearch',
+        'narrchat_webFetchPage',
+      ]);
       expect(tools[tools.length - 2], same(web));
       expect(tools.last, same(fetch));
       expect(
@@ -401,8 +411,8 @@ void main() {
       );
     });
 
-    test('阶段帧指令为 v2 文案（调研 / 记忆 / 正文 / 维护）', () {
-      const lv1 = AgentStageRequest(level: AgentModeLevel.lv1);
+    test('阶段帧指令为 v2 文案（调研 / 记忆 / 正文 / 维护 / 修复）', () {
+      const lv1 = AgentStageRequest();
       // 调研回合：只读史 + 按需联网，**不产出大纲**，且文本通道零输出。
       final prepare = promptInterface.stagePrepare(lv1);
       expect(prepare, startsWith('【调研回合】'));
@@ -414,7 +424,6 @@ void main() {
 
       final copy = copyOf();
       final memory = promptInterface.stageMemory(AgentStageRequest(
-        level: AgentModeLevel.lv1,
         workingCopy: copy,
         first: true,
       ));
@@ -426,32 +435,32 @@ void main() {
       expect(memory, contains('一次做完'));
 
       final lv1State = promptInterface.stageState(const AgentStageRequest(
-        level: AgentModeLevel.lv1,
         problems: ['memorySummary栏目本轮既未编辑也未声明无变化'],
       ));
-      expect(lv1State, startsWith('[State-maintenance turn]'));
+      // 维护首帧 = Lv.1 文案；修复帧（first:false）走 stateHeadFix。
+      expect(lv1State, startsWith(PromptV2Sections.stateHeadLv1));
       expect(lv1State, isNot(contains('narrchat_readWorldState')));
+      expect(lv1State, contains(kEditHistoryToolName));
 
-      final lv2State = promptInterface.stageState(const AgentStageRequest(
-        level: AgentModeLevel.lv2,
-        problems: ['worldState栏目本轮未更新'],
+      final fixState = promptInterface.stageState(const AgentStageRequest(
+        problems: ['memorySummary栏目本轮既未编辑也未声明无变化'],
         first: false,
       ));
-      expect(lv2State, contains('只修复下面列出的各项'));
-      expect(lv2State, contains('- worldState栏目本轮未更新'));
+      expect(fixState, startsWith(PromptV2Sections.stateHeadFix));
+      expect(fixState, contains('只修复下面列出的各项'));
+      expect(fixState, contains('- memorySummary栏目本轮既未编辑也未声明无变化'));
     });
 
     test('记忆帧缺工作副本 → 显式报错', () {
       expect(
-        () => promptInterface.stageMemory(
-          const AgentStageRequest(level: AgentModeLevel.lv1),
-        ),
+        () => promptInterface.stageMemory(const AgentStageRequest()),
         throwsArgumentError,
       );
     });
   });
 
-  test('PromptRequest.mode 覆盖三种模式，且不再携带格式规格对象', () {
+  test('PromptRequest.mode 只有两种（Chat / Agent Lv.1），且不再携带格式规格对象', () {
+    expect(PromptMode.values, [PromptMode.chat, PromptMode.agentLv1]);
     for (final mode in PromptMode.values) {
       final request = requestOf(mode);
       expect(request.mode, same(mode));

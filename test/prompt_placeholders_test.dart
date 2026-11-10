@@ -65,7 +65,6 @@ void main() {
       PromptV2Sections.stageMemoryBody(),
       PromptV2Sections.stageStory,
       PromptV2Sections.stateHeadLv1,
-      PromptV2Sections.stateHeadLv2,
       PromptV2Sections.stateHeadFix,
     ];
     for (final mode in PromptMode.values) {
@@ -127,7 +126,7 @@ void main() {
     '{name}', // 旧占位写法（占位名统一用中文）
   ];
 
-  test('内置文案（含 v2 三种模式实发文本）不含具体案例示例与旧占位写法', () {
+  test('内置文案（含 v2 两种模式实发文本）不含具体案例示例与旧占位写法', () {
     for (final text in modelFacingTexts()) {
       for (final token in banned) {
         expect(text, isNot(contains(token)), reason: '出现「$token」：$text');
@@ -135,7 +134,7 @@ void main() {
     }
   });
 
-  test('记忆条目模板与格式优先级在 v2 三种模式与历史工具中统一', () {
+  test('记忆条目模板与格式优先级在 v2 两种模式与历史工具中统一', () {
     // 单一真源：新格式（带 `- ` 列表符）+ 合并条目模板。
     const template = kMemoryEntryFormat;
     expect(template, startsWith('- '));
@@ -149,7 +148,7 @@ void main() {
     expect(format, contains(kMemoryMergedEntryFormat));
     expect(format, contains('以本格式为准'));
 
-    // 三种模式组装出的 system 都带同一模板与合并策略。
+    // 两种模式组装出的 system 都带同一模板与合并策略。
     for (final mode in PromptMode.values) {
       final system = const PromptV2Build().system(PromptRequest(
         book: book,

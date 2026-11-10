@@ -9,7 +9,6 @@
 /// 某个文本实现，避免把 Flutter 依赖带进纯 Dart 环境。
 library;
 
-import '../models/agent_mode_level.dart';
 import '../models/book.dart';
 import '../models/mod.dart';
 import '../models/round.dart';
@@ -20,15 +19,14 @@ import 'memory_merge_planner.dart';
 ///
 /// v1 提示词已移除后，本枚举是**唯一真源**：`prompt_v2_sections` /
 /// `prompt_v2_build` / `AgentModeProfile` 都由它分派（不再有格式规格对象）。
+/// 历史上的 `agentLv2`（完整 Agent：正文三小节 + 六状态工具）已移除；其提示词
+/// 模板不再生成，多栏目工具框架仍保留在 `agent/state/` 下供后续档位复用。
 enum PromptMode {
   /// 聊天模式：6 个二级标题区块（剧情演绎 → … → 记忆总结）。
   chat,
 
   /// Agent **Lv.1**：5 个区块（排除 `## 记忆总结`）+ 历史工具契约。
   agentLv1,
-
-  /// Agent **Lv.2**：正文三小节 + 六个状态工具按栏目读写。
-  agentLv2,
 }
 
 /// 修改轮（按意见重写某一轮）的目标描述（见 `docs/ai_prompt_v2.md` 修改轮模板）。
@@ -64,7 +62,7 @@ class PromptRequest {
   /// 本书（书籍名 / 分类 / 设定 / 文笔 / 角色类别 / 记忆合并档位等全在内）。
   final Book book;
 
-  /// 提示词模式：Chat / Agent Lv.1 / Agent Lv.2。
+  /// 提示词模式：Chat / Agent Lv.1。
   final PromptMode mode;
 
   /// 生成基座轮（首轮为 null）：上轮时间、状态快照与记忆总结的来源。
@@ -90,15 +88,11 @@ class PromptRequest {
 /// 取用 Agent 阶段帧指令所需的上下文（按阶段取用，未用到的字段忽略）。
 class AgentStageRequest {
   const AgentStageRequest({
-    required this.level,
     this.workingCopy,
     this.memoryMergePlan,
     this.first = true,
     this.problems = const [],
   });
-
-  /// 档位（决定维护帧文案与工具名清单；准备 / 记忆 / 正文帧仅 Lv.1 使用）。
-  final AgentModeLevel level;
 
   /// 本轮状态工作副本（记忆帧判定「本轮条目 / 合并是否落地」必需）。
   final AgentStateWorkingCopy? workingCopy;
@@ -131,15 +125,15 @@ abstract interface class UserPromptSource {
 /// 返回该帧 `role: user` 消息的正文（调用方包成消息条目）。各阶段帧指令是
 /// 「同一轮内追加的指令」，不属于 system / 用户输入本身。
 abstract interface class StageDirectiveSource {
-  /// 调研回合（仅 Lv.1）：读史一次 + 按需联网；不写大纲 / 记忆 / 正文，文本零输出。
+  /// 调研回合：读史一次 + 按需联网；不写大纲 / 记忆 / 正文，文本零输出。
   String stagePrepare(AgentStageRequest request);
 
-  /// 记忆回合（仅 Lv.1）：同一回合内推演剧情（思考通道定大纲）+ 落本轮记忆条目。
+  /// 记忆回合：同一回合内推演剧情（思考通道定大纲）+ 落本轮记忆条目。
   String stageMemory(AgentStageRequest request);
 
-  /// 正文回合：Lv.1 需要（Lv.2 的正文契约在 system 里，不追加帧指令）。
+  /// 正文回合：按上一回合定下的大纲输出 5 区块正文。
   String stageStory(AgentStageRequest request);
 
-  /// 维护 / 修复回合（两档共用）：按缺口清单直接编辑。
+  /// 维护 / 修复回合：按缺口清单直接编辑（当前只有历史栏目）。
   String stageState(AgentStageRequest request);
 }

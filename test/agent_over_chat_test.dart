@@ -9,18 +9,15 @@ import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/round_provider.dart';
-import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
-import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
 
 import 'helpers/fakes.dart';
 
 /// Agent 档位（实验性功能）**开启** + Chat 兼容协议：
-/// 分阶段执行器在 Chat 通道运行（Lv.2 = 正文 / 维护两阶段；
-/// Lv.1 = 准备 → 记忆 → 正文）——帧转为合法的 Chat messages
-/// （assistant 携带 tool_calls、工具结果以 role:tool 回传），
-/// 无 instructions / previous_response_id / tool_choice，
-/// 思考强度覆盖被拒时就地降级。
+/// Lv.1 三段执行器在 Chat 通道运行（调研 → 记忆 → 正文）——帧转为合法的
+/// Chat messages（assistant 携带 tool_calls、工具结果以 role:tool 回传），
+/// 无 instructions / previous_response_id / tool_choice；工具集只有历史
+/// 一读一写 + 联网两件；思考强度全帧沿用用户设置。
 void main() {
   const book = Book(
     uuid: 'b1',
@@ -39,10 +36,10 @@ void main() {
 
   String line(Map<String, dynamic> json) => 'data: ${jsonEncode(json)}';
 
-  /// Chat 流式消息：正文增量（可选）+ 若干状态编辑调用（可选）。
+  /// Chat 流式消息：正文增量（可选）+ 若干工具调用（可选）。
   List<String> chatFrame({
     String content = '',
-    List<({String id, AgentStateSection section, String newLine})> tools =
+    List<({String id, String name, Map<String, dynamic> args})> tools =
         const [],
   }) {
     final lines = <String>[];
@@ -64,10 +61,7 @@ void main() {
                   'index': i,
                   'id': tool.id,
                   'type': 'function',
-                  'function': {
-                    'name': agentEditToolName(tool.section),
-                    'arguments': '',
-                  },
+                  'function': {'name': tool.name, 'arguments': ''},
                 },
               ],
             },
@@ -81,13 +75,7 @@ void main() {
               'tool_calls': [
                 {
                   'index': i,
-                  'function': {
-                    'arguments': jsonEncode({
-                      'edits': [
-                        {'op': 'append', 'newLine': tool.newLine},
-                      ],
-                    }),
-                  },
+                  'function': {'arguments': jsonEncode(tool.args)},
                 },
               ],
             },
@@ -101,21 +89,40 @@ void main() {
       ],
     }));
     lines.add(
-      'data: ${jsonEncode({
+      line({
         'usage': {'prompt_tokens': 1, 'completion_tokens': 1},
-      })}',
+      }),
     );
     lines.add('data: [DONE]');
     lines.add('');
     return lines;
   }
 
+  /// Lv.1 历史编辑器调用（记忆条目先于正文落地）。
+  ({String id, String name, Map<String, dynamic> args}) editHistory(
+    String id,
+    String newLine,
+  ) =>
+      (
+        id: id,
+        name: 'narrchat_editHistory',
+        args: {
+          'edits': [
+            {'op': 'append', 'newLine': newLine},
+          ],
+        },
+      );
+
+  /// Lv.1 历史读取器调用（调研阶段只读一次）。
+  ({String id, String name, Map<String, dynamic> args}) readHistory(String id) =>
+      (id: id, name: 'narrchat_readHistory', args: {'round': 1});
+
   List<Map<String, dynamic>> toolSchemas(Map<String, dynamic> body) =>
       ((body['tools'] as List).cast<Map<String, dynamic>>())
           .map((t) => (t['function'] as Map).cast<String, dynamic>())
           .toList();
 
-  test('Agent Lv.2 开 + Chat 协议：两阶段在 Chat 通道（frames 转 tool_calls/tool 消息）', () async {
+  test('Agent Lv.1 开 + Chat 协议：调研/记忆/正文三帧（仅历史工具，世界/角色取自正文）', () async {
     final stack = await TestStack.create();
     addTearDown(stack.dispose);
     await stack.seedBook(uuid: 'b1', title: '测试书');
@@ -126,131 +133,7 @@ void main() {
         bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = bodies.length;
         if (idx == 1) {
-          return sse(
-            chatFrame(
-              content: '## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。\n\n## 当前时间\n第一天 午时',
-              tools: const [
-                (
-                  id: 'call_1',
-                  section: AgentStateSection.worldState,
-                  newLine: '- 地点：青云宗',
-                ),
-              ],
-            ),
-          );
-        }
-        // 维护轮：角色 + 历史补齐（一次响应完成清单）。
-        return sse(
-          chatFrame(
-            tools: const [
-              (
-                id: 'call_2',
-                section: AgentStateSection.characterState,
-                newLine: '# 主角\n## 林远\n- 气血：100',
-              ),
-              (
-                id: 'call_3',
-                section: AgentStateSection.memorySummary,
-                newLine: '- 第1轮｜日期：第一天 午时｜入门',
-              ),
-            ],
-          ),
-        );
-      }),
-    );
-    final provider = RoundProvider(
-        rounds: stack.repos.rounds,
-        books: stack.repos.books,
-      aiService: ai,
-      // Agent 档位开启 + Chat 兼容协议（全解耦组合）。
-      aiSettingsProvider: ChatCompatibleSettings(),
-      experimentalSettings: AgentModeSettings(),
-      retryDelay: Duration.zero,
-    );
-    await provider.loadRounds('b1');
-
-    expect(
-      await provider.sendRound(userInput: '第一章', book: book),
-      isTrue,
-    );
-    expect(bodies, hasLength(2));
-
-    // 第 1 帧：Chat 线路请求体（messages + 嵌套工具 schema），
-    // 无 instructions / input / previous_response_id / tool_choice。
-    final body1 = bodies.first;
-    expect(body1.containsKey('messages'), isTrue);
-    expect(body1.containsKey('input'), isFalse);
-    expect(body1.containsKey('instructions'), isFalse);
-    expect(body1.containsKey('tool_choice'), isFalse);
-    final messages1 = (body1['messages'] as List).cast<Map<String, dynamic>>();
-    expect(messages1.first['role'], 'system');
-    expect((messages1.first['content'] as String?), contains('这是 Agent 模式'));
-    final tools = toolSchemas(body1);
-    expect(
-      tools.map((t) => t['name']),
-      containsAll([
-        'narrchat_readWorldState',
-        'narrchat_readCharacterState',
-        'narrchat_readHistory',
-        'narrchat_editWorldState',
-        'narrchat_editCharacterState',
-        'narrchat_editHistory',
-      ]),
-    );
-    // 联网在 Agent 期间强制开启 → 搜索 / 打开页工具同批注入，
-    // 但 system **不**追加联网指令（调用指导随工具 description 下发）。
-    expect(
-      tools.map((t) => t['name']),
-      containsAll(['narrchat_webSearch', 'narrchat_webFetchPage']),
-    );
-    expect(
-      (messages1.first['content'] as String?),
-      isNot(contains('【联网搜索】')),
-    );
-    expect((body1['tools'] as List).first.containsKey('name'), isFalse,
-        reason: 'Chat 线路为嵌套 function 形态');
-
-    // 第 2 帧（维护轮）：帧会话转为 chat 消息（tool_calls / role:tool），
-    // 同样不发 tool_choice。
-    final body2 = bodies[1];
-    expect(body2.containsKey('tool_choice'), isFalse);
-    expect(body2.containsKey('previous_response_id'), isFalse);
-    final messages2 = (body2['messages'] as List).cast<Map<String, dynamic>>();
-    final assistant = messages2.firstWhere((m) => m['role'] == 'assistant');
-    expect((assistant['tool_calls'] as List), hasLength(1));
-    expect(((assistant['tool_calls'] as List).first as Map)['id'], 'call_1');
-    final toolMsg = messages2.firstWhere((m) => m['role'] == 'tool');
-    expect(toolMsg['tool_call_id'], 'call_1');
-    expect((toolMsg['content'] as String?) ?? '', contains('已更新'));
-    // 维护轮指令（EN + 中文，先读后编辑；工具名按栏目）。
-    final directive = messages2.lastWhere(
-      (m) =>
-          m['role'] == 'user' &&
-          (m['content'] as String? ?? '').contains('State-maintenance turn'),
-    );
-    expect((directive['content'] as String?), contains('读取器已禁用'));
-    expect((directive['content'] as String?), contains('narrchat_editHistory'));
-
-    // 落库：状态来自工作副本合并（工具落地），正文为标题帧内容。
-    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
-    expect(round.aiNarrative, contains('主角踏门而入'));
-    expect(round.worldState, '- 地点：青云宗');
-    expect(round.characterState, contains('气血：100'));
-    expect(round.memorySummary, contains('第1轮'));
-    expect(provider.rawExchangesFor(round.uuid), hasLength(2));
-  });
-
-  test('Agent Lv.1 开 + Chat 协议：准备/记忆/正文三帧（仅历史工具，世界/角色取自正文）', () async {
-    final stack = await TestStack.create();
-    addTearDown(stack.dispose);
-    await stack.seedBook(uuid: 'b1', title: '测试书');
-    final bodies = <Map<String, dynamic>>[];
-    final ai = AiService(
-      client: MockClient((request) async {
-        bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
-        final idx = bodies.length;
-        if (idx == 1) {
-          // 调研帧：无工具调用（联网结束）→ 调研阶段闭环（文本不采纳）。
+          // 调研帧：无工具调用（模型直接收手）→ 调研阶段闭环（文本不采纳）。
           return sse(
             chatFrame(content: '本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'),
           );
@@ -259,12 +142,8 @@ void main() {
           // 记忆帧：本轮历史条目**先于正文**落地。
           return sse(
             chatFrame(
-              tools: const [
-                (
-                  id: 'call_9',
-                  section: AgentStateSection.memorySummary,
-                  newLine: '- 第1轮｜日期：第二天 辰时｜殿前递帖',
-                ),
+              tools: [
+                editHistory('call_9', '- 第1轮｜日期：第二天 辰时｜殿前递帖'),
               ],
             ),
           );
@@ -281,8 +160,8 @@ void main() {
       }),
     );
     final provider = RoundProvider(
-        rounds: stack.repos.rounds,
-        books: stack.repos.books,
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),
       // Lv.1：仅历史工具 + 联网。
@@ -292,7 +171,7 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
-    // 合规一轮 = 恰好 3 帧：准备 → 记忆 → 正文
+    // 合规一轮 = 恰好 3 帧：调研 → 记忆 → 正文
     //（维护轮只作兜底，不再「每轮必发」；工具调用靠帧指令驱动）。
     expect(bodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
     expect(
@@ -306,13 +185,14 @@ void main() {
     expect(bodies.first.containsKey('instructions'), isFalse);
     final tools = toolSchemas(bodies.first);
     expect(
-      tools.map((t) => t['name']),
-      containsAll([
+      tools.map((t) => t['name']).toList(),
+      [
         'narrchat_readHistory',
         'narrchat_editHistory',
         'narrchat_webSearch',
         'narrchat_webFetchPage',
-      ]),
+      ],
+      reason: 'Lv.1 工具集 = 历史一读一写 + 联网两件（顺序稳定）',
     );
     // 世界 / 角色不在 Lv.1 的工具集里。
     expect(tools.map((t) => t['name']),
@@ -325,14 +205,16 @@ void main() {
     for (final b in bodies.skip(1)) {
       expect(jsonEncode(b['tools']), jsonEncode(bodies.first['tools']));
     }
-    final system = (bodies.first['messages'] as List).first as Map<String, dynamic>;
+    final system =
+        (bodies.first['messages'] as List).first as Map<String, dynamic>;
     expect(system['role'], 'system');
     expect('${system['content']}', contains('只输出 5 个二级标题'));
     expect('${system['content']}', contains('narrchat_readHistory'));
 
     // 记忆帧的工具调用在 Chat 通道转为合法帧会话：assistant 携带 tool_calls、
     // 工具结果以 `role: tool` 回传（出现在**正文帧**（第 3 帧）的 messages 里）。
-    final messages3 = (bodies[2]['messages'] as List).cast<Map<String, dynamic>>();
+    final messages3 =
+        (bodies[2]['messages'] as List).cast<Map<String, dynamic>>();
     final assistant = messages3.firstWhere(
       (m) => m['role'] == 'assistant' && m['tool_calls'] != null,
     );
@@ -343,7 +225,9 @@ void main() {
     expect((toolMsg['content'] as String?) ?? '', contains('已更新'));
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
-    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1'))
+        .rounds
+        .firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.aiNarrative, isNot(contains('本轮大纲')));
     expect(round.worldState, '- 地点：青云宗主殿');
@@ -355,13 +239,13 @@ void main() {
     expect(provider.rawExchangesFor(round.uuid), hasLength(3));
   });
 
-  test('Agent 开 + Chat 协议：预览请求体为 Chat 形态（messages/tools），无指令字段', () async {
+  test('Agent Lv.1 开 + Chat 协议：预览首帧 = 调研帧（工具只含历史两件 + 联网两件）', () async {
     final stack = await TestStack.create();
     addTearDown(stack.dispose);
     await stack.seedBook(uuid: 'b1', title: '测试书');
     final provider = RoundProvider(
-        rounds: stack.repos.rounds,
-        books: stack.repos.books,
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: AiService(client: MockClient((_) async => sse(['']))),
       aiSettingsProvider: ChatCompatibleSettings(),
       experimentalSettings: AgentModeSettings(),
@@ -378,20 +262,26 @@ void main() {
     expect(body['messages'], isA<List>());
     expect(body.containsKey('instructions'), isFalse);
     expect(body.containsKey('tool_choice'), isFalse);
+    // Lv.1 首帧 = 调研帧：末条是「【调研回合】」指令，不是正文帧。
+    final messages = (body['messages'] as List).cast<Map<String, dynamic>>();
+    expect(messages.last['role'], 'user');
+    expect('${messages.last['content']}', startsWith('【调研回合】'));
     expect(
-      toolSchemas(body).map((t) => t['name']),
-      containsAll([
-        'narrchat_readWorldState',
-        'narrchat_readCharacterState',
+      toolSchemas(body).map((t) => t['name']).toList(),
+      [
         'narrchat_readHistory',
-        'narrchat_editWorldState',
-        'narrchat_editCharacterState',
         'narrchat_editHistory',
-      ]),
+        'narrchat_webSearch',
+        'narrchat_webFetchPage',
+      ],
+    );
+    expect(
+      preview.subsequentFrames.map((f) => f.label).toList(),
+      ['记忆帧', '正文帧', '维护帧'],
     );
   });
 
-  test('Agent 开 + Chat 协议：思考强度全程沿用用户设置（维护帧不再降为 low）', () async {
+  test('Agent Lv.1 开 + Chat 协议：思考强度全程沿用用户设置（调研/记忆/正文一致）', () async {
     final stack = await TestStack.create();
     addTearDown(stack.dispose);
     await stack.seedBook(uuid: 'b1', title: '测试书');
@@ -402,39 +292,33 @@ void main() {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         bodies.add(body);
         served++;
+        if (served == 1) {
+          // 调研帧：读一次历史（只读 → 调研阶段闭环）。
+          return sse(chatFrame(tools: [readHistory('call_r')]));
+        }
+        if (served == 2) {
+          // 记忆帧：历史条目落地。
+          return sse(
+            chatFrame(
+              tools: [
+                editHistory('call_m', '- 1 | 第一天 午时 | 入门'),
+              ],
+            ),
+          );
+        }
+        // 正文帧：5 区块。
         return sse(
-          served == 1
-              ? chatFrame(
-                  content:
-                      '## 剧情演绎\n正文。\n\n## 推荐行动\nx\n\n## 当前时间\n第一天 午时',
-                  tools: const [
-                    (
-                      id: 'call_1',
-                      section: AgentStateSection.worldState,
-                      newLine: '- 地点：青云宗',
-                    ),
-                  ],
-                )
-              : chatFrame(
-                  tools: const [
-                    (
-                      id: 'call_2',
-                      section: AgentStateSection.characterState,
-                      newLine: '# 主角\n## 林远\n- 气血：100',
-                    ),
-                    (
-                      id: 'call_3',
-                      section: AgentStateSection.memorySummary,
-                      newLine: '- 第1轮｜日期：第一天 午时｜入门',
-                    ),
-                  ],
-                ),
+          chatFrame(
+            content: '## 剧情演绎\n正文。\n\n## 推荐行动\nx\n\n'
+                '## 当前时间\n第一天 午时\n\n## 世界状态\n- 地点：青云宗\n\n'
+                '## 角色状态\n## 林远\n- 气血：100',
+          ),
         );
       }),
     );
     final provider = RoundProvider(
-        rounds: stack.repos.rounds,
-        books: stack.repos.books,
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: ChatCompatibleSettings(),
       experimentalSettings: AgentModeSettings(),
@@ -443,24 +327,38 @@ void main() {
     await provider.loadRounds('b1');
 
     final ok = await provider.sendRound(userInput: '第一章', book: book);
-    expect(ok, isTrue, reason: provider.rounds.where((r) => r.isError).map((r) => r.message).join('；'));
-    // 2 帧（正文 + 维护）：两帧的思考强度**都**来自用户设置（默认 high），
-    // 维护帧不再中途降为 low。
-    expect(bodies, hasLength(2));
+    expect(
+      ok,
+      isTrue,
+      reason: provider.rounds
+          .where((r) => r.isError)
+          .map((r) => r.message)
+          .join('；'),
+    );
+    // 3 帧（调研 / 记忆 / 正文）：所有帧的思考强度**都**来自用户设置
+    //（默认 high），执行器不为任何阶段覆盖。
+    expect(bodies, hasLength(3));
     expect(
       bodies.map((b) => b['reasoning_effort']).toSet(),
       {'high'},
       reason: '任何帧都不覆盖用户设置的思考强度',
     );
+    // Chat 线路每帧全量重发：帧会话只增不减。
     expect(
       (bodies[1]['messages'] as List).length,
       greaterThan((bodies[0]['messages'] as List).length),
-      reason: '维护帧是续接的新一帧（不是重发）',
+    );
+    expect(
+      (bodies[2]['messages'] as List).length,
+      greaterThan((bodies[1]['messages'] as List).length),
     );
     // Chat 线路同样一律不发 tool_choice。
     expect(bodies.every((b) => !b.containsKey('tool_choice')), isTrue);
 
-    final round = (await stack.repos.rounds.loadChain('b1')).rounds.firstWhere((r) => r.roundIndex == 1);
+    final round = (await stack.repos.rounds.loadChain('b1'))
+        .rounds
+        .firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('正文。'));
+    expect(round.memorySummary, '- 1 | 第一天 午时 | 入门');
   });
 }

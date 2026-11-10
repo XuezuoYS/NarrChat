@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/services/agent/agent_mode_profile.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/prompt_text.dart';
@@ -348,21 +349,21 @@ void main() {
           baseRound.memorySummary);
     });
 
-    test('读取器描述与 v2 契约引用的标签 / 工具名与渲染器一致（改一处必须同步另一处）', () {
+    test('读取器描述与 v2 契约引用的标签 / 工具名与渲染器一致（历史栏目）', () {
       final c = copy(lastRound: baseRound);
       final tools = {
         for (final tool in buildStateTools(
           c,
-          sections: AgentStateSection.values,
+          sections: AgentModeProfile.lv1.toolSections,
         ))
           tool.name: tool,
       };
-      // v2 实发文本：Lv.2 正文契约 + 状态工具契约。
+      // v2 实发文本：Lv.1 正文契约 + 状态工具契约（当前档位只托管历史）。
       final contract = [
-        ...PromptV2Sections.modeContractLines(PromptMode.agentLv2),
+        ...PromptV2Sections.modeContractLines(PromptMode.agentLv1),
         ...PromptV2Sections.toolContractLines(),
       ].join('\n');
-      for (final section in AgentStateSection.values) {
+      for (final section in AgentModeProfile.lv1.toolSections) {
         final tag = '<${section.tag}>';
         expect(c.renderSection(section), contains(tag),
             reason: '渲染器缺标签 $tag');
@@ -378,10 +379,13 @@ void main() {
       final world = c.renderSection(AgentStateSection.worldState);
       expect(world, isNot(contains('<time>')));
       expect(contract, isNot(contains('<time>')));
-      // 契约引用六个工具（读取器在前）。
-      for (final name in kStateToolNames) {
-        expect(contract, contains(name), reason: 'v2 契约未引用 $name');
-      }
+      // 当前档位只引用历史一读一写；世界 / 角色工具是保留框架，不进 system 契约。
+      expect(contract, contains(kReadHistoryToolName));
+      expect(contract, contains(kEditHistoryToolName));
+      expect(contract, isNot(contains(kReadWorldStateToolName)));
+      expect(contract, isNot(contains(kEditWorldStateToolName)));
+      expect(contract, isNot(contains(kReadCharacterStateToolName)));
+      expect(contract, isNot(contains(kEditCharacterStateToolName)));
     });
   });
 }

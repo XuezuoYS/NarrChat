@@ -120,16 +120,25 @@ void main() {
     // 点击卡片**左侧的标题文字**（不靠近右侧箭头）也能展开菜单。
     await tester.tap(find.text('Agent 模式'));
     await tester.pumpAndSettle();
-    // 三个档位齐全，且每个选项自带一行说明。
-    expect(find.text('无'), findsWidgets);
-    expect(find.text('Agent Lv.1'), findsWidgets);
-    expect(find.text('Agent Lv.2'), findsWidgets);
-    expect(find.text('使用传统 Chat 方式'), findsOneWidget);
-    expect(find.text('记忆总结部分将由 Agent 托管'), findsOneWidget);
+    // 菜单只剩两个档位（无 / Agent Lv.1），且每个选项自带一行说明。
     expect(
-      find.text('角色状态、世界状态、记忆总结部分将由 Agent 托管'),
+      find.byKey(const ValueKey('experimental_agent_mode_option_0')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey('experimental_agent_mode_option_1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('experimental_agent_mode_option_2')),
+      findsNothing,
+      reason: 'Lv.2 已移除，不再出现在菜单里',
+    );
+    expect(find.text('无'), findsWidgets);
+    expect(find.text('Agent Lv.1'), findsWidgets);
+    expect(find.text('Agent Lv.2'), findsNothing);
+    expect(find.text('使用传统 Chat 方式'), findsOneWidget);
+    expect(find.text('记忆总结部分将由 Agent 托管'), findsOneWidget);
 
     // 选择 Lv.1 → Provider 乐观更新（界面即时生效）。
     await tester.tap(find.text('Agent Lv.1').last);
@@ -137,15 +146,16 @@ void main() {
     expect(provider.agentModeLevel, AgentModeLevel.lv1);
     expect(label(), 'Lv.1');
 
-    // 再次点击卡片**描述文字区域**同样可展开 → 切到 Lv.2。
+    // 再次点击卡片**描述文字区域**同样可展开 → 切回「无」。
     await tester.ensureVisible(card);
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining('实验性功能（默认「无」）'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Agent Lv.2').last);
+    expect(find.text('Agent Lv.1'), findsWidgets);
+    await tester.tap(find.text('无').last);
     await tester.pumpAndSettle();
-    expect(provider.agentModeLevel, AgentModeLevel.lv2);
-    expect(label(), 'Lv.2');
+    expect(provider.agentModeLevel, AgentModeLevel.off);
+    expect(label(), '关');
   });
 
   testWidgets('精简思考回传开关：默认关，点击后开启并即时生效', (tester) async {
@@ -215,9 +225,9 @@ void main() {
     await tester.pump();
 
     // 简要介绍：指向下拉选项（细节不在卡片里堆砌）。
-    expect(find.textContaining('各档位托管范围见下拉选项说明'), findsOneWidget);
+    expect(find.textContaining('托管范围见下拉选项说明'), findsOneWidget);
     expect(find.textContaining('narrchat_*'), findsOneWidget);
-    expect(find.textContaining('两阶段生成'), findsOneWidget);
+    expect(find.textContaining('分阶段生成'), findsOneWidget);
     // 指示器限制声明 + 破坏性变更声明 + 正确性声明。
     expect(find.textContaining('无法通过对话页指示器关闭'), findsOneWidget);
     expect(find.textContaining('破坏性变更'), findsOneWidget);

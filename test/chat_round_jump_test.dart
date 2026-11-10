@@ -50,7 +50,7 @@ Future<void> _jumpToRoundByCapsule(
   required int maxRound,
 }) async {
   if (find.byTooltip('顶部').evaluate().isEmpty) {
-    await tester.tap(find.byKey(ChatRail.trackKey));
+    await tester.tap(find.byKey(ChatRail.knobHitKey));
     await tester.pumpAndSettle();
   }
   await tester.tap(find.textContaining('/ $maxRound', findRichText: true));
@@ -157,7 +157,7 @@ void main() {
     await settle(tester);
 
     if (find.byTooltip('顶部').evaluate().isEmpty) {
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
     }
     final expected = _actualTopRound(tester);

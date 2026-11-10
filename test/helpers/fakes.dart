@@ -353,13 +353,13 @@ class ChatCompatibleSettings extends AiSettingsProvider {
 
 /// 开启 Agent 模式的实验性设置替身（构造注入档位，不触碰真实配置文件）。
 ///
-/// 默认 [AgentModeLevel.lv2]（完整 Agent：六个状态工具 + 正文三小节）；
-/// 需要 Lv.1（仅历史工具 + 正文 5 区块）时显式传 `level:`。
+/// 默认 [AgentModeLevel.lv1]（当前唯一 Agent 档位：仅历史工具 + 正文 5 区块）。
+/// 完整 Agent（Lv.2）已移除，档位只剩「关 / Lv.1」两档。
 /// Agent 档位与平台协议**正交**：与 [ChatCompatibleSettings] /
 /// 默认 Response 平台组合分别覆盖「Agent × Chat 线路」与
 /// 「Agent × Responses 线路」两条路径。
 class AgentModeSettings extends ExperimentalSettingsProvider {
-  AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv2})
+  AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv1})
     : super(initialLevel: level);
 }
 

@@ -1,19 +1,19 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/round.dart';
+import 'package:narrchat/services/agent/agent_activity.dart';
 import 'package:narrchat/services/agent/agent_mode_profile.dart';
 import 'package:narrchat/services/agent/agent_round_runner.dart';
+import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/memory_merge_planner.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 
-/// `AgentRoundRunner` 单元测试：分阶段执行器（Lv.2 = 正文轮 → 缺口驱动的
-/// 维护轮；Lv.1 = 准备 → 记忆 → 正文，维护轮仅兜底）、档位差异、
-/// 帧级正文分类与「最后一个标题帧胜出」、门控上屏、读取器自取、
-/// 协议兼容降级（思考强度覆盖 / 链式续接）、无进展止损。
+/// `AgentRoundRunner` 单元测试：当前唯一 Agent 档位（Lv.1）的三段执行器
+/// （调研 → 记忆 → 正文，维护轮仅兜底）、帧级正文分类与「最后一个标题帧胜出」、
+/// 门控上屏、读取器自取、协议兼容降级（链式续接）、维护帧截断补救、无进展止损。
 void main() {
   const lastRound = Round(
     id: 1,
@@ -53,11 +53,13 @@ void main() {
 
   /// 脚本化执行器：按序返回 [script] 中的帧结果（`AiException` 项 = 该次调用
   /// 直接失败，用于测协议降级重发），并把每帧请求记入 [requests]。
+  ///
+  /// 档位固定为当前唯一档位（Lv.1）；[extraTools] 用于叠加联网等非状态工具替身。
   ({AgentRoundRunner runner, List<_Request> requests, List<AiStreamChunk> sunk})
       harness({
     required AgentStateWorkingCopy copy,
     required List<Object> script,
-    AgentModeLevel level = AgentModeLevel.lv2,
+    List<NarrAgentTool> extraTools = const [],
     MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
     bool reduceReasoningReplay = false,
@@ -68,7 +70,7 @@ void main() {
     final requests = <_Request>[];
     final sunk = <AiStreamChunk>[];
     var callIndex = 0;
-    final profile = AgentModeProfile.of(level);
+    final profile = AgentModeProfile.lv1;
     final runner = AgentRoundRunner(
       buildBody: (t) {
         requests.add((
@@ -95,7 +97,10 @@ void main() {
         onChunk?.call(const AiStreamChunk(done: true));
         return result;
       },
-      tools: buildStateTools(copy, sections: profile.toolSections),
+      tools: [
+        ...buildStateTools(copy, sections: profile.toolSections),
+        ...extraTools,
+      ],
       workingCopy: copy,
       profile: profile,
       memoryMergePlan: memoryMergePlan,
@@ -116,876 +121,14 @@ void main() {
         onChunk: null,
       );
 
-  /// 正文 + 一个「历史声明无变化」的调用（历史每轮必须补条目 → 必被拒）。
-  AiCallResult turnWithBadMemory(String id) {
-    return AiCallResult(
-      content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
-      toolCalls: [
-        editCall(id, AgentStateSection.memorySummary, [
-          {'op': 'noChange'},
-        ]),
-      ],
-      promptTokens: 1,
-      completionTokens: 1,
-      responseId: 'resp_1',
-    );
-  }
-
-  /// 维护轮的一帧：三个栏目全部补齐（[story] 非空时附带标题正文
-  /// + `## 当前时间`；时间属于正文，不在工具清单里）。
-  AiCallResult fullStateTurn(String prefix, {String story = ''}) => AiCallResult(
-        content: story.isEmpty
-            ? ''
-            : '## 剧情演绎\n$story\n\n## 推荐行动\n行动\n\n## 当前时间\n第二天 申时',
-        toolCalls: [
-          editCall('${prefix}_w', AgentStateSection.worldState, [
-            {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-          ]),
-          editCall('${prefix}_c', AgentStateSection.characterState, [
-            {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
-          ]),
-          editCall('${prefix}_m', AgentStateSection.memorySummary, [
-            {
-              'op': 'append',
-              'newLine': '- 第2轮｜日期：第二天 申时｜主角前往主峰',
-            },
-          ]),
-        ],
-        promptTokens: 2,
-        completionTokens: 2,
-        responseId: 'resp_2',
-      );
-
-  AiCallResult storyOnly({String story = '正文', String time = ''}) =>
-      AiCallResult(
-        content: '## 剧情演绎\n$story\n\n## 推荐行动\n行动'
-            '${time.isEmpty ? '' : '\n\n## 当前时间\n$time'}',
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      );
-
-  test('正文轮已把状态补齐 → 单次调用即结束（零额外请求、无警告）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      AiCallResult(
-        content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动\n\n## 当前时间\n第二天 申时',
-        toolCalls: [
-          editCall('call_1', AgentStateSection.worldState, [
-            {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-          ]),
-          editCall('call_2', AgentStateSection.characterState, [
-            {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
-          ]),
-          editCall('call_3', AgentStateSection.memorySummary, [
-            {
-              'op': 'append',
-              'newLine': '- 第2轮｜日期：第二天 申时｜主角前往主峰',
-            },
-          ]),
-        ],
-        promptTokens: 5,
-        completionTokens: 3,
-        responseId: 'resp_1',
-      ),
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(1));
-    expect(h.requests.single.stage, AgentStage.story);
-    expect(result.stateTurnUsed, isFalse);
-    expect(result.frames, 1);
-    expect(result.warnings, isEmpty);
-    expect(result.content, contains('正文'));
-    expect(copy.worldState, '- 地点：主峰\n- 天气：晴');
-    // 时间来自正文 `## 当前时间`（工作副本由解析写入）。
-    expect(copy.currentTime, '第二天 申时');
-    expect(copy.memorySummary, contains('第2轮'));
-  });
-
-  test('正文轮只写正文 → 自动发起维护轮补齐缺口', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [storyOnly(), fullStateTurn('s')]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(2));
-    expect(h.requests[0].stage, AgentStage.story);
-    expect(h.requests[1].stage, AgentStage.state);
-    // 帧间差异只有 input / 续接基点：执行器不覆盖思考强度（全帧沿用户设置）。
-    expect(h.requests[1].previousResponseId, isNull);
-    expect(h.requests[1].items.length, greaterThan(h.requests[0].items.length));
-    // 状态**不再预置注入**：request 里的 input 不含任何读取结果。
-    final readItems = h.requests[1].items.where(
-      (i) => i['name'] == kReadWorldStateToolName,
-    );
-    expect(readItems, isEmpty, reason: '状态改为模型自取，应用不做预置');
-    expect(result.stateTurnUsed, isTrue);
-    expect(result.warnings, isEmpty);
-    expect(copy.worldState, '- 地点：主峰\n- 天气：晴');
-  });
-
-  /// 模型主动读取三栏的合法流程帧：只读，无文本、无编辑。
-  AiCallResult readAllTurn(String prefix, {int round = 2}) => AiCallResult(
-        content: '',
-        toolCalls: [
-          for (final section in AgentStateSection.values)
-            readCall('${prefix}_${section.tag}', section, round: round),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_$prefix',
-      );
-
-  test('读取器自取：正文回合只读一次，每栏只保留最新一份结果', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      readAllTurn('rs1'), // 正文轮第 1 帧：读三栏（开场白，不上屏）
-      storyOnly(), // 正文轮第 2 帧：正文
-      fullStateTurn('s'), // 维护轮第 1 帧：直接编辑（复用 rs1 的读取结果）
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(result.content, contains('正文'));
-    expect(result.stateTurnUsed, isTrue);
-    expect(copy.worldState, '- 地点：主峰\n- 天气：晴');
-    expect(h.requests, hasLength(3));
-    // 正文帧的请求里：模型自己读取后，每栏恰好一份结果（按栏剔除旧份）。
-    for (final section in AgentStateSection.values) {
-      final name = agentReadToolName(section);
-      final calls =
-          h.requests[1].items.where((i) => i['name'] == name).toList();
-      expect(calls, hasLength(1), reason: '$name 应只保留一份');
-      expect(calls.single['call_id'], 'rs1_${section.tag}');
-    }
-    // 维护帧的请求里：**同一份**读取结果仍在上下文（正文回合的读取就是
-    // 维护回合的锚点来源），维护帧自身不再产生任何读取调用。
-    final maintenanceItems = h.requests[2].items;
-    for (final section in AgentStateSection.values) {
-      final name = agentReadToolName(section);
-      final calls = maintenanceItems.where((i) => i['name'] == name).toList();
-      expect(calls, hasLength(1), reason: '$name 仍应只有正文回合那一份');
-      expect(calls.single['call_id'], 'rs1_${section.tag}');
-    }
-    // 读取结果 = 工作副本当前渲染，且只含被请求的那一栏标签。
-    final worldOutput = maintenanceItems
-        .where((i) => i['type'] == 'function_call_output')
-        .firstWhere((i) => '${i['output']}'.contains('NARRCHAT_STATE'));
-    expect('${worldOutput['output']}', contains('<<<NARRCHAT_STATE round=2>>>'));
-    final historyCall = maintenanceItems.firstWhere(
-      (i) => i['name'] == kReadHistoryToolName,
-    );
-    final historyOutput = maintenanceItems.firstWhere(
-      (i) =>
-          i['type'] == 'function_call_output' &&
-          i['call_id'] == historyCall['call_id'],
-    );
-    expect('${historyOutput['output']}', contains('<memorySummary'));
-    expect('${historyOutput['output']}', isNot(contains('<worldState>')));
-  });
-
-  test('维护轮护栏：已提供过的栏目重复读取被拒绝（正文回合结果不被顶替）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      readAllTurn('rs1'), // 正文轮：读三栏
-      storyOnly(), // 正文轮：正文
-      readAllTurn('rs2'), // 维护轮第 1 帧：多此一举地再读一遍 → 全部被拒
-      fullStateTurn('s'), // 维护轮第 2 帧：按已有全文直接编辑
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(4));
-    expect(result.warnings, isEmpty, reason: '被拒的重复读取不算缺项，照常完成');
-    expect(copy.worldState, '- 地点：主峰\n- 天气：晴');
-    expect(copy.memorySummary, contains('第2轮'));
-
-    // 三次读取调用都执行了「拒绝」语义（UI 事件框 ✕ + 回传说明）。
-    final refused = result.outcomes.where((o) => !o.applied).toList();
-    expect(refused, hasLength(3));
-    for (final o in refused) {
-      expect(o.message, contains('不再重复读取'));
-      expect(o.isStateTool, isFalse, reason: '流程违规不进入缺项清单');
-    }
-
-    // 第 4 帧（编辑帧）的请求里：rs2 的调用与拒绝说明在上下文，但**没有**
-    // 可用的新读取结果——正文回合的 rs1 结果仍是唯一一份（未被顶替）。
-    final items = h.requests[3].items;
-    for (final section in AgentStateSection.values) {
-      final name = agentReadToolName(section);
-      final executed = items
-          .where((i) => i['name'] == name)
-          .map((i) => i['call_id'])
-          .toList();
-      expect(executed, containsAll(['rs1_${section.tag}', 'rs2_${section.tag}']));
-    }
-    final rs2Output = items.firstWhere(
-      (i) =>
-          i['type'] == 'function_call_output' &&
-          i['call_id'] == 'rs2_worldState',
-    );
-    expect('${rs2Output['output']}', contains('本次不再重复读取'));
-    expect('${rs2Output['output']}', contains(kEditWorldStateToolName));
-    expect('${rs2Output['output']}', isNot(contains('NARRCHAT_STATE')));
-    // 回传说明：中文概述在英文要求之后，无 [EN] / 【中】 语言标记。
-    expect('${rs2Output['output']}', contains('已在对话中'));
-    expect('${rs2Output['output']}', isNot(contains('[EN]')));
-    expect('${rs2Output['output']}', isNot(contains('【中】')));
-    // 正文回合那一份仍在（护栏不能把模型的唯一锚点来源剔掉）。
-    final rs1Output = items.firstWhere(
-      (i) =>
-          i['type'] == 'function_call_output' &&
-          i['call_id'] == 'rs1_worldState',
-    );
-    expect('${rs1Output['output']}', contains('NARRCHAT_STATE'));
-  });
-
-  test('维护轮护栏：正文回合**漏读**的栏目照常允许读取（非合规流程不失明）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 正文轮第 1 帧：只读了世界状态（漏了角色 / 历史）。
-      AiCallResult(
-        content: '',
-        toolCalls: [
-          readCall('r_w', AgentStateSection.worldState),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      storyOnly(), // 正文轮第 2 帧：正文
-      // 维护轮：补齐漏读的两栏（允许执行）+ 直接编辑全部清单项。
-      AiCallResult(
-        content: '',
-        toolCalls: [
-          readCall('m_c', AgentStateSection.characterState),
-          readCall('m_m', AgentStateSection.memorySummary),
-          ...fullStateTurn('s').toolCalls,
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_2',
-      ),
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(3));
-    // 正文回合那一份读取结果在维护帧仍可用（未读的栏目不受护栏影响）。
-    expect(
-      h.requests[2].items.any(
-        (i) => i['call_id'] == 'r_w' && '${i['output']}'.contains('<worldState>'),
-      ),
-      isTrue,
-    );
-    // 漏读的两栏照常执行读取（未提供过 → 护栏放行）。
-    final readOutcomes =
-        result.outcomes.where((o) => kReadStateToolNames.contains(o.name)).toList();
-    expect(readOutcomes.map((o) => o.callId),
-        containsAll(['r_w', 'm_c', 'm_m']));
-    expect(readOutcomes.every((o) => o.applied), isTrue);
-    // 编辑照常落地，整轮无警告。
-    expect(copy.characterState, contains('- 气血：70'));
-    expect(copy.memorySummary, contains('第2轮'));
-    expect(result.warnings, isEmpty);
-  });
-
-  test('维护轮文本不上屏、也不覆盖已采纳正文', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      storyOnly(),
-      AiCallResult(
-        // 维护轮违规复读正文（结构上不可能成为本轮正文）。
-        content: '## 剧情演绎\n状态轮里又写了一份正文\n\n## 推荐行动\nx',
-        toolCalls: fullStateTurn('s').toolCalls,
-        promptTokens: 2,
-        completionTokens: 2,
-        responseId: 'resp_2',
-      ),
-    ]);
-    final sunk = <AiStreamChunk>[];
-    await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-      onChunk: sunk.add,
-    );
-
-    final published = sunk
-        .where((c) => c.contentDelta.isNotEmpty)
-        .map((c) => c.contentDelta)
-        .join();
-    expect(published, contains('正文'));
-    expect(published, isNot(contains('状态轮里又写了一份正文')));
-  });
-
-  test('写到一半去搜索 → 后一个标题帧胜出，界面收到重置信号', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 帧 1：半截正文 + 搜索工具（非状态工具 → 必须继续下一帧）。
-      AiCallResult(
-        content: '## 剧情演绎\n写了一半',
-        toolCalls: const [
-          AiToolCall(
-            id: 's1',
-            name: 'narrchat_webSearch',
-            arguments: {'query': '青云宗'},
-          ),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      // 帧 2：完整正文 + 全部状态工具 → 覆盖帧 1。
-      fullStateTurn('f2'),
-    ]);
-    final sunk = <AiStreamChunk>[];
-    final result = await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-      onChunk: sunk.add,
-    );
-
-    // 帧 2 没有正文（维护轮语义）→ 采纳的仍是帧 1 的正文。
-    expect(result.content, contains('写了一半'));
-    expect(h.requests.first.items, hasLength(1)); // 历史；状态不预置（模型自取）
-    expect(h.requests[1].stage, AgentStage.story);
-    // 搜索帧的输出被回传（模型据此续写）。
-    expect(
-      h.requests[1].items.any((i) => i['type'] == 'function_call_output'),
-      isTrue,
-    );
-    // 帧 1 正文上屏过；帧 2 无文本 → 不再有第二次重置。
-    expect(sunk.where((c) => c.narrativeReset), hasLength(1));
-  });
-
-  test('思考块按**每个工具调用**各回传一块（服务端逐块校验）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 帧 1：一次思考 + **两个**工具调用（读取器 → 必然继续下一帧）。
-      AiCallResult(
-        content: '## 剧情演绎\n写了一半\n\n## 推荐行动\n行动',
-        reasoningContent: '先读世界状态',
-        reasoningItems: const [
-          AiReasoningItem(id: 'r1', text: '先读世界状态'),
-        ],
-        toolCalls: [
-          readCall('r_w', AgentStateSection.worldState),
-          readCall('r_c', AgentStateSection.characterState),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      // 帧 2：补齐三栏（正文轮闭环；缺口已无 → 不发维护轮，脚本刚好用尽）。
-      fullStateTurn('f2'),
-    ]);
-    final result = await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-
-    expect(result.content, contains('写了一半'));
-    expect(h.requests, hasLength(2));
-    final frame2 = h.requests[1].items;
-    // 服务端实测规则：带 tools 的请求里**每个 function_call 都必须紧邻其前**
-    // 各有一块非空 reasoning（一帧两个调用只回一块 → 400
-    //「The reasoning_text in the thinking mode must be passed back」）。
-    final calls = <int>[
-      for (var i = 0; i < frame2.length; i++)
-        if (frame2[i]['type'] == 'function_call') i,
-    ];
-    expect(calls, hasLength(2));
-    for (final callAt in calls) {
-      expect(
-        callAt,
-        greaterThan(0),
-        reason: 'function_call 前必须有紧邻的思考块',
-      );
-      expect(frame2[callAt - 1]['type'], 'reasoning');
-      expect(frame2[callAt - 1]['text'], isNotEmpty);
-    }
-    // 正文帧的 assistant 消息在（思考块不会被正文顶替）。
-    expect(
-      frame2.any((i) => i['role'] == 'assistant' && '${i['content']}'.contains('写了一半')),
-      isTrue,
-    );
-  });
-
-  test('无工具调用的帧：思考块照常回传（先于正文，单块）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 帧 1：只有正文（无工具）→ 正文轮直接结束；缺口 → 维护轮。
-      AiCallResult(
-        content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
-        reasoningContent: '想了一下剧情',
-        reasoningItems: const [
-          AiReasoningItem(id: 'r1', text: '想了一下剧情'),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      fullStateTurn('f2'),
-    ]);
-    await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-
-    // 维护轮首帧请求体里：思考块恰一块，且先于正文消息。
-    final frame2 = h.requests[1].items;
-    final reasonings = [
-      for (final i in frame2)
-        if (i['type'] == 'reasoning') i,
-    ];
-    expect(reasonings, hasLength(1));
-    expect(reasonings.single['text'], '想了一下剧情');
-    expect(
-      frame2.indexOf(reasonings.single),
-      lessThan(frame2.indexWhere((i) => i['role'] == 'assistant')),
-    );
-  });
-
-  test('模型未产出思考时仍逐块兜底（工具帧绝不缺块）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 帧 1：无 reasoningItems / reasoningContent，但有两个工具调用。
-      AiCallResult(
-        content: '',
-        toolCalls: [
-          readCall('r_w', AgentStateSection.worldState),
-          readCall('r_c', AgentStateSection.characterState),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      // 帧 2：正文 + 三栏闭环（正文轮退出，缺口已无 → 不再发维护轮）。
-      fullStateTurn('f2', story: '正文'),
-    ]);
-    await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-
-    final frame2 = h.requests[1].items;
-    final calls = <int>[
-      for (var i = 0; i < frame2.length; i++)
-        if (frame2[i]['type'] == 'function_call') i,
-    ];
-    expect(calls, hasLength(2));
-    for (final at in calls) {
-      expect(frame2[at - 1]['type'], 'reasoning');
-      // 兜底文本非空（本帧无正文 → 占位文本；服务端只校验「非空且紧邻」）。
-      expect('${frame2[at - 1]['text']}', isNotEmpty);
-    }
-  });
-
-  test('精简思考回传（开关开启时）：多段只回传首段 + 末段（`\\n\\n` 空行不计段）', () async {
-    final copy = workingCopy();
-    // 多段思考（中间过程整段丢弃；空行只是格式占位，不算段）。
-    const long = '先读世界状态确定地点。\n\n'
-        '再搜索两位角色的资料。\n\n'
-        '最后按五区块写正文，时间沿用上轮格式。';
-    final h = harness(
-      copy: copy,
-      reduceReasoningReplay: true,
-      script: [
-        AiCallResult(
-          content: '',
-          reasoningContent: long,
-          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
-          toolCalls: [readCall('r_w', AgentStateSection.worldState)],
-          promptTokens: 1,
-          completionTokens: 1,
-          responseId: 'resp_1',
-        ),
-        fullStateTurn('f2', story: '正文'),
-      ],
-    );
-    await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-
-    final frame2 = h.requests[1].items;
-    final reasoning = frame2.firstWhere((i) => i['type'] == 'reasoning');
-    expect(
-      reasoning['text'],
-      '先读世界状态确定地点。\n\n最后按五区块写正文，时间沿用上轮格式。',
-    );
-    // 中间段不得出现在回传里。
-    expect('${reasoning['text']}', isNot(contains('再搜索两位角色的资料')));
-  });
-
-  test('精简关闭（默认）：逐字节回传思考原文', () async {
-    final copy = workingCopy();
-    const long = '第一段过程。\n\n第二段过程。\n\n第三段结论。';
-    final h = harness(
-      copy: copy,
-      script: [
-        AiCallResult(
-          content: '',
-          reasoningContent: long,
-          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
-          toolCalls: [readCall('r_w', AgentStateSection.worldState)],
-          promptTokens: 1,
-          completionTokens: 1,
-          responseId: 'resp_1',
-        ),
-        fullStateTurn('f2', story: '正文'),
-      ],
-    );
-    await h.runner.run(
-      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
-      stream: true,
-    );
-
-    final reasoning =
-        h.requests[1].items.firstWhere((i) => i['type'] == 'reasoning');
-    expect(reasoning['text'], long);
-  });
-
-  test('无状态重发：每帧全量 input，状态不预置（模型自取）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [storyOnly(), fullStateTurn('s')]);
-    await run(h.runner);
-
-    expect(h.requests[0].previousResponseId, isNull);
-    expect(h.requests[1].previousResponseId, isNull);
-    final first = h.requests[0].items;
-    // 历史 1 条；状态**不再预置**（模型应自行调用读取器获取）。
-    expect(first, hasLength(1));
-    expect(first.single['role'], 'user');
-    // 第 2 帧：正文轮 assistant 消息已回传（旧缺陷：续接帧「失忆」）。
-    expect(
-      h.requests[1].items.any((i) =>
-          i['role'] == 'assistant' && '${i['content']}'.contains('正文')),
-      isTrue,
-    );
-    // 维护轮指令是最后一条 user 消息，且列出六个工具名。
-    final last = h.requests[1].items.last;
-    expect(last['role'], 'user');
-    expect('${last['content']}', contains('[State-maintenance turn]'));
-    expect('${last['content']}', contains('读取器已禁用'));
-    expect('${last['content']}', contains(kEditHistoryToolName));
-    // 指令形态：简明中文（必要英文只保留回合标记与工具名），不加语言标记。
-    expect('${last['content']}', startsWith('[State-maintenance turn]'));
-    expect('${last['content']}', contains('正文已在上方完成'));
-    for (final marker in const ['[EN]', '【中】']) {
-      expect('${last['content']}', isNot(contains(marker)), reason: marker);
-    }
-  });
-
-  test('有状态链式：续接帧只发新增 item + previous_response_id', () async {
-    final copy = workingCopy();
-    final h = harness(
-      copy: copy,
-      chaining: true,
-      script: [storyOnly(), fullStateTurn('s')],
-    );
-    await run(h.runner);
-
-    expect(h.requests[0].previousResponseId, isNull);
-    expect(h.requests[0].items, hasLength(1));
-    expect(h.requests[1].previousResponseId, 'resp_1');
-    // 只发第 1 帧之后新增的条目（assistant 正文 + 维护轮指令）。
-    expect(h.requests[1].items, hasLength(2));
-  });
-
-  test('维护轮空手帧不再提前止损：保留修复机会（帧数上限兜底）', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
-      storyOnly(), // 正文轮（未动状态 → 3 个栏目缺口）
-      storyOnly(story: '正文'), // 维护帧 0：只回文本（空手，不应结束整轮）
-      fullStateTurn('s'), // 维护帧 1：补齐全部栏目
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(3));
-    expect(h.requests[1].stage, AgentStage.state);
-    expect(h.requests[2].stage, AgentStage.state);
-    expect(result.stateTurnUsed, isTrue);
-    // 空手帧后仍把缺口补上 → 无警告。
-    expect(result.warnings, isEmpty);
-    expect(copy.worldState, '- 地点：主峰\n- 天气：晴');
-    expect(copy.memorySummary, contains('第2轮'));
-  });
-
-  test('维护轮用尽仍有缺项 → 警告钳制（正文照常返回）', () async {
-    final copy = workingCopy();
-    final h = harness(
-      copy: copy,
-      maxStateFrames: 2,
-      script: [
-        turnWithBadMemory('call_1'),
-        turnWithBadMemory('call_2'),
-        turnWithBadMemory('call_3'),
-      ],
-    );
-
-    final result = await run(h.runner);
-
-    expect(result.content, contains('正文'));
-    expect(result.frames, 3); // 正文轮 1 + 维护轮 2
-    expect(result.warnings, isNotEmpty);
-    expect(result.warnings.join(), contains('记忆总结'));
-    // 记忆总结未被污染（noChange 被拒）。
-    expect(copy.memorySummary, isEmpty);
-    expect(copy.worldState, '- 地点：青云宗\n- 天气：晴');
-  });
-
-  test('锚点未命中 → 回传该栏目当前全文供重锚', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      AiCallResult(
-        content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
-        toolCalls: [
-          editCall('call_1', AgentStateSection.worldState, [
-            {
-              'op': 'set',
-              'before': '- 地点：完全不存在的行',
-              'newLine': '- 地点：主峰',
-            },
-          ]),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      fullStateTurn('s'),
-    ]);
-    await run(h.runner);
-
-    final outputs = h.requests[1].items
-        .where((i) => i['type'] == 'function_call_output')
-        .map((i) => '${i['output']}')
-        .join('\n');
-    expect(outputs, contains('未找到与 before 匹配的行'));
-    expect(outputs, contains('当前全文'));
-    expect(outputs, contains('- 天气：晴'));
-    // 维护轮把失败项一并列出（点名对应栏目编辑器）。
-    expect(
-      '${h.requests[1].items.last['content']}',
-      contains(kEditWorldStateToolName),
-    );
-  });
-
-  test('工具参数被截断 → 不执行，并给出「一栏目一次调用」的重试指引', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      AiCallResult(
-        content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
-        toolCalls: [
-          AiToolCall(
-            id: 'call_1',
-            name: kEditWorldStateToolName,
-            arguments: const {},
-            argumentsUnparsable: true,
-          ),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      fullStateTurn('s'),
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(result.outcomes.first.applied, isFalse);
-    expect(result.outcomes.first.message, contains('截断'));
-    // 截断帧什么都没改（世界状态仍是基座），补齐由维护轮那一帧完成。
-    final truncatedOutput =
-        '${h.requests[1].items.firstWhere((i) =>
-            i['type'] == 'function_call_output' &&
-            i['call_id'] == 'call_1')['output']}';
-    expect(truncatedOutput, contains('TRUNCATED'));
-    // 拒绝回传与维护轮反馈都是「英文要求 + 中文概述」，无语言标记。
-    expect(truncatedOutput, contains('工具参数被截断'));
-    final feedback = '${h.requests[1].items.last['content']}';
-    expect(feedback, contains('TRUNCATED'));
-    expect(feedback, contains('工具参数被截断'));
-    for (final text in [truncatedOutput, feedback]) {
-      for (final marker in const ['[EN]', '【中】']) {
-        expect(text, isNot(contains(marker)), reason: marker);
-      }
-    }
-    // 截断项进了维护轮反馈，修复帧完成后无警告。
-    expect(result.warnings, isEmpty);
-  });
-
-  test('懒修改：本轮出场角色块未变 → 维护轮点名', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      // 正文提到林远，但角色状态只声明无变化（且带了 reason，栏目级合法）。
-      AiCallResult(
-        content: '## 剧情演绎\n林远握紧了剑。\n\n## 推荐行动\n行动',
-        toolCalls: [
-          editCall('call_1', AgentStateSection.worldState, [
-            {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-          ]),
-          editCall('call_2', AgentStateSection.characterState, [
-            {'op': 'noChange', 'reason': '林远状态未变'},
-          ]),
-          editCall('call_3', AgentStateSection.memorySummary, [
-            {'op': 'append', 'newLine': '- 第2轮｜日期：第二天 午时｜林远握剑'},
-          ]),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_1',
-      ),
-      AiCallResult(
-        content: '',
-        toolCalls: [
-          editCall('call_5', AgentStateSection.characterState, [
-            {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：75'},
-          ]),
-        ],
-        promptTokens: 1,
-        completionTokens: 1,
-        responseId: 'resp_2',
-      ),
-    ]);
-
-    final result = await run(h.runner);
-
-    // 第 1 帧后仍缺角色状态 → 维护轮指令点名「林远」，并引导改为实际行级编辑。
-    expect(h.requests, hasLength(2));
-    expect(h.requests[1].stage, AgentStage.state);
-    expect('${h.requests[1].items.last['content']}', contains('林远'));
-    expect('${h.requests[1].items.last['content']}', contains('op=set'));
-    expect('${h.requests[1].items.last['content']}', contains('懒修改'));
-    expect(
-      '${h.requests[1].items.last['content']}',
-      contains(kEditCharacterStateToolName),
-    );
-    expect(result.warnings, isEmpty);
-    expect(copy.characterState, contains('- 气血：75'));
-  });
-
-  /// 被输出上限截断的维护帧：一处编辑成功，另一处参数没写完（JSON 不闭合）。
-  AiCallResult truncatedStateTurn(String prefix) => AiCallResult(
-        content: '',
-        toolCalls: [
-          editCall('${prefix}_w', AgentStateSection.worldState, [
-            {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-          ]),
-          const AiToolCall(
-            id: 'x',
-            name: kEditCharacterStateToolName,
-            arguments: {},
-            argumentsUnparsable: true,
-          ),
-        ],
-        promptTokens: 1,
-        completionTokens: 4096,
-        incomplete: true,
-        incompleteReason: kIncompleteMaxOutputTokens,
-      );
-
-  test('维护帧被截断：不判失败，下一帧带「拆短调用」指令重发', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
-      storyOnly(),
-      truncatedStateTurn('a'),
-      fullStateTurn('b'),
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(h.requests, hasLength(3));
-    // 补救只走提示词：请求体里的 max_output_tokens 与思考强度都由用户设置决定，
-    // 执行器一概不擅自改动（帧间差异只有 input 与续接基点）。
-    expect(
-      h.requests.map((r) => r.stage).toList(),
-      [AgentStage.story, AgentStage.state, AgentStage.state],
-    );
-    final capDirective = '${h.requests[2].items.last['content']}';
-    expect(capDirective, contains('TRUNCATED'));
-    // 「拆短调用」提示：中文概述紧跟英文要求之后，无 [EN] / 【中】 语言标记。
-    expect(capDirective, contains('上一帧在输出上限处被截断'));
-    expect(capDirective, isNot(contains('[EN]')));
-    expect(capDirective, isNot(contains('【中】')));
-    expect('${h.requests[2].items.last['content']}', contains('拆短'));
-    // 末帧未截断 → 不再对用户提示截断。
-    expect(result.incomplete, isFalse);
-    expect(result.incompleteReason, isEmpty);
-  });
-
-  test('维护帧末帧仍截断 → 给用户一条可操作的「调高最大 token」提示', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
-      storyOnly(),
-      truncatedStateTurn('a'),
-      truncatedStateTurn('b'),
-    ]);
-
-    final result = await run(h.runner);
-
-    expect(result.incomplete, isTrue);
-    expect(result.incompleteReason, kIncompleteMaxOutputTokens);
-    expect(result.warnings.first, contains('最大 token'));
-    // 正文照常产出：截断只影响状态，不再赔掉整轮。
-    expect(result.content, contains('正文'));
-  });
-
-  test('被截断的帧不作为续接基点：下一帧改为全量重发', () async {
-    final copy = workingCopy();
-    const story = AiCallResult(
-      content: '## 剧情演绎\n正文\n\n## 推荐行动\n行动',
-      promptTokens: 1,
-      completionTokens: 1,
-      responseId: 'resp_1',
-    );
-    final h = harness(copy: copy, chaining: true, maxStateFrames: 2, script: [
-      story,
-      truncatedStateTurn('a'),
-      fullStateTurn('b'),
-    ]);
-
-    await run(h.runner);
-
-    // 维护帧 1 走续接（只发新增项）。
-    expect(h.requests[1].previousResponseId, 'resp_1');
-    // 维护帧 1 被截断 → 帧 2 不能作为基点：全量重发且不带 previous_response_id。
-    expect(h.requests[2].previousResponseId, isNull);
-    expect(
-      h.requests[2].items.length,
-      greaterThan(h.requests[1].items.length),
-    );
-  });
-
-  test('服务商拒绝用户设置的思考强度 → 不重试、不做任何强度回落', () async {
-    final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      storyOnly(),
-      const AiException(
-        "Unsupported parameter: 'reasoning.effort' is not supported",
-        kind: AiExceptionKind.api,
-      ),
-    ]);
-
-    // 该帧就是「用户设置」的那一帧：没有可回落的覆盖，因此直接失败（不重发）。
-    await expectLater(run(h.runner), throwsA(isA<AiException>()));
-    expect(h.requests, hasLength(2));
-    expect(h.requests[1].stage, AgentStage.state);
-  });
-
   // ---------------------------------------------------------------------------
-  // Lv.1（仅历史工具 + 5 区块正文）
+  // Lv.1 三段脚本（调研 → 记忆 → 正文）
   //
-  // 三段流程：调研（读史 + 按需联网）→ 记忆（同回合推演 + 条目**先于正文**落地）→
-  // 正文（唯一采纳 / 上屏阶段）→ 缺口驱动的维护轮（兜底）。
-  // 工具调用靠帧指令驱动，任何帧都不发送 tool_choice。
+  // 当前唯一 Agent 档位：调研帧只读历史（+ 按需联网），记忆帧在同一回合推演并
+  // 用历史编辑器落本轮条目，正文帧输出 5 区块（世界 / 角色随正文携带）。
   // ---------------------------------------------------------------------------
 
-  /// Lv.1 调研帧：无工具调用（联网结束）→ 调研阶段立即结束
-  /// （调研阶段文本不上屏、不采纳）。
+  /// 调研帧：无工具调用（联网结束）→ 调研阶段立即结束（本阶段文本不上屏）。
   AiCallResult lv1PrepareTurn({
     String outline = '本轮大纲：主角前往主峰，结束时间 = 第二天 申时。',
     List<AiToolCall> toolCalls = const [],
@@ -998,7 +141,7 @@ void main() {
         responseId: 'resp_prep',
       );
 
-  /// Lv.1 调研帧：先读一次历史（只读帧 → 调研阶段就此结束，直接进入记忆阶段）。
+  /// 调研帧：读一次历史（只读帧 → 调研阶段就此结束，直接进入记忆阶段）。
   AiCallResult lv1PrepareReadTurn(String id) => AiCallResult(
         content: '',
         toolCalls: [readCall(id, AgentStateSection.memorySummary)],
@@ -1007,7 +150,7 @@ void main() {
         responseId: 'resp_read',
       );
 
-  /// Lv.1 空手帧：只有文本、无工具调用（记忆帧模拟「模型没调编辑器」）。
+  /// 空手帧：只有文本、无工具调用（记忆帧模拟「模型没调编辑器」）。
   AiCallResult lv1EmptyTurn(String text) => AiCallResult(
         content: text,
         promptTokens: 1,
@@ -1015,7 +158,7 @@ void main() {
         responseId: 'resp_empty',
       );
 
-  /// Lv.1 正文帧：5 区块（世界 / 角色随正文携带，记忆区块应由应用剥离）。
+  /// 正文帧：5 区块（世界 / 角色随正文携带，记忆区块应由应用剥离）。
   AiCallResult lv1StoryTurn({
     String extra = '',
     List<AiToolCall> toolCalls = const [],
@@ -1049,11 +192,754 @@ void main() {
         responseId: 'resp_2',
       );
 
+  /// 历史栏编辑被拒的一帧（`op=noChange` 在历史栏非法）→ 维护轮用尽告警用。
+  AiCallResult badHistoryTurn(String id) => AiCallResult(
+        content: '',
+        toolCalls: [
+          editCall(id, AgentStateSection.memorySummary, [
+            {'op': 'noChange', 'reason': '本轮无进展'},
+          ]),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_$id',
+      );
+
+  /// 联网工具替身：只回文本、不发起任何网络请求（帧序测试用）。
+  List<NarrAgentTool> searchToolStub() => [const _StubWebSearchTool()];
+
+  test('记忆阶段漏落条目 → 正文后自动发起维护轮补齐历史缺口', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧：只回文本）'),
+      lv1StoryTurn(),
+      lv1HistoryTurn('m1'),
+    ]);
+
+    final result = await run(h.runner);
+
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [AgentStage.prepare, AgentStage.memory, AgentStage.story, AgentStage.state],
+    );
+    // 状态**不预置注入**：请求 input 里没有应用塞进去的读取结果。
+    expect(
+      h.requests.first.items.where((i) => i['type'] == 'function_call_output'),
+      isEmpty,
+      reason: '状态由模型自取，应用不做预置',
+    );
+    expect(result.stateTurnUsed, isTrue);
+    expect(result.warnings, isEmpty);
+    expect(copy.memorySummary, contains('第2轮'));
+  });
+
+  test('读取器自取：正文阶段再次读史会顶替旧份（每栏只保留最新一份结果）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1HistoryTurn('h1'),
+      // 正文帧 1：半截正文 + 再次读史（正文阶段放行，旧份随新结果剔除）。
+      AiCallResult(
+        content: '## 剧情演绎\n写了一半',
+        toolCalls: [readCall('s1', AgentStateSection.memorySummary)],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_s1',
+      ),
+      lv1StoryTurn(),
+    ]);
+
+    final result = await run(h.runner);
+
+    // 最后一个标题帧胜出：半截正文不进入本轮结果。
+    expect(result.content, contains('## 世界状态'));
+    expect(result.content, isNot(contains('写了一半')));
+    final storyItems = h.requests[3].items;
+    final reads = storyItems
+        .where(
+          (i) =>
+              i['type'] == 'function_call' &&
+              i['name'] == kReadHistoryToolName,
+        )
+        .map((i) => i['call_id'])
+        .toList();
+    // 只保留最新一份：调研帧的 p1 已被 s1 顶替（其紧邻思考块一并剔除）。
+    expect(reads, ['s1']);
+    final output = storyItems.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 's1',
+    );
+    expect('${output['output']}', contains('NARRCHAT_STATE'));
+    expect('${output['output']}', contains('<memorySummary>'));
+    // 读取结果 = 工作副本当前渲染（正文阶段读到的是本轮已落地的条目）。
+    expect('${output['output']}', contains('第2轮'));
+  });
+
+  test('维护轮护栏：已提供过全文的历史栏重复读取被拒绝（调研结果不被顶替）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧没落条目）'),
+      lv1StoryTurn(),
+      // 维护帧 1：多此一举地再读一遍历史 → 被拒。
+      AiCallResult(
+        content: '',
+        toolCalls: [readCall('m_read', AgentStateSection.memorySummary)],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_read2',
+      ),
+      // 维护帧 2：按已有全文直接追加条目。
+      lv1HistoryTurn('m1'),
+    ]);
+
+    final result = await run(h.runner);
+
+    expect(h.requests, hasLength(5));
+    expect(result.stateTurnUsed, isTrue);
+    // 读取被拒：不执行、不算状态缺项（流程违规 ≠ 待修栏目）。
+    final refused = result.outcomes.firstWhere((o) => o.callId == 'm_read');
+    expect(refused.applied, isFalse);
+    expect(refused.message, contains('本阶段不再重复读取'));
+    expect(refused.isStateTool, isFalse);
+    final refusedOutput = h.requests[4].items.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'm_read',
+    );
+    expect('${refusedOutput['output']}', contains('已在对话中'));
+    expect('${refusedOutput['output']}', isNot(contains('NARRCHAT_STATE')));
+    // 调研帧那一份仍在（护栏不能把模型唯一锚点来源剔掉）。
+    final providedOutput = h.requests[4].items.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'p1',
+    );
+    expect('${providedOutput['output']}', contains('NARRCHAT_STATE'));
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.warnings, isEmpty);
+  });
+
+  test('维护轮护栏：调研阶段漏读的历史照常允许补读（非合规流程不失明）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      // 调研帧只有大纲、没有读史（无锚点来源）。
+      lv1PrepareTurn(),
+      lv1EmptyTurn('（记忆帧没落条目）'),
+      lv1StoryTurn(),
+      // 维护帧：补读历史 + 直接追加本轮条目（读取放行 → 锚点可抄）。
+      AiCallResult(
+        content: '',
+        toolCalls: [
+          readCall('m_read', AgentStateSection.memorySummary),
+          ...lv1HistoryTurn('m_edit').toolCalls,
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_fix',
+      ),
+    ]);
+
+    final result = await run(h.runner);
+
+    // 漏读过的栏目照常执行读取（未提供过 → 护栏放行）。
+    final read = result.outcomes.firstWhere((o) => o.callId == 'm_read');
+    expect(read.applied, isTrue);
+    expect(read.isStateTool, isFalse);
+    // 编辑照常落地，整轮无警告。
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.stateTurnUsed, isTrue);
+    expect(result.warnings, isEmpty);
+  });
+
+  test('维护轮文本不上屏、也不覆盖已采纳正文', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧没落条目）'),
+      lv1StoryTurn(),
+      AiCallResult(
+        // 维护轮违规复读正文（结构上不可能成为本轮正文）。
+        content: '## 剧情演绎\n状态轮里又写了一份正文\n\n## 推荐行动\nx',
+        toolCalls: lv1HistoryTurn('m1').toolCalls,
+        promptTokens: 2,
+        completionTokens: 2,
+        responseId: 'resp_2',
+      ),
+    ]);
+    final sunk = <AiStreamChunk>[];
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+      onChunk: sunk.add,
+    );
+
+    final published = sunk
+        .where((c) => c.contentDelta.isNotEmpty)
+        .map((c) => c.contentDelta)
+        .join();
+    expect(published, contains('正文'));
+    expect(published, isNot(contains('状态轮里又写了一份正文')));
+  });
+
+  test('写到一半去搜索 → 后一个标题帧胜出，界面收到重置信号', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, extraTools: searchToolStub(), script: [
+      lv1PrepareReadTurn('p1'),
+      lv1HistoryTurn('h1'),
+      // 正文帧 1：半截正文 + 搜索工具（非状态工具 → 必须继续下一帧）。
+      AiCallResult(
+        content: '## 剧情演绎\n写了一半',
+        toolCalls: const [
+          AiToolCall(
+            id: 's1',
+            name: 'narrchat_webSearch',
+            arguments: {'query': '青云宗'},
+          ),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_s1',
+      ),
+      // 正文帧 2：完整正文 → 覆盖帧 1。
+      lv1StoryTurn(),
+    ]);
+    final sunk = <AiStreamChunk>[];
+    final result = await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+      onChunk: sunk.add,
+    );
+
+    // 帧 2 的完整标题帧胜出 → 半截正文不进入本轮结果。
+    expect(result.content, contains('## 世界状态'));
+    expect(result.content, isNot(contains('写了一半')));
+    // 搜索帧的输出被回传（模型据此续写）。
+    final searchOutput = h.requests[3].items.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 's1',
+    );
+    expect('${searchOutput['output']}', contains('青云宗'));
+    // 两个标题帧各发一次重置信号（界面正文块从标题处重新起流）。
+    expect(sunk.where((c) => c.narrativeReset), hasLength(2));
+  });
+
+  test('思考块按**每个工具调用**各回传一块（服务端逐块校验）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      lv1PrepareReadTurn('p1'),
+      // 记忆帧：一次思考 + **两个**工具调用（读取器被拒 + 历史编辑器落地）。
+      AiCallResult(
+        content: '',
+        reasoningContent: '先读一遍历史，再落条目',
+        reasoningItems: const [
+          AiReasoningItem(id: 'r1', text: '先读一遍历史，再落条目'),
+        ],
+        toolCalls: [
+          readCall('m_read', AgentStateSection.memorySummary),
+          ...lv1HistoryTurn('h1').toolCalls,
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_mem',
+      ),
+      lv1StoryTurn(),
+    ]);
+    final result = await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    expect(result.content, contains('## 剧情演绎'));
+    expect(copy.memorySummary, contains('第2轮'));
+    final storyItems = h.requests[2].items;
+    // 服务端实测规则：带 tools 的请求里**每个 function_call 都必须紧邻其前**
+    // 各有一块非空 reasoning（一帧两个调用只回一块 → 400
+    //「The reasoning_text in the thinking mode must be passed back」）。
+    final callAt = <String, int>{
+      for (var i = 0; i < storyItems.length; i++)
+        if (storyItems[i]['type'] == 'function_call')
+          '${storyItems[i]['call_id']}': i,
+    };
+    // 本帧的两个调用：读取器（被拒）+ 历史编辑器（落地）。
+    for (final id in const ['m_read', 'h1']) {
+      expect(callAt.keys, contains(id));
+      final at = callAt[id]!;
+      expect(
+        at,
+        greaterThan(0),
+        reason: 'function_call 前必须有紧邻的思考块',
+      );
+      expect(storyItems[at - 1]['type'], 'reasoning');
+      expect('${storyItems[at - 1]['text']}', isNotEmpty);
+      // 块数不足时回落到最后一块：两个调用前都是模型本帧的那段思考原文。
+      expect(storyItems[at - 1]['text'], '先读一遍历史，再落条目');
+    }
+  });
+
+  test('无工具调用的帧：思考块照常回传（先于正文，单块）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      lv1PrepareReadTurn('p1'),
+      // 记忆帧：只有文本与思考、没有工具调用（不满足 → 维护轮兜底）。
+      AiCallResult(
+        content: '（记忆帧只回文本）',
+        reasoningContent: '想了一下剧情',
+        reasoningItems: const [
+          AiReasoningItem(id: 'r1', text: '想了一下剧情'),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_mem',
+      ),
+      lv1StoryTurn(),
+      lv1HistoryTurn('m1'),
+    ]);
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    // 正文帧请求体里：记忆帧（无工具）的思考块随帧收尾入队——恰一块，
+    // 且紧挨在其 assistant 文本消息之前。
+    final storyItems = h.requests[2].items;
+    final memoryReasoning = storyItems
+        .where(
+          (i) => i['type'] == 'reasoning' && i['text'] == '想了一下剧情',
+        )
+        .toList();
+    expect(memoryReasoning, hasLength(1));
+    final reasoningAt = storyItems.indexOf(memoryReasoning.single);
+    final assistantAt = storyItems.indexWhere(
+      (i) =>
+          i['role'] == 'assistant' &&
+          '${i['content']}'.contains('记忆帧只回文本'),
+    );
+    expect(assistantAt, reasoningAt + 1);
+  });
+
+  test('模型未产出思考时仍逐块兜底（工具帧绝不缺块）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, extraTools: searchToolStub(), script: [
+      // 调研帧：读史 + 搜索，无 reasoningItems / reasoningContent。
+      AiCallResult(
+        content: '',
+        toolCalls: [
+          readCall('p1', AgentStateSection.memorySummary),
+          const AiToolCall(
+            id: 'w1',
+            name: 'narrchat_webSearch',
+            arguments: {'query': '青云宗'},
+          ),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_prep',
+      ),
+      // 调研帧 2：不再调工具 → 调研阶段收束。
+      lv1EmptyTurn(''),
+      lv1HistoryTurn('h1'),
+      lv1StoryTurn(),
+    ]);
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final memoryItems = h.requests[2].items;
+    final calls = <int>[
+      for (var i = 0; i < memoryItems.length; i++)
+        if (memoryItems[i]['type'] == 'function_call') i,
+    ];
+    expect(calls, hasLength(2));
+    for (final at in calls) {
+      expect(memoryItems[at - 1]['type'], 'reasoning');
+      // 兜底文本非空（本帧无正文 → 占位文本；服务端只校验「非空且紧邻」）。
+      expect('${memoryItems[at - 1]['text']}', isNotEmpty);
+    }
+  });
+
+  test('精简思考回传（开关开启时）：多段只回传首段 + 末段（`\\n\\n` 空行不计段）', () async {
+    final copy = workingCopy();
+    // 多段思考（中间过程整段丢弃；空行只是格式占位，不算段）。
+    const long = '先读一遍历史确定锚点。\n\n'
+        '再核对时间线。\n\n'
+        '最后按五区块写正文，时间沿用上轮格式。';
+    final h = harness(
+      copy: copy,
+      reduceReasoningReplay: true,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: long,
+          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+          toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_prep',
+        ),
+        lv1HistoryTurn('h1'),
+        lv1StoryTurn(),
+      ],
+    );
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final reasoning =
+        h.requests[1].items.firstWhere((i) => i['type'] == 'reasoning');
+    expect(
+      reasoning['text'],
+      '先读一遍历史确定锚点。\n\n最后按五区块写正文，时间沿用上轮格式。',
+    );
+    // 中间段不得出现在回传里。
+    expect('${reasoning['text']}', isNot(contains('再核对时间线')));
+  });
+
+  test('精简关闭（默认）：逐字节回传思考原文', () async {
+    final copy = workingCopy();
+    const long = '第一段过程。\n\n第二段过程。\n\n第三段结论。';
+    final h = harness(
+      copy: copy,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: long,
+          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+          toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_prep',
+        ),
+        lv1HistoryTurn('h1'),
+        lv1StoryTurn(),
+      ],
+    );
+    await h.runner.run(
+      initialInputItems: const [{'role': 'user', 'content': 'hi'}],
+      stream: true,
+    );
+
+    final reasoning =
+        h.requests[1].items.firstWhere((i) => i['type'] == 'reasoning');
+    expect(reasoning['text'], long);
+  });
+
+  test('无状态重发：每帧全量 input，状态不预置（模型自取）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1HistoryTurn('h1'),
+      lv1StoryTurn(),
+    ]);
+    await run(h.runner);
+
+    expect(h.requests, hasLength(3));
+    for (final r in h.requests) {
+      expect(r.previousResponseId, isNull);
+    }
+    final first = h.requests[0].items;
+    // 历史 1 条 + 调研指令；状态**不预置**（模型应自行调用读取器获取）。
+    expect(first, hasLength(2));
+    expect(first.first['role'], 'user');
+    expect('${first.last['content']}', startsWith('【调研回合】'));
+    // 每帧开始时都没有「应用塞入」的状态结果（工具输出只来自模型自己调用）。
+    expect(
+      first.where((i) => i['type'] == 'function_call_output'),
+      isEmpty,
+      reason: '状态由模型自取，应用不做预置',
+    );
+    // 第 2 帧：调研帧的读取结果已回传（旧缺陷：续接帧「失忆」）。
+    expect(
+      h.requests[1].items.any(
+        (i) =>
+            i['type'] == 'function_call_output' &&
+            '${i['output']}'.contains('<memorySummary'),
+      ),
+      isTrue,
+    );
+    // 正文帧指令是最后一条 user 消息（五区块、不要记忆区块）。
+    final last = h.requests[2].items.last;
+    expect(last['role'], 'user');
+    expect('${last['content']}', startsWith('【正文回合】'));
+    expect('${last['content']}', contains('5 个二级标题'));
+  });
+
+  test('有状态链式：续接帧只发新增 item + previous_response_id', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      chaining: true,
+      script: [lv1PrepareReadTurn('p1'), lv1HistoryTurn('h1'), lv1StoryTurn()],
+    );
+    await run(h.runner);
+
+    expect(h.requests[0].previousResponseId, isNull);
+    expect(h.requests[0].items, hasLength(2));
+    // 记忆帧只发「调研帧新增的读取条目 + 记忆指令」。
+    expect(h.requests[1].previousResponseId, 'resp_read');
+    expect(h.requests[1].items, hasLength(4));
+    expect('${h.requests[1].items.last['content']}', startsWith('【记忆回合】'));
+    // 正文帧只发「记忆帧新增的编辑条目 + 正文指令」。
+    expect(h.requests[2].previousResponseId, 'resp_2');
+    expect(h.requests[2].items, hasLength(4));
+    expect('${h.requests[2].items.last['content']}', startsWith('【正文回合】'));
+  });
+
+  test('维护轮空手帧不再提前止损：保留修复机会（帧数上限兜底）', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxStateFrames: 2, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧 1：只回文本）'),
+      lv1EmptyTurn('（记忆帧 2：只回文本）'),
+      lv1EmptyTurn('（记忆帧 3：只回文本）'),
+      lv1StoryTurn(),
+      // 维护帧 0：只回文本（空手，不应结束整轮）。
+      lv1EmptyTurn('（维护帧 0：空手）'),
+      lv1HistoryTurn('m1'),
+    ]);
+
+    final result = await run(h.runner);
+
+    expect(h.requests, hasLength(7));
+    expect(h.requests[5].stage, AgentStage.state);
+    expect(h.requests[6].stage, AgentStage.state);
+    expect(result.stateTurnUsed, isTrue);
+    // 空手帧后仍把缺口补上 → 无警告。
+    expect(result.warnings, isEmpty);
+    expect(copy.memorySummary, contains('第2轮'));
+  });
+
+  test('维护轮用尽仍有缺项 → 警告钳制（正文照常返回）', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      maxMemoryFrames: 1,
+      maxStateFrames: 2,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        lv1EmptyTurn('（记忆帧没落条目）'),
+        lv1StoryTurn(),
+        badHistoryTurn('call_1'),
+        badHistoryTurn('call_2'),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    expect(result.content, contains('正文'));
+    expect(result.frames, 5); // 调研 1 + 记忆 1 + 正文 1 + 维护 2
+    expect(result.warnings, isNotEmpty);
+    expect(result.warnings.join(), contains('记忆总结'));
+    // 记忆总结未被污染（noChange 被拒）。
+    expect(copy.memorySummary, isEmpty);
+  });
+
+  test('锚点未命中 → 回传该栏目当前全文供重锚', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, script: [
+      lv1PrepareReadTurn('p1'),
+      // 记忆帧：锚点打在不存在的行上 → 失败并回传历史栏当前全文。
+      AiCallResult(
+        content: '',
+        toolCalls: [
+          editCall('h_bad', AgentStateSection.memorySummary, [
+            {
+              'op': 'set',
+              'before': '- 完全不存在的行',
+              'newLine': '- 第2轮｜日期：第二天 申时｜主角前往主峰',
+            },
+          ]),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_bad',
+      ),
+      lv1StoryTurn(),
+      lv1HistoryTurn('m1'),
+    ]);
+    await run(h.runner);
+
+    final outputs = h.requests[3].items
+        .where((i) => i['type'] == 'function_call_output')
+        .map((i) => '${i['output']}')
+        .join('\n');
+    expect(outputs, contains('未找到与 before 匹配的行'));
+    expect(outputs, contains('当前全文'));
+    expect(outputs, contains('<memorySummary>'));
+    // 维护轮把失败项一并列出（点名对应栏目编辑器）。
+    expect(
+      '${h.requests[3].items.last['content']}',
+      contains(kEditHistoryToolName),
+    );
+  });
+
+  test('工具参数被截断 → 不执行，下一帧按回传说明重试', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 2, script: [
+      lv1PrepareReadTurn('p1'),
+      AiCallResult(
+        content: '',
+        toolCalls: [
+          const AiToolCall(
+            id: 'call_1',
+            name: kEditHistoryToolName,
+            arguments: {},
+            argumentsUnparsable: true,
+          ),
+        ],
+        promptTokens: 1,
+        completionTokens: 1,
+        responseId: 'resp_trunc',
+      ),
+      lv1HistoryTurn('h1'),
+      lv1StoryTurn(),
+    ]);
+
+    final result = await run(h.runner);
+
+    final truncated = result.outcomes.firstWhere((o) => o.callId == 'call_1');
+    expect(truncated.applied, isFalse);
+    expect(truncated.message, contains('截断'));
+    // 截断帧什么都没改；拒绝回传（英文要求 + 中文概述）进入下一帧上下文。
+    final truncatedOutput = '${h.requests[2].items.firstWhere(
+      (i) => i['type'] == 'function_call_output' && i['call_id'] == 'call_1',
+    )['output']}';
+    expect(truncatedOutput, contains('TRUNCATED'));
+    expect(truncatedOutput, contains('工具参数被截断'));
+    for (final marker in const ['[EN]', '【中】']) {
+      expect(truncatedOutput, isNot(contains(marker)), reason: marker);
+    }
+    // 下一帧按说明重试，条目落地、整轮无警告。
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.warnings, isEmpty);
+  });
+
+  /// 被输出上限截断的维护帧：历史编辑器参数没写完（JSON 不闭合）。
+  AiCallResult truncatedStateTurn(String id) => AiCallResult(
+        content: '',
+        toolCalls: [
+          AiToolCall(
+            id: id,
+            name: kEditHistoryToolName,
+            arguments: const {},
+            argumentsUnparsable: true,
+          ),
+        ],
+        promptTokens: 1,
+        completionTokens: 4096,
+        incomplete: true,
+        incompleteReason: kIncompleteMaxOutputTokens,
+      );
+
+  test('维护帧被截断：不判失败，下一帧带「拆短调用」指令重发', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, maxStateFrames: 2, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧没落条目）'),
+      lv1StoryTurn(),
+      truncatedStateTurn('a'),
+      lv1HistoryTurn('b'),
+    ]);
+
+    final result = await run(h.runner);
+
+    expect(h.requests, hasLength(5));
+    // 补救只走提示词：请求体里的 max_output_tokens 与思考强度都由用户设置决定，
+    // 执行器一概不擅自改动（帧间差异只有 input 与续接基点）。
+    expect(
+      h.requests.map((r) => r.stage).toList(),
+      [
+        AgentStage.prepare,
+        AgentStage.memory,
+        AgentStage.story,
+        AgentStage.state,
+        AgentStage.state,
+      ],
+    );
+    final capDirective = '${h.requests[4].items.last['content']}';
+    expect(capDirective, contains('TRUNCATED'));
+    // 「拆短调用」提示：中文概述紧跟英文要求之后，无 [EN] / 【中】 语言标记。
+    expect(capDirective, contains('上一帧在输出上限处被截断'));
+    expect(capDirective, isNot(contains('[EN]')));
+    expect(capDirective, isNot(contains('【中】')));
+    expect(capDirective, contains('拆短'));
+    // 末帧未截断 → 不再对用户提示截断。
+    expect(result.incomplete, isFalse);
+    expect(result.incompleteReason, isEmpty);
+    expect(copy.memorySummary, contains('第2轮'));
+    expect(result.warnings, isEmpty);
+  });
+
+  test('维护帧末帧仍截断 → 给用户一条可操作的「调高最大 token」提示', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, maxMemoryFrames: 1, maxStateFrames: 2, script: [
+      lv1PrepareReadTurn('p1'),
+      lv1EmptyTurn('（记忆帧没落条目）'),
+      lv1StoryTurn(),
+      truncatedStateTurn('a'),
+      truncatedStateTurn('b'),
+    ]);
+
+    final result = await run(h.runner);
+
+    expect(result.incomplete, isTrue);
+    expect(result.incompleteReason, kIncompleteMaxOutputTokens);
+    expect(result.warnings.first, contains('最大 token'));
+    // 正文照常产出：截断只影响状态，不再赔掉整轮。
+    expect(result.content, contains('正文'));
+    expect(copy.memorySummary, isEmpty);
+  });
+
+  test('被截断的帧不作为续接基点：下一帧改为全量重发', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      chaining: true,
+      maxMemoryFrames: 1,
+      maxStateFrames: 2,
+      script: [
+        lv1PrepareReadTurn('p1'),
+        lv1EmptyTurn('（记忆帧没落条目）'),
+        lv1StoryTurn(),
+        truncatedStateTurn('a'),
+        lv1HistoryTurn('b'),
+      ],
+    );
+
+    await run(h.runner);
+
+    // 维护帧 1 走续接（只发新增项）。
+    expect(h.requests[3].previousResponseId, 'resp_1');
+    // 维护帧 1 被截断 → 帧 2 不能作为基点：全量重发且不带 previous_response_id。
+    expect(h.requests[4].previousResponseId, isNull);
+    expect(
+      h.requests[4].items.length,
+      greaterThan(h.requests[3].items.length),
+    );
+    expect(copy.memorySummary, contains('第2轮'));
+  });
+
+  test('服务商拒绝用户设置的思考强度 → 不重试、不做任何强度回落', () async {
+    final copy = workingCopy();
+    final h = harness(copy: copy, script: [
+      lv1PrepareReadTurn('p1'),
+      const AiException(
+        "Unsupported parameter: 'reasoning.effort' is not supported",
+        kind: AiExceptionKind.api,
+      ),
+    ]);
+
+    // 该帧就是「用户设置」的那一帧：没有可回落的覆盖，因此直接失败（不重发）。
+    await expectLater(run(h.runner), throwsA(isA<AiException>()));
+    expect(h.requests, hasLength(2));
+    expect(h.requests[1].stage, AgentStage.memory);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Lv.1 三段流程专项（准备 / 记忆 / 正文 / 记忆合并）
+  // ---------------------------------------------------------------------------
+
   test('Lv.1：准备(读史) → 记忆(条目先落地) → 正文(5 区块，剥离记忆)', () async {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       // 无需 maxPrepFrames 限制：本帧只调了读取器（读史）→ 调研阶段立即结束。
       script: [
         lv1PrepareReadTurn('p1'),
@@ -1136,7 +1022,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [lv1PrepareReadTurn('p1'), lv1HistoryTurn('h1'), lv1StoryTurn()],
     );
 
@@ -1158,7 +1043,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         // 调研帧 1：读史 + 发起搜索（搜索不是读取器 → 调研阶段继续）。
         AiCallResult(
@@ -1200,7 +1084,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
@@ -1241,7 +1124,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1HistoryTurn('h1'),
@@ -1267,7 +1149,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         lv1PrepareReadTurn('p1'),
         // 记忆帧违规抢写正文（`## 剧情演绎`）+ 正常追加本轮条目。
@@ -1327,7 +1208,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         lv1PrepareReadTurn('p1'),
         lv1EmptyTurn('（记忆帧 1：只回文本）'),
@@ -1387,7 +1267,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         lv1PrepareReadTurn('p1'),
         // 记忆帧：多此一举地再读一遍历史（本轮已提供全文 → 被拒）+ 正常编辑。
@@ -1443,7 +1322,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         // 调研帧：工具**全是编辑器** → 调研阶段立即闭环（该帧文本不上屏）。
         lv1HistoryTurn('p1', entry: '- 第2轮｜日期：第二天 申时｜准备帧写入'),
@@ -1472,7 +1350,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [
         // 新格式（`- {轮次} | {时间} | {记忆内容}`）与旧格式同等成立：
         // `_memorySatisfied` 走共享解析，两种写法都只算一条。
@@ -1498,7 +1375,6 @@ void main() {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       script: [lv1PrepareTurn(), lv1HistoryTurn('h1'), lv1StoryTurn()],
     );
     // 工具集（Lv.1）= 历史读取 + 历史编辑。
@@ -1513,7 +1389,7 @@ void main() {
   test('用户中断在执行工具前抛出 AiCancelledException', () async {
     final copy = workingCopy();
     var calls = 0;
-    final profile = AgentModeProfile.of(AgentModeLevel.lv2);
+    final profile = AgentModeProfile.lv1;
     final runner = AgentRoundRunner(
       buildBody: (t) => {'input': t.items},
       call: (body, stream, onChunk, onRequestBody, isCancelled) async {
@@ -1623,7 +1499,6 @@ void main() {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       memoryMergePlan: mergePlan(),
       script: [lv1PrepareTurn(), mergeHistoryTurn('m1'), lv1StoryTurn()],
     );
@@ -1651,7 +1526,6 @@ void main() {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       memoryMergePlan: mergePlan(),
       maxStateFrames: 1,
       script: [
@@ -1683,98 +1557,10 @@ void main() {
     expect(copy.memorySummary, isNot(contains('- 1 - 5 |')), reason: '确实没合并');
   });
 
-  test('Lv.2：维护轮问题清单带上合并指令，合并落地后零警告', () async {
-    final copy = mergeCopy();
-    final h = harness(
-      copy: copy,
-      memoryMergePlan: mergePlan(),
-      script: [
-        storyOnly(),
-        AiCallResult(
-          content: '',
-          toolCalls: [
-            editCall('s1_w', AgentStateSection.worldState, [
-              {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-            ]),
-            editCall('s1_c', AgentStateSection.characterState, [
-              {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
-            ]),
-            editCall('s1_m', AgentStateSection.memorySummary, [
-              {
-                'op': 'set',
-                'before': mergeSourceLines,
-                'newLine': '- 1 - 5 | t1 ~ t5 | 前五轮要点。',
-              },
-              {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
-            ]),
-          ],
-          promptTokens: 1,
-          completionTokens: 1,
-          responseId: 'resp_s1',
-        ),
-      ],
-    );
-
-    final result = await run(h.runner);
-
-    expect(h.requests.map((r) => r.stage).toList(),
-        [AgentStage.story, AgentStage.state]);
-    expect(itemsText(h.requests[1].items), contains('【本轮记忆合并】'));
-    expect(itemsText(h.requests[1].items), contains('- 1 - 5 | t1 ~ t5 | {记忆内容}'));
-    expect(copy.memorySummary, contains('- 1 - 5 | t1 ~ t5 | 前五轮要点。'));
-    expect(result.warnings, isEmpty);
-  });
-
-  test('Lv.2：维护轮没合并 → 继续修复帧；用尽后常驻警告', () async {
-    final copy = mergeCopy();
-    final h = harness(
-      copy: copy,
-      memoryMergePlan: mergePlan(),
-      maxStateFrames: 2,
-      script: [
-        storyOnly(),
-        AiCallResult(
-          content: '',
-          toolCalls: [
-            editCall('s1_w', AgentStateSection.worldState, [
-              {'op': 'set', 'before': '- 地点：青云宗', 'newLine': '- 地点：主峰'},
-            ]),
-            editCall('s1_c', AgentStateSection.characterState, [
-              {'op': 'set', 'before': '- 气血：80', 'newLine': '- 气血：70'},
-            ]),
-            editCall('s1_m', AgentStateSection.memorySummary, [
-              {'op': 'append', 'newLine': '- 10 | t10 | 第十轮。'},
-            ]),
-          ],
-          promptTokens: 1,
-          completionTokens: 1,
-          responseId: 'resp_s1',
-        ),
-        AiCallResult(
-          content: '',
-          toolCalls: const [],
-          promptTokens: 1,
-          completionTokens: 1,
-          responseId: 'resp_s2',
-        ),
-      ],
-    );
-
-    final result = await run(h.runner);
-
-    final stateStages =
-        h.requests.where((r) => r.stage == AgentStage.state).toList();
-    expect(stateStages, hasLength(2),
-        reason: '合并未落地 → 维护轮继续修复（不再因「无缺口」提前返回）');
-    expect(result.warnings, contains('记忆总结未按档位（5）合并：应合并 1-5'));
-    expect(copy.memorySummary, isNot(contains('- 1 - 5 |')));
-  });
-
   test('Lv.1：调研阶段漏读历史时，记忆阶段仍允许补读一次（合并没有锚点就落不了地）', () async {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       memoryMergePlan: mergePlan(),
       script: [
         // 非合规流程：准备帧只有大纲、没读历史（无 `<memorySummary>` 锚点来源）。
@@ -1816,7 +1602,6 @@ void main() {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       memoryMergePlan: mergePlan(),
       script: [
         lv1PrepareReadTurn('p_read'),
@@ -1845,7 +1630,6 @@ void main() {
     final copy = mergeCopy();
     final h = harness(
       copy: copy,
-      level: AgentModeLevel.lv1,
       memoryMergePlan: planMemoryMerge(
         memoryText: mergeMemoryText,
         tier: 0,
@@ -1870,3 +1654,36 @@ typedef _Request = ({
   List<Map<String, dynamic>> items,
   String? previousResponseId,
 });
+
+/// 联网搜索工具替身：只回固定文本、不发起任何网络请求（帧序测试用）。
+class _StubWebSearchTool implements NarrAgentTool {
+  const _StubWebSearchTool();
+
+  @override
+  String get name => 'narrchat_webSearch';
+
+  @override
+  String get description => '测试用联网搜索替身：返回固定结果。';
+
+  @override
+  Map<String, dynamic> get parameters => {
+        'type': 'object',
+        'properties': {
+          'query': {'type': 'string'},
+        },
+        'required': ['query'],
+      };
+
+  @override
+  bool get isReadOnly => false;
+
+  @override
+  AgentActivityType get activityType => AgentActivityType.searching;
+
+  @override
+  Future<AgentToolResult> run(Map<String, dynamic> arguments) async =>
+      AgentToolResult(
+        success: true,
+        content: '搜索「${arguments['query']}」的结果：\n1. 结果。',
+      );
+}

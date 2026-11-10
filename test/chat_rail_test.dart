@@ -111,25 +111,25 @@ void main() {
   group('可见性', () {
     testWidgets('内容不足一屏时不显示轨道', (tester) async {
       await _pumpRail(tester, visibleFraction: 1);
-      expect(find.byKey(ChatRail.trackKey), findsNothing);
+      expect(find.byKey(ChatRail.knobHitKey), findsNothing);
     });
 
     testWidgets('只有一轮时不显示轨道', (tester) async {
       await _pumpRail(tester, totalRounds: 1);
-      expect(find.byKey(ChatRail.trackKey), findsNothing);
+      expect(find.byKey(ChatRail.knobHitKey), findsNothing);
     });
 
     testWidgets('可滚动时显示滑块', (tester) async {
       await _pumpRail(tester);
-      expect(find.byKey(ChatRail.trackKey), findsOneWidget);
+      expect(find.byKey(ChatRail.knobHitKey), findsOneWidget);
     });
   });
 
   group('面板', () {
-    testWidgets('默认收起：点轨道才展开', (tester) async {
+    testWidgets('默认收起：点滑块才展开', (tester) async {
       await _pumpRail(tester);
       expect(find.byTooltip('顶部'), findsNothing);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       expect(find.byTooltip('顶部'), findsOneWidget);
       expect(find.byTooltip('底部'), findsOneWidget);
@@ -137,18 +137,18 @@ void main() {
       expect(find.byTooltip('下一轮'), findsOneWidget);
     });
 
-    testWidgets('再点轨道收起', (tester) async {
+    testWidgets('再点滑块收起', (tester) async {
       await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       expect(find.byTooltip('顶部'), findsNothing);
     });
 
     testWidgets('胶囊显示 当前轮 / 总轮数', (tester) async {
       await _pumpRail(tester, currentRound: 3, totalRounds: 10);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       expect(find.textContaining('3 / 10', findRichText: true), findsOneWidget);
     });
@@ -158,7 +158,7 @@ void main() {
       addTearDown(handle.dispose);
       await _pumpRail(tester, handle: handle);
 
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       expect(find.byTooltip('顶部'), findsOneWidget);
       expect(handle.expanded, isTrue, reason: '轨道自己的开合也要回写同一个开关');
@@ -181,7 +181,7 @@ void main() {
 
     testWidgets('五个部件各自成形：右缘对齐滑块侧、纵向居中', (tester) async {
       await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
 
       final railBox = tester.getRect(find.byType(ChatRail));
@@ -193,9 +193,11 @@ void main() {
         ).first,
       );
 
-      // 部件右缘 = 父级右缘 -（内缩 + 命中带 + 间隙）；桌面内缩 8。
+      // 部件右缘 = 父级右缘 -（滑块贴边 + 滑块宽 + 间隙）；桌面贴边 10。
       final chipRight = railBox.right -
-          (ChatRail.gutterDesktop + ChatRail.hitWidth + ChatRail.panelGap);
+          (ChatRail.knobEdgeGapDesktop +
+              ChatRail.knobWidth +
+              ChatRail.panelGap);
       expect(top.right, closeTo(chipRight, 0.5));
       expect(capsule.right, closeTo(chipRight, 0.5));
 
@@ -210,7 +212,7 @@ void main() {
 
     testWidgets('没有包裹五个部件的大面板（每个部件自带 Material）', (tester) async {
       await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
 
       for (final tooltip in ['顶部', '上一轮', '下一轮', '底部']) {
@@ -371,10 +373,55 @@ void main() {
     });
   });
 
+  group('命中范围与贴边', () {
+    // 旧版滑块居中在 32dp 命中带里：桌面距边 8 + 11 = 19dp，触控 20 + 11 = 31dp。
+    for (final (platform, isTouch, gap) in [
+      ('桌面', false, 10.0),
+      ('触控', true, 16.0),
+    ]) {
+      testWidgets('$platform：滑块距右缘 ${gap.toInt()}dp（约为旧版的一半）', (tester) async {
+        await _pumpRail(tester, isTouch: isTouch);
+        final railBox = tester.getRect(find.byType(ChatRail));
+        final knob = tester.getRect(find.byKey(ChatRail.knobKey));
+        expect(railBox.right - knob.right, closeTo(gap, 0.5));
+      });
+    }
+
+    testWidgets('命中区就是滑块本体：不铺满整条右缘', (tester) async {
+      await _pumpRail(tester, isTouch: true);
+      final knob = tester.getRect(find.byKey(ChatRail.knobKey));
+      final hit = tester.getRect(find.byKey(ChatRail.knobHitKey));
+
+      expect(hit, knob, reason: '可交互的框与画出来的滑块完全重合');
+      expect(hit.size, const Size(ChatRail.knobWidth, ChatRail.knobHeight));
+      expect(hit.height, lessThan(600 / 4), reason: '只有滑块高，不贯穿整列');
+    });
+
+    testWidgets('触屏：右缘空白处拖动 / 点击不再被轨道抢走', (tester) async {
+      final locator = await _pumpRail(tester, isTouch: true);
+      final railBox = tester.getRect(find.byType(ChatRail));
+      // 旧版 32dp 命中带内、滑块之外的位置（贴着右缘）。
+      final blank = Offset(railBox.right - 4, railBox.top + 40);
+
+      final gesture = await tester.startGesture(blank);
+      await gesture.moveBy(const Offset(0, -60));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(locator.velocities, isEmpty, reason: '空白右缘不产生滚动速度');
+      expect(locator.stopCalls, 0, reason: '根本没有开始拖动');
+
+      await tester.tapAt(blank);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('顶部'), findsNothing, reason: '空白右缘不展开面板');
+    });
+  });
+
   group('跳转按钮', () {
     testWidgets('顶部 / 底部', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('顶部'));
       await tester.tap(find.byTooltip('底部'));
@@ -384,7 +431,7 @@ void main() {
 
     testWidgets('上一轮 / 下一轮跳到相邻轮', (tester) async {
       final locator = await _pumpRail(tester, currentRound: 5);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('上一轮'));
       await tester.tap(find.byTooltip('下一轮'));
@@ -393,7 +440,7 @@ void main() {
 
     testWidgets('第一轮的上一轮 = 顶部', (tester) async {
       final locator = await _pumpRail(tester, currentRound: 1);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('上一轮'));
       expect(locator.topCalls, 1);
@@ -402,7 +449,7 @@ void main() {
 
     testWidgets('最后一轮的下一轮 = 底部', (tester) async {
       final locator = await _pumpRail(tester, currentRound: 10, totalRounds: 10);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('下一轮'));
       expect(locator.bottomCalls, 1);
@@ -412,7 +459,7 @@ void main() {
   group('数字跳转', () {
     testWidgets('点数字进内联输入，回车跳到该轮', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
@@ -426,7 +473,7 @@ void main() {
 
     testWidgets('越界输入被夹取到上限，不报错', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
@@ -438,7 +485,7 @@ void main() {
 
     testWidgets('非法输入（非数字）不跳转', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.tap(find.byKey(ChatRail.trackKey));
+      await tester.tap(find.byKey(ChatRail.knobHitKey));
       await tester.pumpAndSettle();
       await tester.tap(find.textContaining('3 / 10', findRichText: true));
       await tester.pumpAndSettle();
@@ -453,7 +500,7 @@ void main() {
   group('拖动 → 速度', () {
     testWidgets('向上拖产生正速度（往历史翻），松手立即停', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.drag(find.byKey(ChatRail.trackKey), const Offset(0, -120));
+      await tester.drag(find.byKey(ChatRail.knobHitKey), const Offset(0, -120));
       await tester.pumpAndSettle();
       expect(locator.velocities, isNotEmpty);
       expect(locator.velocities.last, isNot(0));
@@ -463,7 +510,7 @@ void main() {
 
     testWidgets('向下拖产生负速度（往最新翻）', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.drag(find.byKey(ChatRail.trackKey), const Offset(0, 120));
+      await tester.drag(find.byKey(ChatRail.knobHitKey), const Offset(0, 120));
       await tester.pumpAndSettle();
       expect(locator.velocities, isNotEmpty);
       expect(locator.velocities.every((v) => v <= 0), isTrue);
@@ -471,7 +518,7 @@ void main() {
 
     testWidgets('拖动后收缩，不再继续调用速度', (tester) async {
       final locator = await _pumpRail(tester);
-      await tester.drag(find.byKey(ChatRail.trackKey), const Offset(0, -120));
+      await tester.drag(find.byKey(ChatRail.knobHitKey), const Offset(0, -120));
       await tester.pumpAndSettle();
       final count = locator.velocities.length;
       expect(count, greaterThan(0));

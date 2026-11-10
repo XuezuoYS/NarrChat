@@ -1101,7 +1101,7 @@ class RoundProvider extends ChangeNotifier {
             historyRounds: recentRounds,
           );
     // 模式与协议**正交**（全解耦）：
-    // - agentLevel：实验性档位（关 / Lv.1 / Lv.2，默认关闭）——档位档案
+    // - agentLevel：实验性档位（关 / Lv.1，默认关闭；Lv.2 已移除）——档位档案
     //   （[AgentModeProfile]）决定提示词模式、工具栏目与历史拼合形态；
     //   无设置注入（仅测试/降级路径）保持 Chat 语义；
     // - responsesWire：平台接入协议决定的线路格式（只决定请求体形态）。
@@ -1146,8 +1146,9 @@ class RoundProvider extends ChangeNotifier {
       imagePartsFor: supportsVision
           ? (r) => _imagePartsFor(r, imageDataUrls)
           : null,
-      // 拼合形态随档位（见 [AssistantHistoryShape]）：Lv.2 每轮只带正文三小节、
-      // Lv.1 最新一轮带 5 区块（历史区块由工具提供）、Chat 维持原样。
+      // 拼合形态随档位（见 [AssistantHistoryShape]）：Agent Lv.1 最新一轮带
+      // 5 区块（历史区块由工具提供）、Chat 维持原样；完整 Agent 的
+      // agentStoryOnly 形态随 Lv.2 移除，保留为后续档位的框架。
       shape: profile.historyShape,
     );
     final userText = promptInterface.user(promptRequest);
@@ -1183,8 +1184,8 @@ class RoundProvider extends ChangeNotifier {
     final temperature = settings?.temperature ?? 1.0;
     final maxTokens = settings?.maxTokens;
 
-    // AGENT 模式：分阶段执行器（Lv.1 = 准备 → 记忆 → 正文；
-    // Lv.2 = 正文 → 缺口驱动的维护轮）+ 自定义状态/搜索工具。
+    // AGENT 模式：分阶段执行器（Lv.1 = 准备 → 记忆 → 正文 → 缺口兜底维护轮）
+    // + 自定义状态/搜索工具。完整 Agent（Lv.2）已移除。
     // 线路（responses / chat）只影响请求体形态，执行器结构完全一致：
     // - responses 线路：instructions + input items + 顶层工具 schema；
     // - chat 线路：system 消息 + role 消息 + 嵌套 function schema，
@@ -2144,10 +2145,11 @@ class RoundProvider extends ChangeNotifier {
       ];
 
   /// 本轮落库快照（档位差异的唯一处理点）：
-  /// - **Lv.2**：状态三栏全部来自工作副本（正文不含状态区块）；
-  /// - **Lv.1**：世界状态 / 角色状态 / 当前时间由**正文文本**携带（属正文契约），
-  ///   历史（记忆总结）由工具维护 → 从正文解析补齐前三项、记忆取工作副本；
-  ///   正文解析不到时该项为空（与 Chat 的缺失语义一致，不做兜底猜测）。
+  /// - **当前档位（Lv.1）**：世界状态 / 角色状态 / 当前时间由**正文文本**携带
+  ///   （属正文契约），历史（记忆总结）由工具维护 → 从正文解析补齐前三项、记忆
+  ///   取工作副本；正文解析不到时该项为空（与 Chat 的缺失语义一致，不做兜底猜测）。
+  /// - 若某个档位把世界 / 角色托管给工具（完整 Agent Lv.2 已移除，当前无此类
+  ///   档位；该分支保留为框架），则三栏全部来自工作副本。
   static RoundSnapshot _mergedSnapshot(
     AgentModeProfile profile,
     AgentStateWorkingCopy workingCopy,
@@ -2961,11 +2963,10 @@ class _RoundRequest {
   /// 直发（非搜索）路径的请求体；AGENT 模式为**正文轮首帧**体（与实发同源）。
   final Map<String, dynamic> directBody;
 
-  /// 是否 AGENT 模式（实验性档位 Lv.1 / Lv.2；与协议正交）。
+  /// 是否 AGENT 模式（实验性档位 Lv.1；Lv.2 已移除；与协议正交）。
   final bool agent;
 
-  /// Agent 档位（[agent] 为 true 时有效）：Lv.1 走 5 区块正文 + 历史工具，
-  /// Lv.2 走 3 小节正文 + 六工具。
+  /// Agent 档位（[agent] 为 true 时有效）：当前只有 Lv.1（5 区块正文 + 历史工具）。
   final AgentModeLevel agentLevel;
 
   /// 是否 Response API 线路（/responses；协议只决定请求体形态）。

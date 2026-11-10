@@ -215,10 +215,7 @@ class PromptV2Build
 
   @override
   String stageState(AgentStageRequest request) {
-    final head = PromptV2Sections.stateHead(
-      level: request.level,
-      first: request.first,
-    );
+    final head = PromptV2Sections.stateHead(first: request.first);
     final items = <String>[
       ...request.problems,
       ..._pendingMergeLines(request),
@@ -244,7 +241,7 @@ class PromptV2Build
     return PromptV2Sections.memoryMergeAgentLines(plan);
   }
 
-  /// 模式标记：Agent 两档都写 `Agent`（不写等级）。
+  /// 模式标记：Agent 模式写 `Agent`（不写等级；当前只有 Lv.1 一档）。
   static String _modeLabel(PromptMode mode) =>
       mode == PromptMode.chat ? 'Chat' : 'Agent';
 

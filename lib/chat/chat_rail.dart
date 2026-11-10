@@ -20,6 +20,9 @@ import 'chat_rail_motion.dart';
 ///
 /// 展开后是**五个各自独立**的部件（规格 §7.3 的形态），不是一个面板包住五个：
 /// 4 个圆形按钮 + 1 个加宽的胶囊，间距 8dp，纵向居中。
+///
+/// 交互范围只有**滑块本体**（10×44dp），贴着右缘不铺透明命中带——旧版整条右缘
+/// 都能按，触屏上滚动阅读时太容易误触；部件在滑块左侧展开，同样不挡阅读区。
 class ChatRail extends StatefulWidget {
   const ChatRail({
     super.key,
@@ -35,7 +38,7 @@ class ChatRail extends StatefulWidget {
   /// 展开 / 收起的外部开关（点消息区收起、Esc 收起用）。不传则轨道自己管。
   final ChatRailHandle? handle;
 
-  /// 是否触屏平台（决定内缩与透明度）；null = 按平台推断。
+  /// 是否触屏平台（决定贴边距离与透明度）；null = 按平台推断。
   final bool? isTouchPlatform;
 
   final ChatRailMotion motion;
@@ -54,14 +57,14 @@ class ChatRail extends StatefulWidget {
   /// 拖动的死区（像素）：手抖这几像素不该让内容动。
   static const double knobDeadZone = 6;
 
-  /// 交互命中带宽（透明）：滑块在中央，所以整条可读区右缘都能按下开始拖。
-  static const double hitWidth = 32;
+  /// 滑块右缘到窗口右缘的距离。
+  ///
+  /// 旧版滑块居中在 32dp 的透明命中带里，实际距边 19dp（桌面）/ 31dp（触控）。
+  /// 主人反馈"离边太远"，取约一半，让滑块贴着右缘又不压边框。
+  static const double knobEdgeGapDesktop = 10;
+  static const double knobEdgeGapTouch = 16;
 
-  /// 轨道右侧内缩：桌面避开窗口边缘、触控避开系统返回手势。
-  static const double gutterDesktop = 8;
-  static const double gutterTouch = 20;
-
-  /// 部件与命中带之间的间隙。
+  /// 展开部件右缘与滑块左缘之间的间隙。
   static const double panelGap = 8;
 
   /// 圆形按钮直径。
@@ -71,15 +74,17 @@ class ChatRail extends StatefulWidget {
   static const double capsuleWidth = 120;
   static const double capsuleHeight = 44;
 
-  /// 运行时占用的右侧总宽度（内缩 + 命中带 + 间隙 + 最宽的胶囊）。
+  /// 运行时占用的右侧总宽度（滑块距边 + 滑块 + 间隙 + 最宽的胶囊）。
+  ///
+  /// 取触控档（比桌面宽 6dp），两种贴边下部件都不会落到父级边界外。
   static const double reservedWidth =
-      gutterTouch + hitWidth + panelGap + capsuleWidth;
+      knobEdgeGapTouch + knobWidth + panelGap + capsuleWidth;
 
   /// 五个部件堆叠后的总高：4 个按钮 + 1 个胶囊 + 4 个间距。
   static const double panelHeight = itemHeight * 4 + capsuleHeight + 8 * 4;
 
-  /// 滑块命中区（测试与手势用它定位）。
-  static const Key trackKey = ValueKey('chat-rail-track');
+  /// 滑块命中区（只有滑块本体可交互；测试与手势用它定位）。
+  static const Key knobHitKey = ValueKey('chat-rail-knob-hit');
 
   /// 滑块本体（测试用它量位置 / 位移）。
   static const Key knobKey = ValueKey('chat-rail-knob');
@@ -164,8 +169,8 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     }
   }
 
-  double get _gutter =>
-      _isTouch ? ChatRail.gutterTouch : ChatRail.gutterDesktop;
+  double get _knobEdgeGap =>
+      _isTouch ? ChatRail.knobEdgeGapTouch : ChatRail.knobEdgeGapDesktop;
 
   bool get _expanded => _handle.expanded;
 
@@ -433,28 +438,21 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
           children: [
             _buildPanelStack(theme, constraints),
             // 滑块：垂直居中，拖动时跟着手指走（有行程限制）。
+            //
+            // **只有滑块本体响应手势**：旧版是一条 32dp 宽、贯穿整个可读区的
+            // 透明命中带，触屏上贴着右缘滑动阅读时经常被它抢走（误触）。
+            // 指针按下后归本手势所有，手指拖出滑块范围也会继续跟手。
             Positioned(
               top: knobCenterY - ChatRail.knobHeight / 2,
-              right: _gutter + (ChatRail.hitWidth - ChatRail.knobWidth) / 2,
+              right: _knobEdgeGap,
               width: ChatRail.knobWidth,
               height: ChatRail.knobHeight,
-              child: IgnorePointer(
-                key: ChatRail.knobKey,
-                child: _buildKnob(theme),
-              ),
-            ),
-            // 命中带：整条右缘都能按下开始拖（拖动按位移算，按在哪都不会跳）。
-            Positioned(
-              right: _gutter,
-              top: 0,
-              bottom: 0,
-              width: ChatRail.hitWidth,
               child: MouseRegion(
                 cursor: SystemMouseCursors.resizeUpDown,
                 onEnter: (_) => setState(() => _hovering = true),
                 onExit: (_) => setState(() => _hovering = false),
                 child: GestureDetector(
-                  key: ChatRail.trackKey,
+                  key: ChatRail.knobHitKey,
                   behavior: HitTestBehavior.opaque,
                   onTap: _onTapTrack,
                   onVerticalDragDown: _onDragDown,
@@ -462,7 +460,10 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
                   onVerticalDragUpdate: _onDragUpdate,
                   onVerticalDragEnd: (_) => _onDragEnd(),
                   onVerticalDragCancel: _onDragEnd,
-                  child: const SizedBox.expand(),
+                  child: IgnorePointer(
+                    key: ChatRail.knobKey,
+                    child: _buildKnob(theme),
+                  ),
                 ),
               ),
             ),
@@ -520,7 +521,7 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
     );
     final top = math.max(12.0, (constraints.maxHeight - panelHeight) / 2);
     return Positioned(
-      right: _gutter + ChatRail.hitWidth + ChatRail.panelGap,
+      right: _knobEdgeGap + ChatRail.knobWidth + ChatRail.panelGap,
       top: top,
       child: AnimatedBuilder(
         animation: _panelController,
@@ -592,7 +593,7 @@ class _ChatRailState extends State<ChatRail> with TickerProviderStateMixin {
         .clamp(half + 12, math.max(half + 12, constraints.maxHeight - half - 12))
         .toDouble();
     return Positioned(
-      right: _gutter + ChatRail.hitWidth + ChatRail.panelGap,
+      right: _knobEdgeGap + ChatRail.knobWidth + ChatRail.panelGap,
       top: center - half,
       child: IgnorePointer(
         child: AnimatedBuilder(

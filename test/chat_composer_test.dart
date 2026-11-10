@@ -1008,16 +1008,6 @@ void main() {
     expect(find.textContaining('思考'), findsNothing);
   });
 
-  testWidgets('Agent Lv.2：徽标为 Agent Lv.2 On (BETA)', (tester) async {
-    await pumpChatScreen(
-      tester,
-      experimentalSettings: AgentModeSettings(),
-    );
-
-    expect(find.text('Agent Lv.2 On (BETA)'), findsOneWidget);
-    expect(find.text('Agent Lv.1 On (BETA)'), findsNothing);
-  });
-
   testWidgets('Agent 窄屏（360 宽）：徽标单行省略且不溢出', (tester) async {
     await pumpChatScreen(
       tester,
@@ -1025,12 +1015,12 @@ void main() {
       size: const Size(360, 740),
     );
 
-    final badge = tester.widget<Text>(find.text('Agent Lv.2 On (BETA)'));
+    final badge = tester.widget<Text>(find.text('Agent Lv.1 On (BETA)'));
     expect(badge.maxLines, 1);
     expect(badge.overflow, TextOverflow.ellipsis);
     // 徽标区不越到发送按钮上（外层 55% 宽度约束 + 单行省略共同保证）。
     expect(
-      tester.getRect(find.text('Agent Lv.2 On (BETA)')).right,
+      tester.getRect(find.text('Agent Lv.1 On (BETA)')).right,
       lessThanOrEqualTo(tester.getRect(sendButton()).left),
     );
     expect(tester.takeException(), isNull);

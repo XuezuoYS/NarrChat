@@ -74,7 +74,7 @@ void main() {
     expect(history.last['content'], '（无正文）');
   });
 
-  test('AGENT Lv.2（agentStoryOnly）：历史 assistant 只携带三个正文小节，状态一律不进历史', () {
+  test('框架：AGENT（agentStoryOnly）：历史 assistant 只携带三个正文小节，状态一律不进历史', () {
     const withState = Round(
       bookUuid: 'b1',
       roundIndex: 1,
@@ -101,7 +101,8 @@ void main() {
       shape: AssistantHistoryShape.agentStoryOnly,
     );
     expect(history, hasLength(6));
-    // 所有轮同一形状（含带状态的更早轮次）：模型只模仿一种输出格式
+    // 框架形态（当前档位不用；保留给后续「正文三小节」档位）：所有轮同一形状
+    //（含带状态的更早轮次）：模型只模仿一种输出格式
     //（剧情 / 行动 / 时间三小节；状态区块不入历史）。
     expect(
       history[1]['content'],

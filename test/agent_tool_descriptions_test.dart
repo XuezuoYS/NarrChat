@@ -7,10 +7,13 @@ import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 
-/// Agent 工具 `description` 的 **v2** 文案契约（联网 2 个 + 状态 6 个共用同一形态）：
+/// Agent 工具 `description` 的 **v2** 文案契约（联网 2 个 + 状态框架 6 个共用同一形态）：
 /// **简明中文**——撤销中英双语，英文只保留工具名（`narrchat_*`）、状态块标签
 /// （`<worldState>` / `<characterState>` / `<memorySummary>`）与参数 / `op` 取值；
 /// 不出现语言标记，也不出现成句英文。
+///
+/// 当前档位只注册历史一读一写；世界 / 角色两对工具保留为框架，这里按栏目全开
+/// 直接测 `buildStateTools`，确保框架工具的描述同样符合文案契约。
 ///
 /// 联网工具的调用指导（何时调用、搜索后必须打开页面）只在这里声明——
 /// system 不再注入联网指令，故本文件的断言就是那条指令的落点。

@@ -17,7 +17,8 @@ import 'helpers/fakes.dart';
 /// 「代级提示」与「失败轮次」的行为测试（R3）。
 ///
 /// 覆盖：
-/// - 生成警告随代落库（`message_status='warning'`）；
+/// - 生成警告随代落库（`message_status='warning'`）；Lv.1 只有历史栏目经工具
+///   维护，缺项提示文案固定为「记忆总结本轮未更新」；
 /// - 提示以库为唯一来源（重启仍在），**没有关闭入口**（常驻，只能随代变化）；
 /// - 失败/中断 = 链上一条真轮次（`message_status='error'`），保留用户输入；
 /// - 错误代不能衍生下一轮，恢复方式是「重新生成」；
@@ -39,8 +40,9 @@ void main() {
         headers: {'content-type': 'text/event-stream; charset=utf-8'},
       );
 
-  /// 每帧只回文本 + 完成：状态轮空手帧不再止损 → 直到帧数上限，
-  /// 缺项转常驻提示（与 agent_round_test 同夹具思路）。
+  /// 每帧只回文本 + 完成：Lv.1 三段流程下记忆阶段始终不调编辑器 →
+  /// 本轮记忆条目没落地 → 维护轮也补不上 → 缺项转常驻提示
+  ///（与 agent_round_test 的「警告常驻」夹具同思路）。
   List<String> unappliedSse(int calls) => [
         'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n正文。\\n\\n## 推荐行动\\n行动"}',
         'data: {"type":"response.completed","response":{"id":"r$calls","usage":{"input_tokens":1,"output_tokens":1}}}',
@@ -77,7 +79,7 @@ void main() {
     return (provider: rp, cloud: sync);
   }
 
-  /// 成功一轮 AGENT（状态缺项 → 常驻提示）的公共夹具。
+  /// 成功一轮 AGENT（记忆条目未落地 → 常驻提示）的公共夹具。
   Future<({RoundProvider provider, FakeCloudSyncProvider cloud})>
       runWarnedRound() async {
     var calls = 0;
@@ -94,11 +96,11 @@ void main() {
   test('生成警告 → 落到本轮那一代的 message（warning 级）', () async {
     final env = await runWarnedRound();
 
-    expect(env.provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
+    expect(env.provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
 
     final chain = await stack.repos.rounds.loadChain('b1');
     final round = chain.rounds.singleWhere((r) => r.roundIndex == 1);
-    expect(round.message, contains('世界状态本轮未更新'));
+    expect(round.message, contains('记忆总结本轮未更新'));
     expect(round.messageStatus, 'warning');
     expect(round.isUsing, isTrue, reason: '提示挂在当前应用代上');
     expect(round.aiNarrative, contains('正文。'), reason: '提示不是内容');
@@ -113,12 +115,12 @@ void main() {
     final restarted = build();
     await restarted.provider.loadRounds('b1');
 
-    expect(restarted.provider.roundWarningsFor(1), contains('世界状态本轮未更新'));
+    expect(restarted.provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
 
     // 提示就挂在库里那一代上（不是本地副本），没有关闭动作能把它清掉。
     final chain = await stack.repos.rounds.loadChain('b1');
     final round = chain.rounds.singleWhere((r) => r.roundIndex == 1);
-    expect(round.message, contains('世界状态本轮未更新'));
+    expect(round.message, contains('记忆总结本轮未更新'));
     expect(round.messageStatus, 'warning');
     expect(env.cloud.triggers, 1, reason: '提示没有关闭动作，不会再产生额外同步');
   });
@@ -143,15 +145,16 @@ void main() {
   });
 
   test('失败提示 = 失败原因 + 本轮过程警告，合并进同一条 message', () async {
-    // 首次请求：AGENT 只回工具调用 → 整轮无正文 → 判失败（并带上「状态改动已作废」）。
+    // 首次请求：AGENT 只回历史工具调用（不产出正文）→ 整轮无正文 → 判失败
+    //（并带上「状态改动已作废」）。
     var failFirst = true;
     final env = build(
       ai: AiService(
         client: MockClient((request) async {
           if (!failFirst) return sse(unappliedSse(1));
           return sse([
-            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editWorldState"}}',
-            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 地点：荒原\\"}]}"}',
+            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"narrchat_editHistory"}}',
+            'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"edits\\":[{\\"op\\":\\"append\\",\\"newLine\\":\\"- 1 | 第一天 午时 | 只调了工具\\"}]}"}',
             'data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}',
             '',
           ]);
@@ -256,18 +259,18 @@ void main() {
         roundIndex: 1,
         userInput: '第一轮',
         aiNarrative: '正文',
-        message: '世界状态本轮未更新',
+        message: '记忆总结本轮未更新',
         messageStatus: 'warning',
       );
       await provider.loadRounds(kHarnessBookUuid);
     });
     await settle(tester);
 
-    expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
+    expect(find.textContaining('记忆总结本轮未更新'), findsOneWidget);
     // 提示常驻：旧版的「关闭提示」按钮已取消，重绘后它仍在。
     expect(find.byKey(const ValueKey('dismiss_round_warning')), findsNothing);
     await settle(tester);
-    expect(find.textContaining('世界状态本轮未更新'), findsOneWidget);
+    expect(find.textContaining('记忆总结本轮未更新'), findsOneWidget);
     expect(provider.roundWarningsFor(1), isNotEmpty);
   });
 

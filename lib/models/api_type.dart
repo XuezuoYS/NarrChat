@@ -105,9 +105,9 @@ class ApiType {
   /// - 联网搜索：追加 tools。
   ///
   /// 协议只决定请求体 / 线路格式（Chat Completions 通道）；Agent 档位
-  /// （Lv.1 / Lv.2 两阶段生成与自定义工具）由「设置 → 通用设置 → 实验性功能」
+  /// （Lv.1 分阶段生成与自定义工具）由「设置 → 通用设置 → 实验性功能」
   /// 中独立的「Agent 模式」下拉控制（默认关闭），与协议选择正交——本协议同样支持
-  /// 在其上运行 Agent 两阶段（帧以 tool_calls / tool 消息形态传输）。
+  /// 在其上运行 Agent 分阶段流程（帧以 tool_calls / tool 消息形态传输）。
   static const ApiType openAiCompatible = ApiType(
     id: openAiCompatibleId,
     displayName: 'OpenAI Chat API 兼容',
@@ -157,7 +157,7 @@ class ApiType {
   /// - 联网搜索：tools（function 类型，顶层 name 形态）。
   ///
   /// 协议只决定请求体 / 线路格式（POST /responses），**不自动启用 Agent**；
-  /// Agent 档位（Lv.1 / Lv.2 分阶段生成 + 自定义工具 + 状态工作副本）由
+  /// Agent 档位（Lv.1 分阶段生成 + 自定义工具 + 状态工作副本）由
   /// 「设置 → 通用设置 → 实验性功能」中独立的「Agent 模式」下拉控制（默认关闭），
   /// 与协议选择正交。
   static const ApiType openAiResponses = ApiType(

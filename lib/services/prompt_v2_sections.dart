@@ -15,7 +15,6 @@
 ///   不许跳）。
 library;
 
-import '../models/agent_mode_level.dart';
 import '../utils/memory_entry_format.dart';
 import 'agent/state/state_tool_names.dart';
 import 'memory_merge_planner.dart';
@@ -85,21 +84,8 @@ class PromptV2Sections {
       '**本轮主人的要求 > 文笔参考范文 > 文笔要求 > 其他**；'
       '历史里 assistant 的文笔文风不作依据，符合格式且剧情与状态保持连贯即可。';
 
-  /// 本轮区块契约行（按模式给实际区块清单）。
-  static String sectionArrow(PromptMode mode) {
-    final sections = mode == PromptMode.agentLv1
-        ? [
-            for (final s in sectionOrder)
-              if (s != memorySection) s,
-          ]
-        : mode == PromptMode.agentLv2
-            ? const ['剧情演绎', '推荐行动', '当前时间']
-            : sectionOrder;
-    return [for (final s in sections) '`## $s`'].join(' → ');
-  }
-
   // ---------------------------------------------------------------------------
-  // 共用部分（三模式逐字一致，只进 system）
+  // 共用部分（Chat / Agent Lv.1 逐字一致，只进 system）
   // ---------------------------------------------------------------------------
 
   static const List<String> sharedContractLines = [
@@ -120,7 +106,7 @@ class PromptV2Sections {
         '谁也不许删；新登场的角色按类别格式补全；类别格式之外的额外条目同样保留。',
   ];
 
-  /// 【记忆条目格式】块（含格式优先行；三模式共用）。
+  /// 【记忆条目格式】块（含格式优先行；Chat / Agent 共用）。
   static List<String> memoryFormatLines() => [
         '【记忆条目格式】单轮一条：`$kMemoryEntryFormat`；'
             '若干连续轮次合并成一条：`$kMemoryMergedEntryFormat`。',
@@ -205,28 +191,6 @@ class PromptV2Sections {
                 '`## 记忆总结`（它只以工具结果的形式出现），也不许复述历史、'
                 '工具结果或本指令。',
           ],
-        PromptMode.agentLv2 => const [
-            '这是 Agent 模式：正文回合只管写正文，状态交给工具维护。',
-            '',
-            '- 正文只输出 3 个二级标题，顺序固定：`## 剧情演绎` → `## 推荐行动` → '
-                '`## 当前时间`（剧情结束后的剧情内时间，沿用历史格式随时间推进，'
-                '时间没走就写原值）。',
-            '- **禁止**输出 `## 世界状态` / `## 角色状态` / `## 记忆总结`——'
-                '这三栏只会以你调用 `$kReadWorldStateToolName` / '
-                '`$kReadCharacterStateToolName` / `$kReadHistoryToolName` 拿到的'
-                '工具结果出现。那是给你看的阅读材料，绝不是可以照抄的格式。',
-            '- 动笔前把三栏各**读一次**（正文要接着上一轮的状态写）。你写正文时状态'
-                '不会变（只有你自己的编辑会改它），所以随后的维护回合直接复用这次读到'
-                '的东西，**不再重复读取**。',
-            '- 本回合**不许**调用编辑器（`$kEditWorldStateToolName` / '
-                '`$kEditCharacterStateToolName` / `$kEditHistoryToolName`）：'
-                '世界 / 角色 / 记忆的修改都留给随后的维护回合。'
-                '别为了调工具牺牲正文质量。',
-            '- 每轮必须用 `$kEditHistoryToolName` 补**恰好一条**本轮记忆条目'
-                '（`op=append`，时间用本轮正文 `## 当前时间` 的取值）。'
-                '时间只存在于正文里，**没有时间工具**。',
-            '- 状态怎么改、锚点怎么锚，见【状态工具契约】。',
-          ],
       };
 
   /// 【状态工具契约】块（仅 Agent 档位；模型面向，不含档位说明）。
@@ -271,11 +235,6 @@ class PromptV2Sections {
             '这一步不要输出文本），然后才写正文 5 个区块（`## 剧情演绎` → '
             '`## 推荐行动` → `## 当前时间` → `## 世界状态` → `## 角色状态`）。'
             '别输出 `## 记忆总结`，别复述历史与工具结果，也别复述本指令。',
-        PromptMode.agentLv2 => '现在开始：先把三栏各读一次'
-            '（`$kReadWorldStateToolName` / `$kReadCharacterStateToolName` / '
-            '`$kReadHistoryToolName`），再写正文 3 个小节：`## 剧情演绎` → '
-            '`## 推荐行动` → `## 当前时间`。不要输出任何状态区块、不要复述工具结果；'
-            '世界 / 角色 / 记忆的修改都在随后的维护回合完成。',
       };
 
   // ---------------------------------------------------------------------------
@@ -321,7 +280,7 @@ class PromptV2Sections {
   // Agent 阶段帧指令（v2 中文文案）
   // ---------------------------------------------------------------------------
 
-  /// 调研回合（仅 Lv.1）：只读史 + 按需联网；不写大纲 / 记忆 / 正文，文本通道零输出。
+  /// 调研回合：只读史 + 按需联网；不写大纲 / 记忆 / 正文，文本通道零输出。
   static const String stagePrepare = '【调研回合】本回合只做调研：不写大纲、'
       '不写记忆、不写正文。先调用 `$kReadHistoryToolName` **一次**'
       '（以往轮次的记忆只有这一个来源），需要现实资料就联网搜索 / 打开页面'
@@ -330,7 +289,7 @@ class PromptV2Sections {
       '本阶段的文本不会被采纳。读完历史、调研够了就停止调用工具，'
       '随后进入记忆回合：在那里推演剧情并落本轮记忆条目。';
 
-  /// 记忆回合（仅 Lv.1）的正解文案；[lead] 为阶段说明行。
+  /// 记忆回合的正解文案；[lead] 为阶段说明行。
   static String stageMemoryBody() => '【记忆回合】本回合把两件事**一次做完**：'
       '先在**思考通道**推演本轮剧情、定下大纲（关键事件、出场角色、本轮**结束**时'
       '的剧情内时间，时间格式沿用历史），再在同一回合用 `$kEditHistoryToolName` '
@@ -353,14 +312,14 @@ class PromptV2Sections {
       '（文本不会被采纳）。本回合只调 `$kEditHistoryToolName` 把本轮条目补上：'
       '不要复述大纲、不要输出正文。';
 
-  /// 正文回合（仅 Lv.1 需要；Lv.2 的正文契约在 system 里）。
+  /// 正文回合（唯一上屏阶段）。
   static const String stageStory = '【正文回合】历史与本轮记忆条目都已就位，'
       '现在按你**上一回合在思考通道定下的大纲**、本轮输入和本书设定 / 文笔参考'
       '写正文：只输出 5 个二级标题（`## 剧情演绎` → `## 推荐行动` → '
       '`## 当前时间` → `## 世界状态` → `## 角色状态`），`## 当前时间` 用大纲里'
       '本轮结束时的剧情内时间。别输出 `## 记忆总结`，别复述历史、工具结果与本指令。';
 
-  /// 维护回合指令头（Lv.1 只补历史；Lv.2 逐栏目编辑）。
+  /// 维护回合指令头（当前唯一 Agent 档位只补历史）。
   static const String stateHeadLv1 = '[State-maintenance turn] 正文已经写完了，'
       '可历史栏里还没有本轮那一条。本回合不输出任何文本，只调工具：'
       '读取器 `$kReadHistoryToolName` 已禁用（它的 `<memorySummary>` 结果就在上面，'
@@ -368,14 +327,8 @@ class PromptV2Sections {
       '时间用你大纲里本轮结束时的剧情内时间；历史栏不接受 `op=noChange`。'
       '世界状态与角色状态在正文里、已经写完，**不要**再动。';
 
-  static const String stateHeadLv2 = '[State-maintenance turn] 正文已在上方完成。'
-      '本回合不产出任何文本，只调工具：读取器已禁用——正文回合读到的结果就在上面，'
-      '别再读；按下面的清单逐个栏目调用对应的编辑器，`before` 锚点从那些结果'
-      '（或编辑器失败时回传的栏目全文）里逐字复制。**第一个响应就把清单全部做完**；'
-      '装不下就先做历史（记忆）与角色状态，世界状态留到下一帧。'
-      '能用真实编辑就别用 `noChange`：正文里动过的那一行，就是一条 `op=set`。';
-
-  /// 修复回合指令头（两档共用）。
+  /// 维护回合的修复帧指令头（当前档位清单里只会出现历史；「优先历史与角色状态」
+  /// 是保留的通用措辞，文案保持 Lv.1 原有口径不变）。
   static const String stateHeadFix = '[State-maintenance turn] 只修复下面列出的各项，'
       '只调工具、不要输出文本。读取器已禁用：锚点从对话里已有的结果块与失败回传的'
       '栏目全文中复制，实在定位不到才用 `op=reset` 整栏重写。'
@@ -404,6 +357,9 @@ class PromptV2Sections {
   static const int maxStateProblems = 8;
 
   /// 清单项优先级（数值越小越靠前）：记忆 > 角色 > 世界 > 其他。
+  ///
+  /// 世界 / 角色的两档优先级**保留为框架**：当前档位只注册历史栏目，清单里
+  /// 实际只会出现记忆与工具失败说明（后者归「其他」）。
   static int problemPriority(String line) {
     if (line.contains('memorySummary')) return 0;
     if (line.contains('characterState')) return 1;
@@ -411,12 +367,7 @@ class PromptV2Sections {
     return 3;
   }
 
-  /// 维护帧指令头（按档位与主 / 修复帧选择）。
-  static String stateHead({
-    required AgentModeLevel level,
-    required bool first,
-  }) {
-    if (!first) return stateHeadFix;
-    return level == AgentModeLevel.lv1 ? stateHeadLv1 : stateHeadLv2;
-  }
+  /// 维护帧指令头（首帧 / 修复帧）。
+  static String stateHead({required bool first}) =>
+      first ? stateHeadLv1 : stateHeadFix;
 }

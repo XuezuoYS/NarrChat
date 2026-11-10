@@ -14,6 +14,10 @@ import 'state/agent_state_working_copy.dart';
 /// - [bannedStoryHeadings]：正文回合**禁止**出现的状态类二级标题
 ///   （= 工具维护的栏目，避免正文与工具双写）；
 /// - [historyShape]：历史轮次 assistant 消息的拼合形态。
+///
+/// 历史上的完整 Agent（Lv.2：世界 / 角色 / 历史六工具 + 正文三小节）**已移除**；
+/// 六工具实现与多栏目缺口框架仍留在 `state/` 下作为后续档位的基础设施，但当前
+/// 没有任何档位把世界 / 角色栏目放进 [toolSections]。
 class AgentModeProfile {
   const AgentModeProfile._({
     required this.level,
@@ -26,7 +30,6 @@ class AgentModeProfile {
   static AgentModeProfile of(AgentModeLevel level) => switch (level) {
         AgentModeLevel.off => off,
         AgentModeLevel.lv1 => lv1,
-        AgentModeLevel.lv2 => lv2,
       };
 
   /// 关闭：传统 Chat 流程（无工具、6 区块正文与历史形态）。
@@ -45,18 +48,8 @@ class AgentModeProfile {
     historyShape: AssistantHistoryShape.chatWithoutMemory,
   );
 
-  /// Lv.2：六个状态工具 + 联网；正文 3 小节，状态三栏全部由工具维护。
-  static const AgentModeProfile lv2 = AgentModeProfile._(
-    level: AgentModeLevel.lv2,
-    promptMode: PromptMode.agentLv2,
-    toolSections: <AgentStateSection>[
-      AgentStateSection.worldState,
-      AgentStateSection.characterState,
-      AgentStateSection.memorySummary,
-    ],
-    historyShape: AssistantHistoryShape.agentStoryOnly,
-  );
-
+  /// 完整 Agent（Lv.2）的「六工具 + 正文三小节」档案随该档位一起移除；六工具
+  /// 实现与多栏目缺口框架保留在 `state/` 下，当前没有档位注册它们。
   final AgentModeLevel level;
 
   /// 本轮提示词的生成模式（[PromptMode]，分派到 v2 文本契约）。
@@ -68,7 +61,7 @@ class AgentModeProfile {
   /// 历史轮次 assistant 消息的拼合形态。
   final AssistantHistoryShape historyShape;
 
-  /// 是否 Agent 流程（Lv.1 / Lv.2）。
+  /// 是否 Agent 流程（当前仅 Lv.1；Lv.2 已移除）。
   bool get isOn => level.isOn;
 
   /// 正文回合禁止输出的状态类二级标题（= 工具维护的栏目）。
