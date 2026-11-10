@@ -7,17 +7,24 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 
+import '../database/library_store.dart';
+import '../database/sync_store.dart';
 import '../models/app_notice.dart';
 import '../services/app_repositories.dart';
 import '../services/cloud_backup/backup_book_purge.dart';
 import '../services/cloud_backup/backup_catalog.dart';
 import '../services/cloud_backup/backup_image_plane.dart';
+import '../services/cloud_backup/backup_library_merge.dart';
+import '../services/cloud_backup/backup_manifest.dart';
+import '../services/cloud_backup/backup_pk.dart';
 import '../services/cloud_backup/backup_planner.dart';
+import '../services/cloud_backup/backup_preview.dart';
 import '../services/cloud_backup/backup_remote.dart';
 import '../services/cloud_backup/backup_runner.dart';
 import '../services/cloud_backup/backup_unit.dart';
 import '../services/local_config_service.dart';
 import '../services/sync/img_tombstones.dart';
+import '../services/sync/sync_conflict.dart';
 import '../services/sync/sync_models.dart';
 import '../services/webdav_service.dart';
 import '../utils/timestamp_format.dart';
@@ -54,10 +61,12 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     BackupRemote Function()? backupRemoteFactory,
     WebDavService Function()? webDavFactory,
     SyncTombstoneStore? tombstoneStore,
+    BackupPreviewReader Function()? previewFactory,
   }) : _injectedRepositories = repositories,
        _remoteFactory = backupRemoteFactory,
        _davFactory = webDavFactory,
-       _injectedTombstoneStore = tombstoneStore {
+       _injectedTombstoneStore = tombstoneStore,
+       _previewReaderFactory = previewFactory {
     _now = DateTime.now;
   }
 
@@ -65,6 +74,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   final BackupRemote Function()? _remoteFactory;
   final WebDavService Function()? _davFactory;
   final SyncTombstoneStore? _injectedTombstoneStore;
+  final BackupPreviewReader Function()? _previewReaderFactory;
 
   /// 懒取：裸构造（未注入、且全局未初始化）时只有真正用到才会抛，
   /// 不影响 `CloudSyncProvider()` 本身在测试里被创建。
@@ -149,14 +159,39 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 数据面还原完成后由外层注册（刷新首页 / 重开书）。
   Future<void> Function()? onDataRestored;
 
-  /// 冲突裁决器：由面板注入（后台同步没有它就把冲突留待用户处理）。
-  Future<BackupConflictChoice> Function(BackupPlan plan)? conflictResolver;
+  /// 同步中弹出「暂停同步 / 采用云端 / 冲突决策」三选一对话框。
+  ///
+  /// 由 `main.dart` 注入真实对话框（测试注入替身）；为 null 时不弹，冲突攒到
+  /// 本轮结束后交给冲突决策页。
+  Future<SyncConflictPromptResult> Function(List<SyncConflict> pending)?
+  conflictPrompt;
 
-  /// 本次同步里没被裁决的冲突（面板用来列出来让用户逐个处理）。
-  List<BackupPlan> _unresolvedConflicts = const [];
+  /// 需要用户介入时自动打开冲突决策页（由 `main.dart` 推路由）。
+  Future<void> Function()? onConflictsDetected;
 
-  List<BackupPlan> get unresolvedConflicts =>
-      List.unmodifiable(_unresolvedConflicts);
+  /// 当前等待用户裁决的冲突（冲突决策页 / 云同步面板 / 首页状态章共用）。
+  List<SyncConflict> _conflicts = const [];
+
+  List<SyncConflict> get conflicts => List.unmodifiable(_conflicts);
+
+  bool get hasConflicts => _conflicts.isNotEmpty;
+
+  int get conflictCount => _conflicts.length;
+
+  // 本轮数据面同步的临时状态（每次开始重置）。
+  bool _runAdoptRemote = false;
+  bool _runPrompted = false;
+  List<SyncConflict> _runPending = const [];
+  int _runAutoLocal = 0;
+  int _runAutoRemote = 0;
+  bool _runLibraryMerged = false;
+  _LibraryMergeRequest? _pendingLibraryMerge;
+  List<LibraryBookRow> _runLibraryRows = const [];
+  bool _runLibraryRowsLoaded = false;
+  Map<String, String> _runBookTitles = const {};
+  bool _autoOpenConflicts = false;
+  String _lastConflictSignature = '';
+  bool _openingConflicts = false;
 
   /// 串行唤醒的导航器（提示 / 弹窗用）。
   static GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -319,6 +354,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       _manualWaiters.clear();
       notifyListeners();
+      // 冲突要等这一轮彻底结束再开页（页面里的应用决策会再碰文件，不能并行）。
+      _notifyConflictsDetected();
     }
   }
 
@@ -329,6 +366,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       phase: SyncPhase.pullManifest,
       label: '准备备份',
     );
+    _beginConflictRun();
     notifyListeners();
 
     try {
@@ -337,6 +375,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 修剪份数以云端 sync_config.json 为唯一权威：冷启动的自动同步若直接用
       // 内存默认值，会把用户要求的更早快照误删（R2 同款保证）。
       final keepVersions = await _readKeepVersionsForSync(remote);
+      // 书展示名与书架行快照都取这一次（冲突卡片与自动合并共用）。
+      await _loadRunLibraryRows();
       final runner = BackupRunner(
         remote: remote,
         locator: BackupLocator(userDataDir: stores.paths.userDataDir),
@@ -359,15 +399,6 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
               if (row.isDeleted) row.bookUuid,
           ],
           purgeLocalBook: (bookUuid) => _repos.books.purgeBookData(bookUuid),
-          updatedAtOf: (unit) async {
-            if (!unit.isBook) return null;
-            try {
-              final db = await stores.books.open(unit.refUuid);
-              return (await db.meta.read()).updatedAt;
-            } catch (_) {
-              return null;
-            }
-          },
           imagesOf: (unit) async {
             if (!unit.isBook) return const [];
             try {
@@ -378,12 +409,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
             }
           },
           beforeReplace: _closeForReplace,
-          afterReplace: (_) async {},
+          afterReplace: _afterUnitReplaced,
+          afterStructuralUnits: _afterStructuralUnits,
         ),
-        resolver: conflictResolver,
+        resolver: _resolveDuringRun,
       );
 
-      _unresolvedConflicts = report.unresolved;
+      _conflicts = List.of(_runPending);
       _dataProgress = null;
 
       if (report.fatalError != null) {
@@ -407,13 +439,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (report.pulled > 0) {
         await onDataRestored?.call();
       }
-      if (report.unresolved.isNotEmpty) {
-        showSyncResult(
-          '有 ${report.unresolved.length} 项云端与本地都改过，请打开云备份设置逐项选择',
-          NoticeKind.warning,
-        );
-      }
-      return failures == 0 && !report.hasConflicts;
+      _finishConflictRun();
+      return failures == 0 && _conflicts.isEmpty;
     } catch (error) {
       _dataState = SyncState.error;
       _dataError = error.toString();
@@ -423,6 +450,307 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     }
   }
+
+  // --- 冲突：自动 PK / 三选一提示 / 书架自动合并 -------------------------------
+
+  /// 每一轮数据面开始前清空本轮临时状态。
+  void _beginConflictRun() {
+    _runAdoptRemote = false;
+    _runPrompted = false;
+    _runPending = const [];
+    _runAutoLocal = 0;
+    _runAutoRemote = 0;
+    _runLibraryMerged = false;
+    _pendingLibraryMerge = null;
+    _runLibraryRows = const [];
+    _runLibraryRowsLoaded = false;
+    _runBookTitles = _bookTitlesCache;
+    _autoOpenConflicts = false;
+  }
+
+  /// 取一次书架行（含墓碑）与「书 uuid → 书名」，供冲突卡片与自动合并共用。
+  Future<void> _loadRunLibraryRows() async {
+    try {
+      final rows = await _repos.stores.library.books(includeDeleted: true);
+      _runLibraryRows = rows;
+      _runLibraryRowsLoaded = true;
+      final titles = <String, String>{};
+      for (final row in rows) {
+        if (row.title.trim().isNotEmpty) titles[row.bookUuid] = row.title;
+      }
+      _runBookTitles = titles;
+    } catch (_) {
+      _runLibraryRows = const [];
+      _runLibraryRowsLoaded = false;
+    }
+  }
+
+  /// 跑同步时遇到 `BackupAction.conflict` 的裁决入口。
+  ///
+  /// 顺序：整轮「采用云端」→ 书架自动合并 → 书籍 / Mod 的 PK → 弹dialog问用户。
+  Future<BackupConflictChoice> _resolveDuringRun(BackupPlan plan) async {
+    if (_runAdoptRemote) {
+      _runAutoRemote++;
+      return BackupConflictChoice.remote;
+    }
+    if (plan.unit.kind == BackupUnitKind.library) {
+      final remote = plan.remote;
+      // 拿不到本地书架行就不敢按行合并（否则会把本地独有的书当成"云端新增"）：
+      // 降级成人工二选一更安全。
+      if (remote != null &&
+          !BackupPk.digestVersionMismatch(remote) &&
+          _runLibraryRowsLoaded) {
+        _pendingLibraryMerge = _LibraryMergeRequest(
+          conflict: _buildConflict(plan),
+          remote: remote,
+          localRows: _runLibraryRows,
+        );
+        // 书架不做二选一：先按行合并，墓碑整理与书单元发现都读合并后的目录。
+        return BackupConflictChoice.skip;
+      }
+      return _escalate(_buildConflict(plan));
+    }
+
+    final conflict = _buildConflict(plan);
+    if (conflict.pk.unanimous) {
+      if (conflict.pk.winner == SyncPkOutcome.remote) {
+        _runAutoRemote++;
+        return BackupConflictChoice.remote;
+      }
+      _runAutoLocal++;
+      return BackupConflictChoice.local;
+    }
+    return _escalate(conflict);
+  }
+
+  /// 记下待定冲突；本轮第一次需要用户介入时弹三选一对话框。
+  Future<BackupConflictChoice> _escalate(SyncConflict conflict) async {
+    _runPending = [..._runPending, conflict];
+    final prompt = conflictPrompt;
+    if (prompt == null || _runPrompted) return BackupConflictChoice.skip;
+    _runPrompted = true;
+    var result = SyncConflictPromptResult.decide;
+    try {
+      result = await prompt(List.unmodifiable(_runPending));
+    } catch (_) {
+      result = SyncConflictPromptResult.decide;
+    }
+    if (_cancelRequested) return BackupConflictChoice.skip;
+    switch (result) {
+      case SyncConflictPromptResult.adoptRemote:
+        _runAdoptRemote = true;
+        _runPending = [
+          for (final item in _runPending)
+            if (item.unit != conflict.unit) item,
+        ];
+        _runAutoRemote++;
+        return BackupConflictChoice.remote;
+      case SyncConflictPromptResult.pause:
+        _cancelRequested = true;
+        unawaited(setSyncMode(SyncMode.manual));
+        showSyncResult('已暂停自动同步：可在「设置 → 云同步」改回全自动', NoticeKind.info);
+        return BackupConflictChoice.skip;
+      case SyncConflictPromptResult.decide:
+        return BackupConflictChoice.skip;
+    }
+  }
+
+  SyncConflict _buildConflict(BackupPlan plan) {
+    final title = switch (plan.unit.kind) {
+      BackupUnitKind.book =>
+        '书籍《${_runBookTitles[plan.unit.refUuid] ?? _shortUuid(plan.unit.refUuid)}》',
+      BackupUnitKind.mods => 'Mod 库',
+      BackupUnitKind.library => '书架（Library 库）',
+    };
+    return SyncConflict(
+      unit: plan.unit,
+      plan: plan,
+      pk: _pkOf(plan),
+      title: title,
+    );
+  }
+
+  SyncPkResult _pkOf(BackupPlan plan) {
+    if (BackupPk.digestVersionMismatch(plan.remote)) {
+      return BackupPk.digestVersionConflict();
+    }
+    return switch (plan.unit.kind) {
+      BackupUnitKind.book => BackupPk.decideBook(
+        local: plan.localMetrics,
+        remote: plan.remote,
+      ),
+      BackupUnitKind.mods => BackupPk.decideMods(
+        local: plan.localMetrics,
+        remote: plan.remote,
+      ),
+      BackupUnitKind.library => const SyncPkResult.unavailable(
+        '书架不做逐项 PK：本地与云端都改过时按行自动合并，合并不了才需要你选择。',
+      ),
+    };
+  }
+
+  /// 书架 / Mod 处理完、墓碑整理与书单元发现之前调用：把书架冲突按行合并。
+  Future<void> _afterStructuralUnits(BackupRemote remote) async {
+    final request = _pendingLibraryMerge;
+    if (request == null || _cancelRequested) return;
+    _pendingLibraryMerge = null;
+    try {
+      final result = await _mergeLibrary(remote, request);
+      if (result.hasChanges) {
+        _runLibraryMerged = true;
+        // 合并结果还没推到云端：本轮结束后补跑一轮（那时必然是 push）。
+        _pendingData = true;
+      }
+    } catch (error) {
+      _runPending = [
+        ..._runPending,
+        request.conflict.withNote('书架自动合并失败：$error'),
+      ];
+    }
+  }
+
+  Future<LibraryMergeResult> _mergeLibrary(
+    BackupRemote remote,
+    _LibraryMergeRequest request,
+  ) async {
+    final stores = _repos.stores;
+    final manifest = request.remote;
+    final snapshot = await LibraryMerger.readRemoteSnapshot(
+      remote,
+      manifest.snapshotName,
+    );
+    final localMaster = await stores.library.masterUuid();
+    if (localMaster.trim().isNotEmpty &&
+        snapshot.masterUuid.trim().isNotEmpty &&
+        localMaster != snapshot.masterUuid) {
+      throw const LibraryMergeException('两侧书架的全局身份不一致，不能自动合并');
+    }
+
+    final localByUuid = {
+      for (final row in request.localRows) row.bookUuid: row,
+    };
+    final remoteByUuid = {for (final row in snapshot.rows) row.bookUuid: row};
+    // 只给「一侧活一侧墓碑」的行查内容时间（尽量少打网络）。
+    final localContent = <String, DateTime?>{};
+    final remoteContent = <String, DateTime?>{};
+    for (final uuid in {...localByUuid.keys, ...remoteByUuid.keys}) {
+      final local = localByUuid[uuid];
+      final remoteRow = remoteByUuid[uuid];
+      if (local == null || remoteRow == null) continue;
+      if (local.isDeleted == remoteRow.isDeleted) continue;
+      if (local.isDeleted) {
+        remoteContent[uuid] = await _remoteBookContentAt(remote, uuid);
+      } else {
+        localContent[uuid] = await _localBookContentAt(uuid);
+      }
+    }
+
+    final result = LibraryMerger.merge(
+      LibraryMergeInputs(
+        localRows: request.localRows,
+        remoteRows: snapshot.rows,
+        localBookContentAt: localContent,
+        remoteBookContentAt: remoteContent,
+      ),
+    );
+    for (final row in result.changedRows) {
+      await stores.library.putBook(row);
+    }
+    await _repos.books.purgeTombstonedBooks();
+    // 基线改成云端这一代：本地内容与它不同 → 下一轮按「本地有改动」推送。
+    await stores.sync.putUnit(
+      SyncUnitRow(
+        unitKey: BackupUnit.library.unitKey,
+        kind: BackupUnitKind.library.name,
+        generation: manifest.generation,
+        remoteDigest: manifest.digest,
+        baseDigest: manifest.digest,
+        lastSyncedAt: DateTime.now().toUtc(),
+      ),
+    );
+    return result;
+  }
+
+  Future<DateTime?> _localBookContentAt(String bookUuid) async {
+    try {
+      if (!await _repos.stores.books.exists(bookUuid)) return null;
+      final db = await _repos.stores.books.open(bookUuid);
+      return (await db.meta.read()).updatedAt;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<DateTime?> _remoteBookContentAt(
+    BackupRemote remote,
+    String bookUuid,
+  ) async {
+    try {
+      final bytes = await remote.read(BackupUnit.book(bookUuid).manifestName);
+      return parseTimestamp(BackupManifest.decode(bytes).contentUpdatedAt);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 一轮数据面结束：发汇总提示，并标记是否要自动开冲突决策页。
+  void _finishConflictRun() {
+    final auto = _runAutoLocal + _runAutoRemote;
+    if (_conflicts.isEmpty) {
+      // 冲突清空了：下次再出现同样的冲突要能重新自动开页。
+      _lastConflictSignature = '';
+      if (auto > 0 || _runLibraryMerged) {
+        final parts = <String>[
+          if (_runAutoRemote > 0) '采用云端 $_runAutoRemote 项',
+          if (_runAutoLocal > 0) '保留本地 $_runAutoLocal 项',
+          if (_runLibraryMerged) '书架已自动合并',
+        ];
+        showSyncResult('自动处理冲突：${parts.join('，')}', NoticeKind.success);
+      }
+      return;
+    }
+    _autoOpenConflicts = true;
+    showSyncResult(
+      '有 ${_conflicts.length} 项冲突需要你选择，可在「冲突决策」里处理',
+      NoticeKind.warning,
+    );
+  }
+
+  /// 冲突有新增时自动打开决策页（同一批冲突只自动打开一次）。
+  void _notifyConflictsDetected() {
+    if (!_autoOpenConflicts || _conflicts.isEmpty) return;
+    _autoOpenConflicts = false;
+    final hook = onConflictsDetected;
+    if (hook == null || _openingConflicts) return;
+    final signature = _conflictSignatureOf(_conflicts);
+    if (signature == _lastConflictSignature) return;
+    _lastConflictSignature = signature;
+    _openingConflicts = true;
+    unawaited(
+      Future<void>.microtask(() async {
+        try {
+          await hook();
+        } catch (_) {
+          // 打不开页面不影响同步结果；入口仍在云同步面板与首页状态章。
+        } finally {
+          _openingConflicts = false;
+        }
+      }),
+    );
+  }
+
+  static String _conflictSignatureOf(List<SyncConflict> conflicts) {
+    final keys = [
+      for (final conflict in conflicts)
+        '${conflict.unit.unitKey}|'
+            '${conflict.plan.remote?.snapshotName ?? ''}|'
+            '${conflict.plan.localDigest}',
+    ]..sort();
+    return keys.join(',');
+  }
+
+  static String _shortUuid(String uuid) =>
+      uuid.length <= 8 ? uuid : uuid.substring(0, 8);
 
   Future<void> _runImagePlane() async {
     _imageState = SyncState.syncing;
@@ -716,7 +1044,8 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (targetUrl.isEmpty) return '请填写服务器地址';
     try {
       // 生产按表单里的地址 / 账号临时建一个客户端；测试注入内存替身（不碰网络）。
-      final dav = _davFactory?.call() ??
+      final dav =
+          _davFactory?.call() ??
           WebDavService(
             baseUrl: targetUrl,
             username: targetUser,
@@ -875,8 +1204,102 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 把某个单元的冲突裁决应用到本地/云端（面板里逐个处理用）。
-  Future<String?> resolveConflict(
+  // --- 冲突决策 ---------------------------------------------------------------
+
+  /// 把一批冲突决策应用到本地 / 云端（冲突决策页的「应用决策」）。
+  ///
+  /// 逐项处理、互不牵连：某一项失败只记进 [SyncConflictApplyReport.errors]，
+  /// 其余照常执行。处理成功的项立即从 [conflicts] 移除。
+  Future<SyncConflictApplyReport> applyConflictDecisions(
+    List<SyncConflictDecision> decisions,
+  ) async {
+    if (decisions.isEmpty) return const SyncConflictApplyReport();
+    if (_running) {
+      return const SyncConflictApplyReport(
+        errors: {'': '同步正在进行，请等这次同步结束再处理冲突'},
+      );
+    }
+    _opsBusy = true;
+    notifyListeners();
+    var localApplied = 0;
+    var remoteApplied = 0;
+    var skipped = 0;
+    var restored = false;
+    var touchedLibrary = false;
+    final errors = <String, String>{};
+    final resolved = <BackupUnit>{};
+    try {
+      for (final decision in decisions) {
+        final unit = decision.conflict.unit;
+        if (decision.choice == BackupConflictChoice.skip) {
+          // 稍后处理 = 本次不动，冲突继续留着（面板 / 状态章还能看到入口）。
+          skipped++;
+          continue;
+        }
+        final error = await _applyConflictChoice(
+          decision.conflict.plan,
+          decision.choice,
+        );
+        if (error != null) {
+          errors[unit.unitKey] = error;
+          continue;
+        }
+        if (decision.choice == BackupConflictChoice.remote) {
+          remoteApplied++;
+          restored = true;
+        } else {
+          localApplied++;
+        }
+        if (unit.kind == BackupUnitKind.library) touchedLibrary = true;
+        resolved.add(unit);
+      }
+    } finally {
+      if (resolved.isNotEmpty) {
+        _conflicts = [
+          for (final conflict in _conflicts)
+            if (!resolved.contains(conflict.unit)) conflict,
+        ];
+      }
+      _opsBusy = false;
+      notifyListeners();
+    }
+    if (restored) await onDataRestored?.call();
+    // 书架被替换过后还有「云端有、本机没有」的书要补下来：再跑一轮数据面。
+    if (touchedLibrary && autoSyncEnabled) {
+      triggerSync(kind: SyncKind.data, silent: true);
+    }
+    return SyncConflictApplyReport(
+      localApplied: localApplied,
+      remoteApplied: remoteApplied,
+      skipped: skipped,
+      errors: errors,
+      restored: restored,
+    );
+  }
+
+  /// 读取某一侧的预览数据（冲突决策页按需调用，云端一侧会临时下载快照）。
+  Future<SyncSidePreview> loadConflictPreview(
+    SyncConflict conflict,
+    SyncPreviewSide side,
+  ) {
+    return _previewReader().read(conflict, side);
+  }
+
+  BackupPreviewReader _previewReader() {
+    final injected = _previewReaderFactory;
+    if (injected != null) return injected();
+    final stores = _repos.stores;
+    return BackupPreviewReader(
+      remoteFactory: () => _newRemote(_folder),
+      locator: BackupLocator(userDataDir: stores.paths.userDataDir),
+      books: stores.books,
+      mods: stores.mods,
+      library: stores.library,
+    );
+  }
+
+  /// 把某个单元的冲突裁决应用到本地 / 云端。
+  Future<String?> _applyConflictChoice(
     BackupPlan plan,
     BackupConflictChoice choice,
   ) async {
@@ -891,12 +1314,12 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         final bytes = await remote.read(manifest.snapshotName);
         await _closeForReplace(plan.unit);
         final target = File(locator.localPathOf(plan.unit));
+        await target.parent.create(recursive: true);
         final tmp = File('${target.path}.tmp');
         await tmp.writeAsBytes(bytes, flush: true);
         if (await target.exists()) await target.delete();
         await tmp.rename(target.path);
         await _afterUnitReplaced(plan.unit);
-        await onDataRestored?.call();
       } else {
         // 保留本地：直接推一代上去（修剪份数同样以云端配置为准）。
         final keepVersions = await _readKeepVersionsForSync(remote);
@@ -916,15 +1339,17 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           resolver: (_) async => BackupConflictChoice.local,
         );
       }
-      _unresolvedConflicts = [
-        for (final item in _unresolvedConflicts)
-          if (item.unit != plan.unit) item,
-      ];
-      notifyListeners();
       return null;
     } catch (error) {
       return error.toString();
     }
+  }
+
+  /// 直接塞入待处理冲突（测试 / 页面预览用）。
+  @visibleForTesting
+  void debugSetConflicts(List<SyncConflict> value) {
+    _conflicts = List.of(value);
+    notifyListeners();
   }
 
   // --- 删除与回收站 -----------------------------------------------------------
@@ -937,7 +1362,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   void handleBookDeleted(String bookUuid) {
     if (bookUuid.isEmpty) return;
     // 这本书都删了，留着它的冲突裁决没有意义。
-    _dropUnresolvedConflict(BackupUnit.book(bookUuid));
+    _dropConflict(BackupUnit.book(bookUuid));
     if (!isConfigured) return;
     if (autoSyncEnabled) {
       triggerSync(kind: SyncKind.data);
@@ -1023,7 +1448,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
       _bookTitlesCache = {..._bookTitlesCache, uuid: restored.title};
     }
     _rebuildBackupCatalog();
-    _dropUnresolvedConflict(entry.unit);
+    _dropConflict(entry.unit);
     // 清墓碑要随 library 推上去；手动档不主动同步，交给用户点「同步」。
     if (autoSyncEnabled) triggerSync(kind: SyncKind.data);
     notifyListeners();
@@ -1058,7 +1483,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (unitOfSnapshot(file.name) != entry.unit) file,
       ];
       _rebuildBackupCatalog();
-      _dropUnresolvedConflict(entry.unit);
+      _dropConflict(entry.unit);
       notifyListeners();
       return null;
     } finally {
@@ -1067,14 +1492,14 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 移除某个单元未裁决的冲突（书被删/被还原后不再有意义）。
-  void _dropUnresolvedConflict(BackupUnit unit) {
-    final before = _unresolvedConflicts.length;
-    _unresolvedConflicts = [
-      for (final plan in _unresolvedConflicts)
-        if (plan.unit != unit) plan,
+  /// 移除某个单元待处理的冲突（书被删 / 被还原后不再有意义）。
+  void _dropConflict(BackupUnit unit) {
+    final before = _conflicts.length;
+    _conflicts = [
+      for (final conflict in _conflicts)
+        if (conflict.unit != unit) conflict,
     ];
-    if (_unresolvedConflicts.length != before) notifyListeners();
+    if (_conflicts.length != before) notifyListeners();
   }
 
   // --- 内部工具 ---------------------------------------------------------------
@@ -1208,4 +1633,22 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     final stamp = formatTimestamp(DateTime.now());
     return '${unit.unitKey} · $stamp';
   }
+}
+
+/// 一次待执行的书架自动合并（在 `afterStructuralUnits` 钩子里落地）。
+class _LibraryMergeRequest {
+  const _LibraryMergeRequest({
+    required this.conflict,
+    required this.remote,
+    required this.localRows,
+  });
+
+  /// 合并失败时降级用的冲突项（带着云端清单与本地摘要）。
+  final SyncConflict conflict;
+
+  /// 云端这一代书架的清单。
+  final BackupManifest remote;
+
+  /// 冲突发生时的本地书架行（含墓碑）。
+  final List<LibraryBookRow> localRows;
 }

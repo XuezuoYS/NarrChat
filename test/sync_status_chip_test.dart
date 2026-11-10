@@ -6,6 +6,8 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/sync_status_chip.dart';
 import 'package:provider/provider.dart';
 
+import 'helpers/sync_conflict_fixtures.dart';
+
 /// 同步状态章 widget 测试：两平面聚合为单枚指示，文案区分平面。
 void main() {
   Future<CloudSyncProvider> pumpChip(
@@ -54,25 +56,38 @@ void main() {
   });
 
   testWidgets('两平面同时同步：聚合为「同步中…」', (tester) async {
-    await pumpChip(
-      tester,
-      data: SyncState.syncing,
-      images: SyncState.syncing,
-    );
+    await pumpChip(tester, data: SyncState.syncing, images: SyncState.syncing);
     expect(find.text('同步中…'), findsOneWidget);
   });
 
   testWidgets('任一平面失败：优先显示「同步失败」（另一平面成功不遮蔽）', (tester) async {
-    await pumpChip(
-      tester,
-      data: SyncState.error,
-      images: SyncState.success,
-    );
+    await pumpChip(tester, data: SyncState.error, images: SyncState.success);
     expect(find.text('同步失败'), findsOneWidget);
   });
 
   testWidgets('任一平面成功（无同步中/失败）：显示「已同步」', (tester) async {
     await pumpChip(tester, images: SyncState.success);
     expect(find.text('已同步'), findsOneWidget);
+  });
+
+  testWidgets('有冲突待处理：显示「N 项冲突」，优先于已同步', (tester) async {
+    final provider = await pumpChip(tester, data: SyncState.success);
+    provider.debugSetConflicts([
+      buildBookConflict(uuid: 'b1'),
+      buildModsConflict(),
+    ]);
+    await tester.pump();
+
+    expect(find.text('2 项冲突'), findsOneWidget);
+    expect(find.text('已同步'), findsNothing);
+  });
+
+  testWidgets('冲突不遮蔽同步中', (tester) async {
+    final provider = await pumpChip(tester, data: SyncState.syncing);
+    provider.debugSetConflicts([buildBookConflict()]);
+    await tester.pump();
+
+    expect(find.text('数据同步中…'), findsOneWidget);
+    expect(find.textContaining('项冲突'), findsNothing);
   });
 }

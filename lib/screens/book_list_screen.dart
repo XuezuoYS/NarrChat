@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/book.dart';
 import '../models/default_cover_style.dart';
 import '../providers/book_provider.dart';
+import '../providers/cloud_sync_provider.dart';
 import '../providers/notification_settings_provider.dart';
 import '../providers/ui_settings_provider.dart';
 import '../theme/app_theme.dart';
@@ -16,6 +17,7 @@ import '../widgets/book_grid_card.dart';
 import '../widgets/book_list_toolbar.dart';
 import 'home_navigation.dart';
 import 'settings_screen.dart';
+import 'sync_conflict_page.dart';
 
 /// 首页：书籍列表。
 ///
@@ -79,10 +81,17 @@ class _BookListScreenState extends State<BookListScreen> {
           layoutMode: layoutMode,
           onLayoutChanged: (mode) => ui.setHomeLayoutMode(mode),
           bookCount: provider.books.length,
-          onOpenSyncSettings: () => SettingsScreen.open(
-            context,
-            initialIndex: SettingsScreen.pageIndexCloudSync,
-          ),
+          onOpenSyncSettings: () {
+            // 有冲突待处理时，胶囊直接进冲突决策页（比绕去设置再点一次更直接）。
+            if (context.read<CloudSyncProvider>().hasConflicts) {
+              SyncConflictPage.open(context);
+              return;
+            }
+            SettingsScreen.open(
+              context,
+              initialIndex: SettingsScreen.pageIndexCloudSync,
+            );
+          },
           horizontalPadding: horizontal,
         ),
         // 第三行：通知异常提示（安卓通知未开启 / 生成完成渠道被关）。

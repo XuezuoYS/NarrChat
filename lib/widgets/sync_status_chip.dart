@@ -10,12 +10,13 @@ import '../theme/app_theme.dart';
 /// 聚合两平面（数据 / 图片）为单枚指示，文案区分平面：
 /// - 未连接：灰点 + 「未连接」；
 /// - 仅数据平面同步中：「数据同步中…」；仅图片：「图片同步中…」；两者：「同步中…」；
+/// - 有冲突待处理：「N 项冲突」（警告色，点开进冲突决策页）；
 /// - 任一失败：红 + 「同步失败」（可点开看原因）；
 /// - 已同步：绿色 + 「已同步」；
 /// - 空闲：「已连接」。
 ///
-/// 点击交给 [onTap]（通常跳转到云同步设置页）。颜色走 [NarrChatColors] 自适应主题。
-/// 各平面的详细进度看应用级悬浮 HUD（分平面段独立显示）。
+/// 点击交给 [onTap]（有冲突时由调用方打开冲突决策页，否则跳云同步设置）。
+/// 颜色走 [NarrChatColors] 自适应主题；各平面的详细进度看应用级悬浮 HUD。
 class SyncStatusChip extends StatelessWidget {
   final VoidCallback? onTap;
 
@@ -64,8 +65,11 @@ class SyncStatusChip extends StatelessWidget {
     );
   }
 
-  /// 两平面聚合：syncing（文案带平面名）> error > success > idle。
-  static (String, Color) _aggregate(CloudSyncProvider provider, BuildContext context) {
+  /// 两平面聚合：syncing（文案带平面名）> 待处理冲突 > error > success > idle。
+  static (String, Color) _aggregate(
+    CloudSyncProvider provider,
+    BuildContext context,
+  ) {
     final scheme = Theme.of(context).colorScheme;
     final colors = context.narrColors;
     final data = provider.dataSyncState;
@@ -79,6 +83,9 @@ class SyncStatusChip extends StatelessWidget {
           ? '${SyncPlane.data.label}中…'
           : '${SyncPlane.images.label}中…';
       return (label, NarrChatTheme.primary);
+    }
+    if (provider.hasConflicts) {
+      return ('${provider.conflictCount} 项冲突', colors.warning);
     }
     if (data == SyncState.error || images == SyncState.error) {
       return ('同步失败', scheme.error);

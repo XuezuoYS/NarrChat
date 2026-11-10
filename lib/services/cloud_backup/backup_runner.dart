@@ -8,6 +8,7 @@ import 'backup_book_purge.dart';
 import 'backup_digest.dart';
 import 'backup_image_plane.dart';
 import 'backup_manifest.dart';
+import 'backup_metrics.dart';
 import 'backup_planner.dart';
 import 'backup_remote.dart';
 import 'backup_unit.dart';
@@ -28,10 +29,10 @@ class BackupContext {
     required this.bookUuids,
     this.deletedBookUuids,
     this.purgeLocalBook,
-    this.updatedAtOf,
     this.imagesOf,
     this.beforeReplace,
     this.afterReplace,
+    this.afterStructuralUnits,
   });
 
   /// 当前**未删除**的书 uuid（删掉的书不推数据库，只靠 library 墓碑传播）。
@@ -46,9 +47,6 @@ class BackupContext {
   /// 清掉某本书的本机数据（书库 / 缓存行 / 高度 / 图片引用），**不动墓碑**。
   final Future<void> Function(String bookUuid)? purgeLocalBook;
 
-  /// 单元的内容时间（书 = `book_meta.updated_at`），冲突默认裁决用。
-  final Future<DateTime?> Function(BackupUnit unit)? updatedAtOf;
-
   /// 单元引用的图片相对路径（写进清单，还原时顺带拉图）。
   final Future<List<String>> Function(BackupUnit unit)? imagesOf;
 
@@ -57,6 +55,13 @@ class BackupContext {
 
   /// 覆盖完成**之后**调用（上层负责重新打开连接 / 刷新页面）。
   final Future<void> Function(BackupUnit unit)? afterReplace;
+
+  /// library / mods 处理完、墓碑整理与书单元发现**之前**调用。
+  ///
+  /// 上层在这里做「书架按行自动合并」：合并后本机的墓碑清单与书单元才准确，
+  /// 否则会按合并前的旧目录去推书 / 整理云端。参数是**本轮的云端连接**，
+  /// 复用它可以省掉一次握手，也保证读的是同一个云端目录。
+  final Future<void> Function(BackupRemote remote)? afterStructuralUnits;
 }
 
 /// 备份进度（UI 用）。
@@ -184,12 +189,16 @@ class BackupRunner {
       resolver: resolver,
     );
 
-    // 2) 按墓碑整理已删除的书（本机清残留 + 云端只留最新一代），再做书单元
-    // 的发现与推拉。
-    //
-    // 顺序很关键：拉下来的 library 若带着新墓碑，必须在发现书单元**之前**
-    // 整理，否则会把刚删掉的书原地推回云端。
+    // 2) 书架按行合并（见 [BackupContext.afterStructuralUnits]）：必须在墓碑
+    // 整理与书单元发现之前，合并后的目录才决定「哪些书该清、哪些该补下来」。
     if (!aborted && units == null && !_cancelled) {
+      await context.afterStructuralUnits?.call(remote);
+
+      // 3) 按墓碑整理已删除的书（本机清残留 + 云端只留最新一代），再做书单元
+      // 的发现与推拉。
+      //
+      // 顺序很关键：拉下来的 library 若带着新墓碑，必须在发现书单元**之前**
+      // 整理，否则会把刚删掉的书原地推回云端。
       final deleted =
           await context.deletedBookUuids?.call() ?? const <String>[];
       if (deleted.isNotEmpty) {
@@ -350,37 +359,55 @@ class BackupRunner {
     Set<String> names,
     BackupContext context,
   ) async {
+    final base = await _baseOf(unit);
+    final manifest = await _manifestOf(unit, names);
     final localPath = locator.localPathOf(unit);
-    final localFile = File(localPath);
-    if (!await localFile.exists()) {
+    if (!await File(localPath).exists()) {
+      // 本机没有这个库 / 这本书：云端有清单就补下来（换设备后的首轮、或本机
+      // 文件被手动删掉）。云端也没有才算跳过。
+      if (manifest != null) {
+        return BackupPlan(
+          unit: unit,
+          action: BackupAction.pull,
+          base: base,
+          localDigest: '',
+          remote: manifest,
+          reason: '本机还没有这个库，从云端补齐',
+        );
+      }
       return BackupPlan(
         unit: unit,
         action: BackupAction.skipped,
-        base: await _baseOf(unit),
+        base: base,
         localDigest: '',
         reason: '本地文件不存在',
       );
     }
 
-    final localDigest = await _digestOf(unit, localPath);
-    final base = await _baseOf(unit);
-    final manifestName = unit.manifestName;
-    BackupManifest? manifest;
-    if (names.contains(manifestName)) {
-      final bytes = await remote.read(manifestName);
-      manifest = BackupManifest.decode(bytes);
-      if (manifest.unitKey != unit.unitKey) {
-        throw BackupManifestException(
-          '清单与单元不匹配：期望 ${unit.unitKey}，实际 ${manifest.unitKey}',
-        );
-      }
-    }
+    final local = await _localInfoOf(unit, localPath);
     return BackupPlanner.plan(
       unit: unit,
-      localDigest: localDigest,
+      localDigest: local.digest,
+      localMetrics: local.metrics,
       base: base,
       remote: manifest,
     );
+  }
+
+  /// 读云端清单；没有该文件返回 null（清单存在但读不懂照样抛异常）。
+  Future<BackupManifest?> _manifestOf(
+    BackupUnit unit,
+    Set<String> names,
+  ) async {
+    final manifestName = unit.manifestName;
+    if (!names.contains(manifestName)) return null;
+    final manifest = BackupManifest.decode(await remote.read(manifestName));
+    if (manifest.unitKey != unit.unitKey) {
+      throw BackupManifestException(
+        '清单与单元不匹配：期望 ${unit.unitKey}，实际 ${manifest.unitKey}',
+      );
+    }
+    return manifest;
   }
 
   Future<BackupBase> _baseOf(BackupUnit unit) async {
@@ -389,11 +416,18 @@ class BackupRunner {
     return BackupBase(generation: row.generation, baseDigest: row.baseDigest);
   }
 
-  Future<String> _digestOf(BackupUnit unit, String path) async {
+  /// 一次开库同时取「内容摘要」与「内容指标」（PK / 写清单共用，不重复开库）。
+  Future<({String digest, BackupUnitMetrics metrics})> _localInfoOf(
+    BackupUnit unit,
+    String path,
+  ) async {
     return _withFileRetry(() async {
       final db = await _openDatabase(path);
       try {
-        return await BackupDigest.ofUnit(unit, db);
+        return (
+          digest: await BackupDigest.ofUnit(unit, db),
+          metrics: await BackupMetricsReader.read(unit, db),
+        );
       } finally {
         await db.close();
       }
@@ -427,14 +461,16 @@ class BackupRunner {
 
     await remote.write(unit.snapshotName(generation), bytes);
 
-    final updatedAt = await context.updatedAtOf?.call(unit);
+    final metrics = plan.localMetrics;
     final images = await context.imagesOf?.call(unit) ?? const <String>[];
     final manifest = BackupManifest.build(
       unit: unit,
       generation: generation,
       digest: plan.localDigest,
       deviceId: deviceId,
-      contentUpdatedAt: updatedAt,
+      contentUpdatedAt: metrics?.updatedAt,
+      latestRoundIndex: metrics?.latestRoundIndex ?? 0,
+      roundGenerationCount: metrics?.roundGenerationCount ?? 0,
       images: images,
     );
     await remote.write(unit.manifestName, manifest.encode());

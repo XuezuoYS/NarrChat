@@ -1,5 +1,6 @@
 import 'backup_digest.dart';
 import 'backup_manifest.dart';
+import 'backup_metrics.dart';
 import 'backup_unit.dart';
 
 /// 本机记着的"上次成功同步到哪一代、内容摘要是什么"。
@@ -26,7 +27,7 @@ enum BackupAction {
   /// 本地更新：推一代上去。
   push,
 
-  /// 云端更新：拉下来替换本地。
+  /// 云端更新：拉下来替换本地（本机没有这个库/这本书时也走这里，补建文件）。
   pull,
 
   /// 两边都变了：交给用户整本二选一。
@@ -43,6 +44,7 @@ class BackupPlan {
     required this.action,
     required this.base,
     required this.localDigest,
+    this.localMetrics,
     this.remote,
     this.reason = '',
   });
@@ -51,6 +53,12 @@ class BackupPlan {
   final BackupAction action;
   final BackupBase base;
   final String localDigest;
+
+  /// 本地内容指标（代数 / 最新轮次 / 内容时间）：冲突 PK 与写清单共用。
+  ///
+  /// 本地文件不存在时为 null（例如「云端有、本机还没有」的库）。
+  final BackupUnitMetrics? localMetrics;
+
   final BackupManifest? remote;
   final String reason;
 
@@ -77,6 +85,7 @@ class BackupPlanner {
   static BackupPlan plan({
     required BackupUnit unit,
     required String localDigest,
+    BackupUnitMetrics? localMetrics,
     BackupBase base = BackupBase.none,
     BackupManifest? remote,
     String? localMissingReason,
@@ -87,6 +96,7 @@ class BackupPlanner {
         action: BackupAction.skipped,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         remote: remote,
         reason: localMissingReason,
       );
@@ -98,6 +108,7 @@ class BackupPlanner {
         action: BackupAction.push,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         reason: base.generation == 0 ? '首次备份' : '云端清单缺失，重新推送',
       );
     }
@@ -108,6 +119,7 @@ class BackupPlanner {
         action: BackupAction.conflict,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         remote: remote,
         reason: '摘要算法版本不同（云端 ${remote.digestVersion}，本地 $backupDigestVersion）',
       );
@@ -119,6 +131,7 @@ class BackupPlanner {
         action: BackupAction.upToDate,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         remote: remote,
         reason: '内容一致',
       );
@@ -134,6 +147,7 @@ class BackupPlanner {
           action: BackupAction.pull,
           base: base,
           localDigest: localDigest,
+          localMetrics: localMetrics,
           remote: remote,
           reason: '云端更新到第 ${remote.generation} 代',
         );
@@ -143,6 +157,7 @@ class BackupPlanner {
         action: BackupAction.conflict,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         remote: remote,
         reason: '本地与云端都改过',
       );
@@ -156,6 +171,7 @@ class BackupPlanner {
         action: BackupAction.pull,
         base: base,
         localDigest: localDigest,
+        localMetrics: localMetrics,
         remote: remote,
         reason: '云端内容被替换，跟随云端',
       );
@@ -165,6 +181,7 @@ class BackupPlanner {
       action: BackupAction.push,
       base: base,
       localDigest: localDigest,
+      localMetrics: localMetrics,
       remote: remote,
       reason: '本地有改动且云端未前进',
     );

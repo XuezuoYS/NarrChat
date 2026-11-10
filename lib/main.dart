@@ -18,6 +18,7 @@ import 'providers/sidebar_provider.dart';
 import 'providers/ui_settings_provider.dart';
 import 'providers/world_book_provider.dart';
 import 'screens/home_screen.dart';
+import 'screens/sync_conflict_page.dart';
 import 'services/app_repositories.dart';
 import 'services/clipboard_paste_service.dart';
 import 'services/manual_licenses_service.dart';
@@ -26,6 +27,7 @@ import 'services/notification_service.dart';
 import 'services/storage_service.dart';
 import 'services/sync/image_revival.dart';
 import 'services/sync/image_deletion.dart';
+import 'services/sync/sync_conflict.dart';
 import 'services/system_fonts_service.dart';
 import 'services/update_check_flow.dart';
 import 'services/update_check_service.dart';
@@ -35,6 +37,7 @@ import 'widgets/app_notice_overlay.dart';
 import 'widgets/ime_caret_sync.dart';
 import 'widgets/image_viewer_window.dart';
 import 'widgets/narr_chat_scrollbar.dart';
+import 'widgets/sync_conflict_prompt_dialog.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -119,6 +122,26 @@ Future<void> main() async {
     await modProvider.loadUserMods();
     await worldBookProvider.reloadCurrent();
     await roundProvider.reloadCurrent();
+  };
+  // 冲突提示：同步中检出「PK 判不了」的冲突时弹三选一；选「冲突决策」后
+  // 本轮结束自动打开冲突决策页。应用在后台 / 首帧前拿不到 Navigator 时静默跳过，
+  // 冲突仍会留在 provider 里，面板与首页状态章都有入口。
+  cloudSyncProvider.conflictPrompt = (pending) async {
+    final binding = WidgetsBinding.instance;
+    final state = binding.lifecycleState;
+    if (state != null && state != AppLifecycleState.resumed) {
+      return SyncConflictPromptResult.decide;
+    }
+    final promptContext = notificationService.navigatorKey.currentContext;
+    if (promptContext == null) return SyncConflictPromptResult.decide;
+    return showSyncConflictPrompt(promptContext, pending);
+  };
+  cloudSyncProvider.onConflictsDetected = () async {
+    final navigator = notificationService.navigatorKey.currentState;
+    if (navigator == null) return;
+    await navigator.push(
+      MaterialPageRoute<void>(builder: (_) => const SyncConflictPage()),
+    );
   };
   // 开放源代码许可：注册手动补充的许可证清单（懒加载，仅打开许可证页时解析）。
   ManualLicensesService.register();

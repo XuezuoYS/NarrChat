@@ -11,6 +11,7 @@ import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/services/cloud_backup/backup_digest.dart';
 import 'package:narrchat/services/cloud_backup/backup_image_plane.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_remote.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/img_tombstones.dart';
@@ -118,15 +119,13 @@ void main() {
     List<String> books = const ['b1'],
     Future<void> Function(BackupUnit)? beforeReplace,
     Future<void> Function(BackupUnit)? afterReplace,
-    Future<DateTime?> Function(BackupUnit)? updatedAtOf,
+    Future<void> Function(BackupRemote remote)? afterStructuralUnits,
   }) {
     return BackupContext(
       bookUuids: () async => books,
-      updatedAtOf:
-          updatedAtOf ??
-          (unit) async => unit.isBook ? DateTime.utc(2026, 1, 2) : null,
       beforeReplace: beforeReplace,
       afterReplace: afterReplace,
+      afterStructuralUnits: afterStructuralUnits,
     );
   }
 
@@ -508,8 +507,6 @@ void main() {
             purgedLocal.add(uuid);
             await File(bookPath(uuid)).delete();
           },
-          updatedAtOf: (unit) async =>
-              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
         ),
       );
 
@@ -597,8 +594,6 @@ void main() {
           bookUuids: liveBookUuids,
           deletedBookUuids: tombstoneUuids,
           purgeLocalBook: (uuid) => File(bookPath(uuid)).delete(),
-          updatedAtOf: (unit) async =>
-              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
         ),
       );
 
@@ -639,8 +634,6 @@ void main() {
           purgeLocalBook: (uuid) async {
             throw StateError('文件被占用：$uuid');
           },
-          updatedAtOf: (unit) async =>
-              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
         ),
       );
 
@@ -663,8 +656,6 @@ void main() {
         context: BackupContext(
           bookUuids: () async => ['b1'],
           deletedBookUuids: () async => ['b2'],
-          updatedAtOf: (unit) async =>
-              unit.isBook ? DateTime.utc(2026, 1, 2) : null,
         ),
       );
 
@@ -731,6 +722,67 @@ void main() {
       expect(second.uploaded, 0);
       expect(second.pulled, 0);
       expect(remote.writeCount, writes, reason: '墓碑内容没变就不重写');
+    });
+  });
+
+  group('内容指标与云端补齐', () {
+    test('推送时把代数 / 最新轮次 / 内容时间写进清单', () async {
+      await seed();
+      await runner().run(context: context());
+
+      final manifest = BackupManifest.decode(
+        remote.files['manifest_narrbook_b1.json']!,
+      );
+      expect(manifest.roundGenerationCount, 1, reason: 'round_stack 一行 = 一代');
+      expect(manifest.latestRoundIndex, 1);
+      expect(manifest.contentUpdatedAt, isNotEmpty);
+
+      // 非书单元没有代次与内容时间，写 0 / 写入时间。
+      final library = BackupManifest.decode(
+        remote.files['manifest_narrchat_library.json']!,
+      );
+      expect(library.roundGenerationCount, 0);
+      expect(library.latestRoundIndex, 0);
+      expect(library.contentUpdatedAt, isNotEmpty);
+    });
+
+    test('本机没有这本书 + 云端有清单：从云端补齐本地文件', () async {
+      await seed();
+      await runner().run(context: context());
+      final remoteBytes = remote.files['narrbook_b1_shot-g1.db']!;
+
+      await BookDb.open(
+        bookUuid: 'b1',
+        pathOverride: bookPath('b1'),
+      ).then((db) => db.close());
+      await File(bookPath('b1')).delete();
+      expect(File(bookPath('b1')).existsSync(), isFalse);
+
+      final report = await runner().run(context: context());
+
+      expect(report.errors, isEmpty);
+      expect(report.pulled, 1, reason: '缺文件 → 从云端补齐');
+      expect(File(bookPath('b1')).existsSync(), isTrue);
+      expect(await File(bookPath('b1')).readAsBytes(), remoteBytes);
+      expect((await store.unit('book:b1'))!.generation, 1);
+    });
+
+    test('afterStructuralUnits 在书单元发现之前调用，且只有整轮才跑', () async {
+      await seed();
+      final order = <String>[];
+      final context0 = BackupContext(
+        bookUuids: () async {
+          order.add('books');
+          return ['b1'];
+        },
+        afterStructuralUnits: (BackupRemote remote) async {
+          order.add('structural');
+        },
+      );
+
+      await runner().run(context: context0);
+
+      expect(order, ['structural', 'books']);
     });
   });
 }

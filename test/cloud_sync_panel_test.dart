@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 
 import 'helpers/backup_fakes.dart';
 import 'helpers/notice_harness.dart';
+import 'helpers/sync_conflict_fixtures.dart';
 
 /// 云备份面板 widget 测试（R3：一库一单元一代）。
 ///
@@ -404,5 +405,38 @@ void main() {
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pumpAndSettle();
     expect(find.byType(AlertDialog), findsOneWidget, reason: '点击打开修改弹窗');
+  });
+
+  testWidgets('有冲突：置顶警告卡展示数量与「去处理」入口', (tester) async {
+    final provider = CloudSyncProvider()
+      ..debugSetConflicts([
+        buildBookConflict(uuid: 'b1', title: '第一本'),
+        buildBookConflict(uuid: 'b2', title: '第二本'),
+      ]);
+    final form = makeForm(provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    expect(find.text('待处理冲突 2 项'), findsOneWidget);
+    expect(find.textContaining('书籍《第一本》'), findsWidgets);
+    expect(find.text('去处理'), findsOneWidget);
+  });
+
+  testWidgets('无冲突：不渲染待处理卡', (tester) async {
+    final provider = CloudSyncProvider();
+    final form = makeForm(provider: provider);
+    await pumpPanel(
+      tester,
+      theme: NarrChatTheme.light,
+      form: form,
+      provider: provider,
+    );
+
+    expect(find.textContaining('待处理冲突'), findsNothing);
+    expect(find.text('去处理'), findsNothing);
   });
 }

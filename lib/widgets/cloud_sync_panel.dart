@@ -5,6 +5,7 @@ import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
 import '../screens/backup_unit_page.dart';
 import '../screens/book_recycle_bin_page.dart';
+import '../screens/sync_conflict_page.dart';
 import '../services/cloud_backup/backup_catalog.dart';
 import '../services/sync/sync_models.dart';
 import '../theme/app_theme.dart';
@@ -155,6 +156,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
           description: '把书籍、角色设定与剧情进度备份到 WebDAV，多设备自动同步。',
         ),
         _buildStatusHero(context, provider),
+        if (provider.hasConflicts) ...[
+          const SizedBox(height: 16),
+          _buildConflictCard(context, provider),
+        ],
         const SizedBox(height: 16),
         _buildSyncModeCard(context),
         const SizedBox(height: 16),
@@ -374,6 +379,77 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
   }
 
   // ---------------------------------------------------------------------------
+  // 待处理冲突卡片
+  // ---------------------------------------------------------------------------
+  /// 有待处理冲突时置顶的警告卡：数量 + 前两项名称 + 「去处理」入口。
+  ///
+  /// 冲突不处理不会丢数据，但会一直卡在「本地与云端不一致」的状态，所以这里
+  /// 必须有一个显眼、随时能找到的入口（同步中三选一选「冲突决策」也会自动开页）。
+  Widget _buildConflictCard(BuildContext context, CloudSyncProvider provider) {
+    final colors = context.narrColors;
+    final conflicts = provider.conflicts;
+    final pending = conflicts.take(2).map((item) => item.title).join('、');
+    return SettingsCard(
+      padding: const EdgeInsets.all(14),
+      borderColor: colors.warning.withValues(alpha: 0.45),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: colors.warning.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              Icons.sync_problem_outlined,
+              size: 20,
+              color: colors.warning,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '待处理冲突 ${conflicts.length} 项',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: colors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  conflicts.length <= 2
+                      ? '${pending.isEmpty ? '有数据需要你选择保留哪一侧' : pending}：'
+                            '本地与云端都改过，PK 无法判定。'
+                      : '$pending 等 ${conflicts.length} 项本地与云端都改过，PK 无法判定。',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.45,
+                    color: colors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: provider.isBusy
+                      ? null
+                      : () => SyncConflictPage.open(context),
+                  icon: const Icon(Icons.rule_folder_outlined, size: 18),
+                  label: const Text('去处理'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // 同步模式卡片
   // ---------------------------------------------------------------------------
   Widget _buildSyncModeCard(BuildContext context) {
@@ -426,7 +502,8 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
     return _sectionCard(
       icon: Icons.link,
       title: '连接设置',
-      subtitle: '填写你的 WebDAV 服务器与存储文件夹。数据放该文件夹，图片放它的 img 子目录；'
+      subtitle:
+          '填写你的 WebDAV 服务器与存储文件夹。数据放该文件夹，图片放它的 img 子目录；'
           '密码存入系统安全存储，不明文落盘。',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -655,11 +732,7 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                 NarrChatTheme.controlRadius - 3,
               ),
             ),
-            child: Icon(
-              Icons.delete_outline,
-              size: 18,
-              color: errorColor,
-            ),
+            child: Icon(Icons.delete_outline, size: 18, color: errorColor),
           ),
           title: '已删除',
           subtitle: '$count 本书 · 点进去还原或彻底删除',

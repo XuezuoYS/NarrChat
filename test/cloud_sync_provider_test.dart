@@ -6,9 +6,11 @@ import 'package:narrchat/models/app_notice.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
+import 'package:narrchat/services/sync/sync_conflict.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
 
@@ -403,15 +405,10 @@ void main() {
     });
   });
 
-  group('整本二选一（冲突状态）', () {
-    test('初始没有待裁决冲突', () {
-      final provider = CloudSyncProvider();
-      expect(provider.unresolvedConflicts, isEmpty);
-    });
-
-    test('resolveConflict(skip)：直接返回 null，不改变冲突清单', () async {
-      final provider = CloudSyncProvider();
-      final unit = BackupUnit.book('b1');
+  group('冲突决策（整本二选一）', () {
+    /// 造一个书籍冲突项（不连库、不联网）。
+    SyncConflict bookConflict(String uuid) {
+      final unit = BackupUnit.book(uuid);
       final plan = BackupPlanner.plan(
         unit: unit,
         localDigest: 'L2',
@@ -426,12 +423,49 @@ void main() {
           savedAt: '2026-01-01T00:00:00.000Z',
         ),
       );
-      expect(plan.action, BackupAction.conflict);
-      expect(
-        await provider.resolveConflict(plan, BackupConflictChoice.skip),
-        isNull,
+      return SyncConflict(
+        unit: unit,
+        plan: plan,
+        pk: BackupPk.decideBook(local: null, remote: plan.remote),
+        title: '书籍《测试》',
       );
-      expect(provider.unresolvedConflicts, isEmpty);
+    }
+
+    test('初始没有待裁决冲突', () {
+      final provider = CloudSyncProvider();
+      expect(provider.conflicts, isEmpty);
+      expect(provider.hasConflicts, isFalse);
+      expect(provider.conflictCount, 0);
+    });
+
+    test('debugSetConflicts：注入后 hasConflicts / 数量同步', () {
+      final provider = CloudSyncProvider()
+        ..debugSetConflicts([bookConflict('b1'), bookConflict('b2')]);
+      expect(provider.hasConflicts, isTrue);
+      expect(provider.conflictCount, 2);
+    });
+
+    test('applyConflictDecisions(稍后处理)：计入 skipped 且保留冲突项', () async {
+      final conflict = bookConflict('b1');
+      final provider = CloudSyncProvider()..debugSetConflicts([conflict]);
+
+      final report = await provider.applyConflictDecisions([
+        SyncConflictDecision(
+          conflict: conflict,
+          choice: BackupConflictChoice.skip,
+        ),
+      ]);
+
+      expect(report.skipped, 1);
+      expect(report.applied, 0);
+      expect(provider.conflicts, hasLength(1), reason: '稍后处理的项继续留着');
+    });
+
+    test('applyConflictDecisions(空列表)：直接返回空报告', () async {
+      final provider = CloudSyncProvider();
+      final report = await provider.applyConflictDecisions(const []);
+      expect(report.isEmpty, isTrue);
+      expect(report.summary, '没有应用任何决策');
     });
 
     test('restoreSnapshot：无法识别的文件名给出明确错误', () async {

@@ -21,6 +21,8 @@ class BackupManifest {
     required this.savedAt,
     this.deviceId = '',
     this.contentUpdatedAt = '',
+    this.latestRoundIndex = 0,
+    this.roundGenerationCount = 0,
     this.images = const [],
     this.digestVersion = backupDigestVersion,
   });
@@ -50,6 +52,15 @@ class BackupManifest {
   /// 推送时书籍 `book_meta.updated_at`（冲突默认裁决用；library / mods 为空）。
   final String contentUpdatedAt;
 
+  /// 这一代的最新轮号（0 = 未知 / 空书）。
+  ///
+  /// 与 [roundGenerationCount] 一起，供其它设备做冲突 PK；旧版清单没有这两个
+  /// 字段，解析为 0，PK 时按「未知」处理（交给人决定）。
+  final int latestRoundIndex;
+
+  /// 这一代的全书代数：`round_stack` 的行数（0 = 未知 / 空书）。
+  final int roundGenerationCount;
+
   /// 这一代引用到的图片相对路径（还原这本书时顺带把图拉下来）。
   final List<String> images;
 
@@ -64,6 +75,8 @@ class BackupManifest {
         'savedAt': savedAt,
         'deviceId': deviceId,
         'contentUpdatedAt': contentUpdatedAt,
+        'latestRoundIndex': latestRoundIndex,
+        'roundGenerationCount': roundGenerationCount,
         'images': images,
       };
 
@@ -98,6 +111,9 @@ class BackupManifest {
       savedAt: (json['savedAt'] as String?) ?? '',
       deviceId: (json['deviceId'] as String?) ?? '',
       contentUpdatedAt: (json['contentUpdatedAt'] as String?) ?? '',
+      latestRoundIndex: (json['latestRoundIndex'] as num?)?.toInt() ?? 0,
+      roundGenerationCount:
+          (json['roundGenerationCount'] as num?)?.toInt() ?? 0,
       images: images is List
           ? images.map((e) => e.toString()).toList()
           : const [],
@@ -145,6 +161,8 @@ class BackupManifest {
     String? savedAt,
     String? deviceId,
     String? contentUpdatedAt,
+    int? latestRoundIndex,
+    int? roundGenerationCount,
     List<String>? images,
   }) {
     return BackupManifest(
@@ -158,6 +176,8 @@ class BackupManifest {
       savedAt: savedAt ?? this.savedAt,
       deviceId: deviceId ?? this.deviceId,
       contentUpdatedAt: contentUpdatedAt ?? this.contentUpdatedAt,
+      latestRoundIndex: latestRoundIndex ?? this.latestRoundIndex,
+      roundGenerationCount: roundGenerationCount ?? this.roundGenerationCount,
       images: images ?? this.images,
     );
   }
@@ -170,6 +190,8 @@ class BackupManifest {
     required String deviceId,
     DateTime? savedAt,
     DateTime? contentUpdatedAt,
+    int latestRoundIndex = 0,
+    int roundGenerationCount = 0,
     List<String> images = const [],
   }) {
     final now = (savedAt ?? DateTime.now()).toUtc();
@@ -185,6 +207,8 @@ class BackupManifest {
       contentUpdatedAt: contentUpdatedAt == null
           ? formatTimestamp(now)
           : formatTimestamp(contentUpdatedAt),
+      latestRoundIndex: latestRoundIndex,
+      roundGenerationCount: roundGenerationCount,
       images: images,
     );
   }

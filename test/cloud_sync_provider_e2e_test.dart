@@ -6,9 +6,11 @@ import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/cloud_backup/backup_digest.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
+import 'package:narrchat/services/sync/sync_conflict.dart';
 import 'package:narrchat/services/sync/sync_models.dart';
 import 'package:narrchat/services/webdav_service.dart';
 import 'package:path/path.dart' as p;
@@ -22,7 +24,7 @@ import 'helpers/fakes.dart';
 /// 覆盖 provider 独占、单元级 `backup_runner_test` 测不到的东西：
 /// - 进度事件 → `SyncPlane` / `SyncPhase` 映射；
 /// - `_closeForReplace` 之后各 store **懒重开**（整份替换后还能继续读）；
-/// - `unresolvedConflicts` 的填充与 `resolveConflict(local/remote)` 两条真实路径。
+/// - 冲突 PK 自动裁决、三选一提示、自动开页、书架自动合并与批量应用决策。
 ///
 /// 依赖全部构造注入（仓储 / 云端 / 墓碑），不碰全局单例，也不写真实用户目录。
 void main() {
@@ -63,12 +65,26 @@ void main() {
   }
 
   /// 造一份"别的设备"的 library 快照 + 清单，放到云端第 [generation] 代。
+  ///
+  /// 顺带把那份书架的 `master_uuid` 改成与本机一致：真实场景里它就是同一套被
+  /// 同步过的库；只有身份一致，书架自动合并才会按「同一套数据」逐行合并。
   Future<TestStack> putRemoteLibraryFromOtherDevice({
     required String title,
     required int generation,
   }) async {
+    final localMaster = await stack.stores.library.masterUuid();
     final other = await TestStack.create(prefix: 'sync_e2e_other_');
     await other.seedBook(uuid: 'b-cloud', title: title);
+    await other.stores.library.close();
+    final db = await databaseFactory.openDatabase(
+      other.paths.libraryDbPath,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    try {
+      await db.update('meta', {'master_uuid': localMaster});
+    } finally {
+      await db.close();
+    }
     final bytes = await File(other.paths.libraryDbPath).readAsBytes();
     final digest = await digestOfLibrary(other.paths.libraryDbPath);
 
@@ -228,55 +244,184 @@ void main() {
     expect(rows.map((b) => b.title), isNot(contains('本地书')));
   });
 
-  test('两边都改：同步后 unresolvedConflicts 留下待裁决项，本地文件不动', () async {
+  test('书架冲突：按行自动合并、补推一代，不打扰用户', () async {
     await stack.seedBook(uuid: 'b-local', title: '本地书');
     await provider.sync();
 
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+    var opened = 0;
+    provider.onConflictsDetected = () async => opened++;
+
     // 本地又建了一本 → library 摘要变了。
     await stack.seedBook(uuid: 'b-local2', title: '本地新书');
-    // 云端同时前进到第 2 代（内容不同）。
+    // 云端同时前进到第 2 代（另一台设备也改了书架）。
     final other = await putRemoteLibraryFromOtherDevice(
       title: '云端书',
       generation: 2,
     );
     addTearDown(other.dispose);
 
-    await provider.sync();
+    final ok = await provider.sync();
 
+    expect(ok, isTrue);
     expect(provider.dataSyncState, SyncState.success, reason: '冲突不算单元级失败');
-    expect(provider.unresolvedConflicts, isNotEmpty);
-    final conflict = provider.unresolvedConflicts.firstWhere(
-      (plan) => plan.unit == BackupUnit.library,
-    );
-    expect(conflict.action, BackupAction.conflict);
+    expect(provider.conflicts, isEmpty, reason: '书架冲突自动合并，不打扰用户');
+    expect(promptCalls, 0, reason: '能自动合并就不该弹三选一');
+    expect(opened, 0, reason: '没有残留冲突就不该开页');
 
-    // 待裁决期间本地文件不动。
     final rows = await stack.stores.library.books();
-    expect(rows.map((b) => b.title), contains('本地书'));
-    expect(rows.map((b) => b.title), isNot(contains('云端书')));
+    expect(
+      rows.map((b) => b.title),
+      containsAll(['本地书', '本地新书', '云端书']),
+      reason: '两侧的书都要留下',
+    );
+    expect(
+      remote.files.containsKey('narrchat_library_shot-g3.db'),
+      isTrue,
+      reason: '合并后的书架要补推新一代',
+    );
+    expect(
+      provider.resultToasts.map((toast) => toast.message).join('\n'),
+      contains('书架已自动合并'),
+    );
   });
 
-  test('resolveConflict(local)：把本地推成新的一代', () async {
+  test('书籍冲突 PK 不一致：留下待裁决项、弹一次三选一、自动开页一次', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '第一轮');
+    await provider.sync();
+
+    // 本地再写一轮。
+    await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '本地第二轮');
+    // 云端也改过：代数更多、轮次更少、时间更旧 → 三轴互相打脸，必须问用户。
+    final other = await TestStack.create(prefix: 'sync_e2e_book_');
+    await other.seedBook(uuid: bookUuid, title: '云端书');
+    final otherBytes = await File(
+      '${other.paths.booksDir}/narrbook_$bookUuid.db',
+    ).readAsBytes();
+    addTearDown(other.dispose);
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(unit.snapshotName(2), otherBytes);
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.utc(2020, 1, 1),
+        latestRoundIndex: 1,
+        roundGenerationCount: 5,
+      ).encode(),
+    );
+
+    final prompts = <List<SyncConflict>>[];
+    provider.conflictPrompt = (pending) async {
+      prompts.add(pending);
+      return SyncConflictPromptResult.decide;
+    };
+    var opened = 0;
+    provider.onConflictsDetected = () async => opened++;
+
+    await provider.sync();
+    // 自动开页走 microtask，等它跑完。
+    await Future<void>.delayed(Duration.zero);
+
+    expect(prompts, hasLength(1), reason: '一轮只弹一次三选一');
+    expect(prompts.single, hasLength(1));
+    expect(provider.conflicts, hasLength(1));
+    final conflict = provider.conflicts.single;
+    expect(conflict.unit, unit);
+    expect(conflict.title, '书籍《本地书》');
+    expect(conflict.pk.unanimous, isFalse);
+    expect(conflict.pk.axes, hasLength(3));
+    expect(opened, 1);
+
+    // 待裁决期间本地文件不动。
+    final chain = await stack.repos.rounds.loadChain(bookUuid);
+    expect(chain.rounds, hasLength(2));
+    expect(
+      await File('${stack.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
+      isNot(otherBytes),
+    );
+  });
+
+  test('书籍冲突 PK 三轴一致：自动采用云端，不弹提示', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '第一轮');
+    await provider.sync();
+
+    await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '本地第二轮');
+    final other = await TestStack.create(prefix: 'sync_e2e_book_');
+    await other.seedBook(uuid: bookUuid, title: '云端书');
+    final otherBytes = await File(
+      '${other.paths.booksDir}/narrbook_$bookUuid.db',
+    ).readAsBytes();
+    addTearDown(other.dispose);
+    final unit = BackupUnit.book(bookUuid);
+    remote.put(unit.snapshotName(2), otherBytes);
+    remote.put(
+      unit.manifestName,
+      BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'remote-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: DateTime.now().toUtc().add(
+          const Duration(minutes: 1),
+        ),
+        latestRoundIndex: 3,
+        roundGenerationCount: 6,
+      ).encode(),
+    );
+
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+    var restoredCalls = 0;
+    provider.onDataRestored = () async => restoredCalls++;
+
+    final ok = await provider.sync();
+
+    expect(ok, isTrue);
+    expect(promptCalls, 0, reason: '三轴一致就自动裁决');
+    expect(provider.conflicts, isEmpty);
+    expect(restoredCalls, greaterThanOrEqualTo(1), reason: '拉取后通知上层重载');
+    expect(
+      await File('${stack.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
+      otherBytes,
+      reason: '采用云端 = 整份替换本地',
+    );
+    final loaded = await stack.repos.books.loadBook(bookUuid);
+    expect(loaded?.title, '云端书');
+    expect(
+      provider.resultToasts.map((toast) => toast.message).join('\n'),
+      contains('采用云端 1 项'),
+    );
+  });
+
+  test('applyConflictDecisions(local)：把本地推成云端新的一代', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
     await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '本地正文');
     await provider.sync();
 
-    // 本地再写一轮：内容真的变了，runner 重新决策时才会推。
     await stack.seedRound(bookUuid, roundIndex: 2, aiNarrative: '又一轮');
-    // 云端也前进到第 2 代（这次只断言代数，摘要不需要与本地对得上）。
-    final unit0 = BackupUnit.book(bookUuid);
+    final unit = BackupUnit.book(bookUuid);
     remote.put(
-      unit0.manifestName,
+      unit.manifestName,
       BackupManifest.build(
-        unit: unit0,
+        unit: unit,
         generation: 2,
         digest: 'remote-digest',
         deviceId: 'other-device',
       ).encode(),
     );
-
-    // 造一个书单元的冲突计划（本地改了、云端也前进）。
-    final unit = BackupUnit.book(bookUuid);
     final plan = BackupPlanner.plan(
       unit: unit,
       localDigest: 'changed-local',
@@ -289,21 +434,32 @@ void main() {
       ),
     );
     expect(plan.action, BackupAction.conflict);
-
-    final error = await provider.resolveConflict(
-      plan,
-      BackupConflictChoice.local,
+    final conflict = SyncConflict(
+      unit: unit,
+      plan: plan,
+      pk: BackupPk.decideBook(local: null, remote: plan.remote),
+      title: '书籍《本地书》',
     );
+    provider.debugSetConflicts([conflict]);
 
-    expect(error, isNull);
+    final report = await provider.applyConflictDecisions([
+      SyncConflictDecision(
+        conflict: conflict,
+        choice: BackupConflictChoice.local,
+      ),
+    ]);
+
+    expect(report.localApplied, 1);
+    expect(report.errors, isEmpty);
     expect(
       remote.files.containsKey('narrbook_b1_shot-g3.db'),
       isTrue,
       reason: '取两边较大代数 + 1',
     );
+    expect(provider.conflicts, isEmpty);
   });
 
-  test('resolveConflict(remote)：用云端快照整份替换本地，并懒重开', () async {
+  test('applyConflictDecisions(remote)：整份替换本地并懒重开', () async {
     final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
     await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '本地正文');
     await provider.sync();
@@ -328,17 +484,28 @@ void main() {
         deviceId: 'other-device',
       ),
     );
+    final conflict = SyncConflict(
+      unit: unit,
+      plan: plan,
+      pk: BackupPk.decideBook(local: null, remote: plan.remote),
+      title: '书籍《本地书》',
+    );
+    provider.debugSetConflicts([conflict]);
 
     var restoredCalls = 0;
     provider.onDataRestored = () async => restoredCalls++;
 
-    final error = await provider.resolveConflict(
-      plan,
-      BackupConflictChoice.remote,
-    );
+    final report = await provider.applyConflictDecisions([
+      SyncConflictDecision(
+        conflict: conflict,
+        choice: BackupConflictChoice.remote,
+      ),
+    ]);
 
-    expect(error, isNull);
+    expect(report.remoteApplied, 1);
+    expect(report.restored, isTrue);
     expect(restoredCalls, 1);
+    expect(provider.conflicts, isEmpty);
     expect(
       await File('${stack.paths.booksDir}/narrbook_$bookUuid.db').readAsBytes(),
       otherBytes,
@@ -349,6 +516,67 @@ void main() {
     expect(chain.rounds, isEmpty, reason: '替换成了云端那份（没有轮次）');
     final loaded = await stack.repos.books.loadBook(bookUuid);
     expect(loaded?.title, '云端书');
+  });
+
+  test('applyConflictDecisions：失败项记错误、保留冲突，其余照常', () async {
+    final bookUuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    await stack.seedRound(bookUuid, roundIndex: 1, aiNarrative: '本地正文');
+    await provider.sync();
+
+    final unit = BackupUnit.book(bookUuid);
+    final brokenPlan = BackupPlanner.plan(
+      unit: unit,
+      localDigest: 'changed-local',
+      base: const BackupBase(generation: 1, baseDigest: 'old'),
+      remote: BackupManifest.build(
+        unit: unit,
+        generation: 2,
+        digest: 'changed-remote',
+        deviceId: 'other-device',
+      ),
+    );
+    final broken = SyncConflict(
+      unit: unit,
+      plan: brokenPlan,
+      pk: BackupPk.decideBook(local: null, remote: brokenPlan.remote),
+      title: '书籍《本地书》',
+    );
+    final skippable = SyncConflict(
+      unit: BackupUnit.mods,
+      plan: BackupPlanner.plan(
+        unit: BackupUnit.mods,
+        localDigest: 'changed-local',
+        base: const BackupBase(generation: 1, baseDigest: 'old'),
+        remote: BackupManifest.build(
+          unit: BackupUnit.mods,
+          generation: 2,
+          digest: 'changed-remote',
+          deviceId: 'other-device',
+        ),
+      ),
+      pk: const SyncPkResult.unavailable('测试用'),
+      title: 'Mod 库',
+    );
+    provider.debugSetConflicts([broken, skippable]);
+
+    final report = await provider.applyConflictDecisions([
+      SyncConflictDecision(
+        conflict: broken,
+        choice: BackupConflictChoice.remote,
+      ),
+      SyncConflictDecision(
+        conflict: skippable,
+        choice: BackupConflictChoice.skip,
+      ),
+    ]);
+
+    expect(report.errors.keys, contains(unit.unitKey), reason: '快照不存在 → 单元级错误');
+    expect(report.skipped, 1);
+    expect(
+      provider.conflicts.map((item) => item.unit),
+      containsAll([unit, BackupUnit.mods]),
+      reason: '失败的项与稍后处理的项都继续留着',
+    );
   });
 
   test('删除书籍后同步：云端只留最新一代，library 墓碑保留', () async {
@@ -602,11 +830,10 @@ void main() {
         isEmpty,
         reason: 'WebDAV 根目录不能留任何应用文件',
       );
-      expect(
-        dav.writes.map((write) => write.path).toSet(),
-        {folder, '$folder/img'},
-        reason: '数据只写数据目录，图片只写 img 子目录',
-      );
+      expect(dav.writes.map((write) => write.path).toSet(), {
+        folder,
+        '$folder/img',
+      }, reason: '数据只写数据目录，图片只写 img 子目录');
       expect(dav.listPaths, containsAll([folder, '$folder/img']));
     }
 
