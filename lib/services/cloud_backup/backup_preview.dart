@@ -12,6 +12,8 @@ import '../../models/preset_mods.dart';
 import '../../models/round_generation.dart';
 import '../../utils/timestamp_format.dart';
 import '../sync/sync_conflict.dart';
+import 'backup_manifest.dart';
+import 'backup_mods_conflict.dart';
 import 'backup_remote.dart';
 import 'backup_unit.dart';
 
@@ -218,35 +220,62 @@ class BackupPreviewReader {
     return SyncSidePreview(side: side, mods: modsPreview);
   }
 
-  Future<ModsSidePreview> _readLocalModsFile() async {
+  /// 读本地 Mod 库的全部行（含墓碑）；库文件不存在时返回空列表。
+  ///
+  /// 逐 Mod PK 与合并都复用这一份读取：与预览同一条只读连接，不碰写连接。
+  Future<List<Map<String, Object?>>> readLocalModRows() async {
     final path = locator.localPathOf(BackupUnit.mods);
-    if (!await File(path).exists()) {
-      return const ModsSidePreview();
+    if (!await File(path).exists()) return const [];
+    return _withDatabase(path, readModRowsFromDatabase);
+  }
+
+  /// 读云端某一代快照的 Mod 行（含墓碑），读不到时抛错由调用方兜底。
+  Future<List<Map<String, Object?>>> readRemoteModRows(
+    BackupManifest manifest,
+  ) async {
+    final remote = remoteFactory();
+    try {
+      return await readRemoteModRowsWith(remote, manifest);
+    } finally {
+      remote.close();
     }
-    return _withDatabase(path, _readModsFromDatabase);
+  }
+
+  /// 用调用方已有的远端连接读快照：逐 Mod 合并时复用同一次同步的 client。
+  Future<List<Map<String, Object?>>> readRemoteModRowsWith(
+    BackupRemote remote,
+    BackupManifest manifest,
+  ) {
+    return _withRemoteSnapshot(
+      remote,
+      manifest.snapshotName,
+      readModRowsFromDatabase,
+    );
+  }
+
+  Future<ModsSidePreview> _readLocalModsFile() async {
+    final rows = await readLocalModRows();
+    return ModsSidePreview(mods: [for (final row in rows) _modPreviewOf(row)]);
   }
 
   Future<ModsSidePreview> _readModsFromDatabase(DatabaseExecutor db) async {
-    final rows = await db.rawQuery(
-      'SELECT "mod_uuid", "name", "description", "pre_prompt", "post_prompt", '
-      '"system_prompt", "world_book", "updated_at", "deleted_at" FROM "mods" '
-      'ORDER BY "created_at" ASC, "mod_uuid" ASC',
-    );
-    return ModsSidePreview(
-      mods: [
-        for (final row in rows)
-          ModEntryPreview(
-            uuid: _textOf(row, 'mod_uuid'),
-            name: _textOf(row, 'name'),
-            description: _textOf(row, 'description'),
-            prePrompt: _textOf(row, 'pre_prompt'),
-            postPrompt: _textOf(row, 'post_prompt'),
-            systemPrompt: _textOf(row, 'system_prompt'),
-            worldBookCount: _worldBookCountOf(_textOf(row, 'world_book')),
-            updatedAt: parseTimestamp(row['updated_at']),
-            deleted: row['deleted_at'] != null,
-          ),
-      ],
+    final rows = await readModRowsFromDatabase(db);
+    return ModsSidePreview(mods: [for (final row in rows) _modPreviewOf(row)]);
+  }
+
+  /// 原始行 → 单条预览（内容指纹与逐 Mod PK 共用同一算法）。
+  static ModEntryPreview _modPreviewOf(Map<String, Object?> row) {
+    return ModEntryPreview(
+      uuid: _textOf(row, 'mod_uuid'),
+      name: _textOf(row, 'name'),
+      description: _textOf(row, 'description'),
+      prePrompt: _textOf(row, 'pre_prompt'),
+      postPrompt: _textOf(row, 'post_prompt'),
+      systemPrompt: _textOf(row, 'system_prompt'),
+      worldBookCount: _worldBookCountOf(_textOf(row, 'world_book')),
+      updatedAt: parseTimestamp(row['updated_at']),
+      deleted: row['deleted_at'] != null,
+      contentDigest: ModContentDigest.ofRow(row),
     );
   }
 

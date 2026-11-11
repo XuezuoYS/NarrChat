@@ -467,14 +467,17 @@ class _SyncConflictPreviewDialogState
     final colors = context.narrColors;
     if (local == null) return ('仅云端', colors.warning);
     if (remote == null) return ('仅本地', colors.warning);
+    // 内容指纹与逐 Mod PK 同一套算法（含墓碑）：两侧相同就是真正的一致。
     final same =
-        local.name == remote.name &&
-        local.description == remote.description &&
-        local.prePrompt == remote.prePrompt &&
-        local.postPrompt == remote.postPrompt &&
-        local.systemPrompt == remote.systemPrompt &&
-        local.worldBookCount == remote.worldBookCount &&
-        local.deleted == remote.deleted;
+        local.contentDigest.isNotEmpty && remote.contentDigest.isNotEmpty
+        ? local.contentDigest == remote.contentDigest
+        : local.name == remote.name &&
+              local.description == remote.description &&
+              local.prePrompt == remote.prePrompt &&
+              local.postPrompt == remote.postPrompt &&
+              local.systemPrompt == remote.systemPrompt &&
+              local.worldBookCount == remote.worldBookCount &&
+              local.deleted == remote.deleted;
     return same ? ('一致', colors.success) : ('内容不同', colors.warning);
   }
 

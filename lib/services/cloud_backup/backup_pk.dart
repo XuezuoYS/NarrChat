@@ -3,6 +3,7 @@ import '../../utils/timestamp_format.dart';
 import 'backup_digest.dart';
 import 'backup_manifest.dart';
 import 'backup_metrics.dart';
+import 'backup_mods_conflict.dart';
 
 /// PK 的三条轴（书籍）。
 ///
@@ -65,24 +66,56 @@ class SyncPkAxisResult {
 
 /// 一次 PK 的完整结果。
 class SyncPkResult {
-  const SyncPkResult({required this.axes, required this.explanation});
+  const SyncPkResult({
+    required this.axes,
+    required this.explanation,
+    this.mods,
+  });
 
   const SyncPkResult.unavailable(this.explanation)
-    : axes = const <SyncPkAxisResult>[];
+    : axes = const <SyncPkAxisResult>[],
+      mods = null;
 
-  /// 逐轴结果（书架冲突时为空：它不做 PK，直接自动合并）。
+  /// 逐轴结果（Mod 库逐项比较时为空，明细在 [mods]；书架冲突时也为空）。
   final List<SyncPkAxisResult> axes;
 
   /// 为什么需要 / 不需要用户介入（面向用户的一句话）。
   final String explanation;
 
+  /// Mod 库的逐 Mod 明细；其它单元 / 读不到明细时为 null。
+  ///
+  /// `mods!.comparable == false` 表示两侧逐 Mod 明细读不出来，此时仍保留
+  /// [axes] 里的整库时间轴供展示，但结论一定是「未知」（不自动裁决）。
+  final ModsPk? mods;
+
   bool get isEmpty => axes.isEmpty;
 
-  /// 三轴是否**全部**指向同一侧（只有本地 / 云端两种算「一致」）。
+  /// 逐 Mod 明细的聚合结论（没有明细 / 不可比较时为 null）。
+  SyncPkOutcome? get modsOutcome {
+    final detail = mods;
+    if (detail == null || !detail.comparable) return null;
+    return switch (detail.outcome) {
+      ModsPkOutcome.local => SyncPkOutcome.local,
+      ModsPkOutcome.remote => SyncPkOutcome.remote,
+      ModsPkOutcome.tie => SyncPkOutcome.tie,
+      ModsPkOutcome.unknown => SyncPkOutcome.unknown,
+    };
+  }
+
+  /// 三轴是否**全部**指向同一侧（Mod 库则看逐项聚合结论）。
+  ///
+  /// 只有本地 / 云端两种算「一致」。
   bool get unanimous => winner != null;
 
   /// 一致时的胜者；不一致 / 有未知 / 没有轴时为 null。
   SyncPkOutcome? get winner {
+    final modsDecision = modsOutcome;
+    if (modsDecision != null) {
+      return modsDecision == SyncPkOutcome.local ||
+              modsDecision == SyncPkOutcome.remote
+          ? modsDecision
+          : null;
+    }
     if (axes.isEmpty) return null;
     final first = axes.first.outcome;
     if (first != SyncPkOutcome.local && first != SyncPkOutcome.remote) {
@@ -97,7 +130,7 @@ class SyncPkResult {
   /// 是否属于「轮次与代数都持平、只有更新时间有分歧」。
   ///
   /// 用户口径：内容规模打平时，谁的时间更近就采用谁——这种情况不该再打扰用户。
-  /// 只对书籍三轴成立；Mod 单轴、书架空轴都不会命中。
+  /// 只对书籍三轴成立；Mod 库走逐项比较、书架空轴都不会命中。
   bool get decidedByTimeOnly {
     if (axes.length != 3) return false;
     final generation = axisOf(SyncPkAxis.generationCount);
@@ -112,10 +145,18 @@ class SyncPkResult {
 
   /// 自动裁决结果（Provider / UI 的「按 PK 建议」都用它）：
   ///
-  /// - 三轴一致 → 该侧；
-  /// - 轮次与代数一致、仅时间更新 → 时间较新的一侧；
+  /// - Mod 库：逐项聚合全部指向同一侧 → 该侧；方向不一致 / 未知 → null；
+  /// - 书籍：三轴一致 → 该侧；
+  /// - 书籍：轮次与代数一致、仅时间更新 → 时间较新的一侧；
   /// - 其余（含时间也持平 / 缺数据）→ null，需要用户选择。
   SyncPkOutcome? get autoDecision {
+    final modsDecision = modsOutcome;
+    if (modsDecision != null) {
+      return modsDecision == SyncPkOutcome.local ||
+              modsDecision == SyncPkOutcome.remote
+          ? modsDecision
+          : null;
+    }
     final strict = winner;
     if (strict != null) return strict;
     if (!decidedByTimeOnly) return null;
@@ -144,9 +185,10 @@ class SyncPkResult {
 
 /// 冲突 PK：**纯逻辑、无 I/O**。
 ///
-/// 书籍三条轴、Mod 库一条轴。自动裁决规则：
-/// - 全部轴一致 → 采用该侧；
-/// - 轮次与代数一致、只有更新时间不同 → 按时间采用较新的一侧（不打扰用户）；
+/// 书籍按三条轴比较、Mod 库按逐 Mod 明细比较。自动裁决规则：
+/// - 书籍：全部轴一致 → 采用该侧；
+/// - 书籍：轮次与代数一致、只有更新时间不同 → 按时间采用较新的一侧（不打扰用户）；
+/// - Mod 库：逐项聚合全部指向同一侧 → 采用该侧；方向不一致 / 未知 → 交回上层；
 /// - 其余（含时间持平 / 缺数据）→ 交回上层（弹对话框 / 冲突决策页）。
 /// 书架不做 PK（见 `LibraryMerger`）。
 class BackupPk {
@@ -183,18 +225,44 @@ class BackupPk {
     return _result(axes);
   }
 
-  /// Mod 库：只有「更新时间」一轴（新者居上）。
+  /// Mod 库：有逐 Mod 明细就按明细裁决；没有明细时只展示整库时间、不走自动裁决。
+  ///
+  /// [comparison] 由 Provider 在检出 Mod 库冲突时读取两侧 `mods` 行得到（纯逻辑
+  /// 在这里比较，I/O 在 `BackupPreviewReader`）。读不到明细时不静默按时间采用
+  /// 某一侧：时间轴只作展示，结论强制「未知」，交给人选择。
   static SyncPkResult decideMods({
     required BackupUnitMetrics? local,
     required BackupManifest? remote,
+    ModsPk? comparison,
   }) {
-    return _result([
-      _compareTimes(
-        axis: SyncPkAxis.updatedAt,
-        local: local?.updatedAt,
-        remote: _parse(remote?.contentUpdatedAt),
-      ),
-    ]);
+    final detail = comparison;
+    if (detail != null && detail.comparable) {
+      return SyncPkResult(
+        axes: const [],
+        explanation: detail.explanation,
+        mods: detail,
+      );
+    }
+    final axis = _compareTimes(
+      axis: SyncPkAxis.updatedAt,
+      local: local?.updatedAt,
+      remote: _parse(remote?.contentUpdatedAt),
+    );
+    final reason = detail?.unavailableReason.trim() ?? '';
+    return SyncPkResult(
+      axes: [
+        SyncPkAxisResult(
+          axis: axis.axis,
+          outcome: SyncPkOutcome.unknown,
+          localText: axis.localText,
+          remoteText: axis.remoteText,
+        ),
+      ],
+      explanation: reason.isEmpty
+          ? '读不到两侧的逐 Mod 明细，无法判定哪边更新，需要你选择保留哪一侧。'
+          : reason,
+      mods: detail,
+    );
   }
 
   /// 云端清单与本地摘要算法版本不同：内容不可比，直接交给人。

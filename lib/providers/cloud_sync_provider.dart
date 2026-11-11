@@ -16,6 +16,7 @@ import '../services/cloud_backup/backup_catalog.dart';
 import '../services/cloud_backup/backup_image_plane.dart';
 import '../services/cloud_backup/backup_library_merge.dart';
 import '../services/cloud_backup/backup_manifest.dart';
+import '../services/cloud_backup/backup_mods_conflict.dart';
 import '../services/cloud_backup/backup_pk.dart';
 import '../services/cloud_backup/backup_planner.dart';
 import '../services/cloud_backup/backup_preview.dart';
@@ -32,7 +33,8 @@ import '../utils/timestamp_format.dart';
 /// 云备份（R3）。
 ///
 /// 数据面完全交给 `lib/services/cloud_backup/`：一个数据库文件 = 一个同步单元
-/// = 一个独立代数，冲突只给「整本书」一个选择。这里只负责：
+/// = 一个独立代数。书籍 / 书架冲突整份二选一；Mod 库先逐 Mod 比较，判不了时
+/// 可以逐 Mod 选择后合并。这里只负责：
 /// - 凭据与设置（URL / 账号 / 密码 / 目录 / 模式 / 保留份数）；
 /// - 触发队列（自动 / 手动 / 生命周期恢复）；
 /// - 两个平面（数据 / 图片）的状态、进度与提示。
@@ -191,6 +193,13 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   Map<String, String> _runBookTitles = const {};
   bool _autoOpenConflicts = false;
   bool _openingConflicts = false;
+
+  /// 云端 Mod 行的会话内缓存（键 = 快照名 + 清单 digest）。
+  ///
+  /// Mod 库冲突时要点一次快照才能逐 Mod 比较；冲突没处理时每轮同步都会重新
+  /// 检查，不能反复下载同一代。只留最近几代，防止一直胀大。
+  final Map<String, List<Map<String, Object?>>> _remoteModRowsCache = {};
+  static const int _remoteModRowsCacheLimit = 4;
 
   /// 串行唤醒的导航器（提示 / 弹窗用）。
   static GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -500,18 +509,19 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
           !BackupPk.digestVersionMismatch(remote) &&
           _runLibraryRowsLoaded) {
         _pendingLibraryMerge = _LibraryMergeRequest(
-          conflict: _buildConflict(plan),
+          conflict: await _buildConflict(plan),
           remote: remote,
           localRows: _runLibraryRows,
         );
         // 书架不做二选一：先按行合并，墓碑整理与书单元发现都读合并后的目录。
         return BackupConflictChoice.skip;
       }
-      return _escalate(_buildConflict(plan));
+      return _escalate(await _buildConflict(plan));
     }
 
-    final conflict = _buildConflict(plan);
-    // 自动裁决：三轴一致，或轮/代一致、仅时间更新时按时间取较新一侧。
+    final conflict = await _buildConflict(plan);
+    if (_cancelRequested) return BackupConflictChoice.skip;
+    // 自动裁决：书籍三轴一致 / 仅时间更新；Mod 库逐项聚合全部指向同一侧。
     final decision = conflict.pk.autoDecision;
     if (decision != null) {
       if (decision == SyncPkOutcome.remote) {
@@ -556,7 +566,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  SyncConflict _buildConflict(BackupPlan plan) {
+  Future<SyncConflict> _buildConflict(BackupPlan plan) async {
     final title = switch (plan.unit.kind) {
       BackupUnitKind.book =>
         '书籍《${_runBookTitles[plan.unit.refUuid] ?? _shortUuid(plan.unit.refUuid)}》',
@@ -566,28 +576,68 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     return SyncConflict(
       unit: plan.unit,
       plan: plan,
-      pk: _pkOf(plan),
+      pk: await _pkOf(plan),
       title: title,
     );
   }
 
-  SyncPkResult _pkOf(BackupPlan plan) {
+  Future<SyncPkResult> _pkOf(BackupPlan plan) async {
     if (BackupPk.digestVersionMismatch(plan.remote)) {
       return BackupPk.digestVersionConflict();
     }
-    return switch (plan.unit.kind) {
-      BackupUnitKind.book => BackupPk.decideBook(
-        local: plan.localMetrics,
-        remote: plan.remote,
-      ),
-      BackupUnitKind.mods => BackupPk.decideMods(
-        local: plan.localMetrics,
-        remote: plan.remote,
-      ),
-      BackupUnitKind.library => const SyncPkResult.unavailable(
-        '书架不做逐项 PK：本地与云端都改过时按行自动合并，合并不了才需要你选择。',
-      ),
-    };
+    switch (plan.unit.kind) {
+      case BackupUnitKind.book:
+        return BackupPk.decideBook(
+          local: plan.localMetrics,
+          remote: plan.remote,
+        );
+      case BackupUnitKind.library:
+        return const SyncPkResult.unavailable(
+          '书架不做逐项 PK：本地与云端都改过时按行自动合并，合并不了才需要你选择。',
+        );
+      case BackupUnitKind.mods:
+        return BackupPk.decideMods(
+          local: plan.localMetrics,
+          remote: plan.remote,
+          comparison: await _modsComparison(plan),
+        );
+    }
+  }
+
+  /// 读两侧 `mods` 行做逐 Mod 比较；任何一侧读不出来都返回「不可比较」。
+  ///
+  /// 逐 Mod 明细不写进云端清单：只在检出 Mod 库冲突时临时读一次云端快照，
+  /// 这样新旧云端数据都能逐项比较，清单格式与摘要版本都不用动。
+  Future<ModsPk> _modsComparison(BackupPlan plan) async {
+    final manifest = plan.remote;
+    if (manifest == null) {
+      return const ModsPk.unavailable('缺少云端清单，读不到逐 Mod 明细，需要你选择保留哪一侧。');
+    }
+    try {
+      final localRows = await _previewReader().readLocalModRows();
+      final remoteRows = await _loadRemoteModRows(manifest);
+      return ModsPk.compare(localRows: localRows, remoteRows: remoteRows);
+    } catch (error) {
+      debugPrint('逐 Mod 比较读取失败，退回整库时间轴：$error');
+      return const ModsPk.unavailable(
+        '读不到云端 Mod 快照或本地 Mod 库，无法逐项比较，需要你选择保留哪一侧。',
+      );
+    }
+  }
+
+  /// 读云端某一代快照的 Mod 行（会话内按「快照名 + 清单 digest」缓存）。
+  Future<List<Map<String, Object?>>> _loadRemoteModRows(
+    BackupManifest manifest,
+  ) async {
+    final key = '${manifest.snapshotName}|${manifest.digest}';
+    final cached = _remoteModRowsCache[key];
+    if (cached != null) return cached;
+    final rows = await _previewReader().readRemoteModRows(manifest);
+    _remoteModRowsCache[key] = rows;
+    while (_remoteModRowsCache.length > _remoteModRowsCacheLimit) {
+      _remoteModRowsCache.remove(_remoteModRowsCache.keys.first);
+    }
+    return rows;
   }
 
   /// 书架 / Mod 处理完、墓碑整理与书单元发现之前调用：把书架冲突按行合并。
@@ -1210,6 +1260,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     var localApplied = 0;
     var remoteApplied = 0;
+    var modsMerged = 0;
     var skipped = 0;
     var restored = false;
     var touchedLibrary = false;
@@ -1218,20 +1269,20 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       for (final decision in decisions) {
         final unit = decision.conflict.unit;
-        if (decision.choice == BackupConflictChoice.skip) {
+        if (decision.isSkip) {
           // 稍后处理 = 本次不动，冲突继续留着（面板 / 状态章还能看到入口）。
           skipped++;
           continue;
         }
-        final error = await _applyConflictChoice(
-          decision.conflict.plan,
-          decision.choice,
-        );
+        final error = await _applyConflictChoice(decision);
         if (error != null) {
           errors[unit.unitKey] = error;
           continue;
         }
-        if (decision.choice == BackupConflictChoice.remote) {
+        if (decision.isModsMerge) {
+          modsMerged++;
+          restored = true;
+        } else if (decision.choice == BackupConflictChoice.remote) {
           remoteApplied++;
           restored = true;
         } else {
@@ -1258,6 +1309,7 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
     return SyncConflictApplyReport(
       localApplied: localApplied,
       remoteApplied: remoteApplied,
+      modsMerged: modsMerged,
       skipped: skipped,
       errors: errors,
       restored: restored,
@@ -1286,15 +1338,18 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 把某个单元的冲突裁决应用到本地 / 云端。
-  Future<String?> _applyConflictChoice(
-    BackupPlan plan,
-    BackupConflictChoice choice,
-  ) async {
-    if (choice == BackupConflictChoice.skip) return null;
+  Future<String?> _applyConflictChoice(SyncConflictDecision decision) async {
+    if (decision.isSkip) return null;
+    final plan = decision.conflict.plan;
     final stores = _repos.stores;
     final locator = BackupLocator(userDataDir: stores.paths.userDataDir);
     final remote = _newRemote(_folder);
     try {
+      if (decision.isModsMerge) {
+        return await _applyModsMerge(decision, remote);
+      }
+      final choice = decision.choice;
+      if (choice == null) return '缺少整库选择';
       if (choice == BackupConflictChoice.remote) {
         final manifest = plan.remote;
         if (manifest == null) return '云端清单缺失';
@@ -1308,28 +1363,103 @@ class CloudSyncProvider extends ChangeNotifier with WidgetsBindingObserver {
         await tmp.rename(target.path);
         await _afterUnitReplaced(plan.unit);
       } else {
-        // 保留本地：直接推一代上去（修剪份数同样以云端配置为准）。
-        final keepVersions = await _readKeepVersionsForSync(remote);
-        final runner = BackupRunner(
-          remote: remote,
-          locator: locator,
-          store: stores.sync,
-          deviceId: _deviceId,
-          keepVersions: keepVersions,
-        );
-        await runner.run(
-          context: BackupContext(
-            bookUuids: () async => [plan.unit.refUuid],
-            beforeReplace: _closeForReplace,
-          ),
-          units: [plan.unit],
-          resolver: (_) async => BackupConflictChoice.local,
-        );
+        final error = _firstErrorOf(await _runLocalPush(remote, plan));
+        if (error != null) return error;
       }
       return null;
     } catch (error) {
       return error.toString();
+    } finally {
+      remote.close();
     }
+  }
+
+  /// 逐 Mod 合并：校验 → 写本地 → 推成云端新代。
+  ///
+  /// 先把同步基线对到云端这一代再跑「保留本地」推送：合并结果若与云端一致
+  /// 就是 upToDate，否则必然走 push（不会被规划成 pull 覆盖刚合并的内容）。
+  /// 推送失败时基线已经对齐，下一次同步会直接补推，不会卡在冲突里。
+  Future<String?> _applyModsMerge(
+    SyncConflictDecision decision,
+    BackupRemote remote,
+  ) async {
+    final plan = decision.conflict.plan;
+    final unit = plan.unit;
+    if (unit.kind != BackupUnitKind.mods) return '只有 Mod 库支持逐 Mod 合并';
+    final manifest = plan.remote;
+    if (manifest == null) return '云端清单缺失';
+    final stored = decision.conflict.pk.mods;
+    if (stored == null || !stored.comparable) {
+      return '读不到逐 Mod 明细，无法合并';
+    }
+    // 页面打开后两侧可能又变过：重算一次，状态对不上就拒绝（不拿旧选择乱写）。
+    final localRows = await _previewReader().readLocalModRows();
+    final remoteRows = await _loadRemoteModRows(manifest);
+    final fresh = ModsPk.compare(localRows: localRows, remoteRows: remoteRows);
+    if (!ModsPk.sameEntries(stored, fresh)) {
+      return '两侧 Mod 在等待期间有变化，请重新同步后再处理';
+    }
+    final ModsMergePlan mergePlan;
+    try {
+      mergePlan = ModsMergePlanner.plan(
+        comparison: fresh,
+        choices: decision.modChoices,
+        remoteRowsByUuid: {
+          for (final row in remoteRows)
+            if ((row['mod_uuid'] as String?)?.trim().isNotEmpty ?? false)
+              (row['mod_uuid'] as String): row,
+        },
+      );
+    } on ModsMergeException catch (error) {
+      return error.message;
+    }
+    await _repos.stores.mods.mergeRows(mergePlan.rowsToWrite);
+    // 合并结果还没推上去：基线先对到云端这一代，保证紧接着的推送只可能是
+    // push / upToDate（详见方法注释）。
+    await _repos.stores.sync.putUnit(
+      SyncUnitRow(
+        unitKey: unit.unitKey,
+        kind: unit.kind.name,
+        refUuid: unit.refUuid,
+        generation: manifest.generation,
+        remoteDigest: manifest.digest,
+        baseDigest: manifest.digest,
+        lastSyncedAt: DateTime.now().toUtc(),
+      ),
+    );
+    return _firstErrorOf(await _runLocalPush(remote, plan));
+  }
+
+  /// 「保留本地」：把这个单元推成云端新的一代（修剪份数同样以云端配置为准）。
+  Future<BackupReport> _runLocalPush(
+    BackupRemote remote,
+    BackupPlan plan,
+  ) async {
+    final stores = _repos.stores;
+    final locator = BackupLocator(userDataDir: stores.paths.userDataDir);
+    final keepVersions = await _readKeepVersionsForSync(remote);
+    final runner = BackupRunner(
+      remote: remote,
+      locator: locator,
+      store: stores.sync,
+      deviceId: _deviceId,
+      keepVersions: keepVersions,
+    );
+    return runner.run(
+      context: BackupContext(
+        bookUuids: () async => [plan.unit.refUuid],
+        beforeReplace: _closeForReplace,
+      ),
+      units: [plan.unit],
+      resolver: (_) async => BackupConflictChoice.local,
+    );
+  }
+
+  /// 单元级报告里的第一条失败（没有失败返回 null）。
+  static String? _firstErrorOf(BackupReport report) {
+    if (report.errors.isNotEmpty) return report.errors.values.first;
+    if (report.fatalError != null) return report.fatalError;
+    return null;
   }
 
   /// 直接塞入待处理冲突（测试 / 页面预览用）。

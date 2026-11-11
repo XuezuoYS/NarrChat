@@ -13,7 +13,10 @@ import 'backup_planner.dart';
 import 'backup_remote.dart';
 import 'backup_unit.dart';
 
-/// 冲突时用户的选择：整本二选一。
+/// 冲突时用户对**单元**的选择（整份二选一）。
+///
+/// Mod 库的逐 Mod 合并不走这里：决策在 `CloudSyncProvider.applyConflictDecisions`
+/// 里合并进本地后，再以「保留本地」推成新代。
 enum BackupConflictChoice { local, remote, skip }
 
 typedef BackupConflictResolver = Future<BackupConflictChoice> Function(

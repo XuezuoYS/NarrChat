@@ -91,14 +91,34 @@ class SyncConflict {
       SyncConflict(unit: unit, plan: plan, pk: pk, title: title, note: value);
 }
 
-/// 用户在冲突页对某一项的选择（`skip` = 稍后处理）。
+/// 用户在冲突页对某一项的选择。
+///
+/// 三种形态：
+/// - 整库二选一：`choice` 为 local / remote；
+/// - 稍后处理：`choice == skip`；
+/// - Mod 库逐 Mod 合并：`modsMerge == true`、`choice == null`，逐项选择在
+///   [modChoices]（`mod_uuid → local / remote`）。
 class SyncConflictDecision {
-  const SyncConflictDecision({required this.conflict, required this.choice});
+  const SyncConflictDecision({
+    required this.conflict,
+    this.choice,
+    this.modChoices = const {},
+    this.modsMerge = false,
+  }) : assert(modsMerge || choice != null, '非逐 Mod 合并的决策必须给出整库选择');
 
   final SyncConflict conflict;
-  final BackupConflictChoice choice;
+
+  /// 整库选择；逐 Mod 合并时为 null。
+  final BackupConflictChoice? choice;
+
+  /// 逐 Mod 选择：`mod_uuid → local / remote`（仅 `same` 之外的条目）。
+  final Map<String, BackupConflictChoice> modChoices;
+
+  /// 是否按逐 Mod 选择合并本地 Mod 库。
+  final bool modsMerge;
 
   bool get isSkip => choice == BackupConflictChoice.skip;
+  bool get isModsMerge => modsMerge;
 }
 
 /// 批量应用冲突决策的结果。
@@ -106,6 +126,7 @@ class SyncConflictApplyReport {
   const SyncConflictApplyReport({
     this.localApplied = 0,
     this.remoteApplied = 0,
+    this.modsMerged = 0,
     this.skipped = 0,
     this.errors = const {},
     this.restored = false,
@@ -117,27 +138,35 @@ class SyncConflictApplyReport {
   /// 采用云端（整份替换本地）的项数。
   final int remoteApplied;
 
+  /// 逐 Mod 合并（合并进本地后推成云端新一代）的项数。
+  final int modsMerged;
+
   /// 稍后处理（保持冲突）的项数。
   final int skipped;
 
   /// 失败明细：`unitKey → 原因`。
   final Map<String, String> errors;
 
-  /// 是否因为采用云端而重载了本地数据。
+  /// 是否因为采用云端 / 逐 Mod 合并而重载了本地数据。
   final bool restored;
 
   bool get hasErrors => errors.isNotEmpty;
   bool get isEmpty =>
-      localApplied == 0 && remoteApplied == 0 && skipped == 0 && !hasErrors;
+      localApplied == 0 &&
+      remoteApplied == 0 &&
+      modsMerged == 0 &&
+      skipped == 0 &&
+      !hasErrors;
 
   /// 成功处理的总项数（不含稍后处理）。
-  int get applied => localApplied + remoteApplied;
+  int get applied => localApplied + remoteApplied + modsMerged;
 
   /// 结果提示文案（页面 / 驻场岛共用）。
   String get summary {
     final parts = <String>[
       if (remoteApplied > 0) '采用云端 $remoteApplied 项',
       if (localApplied > 0) '保留本地 $localApplied 项',
+      if (modsMerged > 0) '逐 Mod 合并 $modsMerged 项',
       if (skipped > 0) '稍后处理 $skipped 项',
     ];
     if (parts.isEmpty) return '没有应用任何决策';
@@ -216,6 +245,7 @@ class ModEntryPreview {
     this.worldBookCount = 0,
     this.updatedAt,
     this.deleted = false,
+    this.contentDigest = '',
   });
 
   final String uuid;
@@ -227,6 +257,9 @@ class ModEntryPreview {
   final int worldBookCount;
   final DateTime? updatedAt;
   final bool deleted;
+
+  /// 内容指纹（与逐 Mod PK 同一套算法）：两侧相同即内容一致，预览不必再逐字段比。
+  final String contentDigest;
 
   /// uuid 前 8 位（同名 Mod 靠它区分）。
   String get uuidShort => uuid.length <= 8 ? uuid : uuid.substring(0, 8);

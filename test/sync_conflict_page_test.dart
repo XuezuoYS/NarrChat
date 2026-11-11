@@ -98,7 +98,7 @@ void main() {
     await tester.tap(find.text('应用决策（1）'));
     await tester.pumpAndSettle();
     expect(find.text('应用这些决策？'), findsOneWidget);
-    expect(find.text('采用云端 1 项，保留本地 0 项。'), findsOneWidget);
+    expect(find.text('采用云端 1 项。'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '应用'));
     await tester.pumpAndSettle();
@@ -261,6 +261,160 @@ void main() {
     expect(find.text('未知'), findsWidgets);
     expect(find.textContaining('缺少数据'), findsOneWidget);
   });
+
+  group('Mod 库逐 Mod 对比', () {
+    testWidgets('渲染逐 Mod 明细与状态徽标，一致项折叠成计数', (tester) async {
+      await pumpPage(tester, conflicts: [buildModsConflict()]);
+
+      expect(find.text('Mod 库'), findsWidgets);
+      expect(find.textContaining('逐 Mod 对比（共 4 个，1 个一致未列出）'), findsOneWidget);
+      expect(find.text('本地较新的 Mod · m-local'), findsOneWidget);
+      expect(find.text('云端较新的 Mod · m-remote'), findsOneWidget);
+      expect(
+        find.text('时间相同的 Mod · m-unknow'),
+        findsOneWidget,
+        reason: 'uuid 前 8 位',
+      );
+      expect(find.text('本地较新'), findsOneWidget);
+      expect(find.text('云端较新'), findsOneWidget);
+      expect(find.text('需要你选'), findsOneWidget);
+      expect(find.text('两侧一致的 Mod · m-same'), findsNothing, reason: '一致项不列出');
+      expect(find.text('已选 0 / 1'), findsOneWidget);
+    });
+
+    testWidgets('按时间建议合并：填好可判定项，时间相同项仍需手选', (tester) async {
+      await pumpPage(tester, conflicts: [buildModsConflict()]);
+
+      await tester.tap(find.text('按时间建议合并'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('逐 Mod 合并 · 还差 1 项'), findsOneWidget);
+      expect(find.textContaining('还有 1 项需要你选'), findsOneWidget);
+      final localChip = tester.widget<ChoiceChip>(
+        find.descendant(
+          of: find.byKey(const ValueKey('mod-choice-m-local-local')),
+          matching: find.byType(ChoiceChip),
+        ),
+      );
+      expect(localChip.selected, isTrue, reason: '本地较新的项按时间建议选本地');
+      final remoteChip = tester.widget<ChoiceChip>(
+        find.descendant(
+          of: find.byKey(const ValueKey('mod-choice-m-remote-remote')),
+          matching: find.byType(ChoiceChip),
+        ),
+      );
+      expect(remoteChip.selected, isTrue, reason: '云端较新的项按时间建议选云端');
+
+      final apply = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '应用决策'),
+      );
+      expect(apply.onPressed, isNull, reason: '还有未知项没选，不能应用');
+    });
+
+    testWidgets('逐 Mod 选完 → 应用提交合并决策与逐项选择', (tester) async {
+      final spy = await pumpPage(tester, conflicts: [buildModsConflict()]);
+
+      await tester.tap(find.text('按时间建议合并'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('mod-choice-m-unknown-remote')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('逐 Mod 合并'), findsOneWidget, reason: '状态徽标显示已就绪');
+      expect(find.text('已选 1 / 1'), findsOneWidget);
+
+      await tester.tap(find.text('应用决策（1）'));
+      await tester.pumpAndSettle();
+      expect(find.text('逐 Mod 合并 1 项。'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, '应用'));
+      await tester.pumpAndSettle();
+
+      expect(spy.applied, hasLength(1));
+      final decision = spy.applied.single;
+      expect(decision.isModsMerge, isTrue);
+      expect(decision.choice, isNull);
+      expect(decision.modChoices, {
+        'm-local': BackupConflictChoice.local,
+        'm-remote': BackupConflictChoice.remote,
+        'm-unknown': BackupConflictChoice.remote,
+      });
+      expect(find.text('同步冲突决策'), findsNothing, reason: '全部解决后自动返回');
+      await flushNotices(tester);
+    });
+
+    testWidgets('「按 PK 建议」批量对 Mod 库进入逐 Mod 合并', (tester) async {
+      await pumpPage(tester, conflicts: [buildModsConflict()]);
+
+      await tester.tap(find.text('按 PK 建议'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('逐 Mod 合并 · 还差 1 项'), findsOneWidget);
+      expect(find.text('已选 0 / 1'), findsOneWidget);
+    });
+
+    testWidgets('整库侧卡选择会退出逐 Mod 合并', (tester) async {
+      await pumpPage(tester, conflicts: [buildModsConflict()]);
+
+      await tester.tap(find.text('按时间建议合并'));
+      await tester.pumpAndSettle();
+      expect(find.text('逐 Mod 合并 · 还差 1 项'), findsOneWidget);
+
+      await tester.tap(find.textContaining('本机已同步'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('已选本地'), findsOneWidget, reason: '侧卡改成整库选择');
+      expect(find.text('逐 Mod 合并 · 还差 1 项'), findsNothing);
+      expect(find.text('逐 Mod 合并'), findsNothing);
+      expect(find.textContaining('已进入逐 Mod 合并'), findsNothing);
+    });
+
+    testWidgets('读不到逐 Mod 明细：退回时间轴并说明原因', (tester) async {
+      await pumpPage(
+        tester,
+        conflicts: [buildModsConflict(withModsDetail: false)],
+      );
+
+      expect(find.textContaining('逐 Mod 对比'), findsNothing);
+      expect(find.text('更新时间'), findsWidgets);
+      expect(find.textContaining('读不到两侧的逐 Mod 明细'), findsOneWidget);
+      expect(find.text('按时间建议合并'), findsNothing);
+    });
+
+    testWidgets('两侧各自新增 Mod：没有待选项也能直接合并', (tester) async {
+      final spy = await pumpPage(
+        tester,
+        conflicts: [buildModsConflictOneSided()],
+      );
+
+      await tester.tap(find.text('按时间建议合并'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('逐 Mod 合并'), findsOneWidget);
+      expect(find.text('已选 1 / 1'), findsOneWidget);
+      expect(find.text('仅本地有'), findsOneWidget);
+      expect(find.text('仅云端有'), findsOneWidget);
+      expect(find.textContaining('自动保留'), findsOneWidget);
+      expect(find.textContaining('自动带入'), findsOneWidget);
+
+      await tester.tap(find.text('应用决策（1）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '应用'));
+      await tester.pumpAndSettle();
+
+      expect(spy.applied.single.isModsMerge, isTrue);
+      expect(spy.applied.single.modChoices, isEmpty, reason: '独有条目自动处理');
+      await flushNotices(tester);
+    });
+
+    testWidgets('窄屏 360：逐 Mod 表格可渲染', (tester) async {
+      await pumpPage(tester, width: 360, conflicts: [buildModsConflict()]);
+
+      expect(find.textContaining('逐 Mod 对比'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
 
 /// 可编排的 provider 替身：只覆盖冲突页用到的两个方法。
@@ -285,14 +439,21 @@ class _SpyProvider extends CloudSyncProvider {
     ]);
     var local = 0;
     var remote = 0;
+    var merged = 0;
     for (final decision in decisions) {
-      if (decision.choice == BackupConflictChoice.remote) {
+      if (decision.isModsMerge) {
+        merged++;
+      } else if (decision.choice == BackupConflictChoice.remote) {
         remote++;
       } else {
         local++;
       }
     }
-    return SyncConflictApplyReport(localApplied: local, remoteApplied: remote);
+    return SyncConflictApplyReport(
+      localApplied: local,
+      remoteApplied: remote,
+      modsMerged: merged,
+    );
   }
 
   @override

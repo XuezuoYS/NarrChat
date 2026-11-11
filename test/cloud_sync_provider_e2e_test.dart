@@ -2,10 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/providers/cloud_sync_provider.dart';
 import 'package:narrchat/services/cloud_backup/backup_catalog.dart';
 import 'package:narrchat/services/cloud_backup/backup_digest.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_mods_conflict.dart';
 import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_runner.dart';
@@ -99,6 +101,127 @@ void main() {
       ).encode(),
     );
     return other;
+  }
+
+  /// 用生产同一套算法算某个 Mod 库文件的内容摘要。
+  Future<String> digestOfMods(String path) async {
+    final db = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(),
+    );
+    try {
+      return await BackupDigest.ofMods(BackupUnit.mods, db);
+    } finally {
+      await db.close();
+    }
+  }
+
+  /// 在本机 Mod 库里造 / 覆盖一个 Mod（固定 uuid 与时间，便于两边对账）。
+  Future<void> seedLocalMod({
+    required String uuid,
+    required String name,
+    required String content,
+    required DateTime updatedAt,
+  }) {
+    return stack.repos.mod.createMod(
+      Mod(
+        uuid: uuid,
+        name: name,
+        prePrompt: content,
+        createdAt: updatedAt,
+        updatedAt: updatedAt,
+      ),
+    );
+  }
+
+  /// 造一份"别的设备"的 Mod 库快照 + 清单，放到云端第 [generation] 代。
+  Future<TestStack> putRemoteModsFromOtherDevice({
+    required List<
+      ({String uuid, String name, String content, DateTime updatedAt})
+    >
+    mods,
+    required int generation,
+    bool withSnapshot = true,
+  }) async {
+    final other = await TestStack.create(prefix: 'sync_e2e_mods_');
+    for (final spec in mods) {
+      await other.repos.mod.createMod(
+        Mod(
+          uuid: spec.uuid,
+          name: spec.name,
+          prePrompt: spec.content,
+          createdAt: spec.updatedAt,
+          updatedAt: spec.updatedAt,
+        ),
+      );
+    }
+    await other.stores.mods.close();
+    if (withSnapshot) {
+      remote.put(
+        BackupUnit.mods.snapshotName(generation),
+        await File(other.paths.modsDbPath).readAsBytes(),
+      );
+    }
+    final latest = mods
+        .map((item) => item.updatedAt)
+        .reduce((a, b) => a.isAfter(b) ? a : b);
+    remote.put(
+      BackupUnit.mods.manifestName,
+      BackupManifest.build(
+        unit: BackupUnit.mods,
+        generation: generation,
+        digest: withSnapshot
+            ? await digestOfMods(other.paths.modsDbPath)
+            : 'remote-mods-digest',
+        deviceId: 'other-device',
+        contentUpdatedAt: latest,
+      ).encode(),
+    );
+    return other;
+  }
+
+  /// 首次同步 → 本地改 A → 云端另一台设备改 B（A 保持旧版）。
+  ///
+  /// 得到「本地 A 较新、云端 B 较新」的混合冲突，供逐 Mod 相关用例复用。
+  Future<SyncConflict> seedMixedModsConflict() async {
+    final base = DateTime.utc(2026, 1, 1);
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v1',
+      updatedAt: base,
+    );
+    await seedLocalMod(
+      uuid: 'm-b',
+      name: 'Mod B',
+      content: 'B v1',
+      updatedAt: base,
+    );
+    await provider.sync();
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v2 本地',
+      updatedAt: DateTime.utc(2026, 3, 1),
+    );
+    final other = await putRemoteModsFromOtherDevice(
+      mods: [
+        (uuid: 'm-a', name: 'Mod A', content: 'A v1', updatedAt: base),
+        (
+          uuid: 'm-b',
+          name: 'Mod B',
+          content: 'B v2 云端',
+          updatedAt: DateTime.utc(2026, 2, 1),
+        ),
+      ],
+      generation: 2,
+    );
+    addTearDown(other.dispose);
+    provider.conflictPrompt = (pending) async =>
+        SyncConflictPromptResult.decide;
+    await provider.sync();
+    await Future<void>.delayed(Duration.zero);
+    return provider.conflicts.single;
   }
 
   test('首次同步：各单元推第 1 代，数据面与图片面都成功', () async {
@@ -1020,6 +1143,192 @@ void main() {
       reason: '彻底删除只删云端备份，墓碑保留',
     );
     expect(provider.deletedBackupUnits, isEmpty);
+  });
+
+  test('Mod 库逐 Mod 方向不一致：不自动裁决，进冲突页并带逐 Mod 明细', () async {
+    final conflict = await seedMixedModsConflict();
+
+    expect(conflict.unit, BackupUnit.mods);
+    expect(provider.conflicts, hasLength(1));
+    final mods = conflict.pk.mods;
+    expect(mods, isNotNull);
+    expect(mods!.comparable, isTrue);
+    expect(mods.outcome, ModsPkOutcome.unknown);
+    final statuses = {
+      for (final entry in mods.entries) entry.uuid: entry.status,
+    };
+    expect(statuses['m-a'], ModsPkStatus.local, reason: '本地改的 A 较新');
+    expect(statuses['m-b'], ModsPkStatus.remote, reason: '云端改的 B 较新');
+    expect(conflict.pk.autoDecision, isNull);
+    expect(provider.dataSyncState, SyncState.success, reason: '冲突不算单元级失败');
+
+    // 待裁决期间本地不动、云端也没被本机覆盖。
+    final local = await stack.stores.mods.list();
+    expect(local.firstWhere((m) => m.uuid == 'm-a').prePrompt, 'A v2 本地');
+    expect(local.firstWhere((m) => m.uuid == 'm-b').prePrompt, 'B v1');
+    expect(
+      remote.files.containsKey(BackupUnit.mods.snapshotName(3)),
+      isFalse,
+      reason: '冲突未处理时不推新代',
+    );
+  });
+
+  test('逐 Mod 合并：两侧较新版本都写回本地，并推成云端新代', () async {
+    final conflict = await seedMixedModsConflict();
+
+    final report = await provider.applyConflictDecisions([
+      SyncConflictDecision(
+        conflict: conflict,
+        modsMerge: true,
+        modChoices: {
+          'm-a': BackupConflictChoice.local,
+          'm-b': BackupConflictChoice.remote,
+        },
+      ),
+    ]);
+
+    expect(report.modsMerged, 1);
+    expect(report.errors, isEmpty);
+    expect(report.restored, isTrue, reason: '本地 Mod 变了，要通知上层重载');
+    expect(provider.conflicts, isEmpty);
+
+    final local = await stack.stores.mods.list();
+    expect(local.firstWhere((m) => m.uuid == 'm-a').prePrompt, 'A v2 本地');
+    expect(local.firstWhere((m) => m.uuid == 'm-b').prePrompt, 'B v2 云端');
+
+    final pushed = BackupManifest.decode(
+      remote.files[BackupUnit.mods.manifestName]!,
+    );
+    expect(pushed.generation, 3, reason: '取两边较大代数 + 1');
+    expect(pushed.digest, await digestOfMods(stack.paths.modsDbPath));
+
+    // 合并结果已推上去：再同步不再冲突、不再写新代。
+    final writes = remote.writeCount;
+    await provider.sync();
+    expect(provider.conflicts, isEmpty);
+    expect(remote.writeCount, writes);
+  });
+
+  test('Mod 库逐项全部指向云端：自动采用云端，不弹提示', () async {
+    final base = DateTime.utc(2026, 1, 1);
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v1',
+      updatedAt: base,
+    );
+    await seedLocalMod(
+      uuid: 'm-b',
+      name: 'Mod B',
+      content: 'B v1',
+      updatedAt: base,
+    );
+    await provider.sync();
+
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v2 本地',
+      updatedAt: DateTime.utc(2026, 2, 1),
+    );
+    final other = await putRemoteModsFromOtherDevice(
+      mods: [
+        (
+          uuid: 'm-a',
+          name: 'Mod A',
+          content: 'A v3 云端',
+          updatedAt: DateTime.utc(2026, 3, 1),
+        ),
+        (
+          uuid: 'm-b',
+          name: 'Mod B',
+          content: 'B v2 云端',
+          updatedAt: DateTime.utc(2026, 3, 1),
+        ),
+      ],
+      generation: 2,
+    );
+    addTearDown(other.dispose);
+    final remoteBytes = remote.files[BackupUnit.mods.snapshotName(2)]!;
+
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+    await provider.sync();
+
+    expect(promptCalls, 0, reason: '全部指向云端就自动裁决');
+    expect(provider.conflicts, isEmpty);
+    expect(
+      await File(stack.paths.modsDbPath).readAsBytes(),
+      remoteBytes,
+      reason: '采用云端 = 整份替换本地',
+    );
+    final local = await stack.stores.mods.list();
+    expect(local.firstWhere((m) => m.uuid == 'm-a').prePrompt, 'A v3 云端');
+    expect(local.firstWhere((m) => m.uuid == 'm-b').prePrompt, 'B v2 云端');
+    expect(
+      provider.resultToasts.map((toast) => toast.message).join('\n'),
+      contains('采用云端 1 项'),
+    );
+  });
+
+  test('Mod 库冲突读不到云端快照：不自动裁决，退回时间轴交给人', () async {
+    final base = DateTime.utc(2026, 1, 1);
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v1',
+      updatedAt: base,
+    );
+    await provider.sync();
+    await seedLocalMod(
+      uuid: 'm-a',
+      name: 'Mod A',
+      content: 'A v2 本地',
+      updatedAt: DateTime.utc(2026, 3, 1),
+    );
+    final other = await putRemoteModsFromOtherDevice(
+      mods: [
+        (
+          uuid: 'm-a',
+          name: 'Mod A',
+          content: 'A v3 云端',
+          updatedAt: DateTime.utc(2026, 4, 1),
+        ),
+      ],
+      generation: 2,
+      withSnapshot: false,
+    );
+    addTearDown(other.dispose);
+
+    var promptCalls = 0;
+    provider.conflictPrompt = (pending) async {
+      promptCalls++;
+      return SyncConflictPromptResult.decide;
+    };
+    var opened = 0;
+    provider.onConflictsDetected = () async => opened++;
+    await provider.sync();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(promptCalls, 1, reason: '读不到明细就不能静默按时间裁决');
+    expect(provider.conflicts, hasLength(1));
+    final conflict = provider.conflicts.single;
+    expect(conflict.pk.mods, isNotNull);
+    expect(conflict.pk.mods!.comparable, isFalse);
+    expect(conflict.pk.autoDecision, isNull);
+    expect(conflict.pk.axes, hasLength(1), reason: '时间轴只作展示');
+    expect(conflict.pk.axes.single.outcome, SyncPkOutcome.unknown);
+    expect(opened, 1);
+    expect(
+      (await stack.stores.mods.list())
+          .firstWhere((m) => m.uuid == 'm-a')
+          .prePrompt,
+      'A v2 本地',
+      reason: '没裁决前本地不动',
+    );
   });
 
   // 云端目录分层：真实 `WebDavBackupRemote` + 按目录存文件的 WebDAV 替身。

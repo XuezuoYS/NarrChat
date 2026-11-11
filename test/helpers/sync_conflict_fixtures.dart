@@ -1,10 +1,34 @@
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
 import 'package:narrchat/services/cloud_backup/backup_metrics.dart';
+import 'package:narrchat/services/cloud_backup/backup_mods_conflict.dart';
 import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_conflict.dart';
 import 'package:narrchat/utils/timestamp_format.dart';
+
+/// 造一条 `mods` 原始行（列名与真实库一致，供逐 Mod 比较 / 合并测试用）。
+Map<String, Object?> modRow({
+  required String uuid,
+  required String name,
+  String content = '',
+  DateTime? updatedAt,
+  DateTime? deletedAt,
+}) {
+  final time = updatedAt ?? DateTime.utc(2026, 1, 1);
+  return {
+    'mod_uuid': uuid,
+    'name': name,
+    'description': '',
+    'pre_prompt': content,
+    'post_prompt': '',
+    'system_prompt': '',
+    'world_book': '',
+    'created_at': formatTimestamp(time),
+    'updated_at': formatTimestamp(time),
+    'deleted_at': deletedAt == null ? null : formatTimestamp(deletedAt),
+  };
+}
 
 /// 冲突相关 widget 测试共用的「纯内存」构造器（不连库、不联网）。
 ///
@@ -56,7 +80,10 @@ SyncConflict buildBookConflict({
   );
 }
 
-SyncConflict buildModsConflict({String remoteDeviceId = 'device-abcdef12'}) {
+SyncConflict buildModsConflict({
+  String remoteDeviceId = 'device-abcdef12',
+  bool withModsDetail = true,
+}) {
   final unit = BackupUnit.mods;
   final manifest = BackupManifest(
     unitKey: unit.unitKey,
@@ -74,12 +101,68 @@ SyncConflict buildModsConflict({String remoteDeviceId = 'device-abcdef12'}) {
     base: const BackupBase(generation: 1, baseDigest: 'base-mods'),
     remote: manifest,
   );
+  // 混合方向：本地 A 较新、云端 B 较新、C 一致、D 时间相同但内容不同。
+  final localRows = [
+    modRow(
+      uuid: 'm-local',
+      name: '本地较新的 Mod',
+      content: '本地版本',
+      updatedAt: DateTime.utc(2026, 3, 1),
+    ),
+    modRow(
+      uuid: 'm-remote',
+      name: '云端较新的 Mod',
+      content: '旧内容',
+      updatedAt: DateTime.utc(2026, 1, 1),
+    ),
+    modRow(
+      uuid: 'm-same',
+      name: '两侧一致的 Mod',
+      content: '一样',
+      updatedAt: DateTime.utc(2026, 2, 1),
+    ),
+    modRow(
+      uuid: 'm-unknown',
+      name: '时间相同的 Mod',
+      content: '本地内容',
+      updatedAt: DateTime.utc(2026, 2, 10),
+    ),
+  ];
+  final remoteRows = [
+    modRow(
+      uuid: 'm-local',
+      name: '本地较新的 Mod',
+      content: '旧版本',
+      updatedAt: DateTime.utc(2026, 1, 1),
+    ),
+    modRow(
+      uuid: 'm-remote',
+      name: '云端较新的 Mod',
+      content: '新内容',
+      updatedAt: DateTime.utc(2026, 2, 1),
+    ),
+    modRow(
+      uuid: 'm-same',
+      name: '两侧一致的 Mod',
+      content: '一样',
+      updatedAt: DateTime.utc(2026, 2, 1),
+    ),
+    modRow(
+      uuid: 'm-unknown',
+      name: '时间相同的 Mod',
+      content: '云端内容',
+      updatedAt: DateTime.utc(2026, 2, 10),
+    ),
+  ];
   return SyncConflict(
     unit: unit,
     plan: plan,
     pk: BackupPk.decideMods(
       local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
       remote: manifest,
+      comparison: withModsDetail
+          ? ModsPk.compare(localRows: localRows, remoteRows: remoteRows)
+          : null,
     ),
     title: 'Mod 库',
   );
@@ -109,6 +192,55 @@ SyncConflict buildLibraryConflict() {
     pk: const SyncPkResult.unavailable('书架无法自动合并，请选择保留哪一侧。'),
     title: '书架（Library 库）',
     note: '两侧书架的全局身份不一致，不能自动合并',
+  );
+}
+
+/// 两侧各自新增了一个不同 uuid 的 Mod：没有共同条目需要逐项选择，可直接合并。
+SyncConflict buildModsConflictOneSided({
+  String remoteDeviceId = 'device-abcdef12',
+}) {
+  final unit = BackupUnit.mods;
+  final manifest = BackupManifest(
+    unitKey: unit.unitKey,
+    kind: unit.kind,
+    refUuid: '',
+    generation: 2,
+    digest: 'remote-mods',
+    snapshotName: unit.snapshotName(2),
+    savedAt: '2026-01-02T00:00:00.000Z',
+    deviceId: remoteDeviceId,
+  );
+  final plan = BackupPlanner.plan(
+    unit: unit,
+    localDigest: 'local-mods',
+    base: const BackupBase(generation: 1, baseDigest: 'base-mods'),
+    remote: manifest,
+  );
+  final localRows = [
+    modRow(
+      uuid: 'm-only-local',
+      name: '仅本地新增',
+      content: '本地新增内容',
+      updatedAt: DateTime.utc(2026, 3, 1),
+    ),
+  ];
+  final remoteRows = [
+    modRow(
+      uuid: 'm-only-remote',
+      name: '仅云端新增',
+      content: '云端新增内容',
+      updatedAt: DateTime.utc(2026, 3, 2),
+    ),
+  ];
+  return SyncConflict(
+    unit: unit,
+    plan: plan,
+    pk: BackupPk.decideMods(
+      local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
+      remote: manifest,
+      comparison: ModsPk.compare(localRows: localRows, remoteRows: remoteRows),
+    ),
+    title: 'Mod 库',
   );
 }
 

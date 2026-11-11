@@ -1,8 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
 import 'package:narrchat/services/cloud_backup/backup_metrics.dart';
+import 'package:narrchat/services/cloud_backup/backup_mods_conflict.dart';
 import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
+
+import 'helpers/sync_conflict_fixtures.dart';
 
 /// 冲突 PK：三轴口径与「只有全部一致才自动裁决」的规则。
 void main() {
@@ -36,6 +39,24 @@ void main() {
       latestRoundIndex: latestRoundIndex,
       roundGenerationCount: roundGenerationCount,
       updatedAt: updatedAt,
+    );
+  }
+
+  /// Mod 库单元的云端清单（没给逐 Mod 明细时只剩整库内容时间可展示）。
+  BackupManifest modsRemoteOf({
+    String contentUpdatedAt = '2026-01-01T00:00:00.000Z',
+    int digestVersion = 1,
+  }) {
+    return BackupManifest(
+      unitKey: BackupUnit.mods.unitKey,
+      kind: BackupUnitKind.mods,
+      refUuid: '',
+      generation: 2,
+      digest: 'remote-mods',
+      snapshotName: BackupUnit.mods.snapshotName(2),
+      savedAt: '2026-01-02T00:00:00.000Z',
+      contentUpdatedAt: contentUpdatedAt,
+      digestVersion: digestVersion,
     );
   }
 
@@ -263,51 +284,242 @@ void main() {
       expect(result.autoDecision, isNull);
       expect(result.hasUnknown, isTrue);
     });
-
-    test('Mod 单轴不受时间裁决影响', () {
-      final result = BackupPk.decideMods(
-        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
-        remote: remoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
-      );
-      expect(result.decidedByTimeOnly, isFalse);
-      expect(result.autoDecision, SyncPkOutcome.remote);
-    });
   });
 
-  group('Mod 单轴', () {
-    test('云端修改时间更新：自动采用云端', () {
-      final result = BackupPk.decideMods(
-        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
-        remote: remoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+  group('Mod 逐项', () {
+    ModsPk compareOf({
+      required List<Map<String, Object?>> localRows,
+      required List<Map<String, Object?>> remoteRows,
+    }) => ModsPk.compare(localRows: localRows, remoteRows: remoteRows);
+
+    test('逐项全部指向云端：autoDecision remote / unanimous', () {
+      final comparison = compareOf(
+        localRows: [
+          modRow(
+            uuid: 'm1',
+            name: '云端较新',
+            content: '旧',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
+        remoteRows: [
+          modRow(
+            uuid: 'm1',
+            name: '云端较新',
+            content: '新',
+            updatedAt: DateTime.utc(2026, 2, 1),
+          ),
+          modRow(
+            uuid: 'm2',
+            name: '仅云端有',
+            content: '云端独有',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
       );
-      expect(result.axes, hasLength(1));
+      expect(comparison.outcome, ModsPkOutcome.remote);
+
+      final result = BackupPk.decideMods(
+        // 整库时间反而本地更新：逐 Mod 明细生效后，不看整库时间。
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+        comparison: comparison,
+      );
+
+      expect(result.axes, isEmpty);
+      expect(result.mods, isNotNull);
+      expect(result.mods!.comparable, isTrue);
+      expect(result.modsOutcome, SyncPkOutcome.remote);
       expect(result.unanimous, isTrue);
       expect(result.winner, SyncPkOutcome.remote);
+      expect(result.autoDecision, SyncPkOutcome.remote);
+      expect(result.winnerLabel, '云端');
+      expect(result.explanation, contains('全部指向云端'));
     });
 
-    test('本地修改时间更新：自动保留本地', () {
-      final result = BackupPk.decideMods(
-        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
-        remote: remoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+    test('逐项全部指向本地：autoDecision local / unanimous', () {
+      final comparison = compareOf(
+        localRows: [
+          modRow(
+            uuid: 'm1',
+            name: '本地较新',
+            content: '新',
+            updatedAt: DateTime.utc(2026, 3, 1),
+          ),
+          modRow(
+            uuid: 'm2',
+            name: '仅本地有',
+            content: '本地独有',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
+        remoteRows: [
+          modRow(
+            uuid: 'm1',
+            name: '本地较新',
+            content: '旧',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
       );
+      expect(comparison.outcome, ModsPkOutcome.local);
+
+      final result = BackupPk.decideMods(
+        // 云端整库时间更新也不影响逐项结论。
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-03-01T00:00:00.000Z'),
+        comparison: comparison,
+      );
+
+      expect(result.axes, isEmpty);
+      expect(result.mods, isNotNull);
+      expect(result.modsOutcome, SyncPkOutcome.local);
       expect(result.unanimous, isTrue);
       expect(result.winner, SyncPkOutcome.local);
+      expect(result.autoDecision, SyncPkOutcome.local);
+      expect(result.winnerLabel, '本地');
+      expect(result.explanation, contains('全部指向本地'));
     });
 
-    test('时间持平或缺失：不自动，交给用户', () {
-      final tie = BackupPk.decideMods(
-        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 2, 1)),
-        remote: remoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+    test('方向不一致：autoDecision 为 null，明细留给页面逐项选择', () {
+      final comparison = compareOf(
+        localRows: [
+          modRow(
+            uuid: 'm-local',
+            name: '本地较新',
+            content: '本地',
+            updatedAt: DateTime.utc(2026, 3, 1),
+          ),
+          modRow(
+            uuid: 'm-remote',
+            name: '云端较新',
+            content: '本地',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
+        remoteRows: [
+          modRow(
+            uuid: 'm-local',
+            name: '本地较新',
+            content: '云端',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+          modRow(
+            uuid: 'm-remote',
+            name: '云端较新',
+            content: '云端',
+            updatedAt: DateTime.utc(2026, 3, 1),
+          ),
+        ],
       );
-      expect(tie.unanimous, isFalse);
-      expect(tie.axes.single.outcome, SyncPkOutcome.tie);
 
-      final unknown = BackupPk.decideMods(
-        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 2, 1)),
-        remote: remoteOf(contentUpdatedAt: ''),
+      final result = BackupPk.decideMods(
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-01-01T00:00:00.000Z'),
+        comparison: comparison,
       );
-      expect(unknown.unanimous, isFalse);
-      expect(unknown.axes.single.outcome, SyncPkOutcome.unknown);
+
+      expect(result.axes, isEmpty, reason: '逐 Mod 明细替代整库时间轴');
+      expect(result.mods, isNotNull);
+      expect(result.mods!.outcome, ModsPkOutcome.unknown);
+      expect(result.modsOutcome, SyncPkOutcome.unknown);
+      expect(result.unanimous, isFalse);
+      expect(result.winner, isNull);
+      expect(result.autoDecision, isNull);
+      expect(result.explanation, contains('需要你逐个选择'));
+    });
+
+    test('有任何一项判不了：不自动裁决', () {
+      final comparison = compareOf(
+        localRows: [
+          modRow(
+            uuid: 'm1',
+            name: '云端较新',
+            content: '旧',
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+          modRow(
+            uuid: 'm2',
+            name: '时间相同',
+            content: '本地',
+            updatedAt: DateTime.utc(2026, 2, 1),
+          ),
+        ],
+        remoteRows: [
+          modRow(
+            uuid: 'm1',
+            name: '云端较新',
+            content: '新',
+            updatedAt: DateTime.utc(2026, 2, 1),
+          ),
+          modRow(
+            uuid: 'm2',
+            name: '时间相同',
+            content: '云端',
+            updatedAt: DateTime.utc(2026, 2, 1),
+          ),
+        ],
+      );
+
+      final result = BackupPk.decideMods(
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 1, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-01-01T00:00:00.000Z'),
+        comparison: comparison,
+      );
+
+      expect(result.modsOutcome, SyncPkOutcome.unknown);
+      expect(result.autoDecision, isNull);
+      expect(result.winner, isNull);
+      expect(result.explanation, contains('时间相同或缺失 1 个'));
+    });
+
+    test('没有逐 Mod 明细：时间轴只作展示，结论强制 unknown', () {
+      final result = BackupPk.decideMods(
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+      );
+
+      expect(result.axes, hasLength(1));
+      final axis = result.axes.single;
+      expect(axis.axis, SyncPkAxis.updatedAt);
+      expect(axis.outcome, SyncPkOutcome.unknown, reason: '本地整库时间更新也不自动裁决');
+      expect(axis.localText, isNot('未知'));
+      expect(result.hasUnknown, isTrue);
+      expect(result.unanimous, isFalse);
+      expect(result.winner, isNull);
+      expect(result.autoDecision, isNull);
+      expect(result.winnerLabel, isNull);
+      expect(result.decidedByTimeOnly, isFalse);
+      expect(result.mods, isNull);
+      expect(result.modsOutcome, isNull);
+      expect(result.explanation, contains('读不到两侧的逐 Mod 明细'));
+    });
+
+    test('逐 Mod 明细读不出来（unavailable）：展示原因，不自动裁决', () {
+      const unavailable = ModsPk.unavailable('读不到云端 Mod 快照，需要你选择保留哪一侧。');
+      final result = BackupPk.decideMods(
+        local: BackupUnitMetrics(updatedAt: DateTime.utc(2026, 3, 1)),
+        remote: modsRemoteOf(contentUpdatedAt: '2026-02-01T00:00:00.000Z'),
+        comparison: unavailable,
+      );
+
+      expect(result.mods, isNotNull);
+      expect(result.mods!.comparable, isFalse);
+      expect(result.modsOutcome, isNull);
+      expect(result.axes.single.outcome, SyncPkOutcome.unknown);
+      expect(result.autoDecision, isNull);
+      expect(result.explanation, '读不到云端 Mod 快照，需要你选择保留哪一侧。');
+    });
+
+    test('云端清单摘要版本不同：走 digestVersionConflict', () {
+      final remote = modsRemoteOf(digestVersion: 99);
+      expect(BackupPk.digestVersionMismatch(remote), isTrue);
+
+      final result = BackupPk.digestVersionConflict();
+      expect(result.axes, isEmpty);
+      expect(result.mods, isNull);
+      expect(result.autoDecision, isNull);
+      expect(result.explanation, contains('摘要算法'));
     });
   });
 }

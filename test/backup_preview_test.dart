@@ -2,19 +2,36 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/services/cloud_backup/backup_manifest.dart';
+import 'package:narrchat/services/cloud_backup/backup_mods_conflict.dart';
 import 'package:narrchat/services/cloud_backup/backup_pk.dart';
 import 'package:narrchat/services/cloud_backup/backup_planner.dart';
 import 'package:narrchat/services/cloud_backup/backup_preview.dart';
 import 'package:narrchat/services/cloud_backup/backup_remote.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:narrchat/services/sync/sync_conflict.dart';
+import 'package:narrchat/utils/timestamp_format.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/backup_fakes.dart';
 import 'helpers/fakes.dart';
+import 'helpers/sync_conflict_fixtures.dart';
 
 /// 冲突页预览读取器：本地走 store、云端临时下载快照只读打开。
 void main() {
+  /// 逐 Mod 读取结果的列清单（与 `modRowsSql` 一致）。
+  const List<String> modColumns = [
+    'mod_uuid',
+    'name',
+    'description',
+    'pre_prompt',
+    'post_prompt',
+    'system_prompt',
+    'world_book',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+  ];
+
   late TestStack stack;
   late FakeBackupRemote remote;
   late BackupPreviewReader reader;
@@ -156,14 +173,136 @@ void main() {
     );
     final localMods = local.mods!.mods;
     expect(localMods.map((mod) => mod.name), containsAll(['本地 Mod', '已删 Mod']));
-    expect(localMods.firstWhere((mod) => mod.uuid == alive).deleted, isFalse);
-    expect(localMods.firstWhere((mod) => mod.uuid == deleted).deleted, isTrue);
+    final alivePreview = localMods.firstWhere((mod) => mod.uuid == alive);
+    final deletedPreview = localMods.firstWhere((mod) => mod.uuid == deleted);
+    expect(alivePreview.deleted, isFalse);
+    expect(deletedPreview.deleted, isTrue);
+    expect(alivePreview.contentDigest, isNotEmpty);
+    expect(deletedPreview.contentDigest, isNotEmpty, reason: '墓碑行同样有内容指纹');
+    expect(
+      deletedPreview.contentDigest,
+      matches(RegExp(r'^[0-9a-f]{64}$')),
+      reason: 'sha256 十六进制',
+    );
 
     final remotePreview = await reader.read(
       conflictOf(BackupUnit.mods),
       SyncPreviewSide.remote,
     );
     expect(remotePreview.mods!.mods.map((mod) => mod.name), ['云端 Mod']);
+    expect(remotePreview.mods!.mods.single.contentDigest, isNotEmpty);
+  });
+
+  test('Mod 内容指纹：两侧内容相同 → 一致，内容不同 → 不一致', () async {
+    final sameRow = modRow(
+      uuid: 'm-same',
+      name: '一致的 Mod',
+      content: '完全一样',
+      updatedAt: DateTime.utc(2026, 1, 1),
+    );
+    final localChanged = modRow(
+      uuid: 'm-diff',
+      name: '改过的 Mod',
+      content: '本地版本',
+      updatedAt: DateTime.utc(2026, 3, 1),
+    );
+    final remoteChanged = modRow(
+      uuid: 'm-diff',
+      name: '改过的 Mod',
+      content: '云端版本',
+      updatedAt: DateTime.utc(2026, 2, 1),
+    );
+    await stack.stores.mods.mergeRows([sameRow, localChanged]);
+
+    final other = await TestStack.create(prefix: 'preview_mods_digest_');
+    addTearDown(other.dispose);
+    await other.stores.mods.mergeRows([sameRow, remoteChanged]);
+    await putSnapshot(BackupUnit.mods, other.paths.modsDbPath);
+
+    final local = await reader.read(
+      conflictOf(BackupUnit.mods),
+      SyncPreviewSide.local,
+    );
+    final remotePreview = await reader.read(
+      conflictOf(BackupUnit.mods),
+      SyncPreviewSide.remote,
+    );
+    final localByUuid = {for (final mod in local.mods!.mods) mod.uuid: mod};
+    final remoteByUuid = {
+      for (final mod in remotePreview.mods!.mods) mod.uuid: mod,
+    };
+
+    expect(localByUuid['m-same']!.contentDigest, isNotEmpty);
+    expect(
+      localByUuid['m-same']!.contentDigest,
+      remoteByUuid['m-same']!.contentDigest,
+      reason: '内容一致 → 指纹一致',
+    );
+    expect(
+      localByUuid['m-same']!.contentDigest,
+      ModContentDigest.ofRow(sameRow),
+      reason: '预览与逐 Mod PK 共用同一套指纹',
+    );
+    expect(
+      localByUuid['m-diff']!.contentDigest,
+      isNot(remoteByUuid['m-diff']!.contentDigest),
+      reason: '内容不同 → 指纹不同',
+    );
+  });
+
+  test('readLocalModRows：返回全部行（含墓碑）、列齐全且按 mod_uuid 排序', () async {
+    final alive = await stack.seedMod(name: '活着的 Mod');
+    final deleted = await stack.seedMod(name: '删掉的 Mod');
+    await stack.repos.mod.deleteMod(deleted);
+
+    final rows = await reader.readLocalModRows();
+
+    expect(rows, hasLength(2));
+    final expectedOrder = [alive, deleted]..sort();
+    expect(rows.map((row) => row['mod_uuid']).toList(), expectedOrder);
+    expect(rows.first.keys, unorderedEquals(modColumns));
+    final aliveRow = rows.firstWhere((row) => row['mod_uuid'] == alive);
+    final deletedRow = rows.firstWhere((row) => row['mod_uuid'] == deleted);
+    expect(aliveRow['deleted_at'], isNull);
+    expect(parseTimestamp(deletedRow['deleted_at']), isNotNull);
+    expect(parseTimestamp(deletedRow['created_at']), isNotNull);
+    expect(parseTimestamp(deletedRow['updated_at']), isNotNull);
+  });
+
+  test('readLocalModRows：本地 Mod 库文件不存在时返回空列表', () async {
+    final file = File(stack.paths.modsDbPath);
+    if (await file.exists()) await file.delete();
+
+    expect(await reader.readLocalModRows(), isEmpty);
+  });
+
+  test('readRemoteModRows：返回含墓碑的全部行，读完关闭注入的 remote', () async {
+    final other = await TestStack.create(prefix: 'preview_mods_rows_');
+    addTearDown(other.dispose);
+    await other.seedMod(name: '云端活 Mod');
+    final deleted = await other.seedMod(name: '云端删 Mod');
+    await other.repos.mod.deleteMod(deleted);
+    await putSnapshot(BackupUnit.mods, other.paths.modsDbPath);
+
+    final manifest = conflictOf(BackupUnit.mods).plan.remote!;
+    final rows = await reader.readRemoteModRows(manifest);
+
+    expect(rows, hasLength(2));
+    expect(rows.first.keys, unorderedEquals(modColumns));
+    expect(rows.map((row) => row['name']), containsAll(['云端活 Mod', '云端删 Mod']));
+    final tombstone = rows.firstWhere((row) => row['deleted_at'] != null);
+    expect(parseTimestamp(tombstone['deleted_at']), isNotNull);
+    expect(remote.closed, isTrue, reason: '方法内部自建的 remote 读完要关掉');
+  });
+
+  test('readRemoteModRows：快照读不到也关闭 remote 并抛错', () async {
+    final manifest = conflictOf(BackupUnit.mods).plan.remote!;
+
+    await expectLater(
+      reader.readRemoteModRows(manifest),
+      throwsA(isA<BackupRemoteException>()),
+    );
+    expect(remote.closed, isTrue);
   });
 
   test('书架两侧预览：活书 / 已删除分组与删除轮号', () async {

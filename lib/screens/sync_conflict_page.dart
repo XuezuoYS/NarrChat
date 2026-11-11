@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/app_notice.dart';
 import '../providers/cloud_sync_provider.dart';
+import '../services/cloud_backup/backup_mods_conflict.dart';
 import '../services/cloud_backup/backup_pk.dart';
 import '../services/cloud_backup/backup_runner.dart';
 import '../services/cloud_backup/backup_unit.dart';
@@ -16,7 +17,10 @@ import '../widgets/sync_conflict_card.dart';
 import '../widgets/sync_conflict_preview.dart';
 import '../widgets/settings/settings_kit.dart';
 
-/// 同步冲突决策页：把「PK 判不了」的冲突逐项摆出来让用户整本二选一。
+/// 同步冲突决策页：把「PK 判不了」的冲突逐项摆出来让用户选择。
+///
+/// 书籍 / 书架整份二选一；Mod 库既支持整库二选一，也支持逐 Mod 选择后合并
+/// （两侧较新的版本都保留，再推成云端新的一代）。
 ///
 /// 入口有三处：同步中三选一选「冲突决策」后自动打开、云同步面板的待处理卡、
 /// 首页同步状态章。页面只读 provider 的 `conflicts` 快照，决策通过
@@ -37,18 +41,58 @@ class SyncConflictPage extends StatefulWidget {
 
 class _SyncConflictPageState extends State<SyncConflictPage> {
   final Map<String, BackupConflictChoice> _choices = {};
+
+  /// 逐 Mod 合并的单元（unitKey）与逐项选择（unitKey → uuid → 选择）。
+  final Set<String> _modsMerges = {};
+  final Map<String, Map<String, BackupConflictChoice>> _modChoices = {};
   final Map<String, String> _errors = {};
   bool _busy = false;
 
   BackupConflictChoice? _choiceOf(SyncConflict conflict) =>
       _choices[conflict.unit.unitKey];
 
-  /// 已选的有效决策（不含稍后处理 / 未选择）。
+  bool _isMergeMode(SyncConflict conflict) =>
+      _modsMerges.contains(conflict.unit.unitKey);
+
+  Map<String, BackupConflictChoice> _modChoicesOf(SyncConflict conflict) =>
+      _modChoices[conflict.unit.unitKey] ?? const {};
+
+  /// 能逐项比较的 Mod 明细；非 Mod 单元 / 读不到明细时为 null。
+  ModsPk? _modsPkOf(SyncConflict conflict) {
+    final detail = conflict.pk.mods;
+    return detail != null && detail.comparable ? detail : null;
+  }
+
+  /// 逐 Mod 合并模式下还差几个必须手动选的项。
+  int _modsPending(SyncConflict conflict) {
+    final detail = _modsPkOf(conflict);
+    if (detail == null) return 0;
+    final chosen = _modChoicesOf(conflict);
+    return detail.entries
+        .where((entry) => entry.needsChoice && !chosen.containsKey(entry.uuid))
+        .length;
+  }
+
+  /// 某个冲突是否已「选好」：整库选择非 skip，或逐 Mod 合并且没有待选项。
+  bool _isReady(SyncConflict conflict) {
+    if (_isMergeMode(conflict)) {
+      return _modsPkOf(conflict) != null && _modsPending(conflict) == 0;
+    }
+    final choice = _choiceOf(conflict);
+    return choice != null && choice != BackupConflictChoice.skip;
+  }
+
+  /// 已选的有效决策（不含稍后处理 / 未选完的逐 Mod 合并）。
   List<SyncConflictDecision> _decisionsOf(List<SyncConflict> conflicts) => [
     for (final conflict in conflicts)
-      if ((_choiceOf(conflict) ?? BackupConflictChoice.skip) !=
-          BackupConflictChoice.skip)
-        SyncConflictDecision(conflict: conflict, choice: _choiceOf(conflict)!),
+      if (_isMergeMode(conflict) && _isReady(conflict))
+        SyncConflictDecision(
+          conflict: conflict,
+          modsMerge: true,
+          modChoices: Map.unmodifiable(_modChoicesOf(conflict)),
+        )
+      else if (!_isMergeMode(conflict) && _isReady(conflict))
+        SyncConflictDecision(conflict: conflict, choice: _choiceOf(conflict)),
   ];
 
   int _selectedCount(List<SyncConflict> conflicts) =>
@@ -56,8 +100,60 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
 
   void _setChoice(SyncConflict conflict, BackupConflictChoice choice) {
     setState(() {
-      _choices[conflict.unit.unitKey] = choice;
+      final key = conflict.unit.unitKey;
+      _choices[key] = choice;
+      _modsMerges.remove(key);
+      _modChoices.remove(key);
+      _errors.remove(key);
+    });
+  }
+
+  /// 单条 Mod 的时间建议：内容不同的项按时间预先选好，未知项留空。
+  static BackupConflictChoice? _suggestionOf(ModsPkEntry entry) =>
+      switch (entry.status) {
+        ModsPkStatus.local => BackupConflictChoice.local,
+        ModsPkStatus.remote => BackupConflictChoice.remote,
+        _ => null,
+      };
+
+  /// 在 merge 模式下填入可自动判定的选择；已手动选过的项保持不动。
+  void _fillSuggestionsIn(SyncConflict conflict) {
+    final detail = _modsPkOf(conflict);
+    if (detail == null) return;
+    final key = conflict.unit.unitKey;
+    _choices.remove(key);
+    _modsMerges.add(key);
+    final choices = <String, BackupConflictChoice>{
+      for (final entry in detail.entries)
+        if (_suggestionOf(entry) != null) entry.uuid: _suggestionOf(entry)!,
+      ...?_modChoices[key],
+    };
+    _modChoices[key] = choices;
+  }
+
+  /// 进入逐 Mod 合并（按时间建议填充）。
+  void _enableModsMerge(SyncConflict conflict) {
+    if (_modsPkOf(conflict) == null) return;
+    setState(() {
+      _fillSuggestionsIn(conflict);
       _errors.remove(conflict.unit.unitKey);
+    });
+  }
+
+  /// 修改单个 Mod 的选择：自动进入逐 Mod 合并。
+  void _setModChoice(
+    SyncConflict conflict,
+    String uuid,
+    BackupConflictChoice choice,
+  ) {
+    if (_modsPkOf(conflict) == null) return;
+    setState(() {
+      _fillSuggestionsIn(conflict);
+      final key = conflict.unit.unitKey;
+      final choices = <String, BackupConflictChoice>{...?_modChoices[key]}
+        ..[uuid] = choice;
+      _modChoices[key] = choices;
+      _errors.remove(key);
     });
   }
 
@@ -68,17 +164,30 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
         switch (rule) {
           case _BulkRule.allLocal:
             _choices[key] = BackupConflictChoice.local;
+            _modsMerges.remove(key);
+            _modChoices.remove(key);
           case _BulkRule.allRemote:
             _choices[key] = BackupConflictChoice.remote;
+            _modsMerges.remove(key);
+            _modChoices.remove(key);
           case _BulkRule.followPk:
-            final decision = conflict.pk.autoDecision;
-            _choices[key] = decision == SyncPkOutcome.local
-                ? BackupConflictChoice.local
-                : decision == SyncPkOutcome.remote
-                ? BackupConflictChoice.remote
-                : BackupConflictChoice.skip;
+            if (_modsPkOf(conflict) != null) {
+              // Mod 库没有「整库胜者」可自动采用：按时间建议逐项填好，等用户应用。
+              _fillSuggestionsIn(conflict);
+            } else {
+              final decision = conflict.pk.autoDecision;
+              _choices[key] = decision == SyncPkOutcome.local
+                  ? BackupConflictChoice.local
+                  : decision == SyncPkOutcome.remote
+                  ? BackupConflictChoice.remote
+                  : BackupConflictChoice.skip;
+              _modsMerges.remove(key);
+              _modChoices.remove(key);
+            }
           case _BulkRule.allLater:
             _choices[key] = BackupConflictChoice.skip;
+            _modsMerges.remove(key);
+            _modChoices.remove(key);
         }
       }
     });
@@ -105,6 +214,8 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
         final key = decision.conflict.unit.unitKey;
         if (report.errors.containsKey(key)) continue;
         _choices.remove(key);
+        _modsMerges.remove(key);
+        _modChoices.remove(key);
       }
     });
     final notices = context.notices;
@@ -120,10 +231,19 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
   }
 
   Future<bool?> _confirmApply(List<SyncConflictDecision> decisions) {
+    final merged = decisions.where((item) => item.isModsMerge).length;
     final remote = decisions
-        .where((item) => item.choice == BackupConflictChoice.remote)
+        .where(
+          (item) =>
+              !item.isModsMerge && item.choice == BackupConflictChoice.remote,
+        )
         .length;
-    final local = decisions.length - remote;
+    final local = decisions.length - remote - merged;
+    final counts = <String>[
+      if (remote > 0) '采用云端 $remote 项',
+      if (local > 0) '保留本地 $local 项',
+      if (merged > 0) '逐 Mod 合并 $merged 项',
+    ].join('，');
     return showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -134,14 +254,13 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                '采用云端 $remote 项，保留本地 $local 项。',
-                style: const TextStyle(fontSize: 13),
-              ),
+              Text('$counts。', style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 8),
               Text(
                 '采用云端会用云端快照整份覆盖本地这一项，本地未上传的改动会丢失；'
-                '保留本地会把本地推成云端新的一代，其它设备下次同步时采用。',
+                '保留本地会把本地推成云端新的一代，其它设备下次同步时采用。'
+                '逐 Mod 合并只按你的选择改写对应 Mod，其余本地 Mod 原样保留，'
+                '结果会推成云端新的一代。',
                 style: TextStyle(
                   fontSize: 11.5,
                   height: 1.5,
@@ -213,6 +332,12 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
                               error: _errors[conflict.unit.unitKey],
                               onChoiceChanged: (choice) =>
                                   _setChoice(conflict, choice),
+                              modsMerge: _isMergeMode(conflict),
+                              modChoices: _modChoicesOf(conflict),
+                              onModsMergeEnabled: () =>
+                                  _enableModsMerge(conflict),
+                              onModChoiceChanged: (uuid, choice) =>
+                                  _setModChoice(conflict, uuid, choice),
                               onPreview: () => showSyncConflictPreview(
                                 context,
                                 conflict,
@@ -301,7 +426,9 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
                   '更新时间（book_meta.updated_at）。三轴全部指向同一侧时自动采用；'
                   '如果轮次与代数都一致、只有更新时间不同，就按时间采用较新的一边；'
                   '其余情况（有轴相反 / 时间也持平 / 缺少数据）才交给你决定。\n'
-                  'Mod 库按较新的修改时间自动采用；书架按行自动合并（保留两侧的书、'
+                  'Mod 库按每个 Mod 逐项比较：内容一致算一致，不同时按修改时间取较新者；'
+                  '如果本地有较新的 Mod、云端也有较新的 Mod（方向不一致），或时间相同 / '
+                  '缺失，就交给你逐项选择。书架按行自动合并（保留两侧的书、'
                   '墓碑取较新者），合并不了才会出现在这里。',
                   style: TextStyle(
                     fontSize: 11.5,
@@ -311,7 +438,9 @@ class _SyncConflictPageState extends State<SyncConflictPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '整本二选一：不做逐部件合并，选「保留本地」会把本地推成云端新一代。',
+                  '书籍不做逐部件合并：整本二选一，选「保留本地」会把本地推成云端新一代。'
+                  'Mod 库既可以整库二选一，也可以逐 Mod 合并——只改写你选中的 Mod，'
+                  '两侧独有的 Mod 都会保留，再推成云端新的一代。',
                   style: TextStyle(
                     fontSize: 11.5,
                     height: 1.55,
@@ -468,9 +597,7 @@ class _DecisionSummaryList extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    decision.choice == BackupConflictChoice.local
-                        ? '保留本地'
-                        : '采用云端',
+                    _labelOf(decision),
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
@@ -483,5 +610,19 @@ class _DecisionSummaryList extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 决策一句话：整库选择 / 逐 Mod 合并（带两侧计数）。
+  static String _labelOf(SyncConflictDecision decision) {
+    if (decision.isModsMerge) {
+      final local = decision.modChoices.values
+          .where((choice) => choice == BackupConflictChoice.local)
+          .length;
+      final remote = decision.modChoices.values
+          .where((choice) => choice == BackupConflictChoice.remote)
+          .length;
+      return '逐 Mod 合并（本地 $local · 云端 $remote）';
+    }
+    return decision.choice == BackupConflictChoice.local ? '保留本地' : '采用云端';
   }
 }

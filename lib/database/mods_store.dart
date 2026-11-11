@@ -25,6 +25,12 @@ abstract class ModsStore {
   /// 打上 / 清除墓碑。整库同步下墓碑只影响展示，不承担删除传播。
   Future<void> setDeletedAt(String modUuid, DateTime? deletedAt);
 
+  /// 逐 Mod 合并：按传入的原始行整行覆盖（含墓碑），不动其它行。
+  ///
+  /// 只给云同步的「逐 Mod 合并」用：行来自云端快照（列名与本地一致），
+  /// `deleted_at` 原样写入，既能传播删除也能把被删的 Mod 复活。
+  Future<void> mergeRows(List<Map<String, Object?>> rows);
+
   /// 物理删除。
   Future<void> hardDelete(String modUuid);
 
@@ -87,11 +93,10 @@ class ModsDb implements ModsStore {
   /// 迁移时写入 `master_uuid`（复用 library 的值）。
   Future<void> putMasterUuid(String masterUuid) async {
     final db = await _database;
-    await db.insert(
-      'meta',
-      {'master_uuid': masterUuid, 'database_version': userDataDbVersion},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('meta', {
+      'master_uuid': masterUuid,
+      'database_version': userDataDbVersion,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   @override
@@ -134,8 +139,9 @@ class ModsDb implements ModsStore {
       ..['created_at'] = mod.createdAt == null
           ? now
           : formatTimestamp(mod.createdAt!)
-      ..['updated_at'] =
-          mod.updatedAt == null ? now : formatTimestamp(mod.updatedAt!);
+      ..['updated_at'] = mod.updatedAt == null
+          ? now
+          : formatTimestamp(mod.updatedAt!);
     await db.insert('mods', row, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
@@ -151,6 +157,55 @@ class ModsDb implements ModsStore {
       where: 'mod_uuid = ?',
       whereArgs: [modUuid],
     );
+  }
+
+  @override
+  Future<void> mergeRows(List<Map<String, Object?>> rows) async {
+    if (rows.isEmpty) return;
+    final normalized = <Map<String, Object?>>[];
+    for (final row in rows) {
+      final uuid = row['mod_uuid'];
+      if (uuid is! String || uuid.isEmpty) {
+        throw ArgumentError('mergeRows 需要非空 mod_uuid');
+      }
+      final name = row['name'];
+      final createdAt = row['created_at'];
+      final updatedAt = row['updated_at'];
+      if (name is! String || createdAt is! String || updatedAt is! String) {
+        throw ArgumentError('mergeRows 的行缺少必填列：$uuid');
+      }
+      normalized.add({
+        'mod_uuid': uuid,
+        'name': name,
+        'description': _textOf(row, 'description'),
+        'pre_prompt': _textOf(row, 'pre_prompt'),
+        'post_prompt': _textOf(row, 'post_prompt'),
+        'system_prompt': _textOf(row, 'system_prompt'),
+        'world_book': _textOf(row, 'world_book'),
+        'created_at': createdAt,
+        'updated_at': updatedAt,
+        // 远端墓碑原样落地：既能传播删除，也能让被删的 Mod 复活。
+        'deleted_at': row['deleted_at'],
+      });
+    }
+    final db = await _database;
+    await db.transaction((txn) async {
+      for (final row in normalized) {
+        await txn.insert(
+          'mods',
+          row,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  /// 取文本列；缺省统一成空串（与建表默认值一致，避免写出 NULL 让摘要漂移）。
+  static String _textOf(Map<String, Object?> row, String column) {
+    final value = row[column];
+    if (value == null) return '';
+    if (value is String) return value;
+    throw ArgumentError('mergeRows 的 $column 列不是文本：$value');
   }
 
   @override
