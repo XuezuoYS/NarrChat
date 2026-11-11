@@ -174,6 +174,28 @@ void main() {
       expect(promptedVersions, hasLength(1));
     });
 
+    testWidgets('跳过版本按版本号语义匹配：只差 v 前缀也不重复弹窗', (tester) async {
+      await pumpNavigator(tester);
+      config[UpdateCheckFlow.keyUpdateSkipVersion] = '1.4.0';
+      service = FakeUpdateCheckService([UpdateAvailable(_release)]);
+
+      await buildFlow().runAtStartup(navigatorKey);
+
+      expect(service.calls, 1);
+      expect(promptedVersions, isEmpty);
+    });
+
+    testWidgets('跳过的是测试版：同主体正式版仍会提示', (tester) async {
+      await pumpNavigator(tester);
+      config[UpdateCheckFlow.keyUpdateSkipVersion] = 'v1.4.0-beta.1';
+      service = FakeUpdateCheckService([UpdateAvailable(_release)]);
+      choices = [UpdateDialogChoice.later];
+
+      await buildFlow().runAtStartup(navigatorKey);
+
+      expect(promptedVersions, ['1.3.1']);
+    });
+
     testWidgets('选择「以后再说」：仅记录检查时间，不写跳过版本', (tester) async {
       await pumpNavigator(tester);
       service = FakeUpdateCheckService([UpdateAvailable(_release)]);

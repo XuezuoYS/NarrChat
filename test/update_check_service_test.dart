@@ -108,6 +108,51 @@ void main() {
       expect(await lower.check(currentVersion: '1.3.1'), isA<UpToDate>());
     });
 
+    test('本地是测试版：同主体正式版算更新，更早的正式版不算', () async {
+      final stable = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonResponse(_releaseJson(tag: 'v3.0.0')),
+        ),
+      );
+      expect(
+        await stable.check(currentVersion: '3.0.0-beta.2'),
+        isA<UpdateAvailable>(),
+      );
+
+      final older = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonResponse(_releaseJson(tag: 'v2.5.2')),
+        ),
+      );
+      expect(
+        await older.check(currentVersion: '3.0.0-beta.2'),
+        isA<UpToDate>(),
+      );
+    });
+
+    test('本地版本号不合规范 → UpToDate（不误报）', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson())),
+      );
+      expect(await service.check(currentVersion: 'dev-build'), isA<UpToDate>());
+      expect(await service.check(currentVersion: '1.3'), isA<UpToDate>());
+    });
+
+    test('latest 的 tag 不合规范（缺段 / 夹带文字 / 规范外后缀）→ CheckFailed', () async {
+      for (final tag in ['v1.4', 'release-1.3.1-tag', 'v1.4.0-hotfix.1']) {
+        final service = UpdateCheckService(
+          client: MockClient(
+            (_) async => _jsonResponse(_releaseJson(tag: tag)),
+          ),
+        );
+        expect(
+          await service.check(currentVersion: '1.3.1'),
+          isA<CheckFailed>(),
+          reason: '应拒绝 "$tag"',
+        );
+      }
+    });
+
     test('404 → NoRelease', () async {
       final service = UpdateCheckService(
         client: MockClient((_) async => http.Response('Not Found', 404)),
@@ -222,6 +267,134 @@ void main() {
         client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.0'))),
       );
       expect(await lower.check(currentVersion: '1.3.1'), isA<UpToDate>());
+    });
+
+    test('本地版本无法解析也返回 UpdateAvailable', () async {
+      final service = UpdateCheckService(
+        client: MockClient((_) async => _jsonResponse(_releaseJson(tag: 'v1.3.0'))),
+      );
+
+      final result = await service.check(
+        currentVersion: 'dev',
+        forceShow: true,
+      );
+
+      expect(result, isA<UpdateAvailable>());
+    });
+  });
+
+  group('check（latest 返回测试版时回退列表）', () {
+    /// 路由式替身：`/releases/latest` 返回 [latest]，其它（列表）返回 [list]。
+    UpdateCheckService buildService({
+      required Map<String, dynamic> latest,
+      required http.Response Function() list,
+      List<String>? requests,
+    }) {
+      return UpdateCheckService(
+        client: MockClient((request) async {
+          requests?.add(request.url.toString());
+          if (request.url.path.endsWith('/latest')) {
+            return _jsonResponse(latest);
+          }
+          return list();
+        }),
+      );
+    }
+
+    test('回退列表后挑最高正式版，忽略测试版与草稿', () async {
+      final requests = <String>[];
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => _jsonListResponse([
+          _releaseJson(tag: 'v3.0.0-beta.2'),
+          _releaseJson(tag: 'v2.5.2', name: 'NarrChat 2.5.2'),
+          _releaseJson(tag: 'v2.4.0'),
+          _releaseJson(tag: 'v9.0.0')..['draft'] = true,
+        ]),
+        requests: requests,
+      );
+
+      final result = await service.check(currentVersion: '2.5.1');
+
+      expect(result, isA<UpdateAvailable>());
+      expect((result as UpdateAvailable).release.tagVersion, 'v2.5.2');
+      expect(requests, hasLength(2));
+      expect(requests.first, endsWith('/releases/latest'));
+      expect(requests.last, endsWith('/releases?per_page=30'));
+    });
+
+    test('latest 是正式版：不再请求列表', () async {
+      final requests = <String>[];
+      final service = buildService(
+        latest: _releaseJson(tag: 'v1.4.0'),
+        list: () => _jsonListResponse([_releaseJson(tag: 'v1.5.0')]),
+        requests: requests,
+      );
+
+      final result = await service.check(currentVersion: '1.3.1');
+
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.4.0');
+      expect(requests, hasLength(1));
+    });
+
+    test('回退列表里全是测试版 → UpToDate（当前渠道无更新）', () async {
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => _jsonListResponse([
+          _releaseJson(tag: 'v3.0.0-beta.2'),
+          _releaseJson(tag: 'v3.0.0-rc.1'),
+        ]),
+      );
+
+      expect(await service.check(currentVersion: '2.5.2'), isA<UpToDate>());
+    });
+
+    test('回退列表为空 → NoRelease', () async {
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => _jsonListResponse([]),
+      );
+
+      expect(await service.check(currentVersion: '2.5.2'), isA<NoRelease>());
+    });
+
+    test('回退列表 tag 全不合规范 → CheckFailed', () async {
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => _jsonListResponse([
+          _releaseJson(tag: 'release-alpha'),
+          _releaseJson(tag: 'v2.5'),
+        ]),
+      );
+
+      final result = await service.check(currentVersion: '2.5.2');
+      expect(result, isA<CheckFailed>());
+      expect((result as CheckFailed).reason, contains('版本号无法解析'));
+    });
+
+    test('回退列表跳过不合规范的 tag，取最高合规正式版', () async {
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => _jsonListResponse([
+          _releaseJson(tag: 'v2.5'),
+          _releaseJson(tag: 'v2.4.9'),
+          _releaseJson(tag: 'v2.5.0'),
+        ]),
+      );
+
+      final result = await service.check(currentVersion: '2.4.9');
+      expect((result as UpdateAvailable).release.tagVersion, 'v2.5.0');
+    });
+
+    test('回退请求失败（403）→ CheckFailed 含限流提示', () async {
+      final service = buildService(
+        latest: _releaseJson(tag: 'v3.0.0-beta.1'),
+        list: () => http.Response('rate limited', 403),
+      );
+
+      final result = await service.check(currentVersion: '2.5.2');
+      expect(result, isA<CheckFailed>());
+      expect((result as CheckFailed).reason, contains('限流'));
     });
   });
 
@@ -353,6 +526,22 @@ void main() {
         includePrerelease: true,
       );
       expect((result as UpdateAvailable).release.tagVersion, 'v1.4.0');
+    });
+
+    test('列表内不合规范的 tag 被跳过', () async {
+      final service = UpdateCheckService(
+        client: MockClient(
+          (_) async => _jsonListResponse([
+            _releaseJson(tag: 'v1.4'),
+            _releaseJson(tag: 'v1.10.0-beta.1'),
+          ]),
+        ),
+      );
+      final result = await service.check(
+        currentVersion: '1.3.1',
+        includePrerelease: true,
+      );
+      expect((result as UpdateAvailable).release.tagVersion, 'v1.10.0-beta.1');
     });
 
     test('空列表 → NoRelease', () async {

@@ -1,83 +1,78 @@
-/// 语义化版本号：轻量解析与比较（零依赖、零 IO）。
+/// 版本号：按 README「版本号规范」解析与比较（零依赖、零 IO）。
 ///
-/// 用于「检查更新」：把本地 `release.yaml` 的 `version`（如 `1.3.1`）与
-/// GitHub Release 的 `tag_name`（如 `v1.4.0`）归一化为数字段序列后逐段比较。
+/// 规范（见 README）：
+/// - 正式版：`a.b.c`；
+/// - 测试版：`a.b.c-beta.d` / `a.b.c-rc.d`；
+/// - 版本高低：先比 `a.b.c`；主体相同时 `beta < rc < 正式版`，同阶段再比 `d`。
 ///
-/// 预发布后缀（`-beta.1` / `-rc.2`）按语义化版本规则参与比较，因此本地
-/// 自己跑 beta 构建时，也能正确判断远端 beta 与正式版谁更新：
-/// `1.4.0-beta.1 < 1.4.0-beta.2 < 1.4.0`。
+/// GitHub tag 通常带 `v` 前缀（如 `v3.0.0-beta.2`），解析时允许；`+build`
+/// 是构建元数据，不参与比较。除此之外的写法（缺段、多余段、规范外的阶段、
+/// 前后夹带文字）一律视为无法解析并返回 `null`——宁可检查失败，也不按
+/// 错误的版本号提示更新。
 class AppVersion implements Comparable<AppVersion> {
-  AppVersion._(this.segments, this.prerelease);
-
-  /// 版本主体（数字段 + 预发布后缀）的匹配：`1.4.0` / `v1.4.0-beta.1`。
-  ///
-  /// 第 1 组为数字段，第 2 组为可选的预发布后缀（`-` 之后、`+` 之前）。
-  static final RegExp _pattern = RegExp(
-    r'(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?',
+  AppVersion._(
+    this.major,
+    this.minor,
+    this.patch,
+    this._stage,
+    this.prereleaseNumber,
   );
 
-  /// 数字段序列，如 `1.4.0` → `[1, 4, 0]`。
-  final List<int> segments;
+  /// 只认规范里的两种形态（可带 `v` 前缀与 `+build` 元数据）。
+  static final RegExp _pattern = RegExp(
+    r'^[vV]?(\d+)\.(\d+)\.(\d+)(?:-(beta|rc)\.(\d+))?(?:\+[0-9A-Za-z.-]+)?$',
+  );
 
-  /// 预发布标识符，如 `-beta.1` → `['beta', '1']`；空列表表示正式版。
-  final List<String> prerelease;
+  /// 正式版第 1 段（`a.b.c` 的 `a`）。
+  final int major;
 
-  /// 从任意字符串中提取版本号（容忍前导 `v`/`V` 与空白、前后缀文本）。
-  ///
-  /// 取首个形如 `\d+(.\d+)*` 的片段；紧跟的 `-xxx` 视为预发布后缀
-  /// （`beta.1` / `rc.2` 等），构建元数据（如 `+build.5`）忽略。
-  /// 无法解析时返回 `null`。
+  /// 正式版第 2 段（`a.b.c` 的 `b`）。
+  final int minor;
+
+  /// 正式版第 3 段（`a.b.c` 的 `c`）。
+  final int patch;
+
+  /// 测试阶段（`-beta.d` / `-rc.d`）；正式版为 `null`。
+  final _ReleaseStage? _stage;
+
+  /// 测试版序号 `d`（如 `-beta.4` 的 4）；正式版为 `null`。
+  final int? prereleaseNumber;
+
+  /// 是否为测试版（带 `-beta.d` / `-rc.d` 后缀）。
+  bool get isPrerelease => _stage != null;
+
+  /// 从 tag 或 `release.yaml` 的版本号解析；不合规范返回 `null`。
   static AppVersion? tryParse(String raw) {
-    final match = _pattern.firstMatch(raw);
+    final match = _pattern.firstMatch(raw.trim());
     if (match == null) return null;
-    final segments = match.group(1)!.split('.').map(int.parse).toList();
-    if (segments.isEmpty) return null;
-    final suffix = match.group(2);
     return AppVersion._(
-      segments,
-      suffix == null ? const [] : suffix.split('.'),
+      int.parse(match.group(1)!),
+      int.parse(match.group(2)!),
+      int.parse(match.group(3)!),
+      switch (match.group(4)) {
+        null => null,
+        'beta' => _ReleaseStage.beta,
+        _ => _ReleaseStage.rc,
+      },
+      match.group(5) == null ? null : int.parse(match.group(5)!),
     );
   }
 
-  /// 逐段数值比较：段数不同时缺失段按 0 计。
-  ///
-  /// 因此 `1.4` 与 `1.4.0` 相等，而 `1.4` > `1.3.9`；主体相同时再比预发布
-  /// 后缀（同号正式版高于预发布版，`beta.2` 高于 `beta.1`）。
+  /// 按规范比较：先比 `a.b.c`；主体相同时 正式版 > rc > beta；同阶段比 `d`。
   @override
   int compareTo(AppVersion other) {
-    final len = segments.length > other.segments.length
-        ? segments.length
-        : other.segments.length;
-    for (var i = 0; i < len; i++) {
-      final a = i < segments.length ? segments[i] : 0;
-      final b = i < other.segments.length ? other.segments[i] : 0;
-      if (a != b) return a < b ? -1 : 1;
-    }
-    return _comparePrerelease(prerelease, other.prerelease);
-  }
-
-  /// 预发布后缀比较（语义化版本 11 条）：正式版 > 预发布版；标识符逐位比较，
-  /// 数字标识符按数值且恒小于字母标识符；前缀相同则标识符更多者更高。
-  static int _comparePrerelease(List<String> a, List<String> b) {
-    if (a.isEmpty || b.isEmpty) {
-      if (a.isEmpty && b.isEmpty) return 0;
-      return a.isEmpty ? 1 : -1;
-    }
-    final len = a.length < b.length ? a.length : b.length;
-    for (var i = 0; i < len; i++) {
-      final cmp = _compareIdentifier(a[i], b[i]);
-      if (cmp != 0) return cmp;
-    }
-    return a.length.compareTo(b.length);
-  }
-
-  static int _compareIdentifier(String a, String b) {
-    final aNumber = int.tryParse(a);
-    final bNumber = int.tryParse(b);
-    if (aNumber != null && bNumber != null) return aNumber.compareTo(bNumber);
-    if (aNumber != null) return -1;
-    if (bNumber != null) return 1;
-    return a.compareTo(b);
+    var result = major.compareTo(other.major);
+    if (result != 0) return result;
+    result = minor.compareTo(other.minor);
+    if (result != 0) return result;
+    result = patch.compareTo(other.patch);
+    if (result != 0) return result;
+    final rank = _stage?.rank ?? _formalRank;
+    final otherRank = other._stage?.rank ?? _formalRank;
+    if (rank != otherRank) return rank.compareTo(otherRank);
+    final number = prereleaseNumber;
+    if (number == null) return 0; // 两边都是正式版
+    return number.compareTo(other.prereleaseNumber!);
   }
 
   bool operator >(AppVersion other) => compareTo(other) > 0;
@@ -92,22 +87,30 @@ class AppVersion implements Comparable<AppVersion> {
   bool operator ==(Object other) =>
       other is AppVersion && compareTo(other) == 0;
 
-  /// 与 [==] 一致的哈希：先剥离末尾的 0 段（`1.3.0` 与 `1.3` 相等），
-  /// 再并入预发布后缀，保证相等对象哈希相同（可安全用作 Set / Map 键）。
+  /// 与 [==] 一致：解析时数字段已归一化（如 `beta.01` 与 `beta.1` 相同），
+  /// 构建元数据不参与，因此相等对象哈希相同。
   @override
-  int get hashCode {
-    final canonical = [...segments];
-    while (canonical.length > 1 && canonical.last == 0) {
-      canonical.removeLast();
-    }
-    return Object.hash(
-      Object.hashAll(canonical),
-      prerelease.isEmpty ? null : Object.hashAll(prerelease),
-    );
-  }
+  int get hashCode =>
+      Object.hash(major, minor, patch, _stage, prereleaseNumber);
 
   @override
-  String toString() => prerelease.isEmpty
-      ? segments.join('.')
-      : '${segments.join('.')}-${prerelease.join('.')}';
+  String toString() {
+    final currentStage = _stage;
+    if (currentStage == null) return '$major.$minor.$patch';
+    return '$major.$minor.$patch-${currentStage.name}.$prereleaseNumber';
+  }
 }
+
+/// 测试阶段，顺序与 README 示例一致（beta 早于 rc）。
+enum _ReleaseStage {
+  beta(0),
+  rc(1);
+
+  const _ReleaseStage(this.rank);
+
+  /// 升序比较用的序号；正式版在 [AppVersion.compareTo] 里按 2 处理。
+  final int rank;
+}
+
+/// 正式版的阶段序号（大于 beta / rc）。
+const int _formalRank = 2;

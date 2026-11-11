@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../utils/app_version.dart';
 import '../utils/release_info.dart';
 import '../widgets/update_available_dialog.dart';
 import 'local_config_service.dart';
@@ -132,7 +133,11 @@ class UpdateCheckFlow {
       switch (result) {
         case UpdateAvailable(:final release):
           // 用户已跳过该版本：不再弹窗。
-          if (release.tagVersion == config[keyUpdateSkipVersion]) return;
+          final skipVersion = config[keyUpdateSkipVersion];
+          if (skipVersion is String &&
+              _isSameVersion(release.tagVersion, skipVersion)) {
+            return;
+          }
           final context = navigatorKey.currentContext;
           if (context == null) return;
           // ignore: use_build_context_synchronously
@@ -157,6 +162,15 @@ class UpdateCheckFlow {
       // 兜底：更新检查绝不影响启动与后续流程。
       debugPrint('检查更新流程异常：$e\n$stack');
     }
+  }
+
+  /// 「跳过此版本」按版本号语义比较：`v1.4.0` 与 `1.4.0` 视为同一版本，
+  /// 下次检查不再弹窗；任一侧不合规范时退回原始字符串比较。
+  static bool _isSameVersion(String a, String b) {
+    final left = AppVersion.tryParse(a);
+    final right = AppVersion.tryParse(b);
+    if (left != null && right != null) return left == right;
+    return a == b;
   }
 
   /// 解析上次检查时间；缺失 / 非字符串 / 非法格式返回 `null`。
