@@ -126,36 +126,102 @@ void main() {
     expect(off.agentModeLevel, AgentModeLevel.off);
   });
 
-  test('精简思考回传：默认关、可持久化开启并回读', () async {
+  test('思考链压缩：默认主开子关、联动复位并持久化', () async {
     final provider = ExperimentalSettingsProvider();
-    expect(provider.reduceReasoningReplay, isFalse, reason: '默认不精简');
+    expect(provider.compressNonBodyReasoning, isTrue, reason: '主开关默认开');
+    expect(provider.compressAllReasoning, isFalse, reason: '子开关默认关');
 
-    // 配置缺失时 load 仍为默认关（读取不写盘）。
+    // 配置缺失时 load 仍为主开子关（读取不写盘）。
     await provider.load();
-    expect(provider.reduceReasoningReplay, isFalse);
+    expect(provider.compressNonBodyReasoning, isTrue);
+    expect(provider.compressAllReasoning, isFalse);
 
     var notified = 0;
     provider.addListener(() => notified++);
-    expect(await provider.setReduceReasoningReplay(true), isTrue);
-    expect(provider.reduceReasoningReplay, isTrue);
+    expect(await provider.setCompressAllReasoning(true), isTrue);
+    expect(provider.compressAllReasoning, isTrue);
     expect(notified, 1);
+
+    // 关闭主开关必须联动复位子开关，并写盘。
+    expect(await provider.setCompressNonBodyReasoning(false), isTrue);
+    expect(provider.compressNonBodyReasoning, isFalse);
+    expect(provider.compressAllReasoning, isFalse);
+    final config = await LocalConfigService.read();
+    expect(
+      config[ExperimentalSettingsProvider.keyCompressNonBodyReasoning],
+      isFalse,
+    );
+    expect(
+      config[ExperimentalSettingsProvider.keyCompressAllReasoning],
+      isFalse,
+    );
+    // 主开关关着时，不能单独打开子开关。
+    expect(await provider.setCompressAllReasoning(true), isFalse);
+    expect(provider.compressAllReasoning, isFalse);
+
+    // 重新打开主开关，子开关保持默认关。
+    expect(await provider.setCompressNonBodyReasoning(true), isTrue);
+    expect(provider.compressNonBodyReasoning, isTrue);
+    expect(provider.compressAllReasoning, isFalse);
+    expect(await provider.setCompressAllReasoning(true), isTrue);
 
     final reloaded = ExperimentalSettingsProvider();
     await reloaded.load();
-    expect(reloaded.reduceReasoningReplay, isTrue);
-    final config = await LocalConfigService.read();
-    expect(
-      config[ExperimentalSettingsProvider.keyReduceReasoningReplay],
-      isTrue,
-    );
+    expect(reloaded.compressNonBodyReasoning, isTrue);
+    expect(reloaded.compressAllReasoning, isTrue);
+  });
 
-    // 非布尔值 / 缺失 ⇒ 回退默认关。
+  test('思考链压缩迁移：旧键保留显式关闭，新键优先，缺省默认开启', () async {
+    // 旧键 false（老用户手动关闭）→ 主开关关闭。
     await LocalConfigService.write({
-      ExperimentalSettingsProvider.keyReduceReasoningReplay: 'yes',
+      ExperimentalSettingsProvider.legacyKeyReduceReasoningReplay: false,
+    });
+    final legacyOff = ExperimentalSettingsProvider();
+    await legacyOff.load();
+    expect(legacyOff.compressNonBodyReasoning, isFalse);
+
+    // 旧键 true → 主开关开启。
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.legacyKeyReduceReasoningReplay: true,
+    });
+    final legacyOn = ExperimentalSettingsProvider();
+    await legacyOn.load();
+    expect(legacyOn.compressNonBodyReasoning, isTrue);
+
+    // 新键存在时优先于旧键。
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.legacyKeyReduceReasoningReplay: false,
+      ExperimentalSettingsProvider.keyCompressNonBodyReasoning: true,
+    });
+    final newWins = ExperimentalSettingsProvider();
+    await newWins.load();
+    expect(newWins.compressNonBodyReasoning, isTrue);
+
+    // 两键都缺失 → 默认开启。
+    await LocalConfigService.write({});
+    final missing = ExperimentalSettingsProvider();
+    await missing.load();
+    expect(missing.compressNonBodyReasoning, isTrue);
+  });
+
+  test('思考链压缩脏配置：主关时子键强制关，非法类型回退默认', () async {
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.keyCompressNonBodyReasoning: false,
+      ExperimentalSettingsProvider.keyCompressAllReasoning: true,
+    });
+    final dirty = ExperimentalSettingsProvider();
+    await dirty.load();
+    expect(dirty.compressNonBodyReasoning, isFalse);
+    expect(dirty.compressAllReasoning, isFalse);
+
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.keyCompressNonBodyReasoning: 'yes',
+      ExperimentalSettingsProvider.keyCompressAllReasoning: 'yes',
     });
     final weird = ExperimentalSettingsProvider();
     await weird.load();
-    expect(weird.reduceReasoningReplay, isFalse);
+    expect(weird.compressNonBodyReasoning, isTrue);
+    expect(weird.compressAllReasoning, isFalse);
   });
 
   test('setAgentModeLevel 乐观生效并持久化（只在 off / lv1 往返）', () async {

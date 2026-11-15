@@ -50,7 +50,10 @@ class AgentRunner {
   /// 定制的工具 schema（协议形状由调用方决定；null = Chat 嵌套形态）。
   final List<Map<String, dynamic>>? toolSchemas;
 
-  /// 回传思考时是否精简（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
+  /// 回传思考时是否压缩（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
+  /// 这是 Chat 工具循环的通用能力；Agent Lv.1 的按步压缩由
+  /// `AgentRoundRunner` 的 `compressNonBodyReasoning` / `compressAllReasoning`
+  /// 控制，当前设置不会传入这里。
   final bool reduceReasoningReplay;
 
   /// 运行 Agent 循环，返回聚合后的最终结果。
@@ -109,7 +112,7 @@ class AgentRunner {
       // 其前各有一块非空思考，一帧调两个工具却只回传一块即整次 400
       //（「The `reasoning_text` in the thinking mode must be passed back」）。
       // **绝不省略**：模型没产出思考时回落正文文本，再退化为占位文本。
-      // 回传文本按设置精简（[reduceReasoningReplay]；Chat 线路的
+      // 回传文本按设置压缩（[reduceReasoningReplay]；Chat 线路的
       // `reasoning_content` 与 Responses 线路的 reasoning 条目共用同一份）。
       final replayed = reasoningTextForReplay(
         result.reasoningContent.trim().isNotEmpty

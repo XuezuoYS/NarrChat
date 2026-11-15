@@ -265,9 +265,13 @@ class RoundProvider extends ChangeNotifier {
   AgentModeLevel get _agentLevel =>
       _experimentalSettings?.agentModeLevel ?? AgentModeLevel.off;
 
-  /// 当前「精简思考回传」策略（无设置注入时按默认**关**；仅测试 / 降级路径）。
-  bool get _reduceReasoningReplay =>
-      _experimentalSettings?.reduceReasoningReplay ?? false;
+  /// 当前「压缩非正文步思考链」策略（无设置注入时按默认**开**）。
+  bool get _compressNonBodyReasoning =>
+      _experimentalSettings?.compressNonBodyReasoning ?? true;
+
+  /// 当前「压缩所有回合思考链」策略（无设置注入时按默认**关**）。
+  bool get _compressAllReasoning =>
+      _experimentalSettings?.compressAllReasoning ?? false;
 
   List<Round> get rounds => _roundsView;
 
@@ -2031,7 +2035,6 @@ class RoundProvider extends ChangeNotifier {
       // 搜索 / 抓取过程事件（UI 展示）互不串书；测试注入的工具优先。
       tools: tools,
       toolSchemas: agentToolSchemas(tools, responses: req.responsesWire),
-      reduceReasoningReplay: _reduceReasoningReplay,
     );
   }
 
@@ -2125,7 +2128,7 @@ class RoundProvider extends ChangeNotifier {
       categoryNames: [for (final c in book.roleCategories) c.name],
     );
     // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各步共用同一份**
-    // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
+    // schema，保证 instructions / tools 前缀在调研 / 正文 / 维护之间完全一致。
     final tools = _agentTools(
       level: req.agentLevel,
       workingCopy: workingCopy,
@@ -2145,7 +2148,8 @@ class RoundProvider extends ChangeNotifier {
       profile: AgentModeProfile.of(req.agentLevel),
       memoryMergePlan: req.memoryMergePlan,
       chaining: req.agentChaining,
-      reduceReasoningReplay: _reduceReasoningReplay,
+      compressNonBodyReasoning: _compressNonBodyReasoning,
+      compressAllReasoning: _compressAllReasoning,
       // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
       // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
       // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。

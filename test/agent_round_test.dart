@@ -649,7 +649,9 @@ void main() {
       books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: _ChainingSettings(),
-      experimentalSettings: AgentModeSettings(),
+      experimentalSettings: AgentModeSettings(
+        compressNonBodyReasoning: false,
+      ),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');

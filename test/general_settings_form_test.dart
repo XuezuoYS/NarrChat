@@ -194,72 +194,103 @@ void main() {
     expect(label(), '关');
   });
 
-  testWidgets('精简思考回传开关：默认关，点击后开启并即时生效', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+  testWidgets('思考链压缩：主开关默认开，子开关默认关且仅主开关开启时显示', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final provider = ExperimentalSettingsProvider();
     await tester.pumpWidget(buildApp(1000, experimental: provider));
     await tester.pump();
 
-    final toggle =
-        find.byKey(const ValueKey('experimental_reduce_reasoning_switch'));
-    await tester.ensureVisible(toggle);
+    final parentToggle = find.byKey(
+      const ValueKey('experimental_compress_non_body_reasoning_switch'),
+    );
+    final childToggle = find.byKey(
+      const ValueKey('experimental_compress_all_reasoning_switch'),
+    );
+    await tester.ensureVisible(parentToggle);
     await tester.pumpAndSettle();
 
-    // 说明文案点明用途、默认状态与代价（改写思考原文）。
+    // 标题本体 + 全局黄色「（实验性）」后缀；子开关默认可见但关闭。
     expect(
-      find.text('精简思考回传（实验性）', findRichText: true),
+      find.text('压缩非正文步模型所获取到的思考链（实验性）', findRichText: true),
       findsOneWidget,
     );
     expect(
-      experimentalTagColor(tester, '精简思考回传（实验性）'),
+      experimentalTagColor(tester, '压缩非正文步模型所获取到的思考链（实验性）'),
       NarrChatColors.light.warning,
     );
-    expect(find.textContaining('只保留首段与末段'), findsOneWidget);
-    expect(find.textContaining('默认关'), findsOneWidget);
     expect(
-      find.textContaining('⚠ 会改写思考原文——自定义网关要求思考完整时请保持关闭'),
+      find.text('压缩所有回合的思考链（实验性）', findRichText: true),
       findsOneWidget,
     );
+    expect(
+      experimentalTagColor(tester, '压缩所有回合的思考链（实验性）'),
+      NarrChatColors.light.warning,
+    );
+    expect(find.textContaining('第一步（调研 + 正文）视为正文步'), findsOneWidget);
+    expect(find.textContaining('默认关'), findsWidgets);
+    expect(
+      find.textContaining('⚠ 会改写回传给模型的思考原文'),
+      findsOneWidget,
+    );
+    expect(provider.compressNonBodyReasoning, isTrue);
+    expect(provider.compressAllReasoning, isFalse);
+    expect(tester.widget<Switch>(parentToggle).value, isTrue);
+    expect(tester.widget<Switch>(childToggle).value, isFalse);
 
-    // 默认关。
-    expect(provider.reduceReasoningReplay, isFalse);
-    expect(tester.widget<Switch>(toggle).value, isFalse);
-
-    await tester.tap(toggle);
+    // 关闭主开关：子行消失，子状态强制复位。
+    await tester.tap(parentToggle);
     await tester.pumpAndSettle();
-    expect(provider.reduceReasoningReplay, isTrue);
-    expect(tester.widget<Switch>(toggle).value, isTrue);
+    expect(provider.compressNonBodyReasoning, isFalse);
+    expect(provider.compressAllReasoning, isFalse);
+    expect(childToggle, findsNothing);
 
-    // 再点回关。
-    await tester.tap(toggle);
+    // 重新打开主开关：子行回来且仍为关。
+    await tester.tap(parentToggle);
     await tester.pumpAndSettle();
-    expect(provider.reduceReasoningReplay, isFalse);
+    expect(provider.compressNonBodyReasoning, isTrue);
+    expect(provider.compressAllReasoning, isFalse);
+    expect(childToggle, findsOneWidget);
+    expect(tester.widget<Switch>(childToggle).value, isFalse);
+
+    // 打开子开关。
+    await tester.tap(childToggle);
+    await tester.pumpAndSettle();
+    expect(provider.compressAllReasoning, isTrue);
+    expect(tester.widget<Switch>(childToggle).value, isTrue);
   });
 
-  testWidgets('精简思考回传：点副标题整行切换（不必点开关）', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+  testWidgets('思考链压缩：点副标题整行切换主 / 子开关', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final provider = ExperimentalSettingsProvider();
     await tester.pumpWidget(buildApp(1000, experimental: provider));
     await tester.pump();
 
-    final toggle =
-        find.byKey(const ValueKey('experimental_reduce_reasoning_switch'));
+    final childToggle = find.byKey(
+      const ValueKey('experimental_compress_all_reasoning_switch'),
+    );
     await tester.ensureVisible(
-      find.text('精简思考回传（实验性）', findRichText: true),
+      find.text('压缩非正文步模型所获取到的思考链（实验性）', findRichText: true),
     );
     await tester.pumpAndSettle();
-    expect(provider.reduceReasoningReplay, isFalse);
+    expect(provider.compressNonBodyReasoning, isTrue);
 
-    // 点击说明文字（离右侧开关很远）也能切换整行。
-    await tester.tap(find.textContaining('只保留首段与末段'));
+    // 点主开关副标题也能关闭主开关，子行随之消失。
+    await tester.tap(find.textContaining('第一步（调研 + 正文）视为正文步'));
     await tester.pumpAndSettle();
+    expect(provider.compressNonBodyReasoning, isFalse);
+    expect(childToggle, findsNothing);
 
-    expect(provider.reduceReasoningReplay, isTrue);
-    expect(tester.widget<Switch>(toggle).value, isTrue);
+    // 点主开关副标题重新打开，再点子开关副标题开启所有回合。
+    await tester.tap(find.textContaining('第一步（调研 + 正文）视为正文步'));
+    await tester.pumpAndSettle();
+    expect(provider.compressNonBodyReasoning, isTrue);
+    await tester.tap(find.textContaining('开启后第一步的调研 / 正文回合也压缩'));
+    await tester.pumpAndSettle();
+    expect(provider.compressAllReasoning, isTrue);
   });
 
   testWidgets('Agent 模式简介简要概括：托管范围、指示器限制与破坏性变更声明', (tester) async {

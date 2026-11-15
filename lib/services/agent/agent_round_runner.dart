@@ -297,10 +297,11 @@ class AgentRoundRunner {
     required this.profile,
     this.memoryMergePlan,
     this.chaining = false,
+    this.compressNonBodyReasoning = true,
+    this.compressAllReasoning = false,
     this.maxPrepFrames = kAgentMaxPrepFrames,
     this.maxStoryFrames = kAgentMaxStoryFrames,
     this.maxStateFrames = kAgentMaxStateFrames,
-    this.reduceReasoningReplay = false,
     this.onStageStarted,
     this.onTurnStarted,
     this.onActivity,
@@ -344,8 +345,13 @@ class AgentRoundRunner {
   /// 维护步的最大回合数：1 主回合 + 修复回合。
   final int maxStateFrames;
 
-  /// 回传思考时是否精简（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
-  final bool reduceReasoningReplay;
+  /// 回传思考时是否压缩（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
+  /// **最终按步生效**：
+  /// - [compressNonBodyReasoning]：第一步（调研 + 正文）视为正文步，完整保留；
+  ///   第二步维护步收到的前序思考链压缩；
+  /// - [compressAllReasoning]：所有回合（含第一步调研 + 正文）都压缩。
+  final bool compressNonBodyReasoning;
+  final bool compressAllReasoning;
 
   /// 某个步开始时回调（UI 据此显示「状态维护中」等状态）。
   final void Function(AgentStage stage)? onStageStarted;
@@ -376,6 +382,8 @@ class AgentRoundRunner {
   int _frames = 0;
   String _lastResponseId = '';
   String? _previousResponseId;
+  bool _useChaining = false;
+  bool _frameReduceReasoning = false;
   String _adopted = '';
   bool _adoptedByHeading = false;
   String _lastFallback = '';
@@ -397,6 +405,35 @@ class AgentRoundRunner {
   bool _maintenanceCancelled = false;
   String? _maintenanceError;
 
+  /// 进入非正文步（维护步）前，把已经累积的前序 reasoning 换成压缩版。
+  ///
+  /// 第一步是正文步：调研 / 正文回合收到的思考链必须完整；只有第二步维护步
+  /// 收到的前面思考链才压缩。这里改的是**内部会话累积**，UI / RAW 聚合仍用原文。
+  /// 同时断掉 `previous_response_id`：否则服务端会继续使用上一回合的完整
+  /// reasoning，压缩不会真正生效。
+  void _compressPriorReasoningForNonBodyStep() {
+    for (var i = 0; i < _items.length; i++) {
+      final item = _items[i];
+      if (item['type'] == 'reasoning') {
+        final text = item['text'] as String? ?? '';
+        final reduced = reasoningTextForReplay(text, reduce: true);
+        if (reduced != text) {
+          _items[i] = {...item, 'text': reduced};
+        }
+      } else if (item['role'] == 'assistant' &&
+          item['reasoning_content'] is String) {
+        final text = item['reasoning_content'] as String;
+        final reduced = reasoningTextForReplay(text, reduce: true);
+        if (reduced != text) {
+          _items[i] = {...item, 'reasoning_content': reduced};
+        }
+      }
+    }
+    _useChaining = false;
+    _previousResponseId = null;
+    _sentCursor = 0;
+  }
+
   /// 开始一轮：设定输入起点并重置全部运行期状态。
   ///
   /// [run] 与 [outlineFrames] 共用——预览的首帧因此与实发首帧同源。
@@ -413,6 +450,8 @@ class AgentRoundRunner {
     _frames = 0;
     _lastResponseId = '';
     _previousResponseId = null;
+    _useChaining = chaining && !compressAllReasoning;
+    _frameReduceReasoning = false;
     _adopted = '';
     _adoptedByHeading = false;
     _lastFallback = '';
@@ -454,6 +493,11 @@ class AgentRoundRunner {
     // 第二步：维护记忆总结。**无条件**发起（合规流程也要写本轮条目）；
     // 维护失败 / 取消都只转成警告，不丢正文。
     if (story.isNotEmpty) {
+      // 第一步 = 正文步，保持完整；进入第二步（非正文步）前，把前序
+      // reasoning 改成压缩版，并断掉有状态续接，确保服务端真正收到压缩结果。
+      if (compressNonBodyReasoning) {
+        _compressPriorReasoningForNonBodyStep();
+      }
       final problems = [..._modelProblems, ..._truncationNotes];
       _truncationNotes.clear();
       onStageStarted?.call(AgentStage.state);
@@ -532,6 +576,15 @@ class AgentRoundRunner {
   void _resetItems() {
     _items = List<Map<String, dynamic>>.from(_history);
     _sentCursor = 0;
+  }
+
+  /// 当前回合收到的 reasoning 是否压缩。
+  ///
+  /// 第一步（调研 + 正文）是正文步：主开关开、子开关关时保持完整；
+  /// 第二步（维护）是非正文步：主开关开即压缩；子开关开则所有回合都压缩。
+  bool _shouldCompressReasoning(AgentStage stage) {
+    if (compressAllReasoning) return true;
+    return compressNonBodyReasoning && stage == AgentStage.state;
   }
 
   List<StateGap> _gaps(String story) => inspectState(
@@ -781,7 +834,7 @@ class AgentRoundRunner {
           isCancelled,
         );
         _frames++;
-        if (chaining) _sentCursor = sentCursor;
+        if (_useChaining) _sentCursor = sentCursor;
         return result;
       } on AiCancelledException {
         rethrow;
@@ -793,7 +846,7 @@ class AgentRoundRunner {
         }
         final msg = e.message.toLowerCase();
         if (_previousResponseId != null &&
-            chaining &&
+            _useChaining &&
             msg.contains('previous_response_id')) {
           _previousResponseId = null;
           continue;
@@ -805,7 +858,7 @@ class AgentRoundRunner {
 
   /// 本次要发送的 input：无状态平台全量重发；续接帧只发新增项。
   List<Map<String, dynamic>> _sendItems() =>
-      (chaining && _previousResponseId != null)
+      (_useChaining && _previousResponseId != null)
           ? _items.sublist(_sentCursor)
           : _items;
 
@@ -817,7 +870,7 @@ class AgentRoundRunner {
         AgentTurnRequest(
           stage: stage,
           items: _sendItems(),
-          previousResponseId: chaining ? _previousResponseId : null,
+          previousResponseId: _useChaining ? _previousResponseId : null,
         ),
       );
 
@@ -905,9 +958,10 @@ class AgentRoundRunner {
     }
     if (stage == AgentStage.story) _classifyStoryFrame(result);
     _noteTruncation(result, stage);
-    // 本帧思考先挂起，**不立即入队**：服务商要求每个 function_call 紧邻其前
+    // 本回合思考先挂起，**不立即入队**：服务商要求每个 function_call 紧邻其前
     // 各有一个非空思考块（见 [_appendCallItems]），故思考在追加工具条目时
-    // 逐个发出，而不是整帧共用一块。回传文本按设置精简（界面/聚合仍用原文）。
+    // 逐个发出，而不是整回合共用一块。压缩只作用于回传，UI/聚合仍用原文。
+    _frameReduceReasoning = _shouldCompressReasoning(stage);
     _frameReasoning = [
       for (final item in result.reasoningItems)
         if (item.text.trim().isNotEmpty)
@@ -915,7 +969,7 @@ class AgentRoundRunner {
             id: item.id,
             text: reasoningTextForReplay(
               item.text,
-              reduce: reduceReasoningReplay,
+              reduce: _frameReduceReasoning,
             ),
             summary: item.summary,
           ),
@@ -943,7 +997,7 @@ class AgentRoundRunner {
   ///
   /// **永不为空**：没有思考块时回落该帧正文（正文本身就是模型对本回合的说明），
   /// 再没有则给占位文本。服务端对「工具调用缺块」是硬 400，宁可回传一段不完美
-  /// 的文本，也不能让整轮生成失败。回落文本同样按设置精简。
+  /// 的文本，也不能让整轮生成失败。回落文本同样按当前步的压缩策略处理。
   String _reasoningTextFor(int index, {required String fallbackContent}) {
     if (_frameReasoning.isNotEmpty) {
       final at = index < _frameReasoning.length ? index : _frameReasoning.length - 1;
@@ -952,7 +1006,10 @@ class AgentRoundRunner {
     }
     final content = fallbackContent.trim();
     if (content.isNotEmpty) {
-      return reasoningTextForReplay(content, reduce: reduceReasoningReplay);
+      return reasoningTextForReplay(
+        content,
+        reduce: _frameReduceReasoning,
+      );
     }
     return 'Continue by calling the requested tool.';
   }
@@ -967,7 +1024,7 @@ class AgentRoundRunner {
       _truncateReason = '';
       return;
     }
-    if (chaining) {
+    if (_useChaining) {
       // 被截断的响应不能作为续接基点（服务端那半截输出本身不完整）：
       // 下一帧改为全量重发，避免服务商直接拒绝。
       _previousResponseId = null;

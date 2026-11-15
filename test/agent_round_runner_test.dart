@@ -130,7 +130,8 @@ void main() {
     List<NarrAgentTool> extraTools = const [],
     MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
-    bool reduceReasoningReplay = false,
+    bool compressNonBodyReasoning = true,
+    bool compressAllReasoning = false,
     int maxPrepFrames = kAgentMaxPrepFrames,
     int maxStateFrames = kAgentMaxStateFrames,
     void Function(AgentStage stage)? onStageStarted,
@@ -173,7 +174,8 @@ void main() {
       profile: profile,
       memoryMergePlan: memoryMergePlan,
       chaining: chaining,
-      reduceReasoningReplay: reduceReasoningReplay,
+      compressNonBodyReasoning: compressNonBodyReasoning,
+      compressAllReasoning: compressAllReasoning,
       maxPrepFrames: maxPrepFrames,
       maxStateFrames: maxStateFrames,
       onStageStarted: onStageStarted,
@@ -543,11 +545,16 @@ void main() {
 
   test('有状态链式：续接回合只发新增 item + previous_response_id', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, chaining: true, script: [
-      prepareRead('p1'),
-      storyTurn(),
-      historyAppend('m1'),
-    ]);
+    final h = harness(
+      copy: copy,
+      chaining: true,
+      compressNonBodyReasoning: false,
+      script: [
+        prepareRead('p1'),
+        storyTurn(),
+        historyAppend('m1'),
+      ],
+    );
 
     await run(h.runner);
 
@@ -605,6 +612,7 @@ void main() {
     final h = harness(
       copy: copy,
       chaining: true,
+      compressNonBodyReasoning: false,
       maxStateFrames: 2,
       script: [
         prepareRead('p1'),
@@ -774,17 +782,176 @@ void main() {
     }
   });
 
-  test('精简思考回传：多段只回传首段 + 末段', () async {
+  List<String> reasoningTexts(List<Map<String, dynamic>> items) => [
+        for (final item in items)
+          if (item['type'] == 'reasoning') '${item['text']}',
+      ];
+
+  test('主开子关：第一步 reasoning 完整，维护步收到的前序 reasoning 压缩', () async {
     final copy = workingCopy();
-    const long = '先读一遍历史确定锚点。\n\n再核对时间线。\n\n最后按五区块写正文。';
+    const prepareLong = '调研第一段。\n\n调研第二段。\n\n调研第三段。';
+    const storyLong = '正文第一段。\n\n正文第二段。\n\n正文第三段。';
     final h = harness(
       copy: copy,
-      reduceReasoningReplay: true,
+      compressNonBodyReasoning: true,
+      compressAllReasoning: false,
       script: [
         AiCallResult(
           content: '',
-          reasoningContent: long,
-          reasoningItems: const [AiReasoningItem(id: 'r1', text: long)],
+          reasoningContent: prepareLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_prep', text: prepareLong),
+          ],
+          toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_prep',
+        ),
+        AiCallResult(
+          content: story5,
+          reasoningContent: storyLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_story', text: storyLong),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_story',
+        ),
+        historyAppend('h1'),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 正文回合收到的调研思考链仍是完整原文（第一步 = 正文步）。
+    final storyReasonings = reasoningTexts(h.requests[1].items);
+    expect(storyReasonings, contains(prepareLong));
+    // 维护回合收到的调研 + 正文思考链都压缩。
+    final maintenanceReasonings = reasoningTexts(h.requests[2].items);
+    expect(
+      maintenanceReasonings,
+      contains('调研第一段。\n\n调研第三段。'),
+    );
+    expect(
+      maintenanceReasonings,
+      contains('正文第一段。\n\n正文第三段。'),
+    );
+    expect(maintenanceReasonings, isNot(contains(prepareLong)));
+    expect(maintenanceReasonings, isNot(contains(storyLong)));
+    // UI / 结果聚合仍是完整原文。
+    expect(result.reasoningContent, contains(prepareLong));
+    expect(result.reasoningContent, contains(storyLong));
+  });
+
+  test('主开子开：第一步的调研 / 正文 reasoning 也压缩', () async {
+    final copy = workingCopy();
+    const prepareLong = '调研第一段。\n\n调研第二段。\n\n调研第三段。';
+    const storyLong = '正文第一段。\n\n正文第二段。\n\n正文第三段。';
+    final h = harness(
+      copy: copy,
+      compressNonBodyReasoning: true,
+      compressAllReasoning: true,
+      chaining: true,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: prepareLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_prep', text: prepareLong),
+          ],
+          toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_prep',
+        ),
+        AiCallResult(
+          content: story5,
+          reasoningContent: storyLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_story', text: storyLong),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_story',
+        ),
+        historyAppend('h1'),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    // 子开关打开时整轮不续接，正文回合直接收到压缩后的调研 reasoning。
+    expect(h.requests[1].previousResponseId, isNull);
+    expect(
+      reasoningTexts(h.requests[1].items),
+      contains('调研第一段。\n\n调研第三段。'),
+    );
+    expect(
+      reasoningTexts(h.requests[2].items),
+      contains('正文第一段。\n\n正文第三段。'),
+    );
+    // UI / 结果聚合仍完整。
+    expect(result.reasoningContent, contains(prepareLong));
+    expect(result.reasoningContent, contains(storyLong));
+  });
+
+  test('主开关关：所有步完整回传 reasoning', () async {
+    final copy = workingCopy();
+    const prepareLong = '调研第一段。\n\n调研第二段。\n\n调研第三段。';
+    const storyLong = '正文第一段。\n\n正文第二段。\n\n正文第三段。';
+    final h = harness(
+      copy: copy,
+      compressNonBodyReasoning: false,
+      compressAllReasoning: false,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: prepareLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_prep', text: prepareLong),
+          ],
+          toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_prep',
+        ),
+        AiCallResult(
+          content: story5,
+          reasoningContent: storyLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_story', text: storyLong),
+          ],
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_story',
+        ),
+        historyAppend('h1'),
+      ],
+    );
+
+    await run(h.runner);
+
+    expect(reasoningTexts(h.requests[1].items), contains(prepareLong));
+    final maintenanceReasonings = reasoningTexts(h.requests[2].items);
+    expect(maintenanceReasonings, contains(prepareLong));
+    expect(maintenanceReasonings, contains(storyLong));
+  });
+
+  test('主开子关 + 续接：正文步可续接，维护步断链后才发送压缩版本', () async {
+    final copy = workingCopy();
+    const prepareLong = '调研第一段。\n\n调研第二段。\n\n调研第三段。';
+    final h = harness(
+      copy: copy,
+      chaining: true,
+      compressNonBodyReasoning: true,
+      compressAllReasoning: false,
+      script: [
+        AiCallResult(
+          content: '',
+          reasoningContent: prepareLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_prep', text: prepareLong),
+          ],
           toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
           promptTokens: 1,
           completionTokens: 1,
@@ -797,10 +964,45 @@ void main() {
 
     await run(h.runner);
 
-    final reasoning =
-        h.requests[1].items.firstWhere((i) => i['type'] == 'reasoning');
-    expect(reasoning['text'], '先读一遍历史确定锚点。\n\n最后按五区块写正文。');
-    expect('${reasoning['text']}', isNot(contains('再核对时间线')));
+    expect(h.requests[1].previousResponseId, 'resp_prep');
+    expect(h.requests[2].previousResponseId, isNull);
+    expect(
+      reasoningTexts(h.requests[2].items),
+      contains('调研第一段。\n\n调研第三段。'),
+    );
+  });
+
+  test('维护修复回合收到压缩后的维护 reasoning', () async {
+    final copy = workingCopy();
+    const stateLong = '维护第一段。\n\n维护第二段。\n\n维护第三段。';
+    final h = harness(
+      copy: copy,
+      compressNonBodyReasoning: true,
+      compressAllReasoning: false,
+      maxStateFrames: 2,
+      script: [
+        prepareRead('p1'),
+        storyTurn(),
+        AiCallResult(
+          content: '',
+          reasoningContent: stateLong,
+          reasoningItems: const [
+            AiReasoningItem(id: 'r_state', text: stateLong),
+          ],
+          toolCalls: badHistory('bad').toolCalls,
+          promptTokens: 1,
+          completionTokens: 1,
+          responseId: 'resp_state_1',
+        ),
+        historyAppend('h1'),
+      ],
+    );
+
+    await run(h.runner);
+
+    final repairReasonings = reasoningTexts(h.requests[3].items);
+    expect(repairReasonings, contains('维护第一段。\n\n维护第三段。'));
+    expect(repairReasonings, isNot(contains(stateLong)));
   });
 }
 

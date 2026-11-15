@@ -56,7 +56,8 @@ class GeneralSettingsForm extends StatelessWidget {
 }
 
 /// 「会话工作模式（实验性）」子模块内容：Agent 模式档位（默认「无 / 使用传统
-/// Chat 方式」）+ Agent 模式专用的「精简思考回传」开关。
+/// Chat 方式」）+ Agent 模式专用的思考链压缩开关（主开关默认开；子开关默认关，
+/// 仅主开关开启时显示）。
 ///
 /// 档位与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
@@ -96,10 +97,14 @@ class _ExperimentalSettingsSectionState
     context.read<ExperimentalSettingsProvider>().setAgentModeLevel(level);
   }
 
-  void _toggleReduceReasoning(bool reduce) {
+  void _toggleCompressNonBodyReasoning(bool value) {
     context
         .read<ExperimentalSettingsProvider>()
-        .setReduceReasoningReplay(reduce);
+        .setCompressNonBodyReasoning(value);
+  }
+
+  void _toggleCompressAllReasoning(bool value) {
+    context.read<ExperimentalSettingsProvider>().setCompressAllReasoning(value);
   }
 
   @override
@@ -111,7 +116,12 @@ class _ExperimentalSettingsSectionState
         children: [
           _buildLevelMenu(experimental),
           const Divider(height: 1, indent: 14, endIndent: 14),
-          _buildReasoningReplaySwitch(experimental),
+          _buildCompressNonBodySwitch(experimental),
+          // 子开关只在主开关开启时存在；关闭主开关时连同状态一起复位。
+          if (experimental.compressNonBodyReasoning) ...[
+            const Divider(height: 1, indent: 14, endIndent: 14),
+            _buildCompressAllSwitch(experimental),
+          ],
         ],
       ),
     );
@@ -142,18 +152,39 @@ class _ExperimentalSettingsSectionState
     );
   }
 
-  /// 「精简思考回传」开关行（Agent 模式专用；默认关）。
-  Widget _buildReasoningReplaySwitch(ExperimentalSettingsProvider experimental) {
+  /// 主开关：「压缩非正文步模型所获取到的思考链」（默认开）。
+  Widget _buildCompressNonBodySwitch(
+    ExperimentalSettingsProvider experimental,
+  ) {
     return SettingsSwitchRow(
       icon: Icons.compress_outlined,
-      title: '精简思考回传',
+      title: '压缩非正文步模型所获取到的思考链',
       experimental: true,
-      subtitle: 'Agent 模式专用（默认关）：开启后回传思考只保留首段与末段'
-          '（单段则原样），降低每帧重发历史的输入 token。'
-          '⚠ 会改写思考原文——自定义网关要求思考完整时请保持关闭。',
-      value: experimental.reduceReasoningReplay,
-      switchKey: const ValueKey('experimental_reduce_reasoning_switch'),
-      onChanged: _toggleReduceReasoning,
+      subtitle: 'Agent 模式专用（默认开）：第一步（调研 + 正文）视为正文步，'
+          '思考链完整保留；只压缩第二步维护收到的前面思考链。'
+          '压缩规则：多段只保留首段与末段（单段原样）。'
+          '⚠ 会改写回传给模型的思考原文——自定义网关要求完整思考时请关闭。',
+      value: experimental.compressNonBodyReasoning,
+      switchKey: const ValueKey(
+        'experimental_compress_non_body_reasoning_switch',
+      ),
+      onChanged: _toggleCompressNonBodyReasoning,
+    );
+  }
+
+  /// 子开关：「压缩所有回合的思考链」（默认关；仅主开关开启时显示）。
+  Widget _buildCompressAllSwitch(ExperimentalSettingsProvider experimental) {
+    return SettingsSwitchRow(
+      icon: Icons.compress,
+      title: '压缩所有回合的思考链',
+      experimental: true,
+      subtitle: '默认关：开启后第一步的调研 / 正文回合也压缩思考链；'
+          '仅在上一项开启时显示并生效。⚠ 同样会改写思考原文。',
+      value: experimental.compressAllReasoning,
+      switchKey: const ValueKey(
+        'experimental_compress_all_reasoning_switch',
+      ),
+      onChanged: _toggleCompressAllReasoning,
     );
   }
 }

@@ -359,8 +359,15 @@ class ChatCompatibleSettings extends AiSettingsProvider {
 /// 默认 Response 平台组合分别覆盖「Agent × Chat 线路」与
 /// 「Agent × Responses 线路」两条路径。
 class AgentModeSettings extends ExperimentalSettingsProvider {
-  AgentModeSettings({AgentModeLevel level = AgentModeLevel.lv1})
-    : super(initialLevel: level);
+  AgentModeSettings({
+    AgentModeLevel level = AgentModeLevel.lv1,
+    bool compressNonBodyReasoning = true,
+    bool compressAllReasoning = false,
+  }) : super(
+          initialLevel: level,
+          initialCompressNonBodyReasoning: compressNonBodyReasoning,
+          initialCompressAllReasoning: compressAllReasoning,
+        );
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，

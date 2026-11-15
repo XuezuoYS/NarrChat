@@ -1,7 +1,7 @@
-/// 思考（reasoning）**回传精简**（纯函数）。
+/// 思考（reasoning）**回传压缩**（纯函数）。
 ///
 /// 服务商要求带 `tools` 的每个 `function_call` 前都有一块非空思考，而 Agent
-/// 每帧全量重发会话，整段回传会让输入随帧数线性膨胀，故提供精简选项：
+/// 每回合全量重发会话，整段回传会让输入随回合数线性膨胀，故提供压缩选项：
 ///
 /// - 按**段落**切分，丢弃纯空白行（`\n\n` 只是格式占位）；
 /// - 只有 1 段 → 原样返回；2 段及以上 → 取**首段 + 末段**。
@@ -13,7 +13,7 @@ List<String> splitReasoningSegments(String text) => [
         if (line.trim().isNotEmpty) line.trim(),
     ];
 
-/// 精简一段思考文本：单段原样返回；多段取首段 + 末段。
+/// 压缩一段思考文本：单段原样返回；多段取首段 + 末段。
 String reduceReasoningText(String text) {
   final segments = splitReasoningSegments(text);
   if (segments.length <= 1) return segments.isEmpty ? '' : segments.first;
