@@ -185,9 +185,6 @@ class _EmptyPromptInterface implements PromptInterface {
   String stagePrepare(AgentStageRequest request) => '';
 
   @override
-  String stageMemory(AgentStageRequest request) => '';
-
-  @override
   String stageStory(AgentStageRequest request) => '';
 
   @override

@@ -17,7 +17,7 @@ import 'memory_merge_planner.dart';
 import 'prompt_text.dart';
 import 'prompt_v2_sections.dart';
 
-/// v2 **文本**取用实现：system（总模板）/ user（新建轮注入）/ Agent 阶段帧指令。
+/// v2 **文本**取用实现：system（总模板）/ user（新建轮注入）/ Agent 阶段回合指令。
 ///
 /// 工具集不在这里——由 `prompt_v2_tools.dart` 与 `prompt_interface.dart` 的
 /// [PromptV2] 聚合提供；本类只依赖纯 Dart 模块，可被脚本 / CLI 直接引用。
@@ -158,7 +158,7 @@ class PromptV2Build
     ]);
     if (post.isNotEmpty) blocks.add(post);
 
-    // —— Chat 的本轮记忆合并指令（后置词之后；Agent 走阶段帧）——
+    // —— Chat 的本轮记忆合并指令（后置词之后；Agent 走维护回合）——
     if (mode == PromptMode.chat) {
       final merge = PromptV2Sections.memoryMergeChatNote(planMemoryMerge(
         memoryText: request.lastRound?.memorySummary ?? '',
@@ -178,37 +178,11 @@ class PromptV2Build
   }
 
   // ---------------------------------------------------------------------------
-  // Agent 阶段帧指令
+  // Agent 阶段回合指令
   // ---------------------------------------------------------------------------
 
   @override
   String stagePrepare(AgentStageRequest request) => PromptV2Sections.stagePrepare;
-
-  @override
-  String stageMemory(AgentStageRequest request) {
-    final workingCopy = request.workingCopy;
-    if (workingCopy == null) {
-      throw ArgumentError.notNull(
-        'AgentStageRequest.workingCopy（记忆回合需要工作副本判定本轮条目 / 合并）',
-      );
-    }
-    final entryWritten = memoryEntryCount(
-          workingCopy.memorySummary,
-          workingCopy.roundIndex,
-        ) ==
-        1;
-    final lead = request.first
-        ? PromptV2Sections.stageMemoryLeadFirst
-        : entryWritten
-            ? PromptV2Sections.stageMemoryLeadMergeMissing
-            : PromptV2Sections.stageMemoryLeadEntryMissing;
-    return [
-      lead,
-      '',
-      PromptV2Sections.stageMemoryBody(),
-      ..._pendingMergeLines(request),
-    ].join('\n');
-  }
 
   @override
   String stageStory(AgentStageRequest request) => PromptV2Sections.stageStory;
@@ -216,6 +190,10 @@ class PromptV2Build
   @override
   String stageState(AgentStageRequest request) {
     final head = PromptV2Sections.stateHead(first: request.first);
+    final copy = request.workingCopy;
+    final alreadyHasEntry = request.first &&
+        copy != null &&
+        memoryEntryCount(copy.memorySummary, copy.roundIndex) == 1;
     final items = <String>[
       ...request.problems,
       ..._pendingMergeLines(request),
@@ -224,8 +202,12 @@ class PromptV2Build
             .compareTo(PromptV2Sections.problemPriority(b)),
       );
     final trimmed = items.take(PromptV2Sections.maxStateProblems).join('\n- ');
-    if (trimmed.isEmpty) return head;
-    return '$head\n- $trimmed';
+    final parts = <String>[
+      head,
+      if (alreadyHasEntry) PromptV2Sections.stateHeadEntryExists,
+      if (trimmed.isNotEmpty) '- $trimmed',
+    ];
+    return parts.join('\n');
   }
 
   // ---------------------------------------------------------------------------

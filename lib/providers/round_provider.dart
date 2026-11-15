@@ -97,9 +97,19 @@ class _BookGenState {
   /// 失败条目的 RAW 时间线（最近一次失败 / 中断尝试）。
   List<RawExchange>? failedRawExchanges;
 
-  /// AGENT 模式的状态钳制警告（修复 2 次后仍失败、已跳过应用的修改项）。
+  /// AGENT 模式的状态钳制警告（维护失败 / 取消 / 缺项）。
   /// 仅**生成期间**的顶部提示；结束时随本轮落库为该「代」的提示。
   final List<String> agentWarnings = [];
+
+  /// 第二步「状态维护」是否正在进行（UI 页眉 / 维护流式框）。
+  bool agentMaintenanceActive = false;
+
+  /// 维护回合的流式文本（只进维护框，绝不进入正文）。
+  String agentMaintenanceContent = '';
+
+  /// 最近一次维护成功完成的代 uuid（内存态灰字提示）：
+  /// 不写库，下一轮开始 / 关闭 APP 即消失。
+  String? maintenanceCompletedUuid;
 
   /// 本书**代级提示**的变更计数（对话列表据此失效缓存的条目高度）。
   ///
@@ -285,9 +295,21 @@ class RoundProvider extends ChangeNotifier {
   /// 正文起点边界（-1 = 正文尚未开始；正文块插入事件序列的该下标处）。
   int get contentBoundaryIndex => _curGen?.contentBoundaryIndex ?? -1;
 
-  /// AGENT 模式状态钳制警告（修复 2 次后仍跳过应用的修改项）。
+  /// AGENT 模式状态钳制警告（维护失败 / 取消 / 缺项）。
   List<String> get agentWarnings =>
       _curGen == null ? const [] : List.unmodifiable(_curGen!.agentWarnings);
+
+  /// 第二步「状态维护」是否正在进行。
+  bool get agentMaintenanceActive => _curGen?.agentMaintenanceActive ?? false;
+
+  /// 维护回合的流式文本（只用于维护框，不进正文）。
+  String get agentMaintenanceContent =>
+      _curGen?.agentMaintenanceContent ?? '';
+
+  /// 指定代是否刚完成维护（内存态灰字提示；不参与云同步）。
+  bool maintenanceCompletedFor(String generationUuid) =>
+      generationUuid.isNotEmpty &&
+      _curGen?.maintenanceCompletedUuid == generationUuid;
 
   /// 某轮当前应用代的提示行（库内 `round_stack.message`）。
   ///
@@ -850,9 +872,9 @@ class RoundProvider extends ChangeNotifier {
   /// 档位、图片、参数）与实发完全同源。
   ///
   /// 返回 [RoundRequestPreview]：
-  /// - `firstFrame` = 真正会发出的**首帧**（Agent 档位 = 该档位实际的第一步，
-  ///   Lv.1 为准备帧而非正文帧）；
-  /// - `subsequentFrames` = 后续**可能**发出的帧（仅增量字段，取决于模型响应）。
+  /// - `firstFrame` = 真正会发出的**首回合**（Agent 档位 = 该档位实际的第一步，
+  ///   Lv.1 为调研回合而非正文回合）；
+  /// - `subsequentFrames` = 后续**可能**发出的回合（仅增量字段，取决于模型响应）。
   ///
   /// 不落库、不发网络、不改生成状态（不新增轮次、不触发预热 / 云同步）。
   Future<RoundRequestPreview> previewRequestBody({
@@ -1184,7 +1206,7 @@ class RoundProvider extends ChangeNotifier {
     final temperature = settings?.temperature ?? 1.0;
     final maxTokens = settings?.maxTokens;
 
-    // AGENT 模式：分阶段执行器（Lv.1 = 准备 → 记忆 → 正文 → 缺口兜底维护轮）
+    // AGENT 模式：两步执行器（Lv.1 = 第一步调研 → 正文；第二步单独维护记忆总结）
     // + 自定义状态/搜索工具。完整 Agent（Lv.2）已移除。
     // 线路（responses / chat）只影响请求体形态，执行器结构完全一致：
     // - responses 线路：instructions + input items + 顶层工具 schema；
@@ -1206,7 +1228,7 @@ class RoundProvider extends ChangeNotifier {
         {'role': 'user', 'content': userContent},
       ];
       // 工具 schema 超集（档位对应的状态工具 + 可选搜索工具），
-      // **各阶段共用同一份**：tools 数组任何差异都会改变请求前缀，
+      // **各步共用同一份**：tools 数组任何差异都会改变请求前缀，
       // 使服务商的上下文缓存整段失效。
       final schemaTools = _agentTools(
         level: agentLevel,
@@ -1428,6 +1450,10 @@ class RoundProvider extends ChangeNotifier {
     gen.agentEvents.clear();
     gen.contentBoundaryIndex = -1;
     gen.agentWarnings.clear();
+    gen.agentMaintenanceActive = false;
+    gen.agentMaintenanceContent = '';
+    // 上一轮的灰色「维护已完成」只在内存里活到下一轮开始。
+    gen.maintenanceCompletedUuid = null;
     gen.newReasoningBlockPending = true;
     gen.retryStatus = null;
     gen.rawExchanges.clear();
@@ -1470,7 +1496,7 @@ class RoundProvider extends ChangeNotifier {
         settings: settings,
       );
       // 模式与协议正交分派：
-      // - Agent 模式（开关开）→ 两阶段执行器（线路由 req.responsesWire 决定）；
+      // - Agent 模式（开关开）→ 两步执行器（线路由 req.responsesWire 决定）；
       // - 联网搜索 → Agent 工具循环（线路同样由 protocol 决定）；
       // - 直发 → 单轮请求（responses 线路走 /responses，chat 线路走 chat）。
       final agentOutcome = req.agent
@@ -1513,7 +1539,10 @@ class RoundProvider extends ChangeNotifier {
               genToken: genToken,
             );
       // 用户主动中断：丢弃部分内容，落一条错误代保留用户输入。
-      if (gen.cancelRequested) {
+      // Agent 已有最终结果（正文已生成）时不再走这里：即便第二步维护被取消，
+      // 也按“所有步结束”统一落正文 + 黄框（见下方 maintenanceCancelled）。
+      final agent = agentOutcome?.agent;
+      if (gen.cancelRequested && agent == null) {
         gen.isStreaming = false;
         gen.showTimeline = false;
         gen.streamingContent = '';
@@ -1582,7 +1611,7 @@ class RoundProvider extends ChangeNotifier {
       // 父代必须显式传给 `_appendRound`：它不给 `fatherUuid` 就默认 null，
       // 于是每轮都成了「链首」——三代各自成根，活动链只解析出最后一轮。
       final fatherUuid = _fatherAnchorFor(newRound.roundIndex);
-      await _appendRound(
+      final generationUuid = await _appendRound(
         newRound,
         serial: _nextSerialFor(
           roundIndex: newRound.roundIndex,
@@ -1592,6 +1621,12 @@ class RoundProvider extends ChangeNotifier {
         message: generationWarnings.join('\n'),
         messageStatus: generationWarnings.isEmpty ? '' : 'warning',
       );
+      // 灰字「状态维护已完成」只存在内存里：按代 uuid 归属，下一轮 / 关闭 APP
+      // 即消失；维护失败 / 取消不设置。
+      gen.maintenanceCompletedUuid =
+          agent?.maintenanceCompleted == true ? generationUuid : null;
+      gen.agentMaintenanceActive = false;
+      gen.agentMaintenanceContent = '';
       _bumpVersions();
       // 成功轮次：RAW 时间线按**代 uuid** 归位（loadRounds 不会丢它）。
       final rawExchanges = List.of(gen.rawExchanges);
@@ -1606,10 +1641,16 @@ class RoundProvider extends ChangeNotifier {
           : null;
       if (liveRound != null) {
         _rawByGeneration[liveRound.uuid] = rawExchanges;
+      } else {
+        _rawByGeneration[generationUuid] = rawExchanges;
       }
+      final maintenanceCancelled = agent?.maintenanceCancelled == true;
       // 生成成功：通知系统通知服务（若用户不在该书 chat 页则弹出系统通知）。
-      onGenerationCompleted?.call(b.uuid, b.title);
-      return true;
+      // 用户取消维护时不通知“已完成”。
+      if (!maintenanceCancelled) {
+        onGenerationCompleted?.call(b.uuid, b.title);
+      }
+      return !maintenanceCancelled;
     } on AiCancelledException {
       // 用户主动中断（非流式场景由 _chatOnce 抛出）：不提示错误，落一条错误代。
       gen.isStreaming = false;
@@ -1659,6 +1700,8 @@ class RoundProvider extends ChangeNotifier {
       gen.pendingRoundIndex = null;
       gen.retryStatus = null;
       gen.rawExchanges.clear();
+      gen.agentMaintenanceActive = false;
+      gen.agentMaintenanceContent = '';
       // 全部生成任务结束：通知服务停止 Android 后台保活前台服务。
       if (!_hasActiveGeneration()) {
         onGenerationActiveChanged?.call(false);
@@ -1979,7 +2022,7 @@ class RoundProvider extends ChangeNotifier {
     );
   }
 
-  /// AGENT 单轮执行（分阶段 + 状态自取；线路由 req.responsesWire 决定）。
+  /// AGENT 单轮执行（两步 + 状态自取；线路由 req.responsesWire 决定）。
   ///
   /// 返回聚合结果（正文 = 最后一个标题帧）、工作副本合并快照与执行器结果。
   /// 状态**只**来自工作副本：模型不再以文本区块输出状态，故无文本兜底。
@@ -2068,7 +2111,7 @@ class RoundProvider extends ChangeNotifier {
       lastRound: req.baseRound,
       categoryNames: [for (final c in book.roleCategories) c.name],
     );
-    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各阶段共用同一份**
+    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各步共用同一份**
     // schema，保证 instructions / tools 前缀在准备 / 记忆 / 正文 / 维护之间完全一致。
     final tools = _agentTools(
       level: req.agentLevel,
@@ -2093,6 +2136,9 @@ class RoundProvider extends ChangeNotifier {
       // AGENT 单轮路径：搜索 / 打开页面事件由工具事件（流式预览 / 开始 /
       // 完成）**统一承载**——同一工具调用只产生一个事件框；活动回调仅用于
       // 新一轮思考块管理（否则会出现「联网搜索框 + Tool 框」双框）。
+      onStageStarted: gen == null
+          ? null
+          : (stage) => _handleAgentStageStarted(stage, gen),
       onActivity: gen == null
           ? null
           : (a) {
@@ -2170,16 +2216,16 @@ class RoundProvider extends ChangeNotifier {
     );
   }
 
-  /// AGENT 模式单帧请求体（Responses 线路；预览与实发共用同一路径）。
+  /// AGENT 模式单回合请求体（Responses 线路；预览与实发共用同一路径）。
   ///
-  /// 帧间差异只有这几处，其余前缀逐字节一致（服务商上下文缓存依赖此）：
-  /// - [AgentTurnRequest.items]：本轮累积 input（各阶段追加 assistant / 工具
-  ///   条目与阶段指令，维护轮再追加缺口清单）；
-  /// - [AgentTurnRequest.previousResponseId]：有状态续接帧不重发
+  /// 回合间差异只有这几处，其余前缀逐字节一致（服务商上下文缓存依赖此）：
+  /// - [AgentTurnRequest.items]：本轮累积 input（各步追加 assistant / 工具
+  ///   条目与回合指令，维护回合再追加缺口清单）；
+  /// - [AgentTurnRequest.previousResponseId]：有状态续接回合不重发
   ///   instructions / tools。
   ///
   /// **思考强度 / 思考开关 / `max_output_tokens` 一律沿用用户设置**：
-  /// 程序不为任何帧覆盖它们（触顶时由执行器下发「拆短调用」指令 +
+  /// 程序不为任何回合覆盖它们（触顶时由执行器下发「拆短调用」指令 +
   /// 黄框提示用户自行调高上限）。
   static Map<String, dynamic> _agentBody({
     required AiSettingsProvider? settings,
@@ -2228,7 +2274,7 @@ class RoundProvider extends ChangeNotifier {
         : settings.buildRequestBody(values);
   }
 
-  /// 各阶段帧的公共取值（协议无关部分）：**思考开关与强度全帧沿用用户设置**
+  /// 各回合帧的公共取值（协议无关部分）：**思考开关与强度全回合沿用用户设置**
   /// （执行器不为任何阶段覆盖；见 [AgentTurnRequest]），温度 / 上限 / 流式同样
   /// 沿用户设置；有状态续接（[chained]）时省略 tools / instructions
   /// （responses 专用）。
@@ -2472,13 +2518,18 @@ class RoundProvider extends ChangeNotifier {
         _handleToolPreview(chunk, gen);
       }
       if (chunk.contentDelta.isNotEmpty) {
-        // 进入正文阶段：当前轮的思考已完成；首个正文增量固定「正文起点边界」
-        //（正文块插入在该下标：此前的块在正文上方、之后的块在正文下方）。
-        if (gen.contentBoundaryIndex < 0) {
-          gen.contentBoundaryIndex = gen.agentEvents.length;
+        if (gen.agentMaintenanceActive) {
+          // 第二步维护文本只进维护流式框，绝不混入正文。
+          gen.agentMaintenanceContent += chunk.contentDelta;
+        } else {
+          // 进入正文回合：当前轮的思考已完成；首个正文增量固定「正文起点边界」
+          //（正文块插入在该下标：此前的块在正文上方、之后的块在正文下方）。
+          if (gen.contentBoundaryIndex < 0) {
+            gen.contentBoundaryIndex = gen.agentEvents.length;
+          }
+          _finishCurrentThinking(gen);
+          gen.streamingContent += chunk.contentDelta;
         }
-        _finishCurrentThinking(gen);
-        gen.streamingContent += chunk.contentDelta;
       }
       if (chunk.reasoningDelta.isNotEmpty) {
         // 需要新建思考事件（首段思考或 agent 新一轮开始）时先开新事件。
@@ -2493,6 +2544,23 @@ class RoundProvider extends ChangeNotifier {
       }
       notifyListeners();
     };
+  }
+
+  /// Agent 步骤开始回调：
+  /// - 进入第二步维护时，打开维护流式框并清空维护文本；
+  /// - 其它步骤关闭维护状态（正文 / 调研仍走原时间线）。
+  void _handleAgentStageStarted(AgentStage stage, _BookGenState gen) {
+    if (stage == AgentStage.state) {
+      gen.agentMaintenanceActive = true;
+      gen.agentMaintenanceContent = '';
+      _finishCurrentThinking(gen);
+      notifyListeners();
+      return;
+    }
+    if (gen.agentMaintenanceActive) {
+      gen.agentMaintenanceActive = false;
+      notifyListeners();
+    }
   }
 
   /// 将最近的未完成思考事件标记为完成（思考结束 / 开始搜索 / 进入正文时）。
@@ -2938,7 +3006,7 @@ class _SendPlan {
 ///
 /// 全部字段在组装时确定，不携带任何运行时生成状态。
 /// [agent]（实验性档位）与 [responsesWire]（线路协议）**正交**：
-/// - [agent] 为 true：Agent 分阶段执行器启用（自定义工具 + 状态工作副本），
+/// - [agent] 为 true：Agent 两步执行器启用（自定义工具 + 状态工作副本），
 ///   [agentLevel] / [agentValues] 等字段随之生效；
 /// - [responsesWire] 为 true：请求体走 Response API 线路（/responses）。
 class _RoundRequest {

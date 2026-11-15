@@ -24,10 +24,10 @@ import 'helpers/fakes.dart';
 /// **逐字一致**，且预览本身零副作用（不落库、不发网络、不改生成状态、不触发同步）。
 ///
 /// 每类入口各覆盖一次：普通新一轮 / 灰条「修改并重新提问」（先删轮再发）/
-/// 灰条「按意见修改」（修改轮）/ Agent Lv.1（首帧 = 准备帧，非正文帧）/
+/// 灰条「按意见修改」（修改轮）/ Agent Lv.1（首回合 = 调研回合，非正文回合）/
 /// 联网工具循环。
 ///
-/// 完整 Agent（Lv.2）已移除：其「首帧 = 正文帧」的预览用例随档位一并删除。
+/// 完整 Agent（Lv.2）已移除：其「首回合 = 正文回合」的预览用例随档位一并删除。
 void main() {
   const book = Book(uuid: 'b1', title: '测试书', historyRounds: 2);
 
@@ -182,7 +182,7 @@ void main() {
       expect(seeded.length, 4);
     });
 
-    test('Agent Lv.1：首帧 = 准备帧（含准备阶段指令），与实发首帧逐字一致', () async {
+    test('Agent Lv.1：首回合 = 调研回合（含调研指令），与实发首回合逐字一致', () async {
       final env = await build(
         settings: AiSettingsProvider(),
         experimental: AgentModeSettings(level: AgentModeLevel.lv1),
@@ -195,8 +195,8 @@ void main() {
       );
       final input = (preview.firstFrame['input'] as List)
           .cast<Map<String, dynamic>>();
-      // Lv.1 第一步是准备帧：末条不再只是用户输入，而是紧随其后的帧指令
-      // （旧实现误按「正文帧」预览，与实际发出的首帧不符）。
+      // Lv.1 第一步是调研回合：末条不再只是用户输入，而是紧随其后的回合指令
+      // （旧实现误按「正文回合」预览，与实际发出的首帧不符）。
       expect(input.last['role'], 'user');
       expect('${input.last['content']}', isNot('第一章'));
       expect(
@@ -205,7 +205,7 @@ void main() {
       );
       expect(
         preview.subsequentFrames.map((f) => f.label).toList(),
-        ['记忆帧', '正文帧', '维护帧'],
+        ['正文回合', '维护回合'],
       );
       // 后续帧只列增量：本帧追加的都是 input 条目，且**不改思考强度**
       // （所有帧一律沿用用户设置）。
@@ -500,7 +500,7 @@ void main() {
     test('fromOutline：首帧取第一项，其余按上一帧求增量', () {
       final preview = RoundRequestPreview.fromOutline(const [
         RequestFrameOutline(
-          label: '准备帧',
+          label: '调研回合',
           note: '第一步',
           body: {
             'input': [
@@ -509,7 +509,7 @@ void main() {
           },
         ),
         RequestFrameOutline(
-          label: '记忆帧',
+          label: '正文回合',
           note: '第二步',
           body: {
             'input': [
@@ -522,7 +522,7 @@ void main() {
 
       expect(preview.firstFrame['input'], hasLength(1));
       final frame = preview.subsequentFrames.single;
-      expect(frame.label, '记忆帧');
+      expect(frame.label, '正文回合');
       expect(frame.note, '第二步');
       expect(frame.diffJson, contains('阶段指令'));
       expect(frame.diffJson, isNot(contains('hi')), reason: '不重抄上一帧');

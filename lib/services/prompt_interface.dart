@@ -12,7 +12,7 @@
 /// 【覆盖范围】只包含文本与其等价物：
 /// - [SystemPromptSource.system]：**拼合后**的 system（instructions）；
 /// - [UserPromptSource.user]：**拼合后**的本轮 user 消息；
-/// - [StageDirectiveSource]：Agent 阶段帧指令（准备 / 记忆 / 正文 / 维护）；
+/// - [StageDirectiveSource]：Agent 阶段回合指令（调研 / 正文 / 维护）；
 /// - [AgentToolSource.tools]：工具集（工具定义即文本，故由接口构造）。
 ///
 /// 【不覆盖】（仍由各自实现器负责，接口不参与）：
@@ -97,7 +97,7 @@ abstract interface class PromptInterface
         StageDirectiveSource,
         AgentToolSource {}
 
-/// **v2 聚合实现**：文本 = [PromptV2Build]（总模板 / 新建轮模板 / 阶段帧），
+/// **v2 聚合实现**：文本 = [PromptV2Build]（总模板 / 新建轮模板 / 阶段回合指令），
 /// 工具 = `prompt_v2_tools.listPromptTools`（与 v1 共用同一份清单路由）。
 class PromptV2 extends PromptV2Build implements PromptInterface {
   const PromptV2();

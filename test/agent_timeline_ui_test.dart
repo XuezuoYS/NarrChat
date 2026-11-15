@@ -41,7 +41,7 @@ class _ScriptedFrame {
   final Completer<void>? endGate;
 }
 
-/// 脚本化 responses 服务：按序返回 [_ScriptedFrame]（Lv.1 三段帧脚本）。
+/// 脚本化 responses 服务：按序返回 [_ScriptedFrame]（Lv.1 两步回合脚本）。
 class _ScriptedStreamResponsesService extends AiService {
   _ScriptedStreamResponsesService(this.frames);
 
@@ -85,7 +85,7 @@ Future<void> _pumpUntil(
 // Lv.1 帧脚本辅助
 // ---------------------------------------------------------------------------
 
-/// 准备帧：只读一次历史（读完即结束调研阶段，无联网时整轮恰好三段）。
+/// 调研回合：只读一次历史（读完即结束调研，无联网时整轮恰好 3 个回合）。
 _ScriptedFrame _prepareReadFrame({String id = 'fc_read'}) => _ScriptedFrame(
   result: AiCallResult(
     content: '',
@@ -98,10 +98,12 @@ _ScriptedFrame _prepareReadFrame({String id = 'fc_read'}) => _ScriptedFrame(
   ),
 );
 
-/// 记忆帧：`op=append` 追加恰好一条本轮条目（记忆先于正文落地）。
-_ScriptedFrame _memoryAppendFrame({
+/// 维护回合：`op=append` 追加恰好一条本轮条目（正文之后单独请求）。
+_ScriptedFrame _maintenanceAppendFrame({
   required String entry,
-  String id = 'fc_memory',
+  String id = 'fc_maintenance',
+  Completer<void>? startGate,
+  Completer<void>? endGate,
 }) => _ScriptedFrame(
   result: AiCallResult(
     content: '',
@@ -118,11 +120,13 @@ _ScriptedFrame _memoryAppendFrame({
     ],
     promptTokens: 1,
     completionTokens: 1,
-    responseId: 'r_memory',
+    responseId: 'r_maintenance',
   ),
+  startGate: startGate,
+  endGate: endGate,
 );
 
-/// 空手帧：只回文本、不调工具（记忆 / 维护阶段走到帧数上限用）。
+/// 空手帧：只回文本、不调工具（维护阶段走到帧数上限用）。
 _ScriptedFrame _emptyFrame(String text) => _ScriptedFrame(
   result: AiCallResult(
     content: text,
@@ -132,7 +136,7 @@ _ScriptedFrame _emptyFrame(String text) => _ScriptedFrame(
   ),
 );
 
-/// 正文帧：标题帧正文（唯一上屏阶段），流式增量与最终结果一致。
+/// 正文回合：标题回合正文（唯一上屏步），流式增量与最终结果一致。
 _ScriptedFrame _storyFrame(
   String story, {
   Completer<void>? startGate,
@@ -151,13 +155,13 @@ _ScriptedFrame _storyFrame(
 
 /// AGENT Lv.1 模式 UI：聊天页「AGENT」徽标与状态工具时间线框。
 ///
-/// 帧语义：准备（读史 / 联网）→ 记忆（编辑历史）→ 正文（唯一上屏）→
-/// 维护轮（仅在记忆未落地时兜底）。工具块在「调用间隙」可见，因此用例
-/// 用多帧脚本 + 门控在帧间断言：工具先行的块排在正文上方。
+/// 回合语义：调研（读史 / 联网）→ 正文（唯一上屏）→ 维护（正文后单独请求）。
+/// 工具块在「调用间隙」可见，因此用例用多回合脚本 + 门控在回合间断言：
+/// 调研工具块在正文上方，维护工具块在正文下方。
 void main() {
   const book = Book(uuid: kHarnessBookUuid, title: '测试书');
 
-  testWidgets('AGENT Lv.1（默认平台）：徽标为 Lv.1；准备/记忆工具块在正文上方', (tester) async {
+  testWidgets('AGENT Lv.1（默认平台）：徽标为 Lv.1；调研工具块在正文上方、维护在下方', (tester) async {
     final storyStartGate = Completer<void>();
     final storyEndGate = Completer<void>();
     const story = '## 剧情演绎\n主角踏门而入。\n\n## 推荐行动\n叩见掌门。\n\n'
@@ -165,8 +169,8 @@ void main() {
         '## 角色状态\n# 主角\n## 林远\n- 气血：70';
     final ai = _ScriptedStreamResponsesService([
       _prepareReadFrame(),
-      _memoryAppendFrame(entry: '- 第1轮｜日期：第二天 午时｜主角踏门而入'),
       _storyFrame(story, startGate: storyStartGate, endGate: storyEndGate),
+      _maintenanceAppendFrame(entry: '- 第1轮｜日期：第二天 午时｜主角踏门而入'),
     ]);
     final settings = AiSettingsProvider();
     final provider = await pumpChatScreen(
@@ -182,27 +186,25 @@ void main() {
     expect(find.textContaining('Agent Lv.1 On (BETA)'), findsWidgets);
 
     final future = provider.sendRound(userInput: '测试', book: book);
-    await _pumpUntil(tester, () => ai.calls == 3);
+    await _pumpUntil(tester, () => ai.calls == 2);
 
-    // 准备帧读史 + 记忆帧编辑历史：两个工具块都已结束且排在正文上方；
-    // 正文帧已发出请求但尚未流出任何正文。
+    // 调研回合读史；正文回合已发出请求但尚未流出正文。维护还没开始。
     expect(find.textContaining('Tool · narrchat_readHistory'), findsOneWidget);
-    expect(find.textContaining('Tool · narrchat_editHistory'), findsOneWidget);
+    expect(find.textContaining('Tool · narrchat_editHistory'), findsNothing);
     expect(provider.streamingContent, isEmpty);
     expect(provider.contentBoundaryIndex, -1);
 
-    // 放行正文帧：正文起点边界落在两个工具块之后（块下标 0/1 → 边界 2），
-    // 即工具块严格位于正文上方。
+    // 放行正文回合：正文起点边界落在读史工具块之后（块下标 0 → 边界 1）。
     storyStartGate.complete();
     await _pumpUntil(tester, () => provider.streamingContent.isNotEmpty);
     expect(provider.streamingContent, contains('主角踏门而入'));
-    expect(provider.contentBoundaryIndex, 2);
+    expect(provider.contentBoundaryIndex, 1);
 
     storyEndGate.complete();
     await future;
     await waitSendDone(tester, provider);
 
-    // 正文按正文帧落库；记忆条目由记忆帧先于正文写入。
+    // 正文按正文回合落库；记忆条目由第二步维护追加。
     final round = provider.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('主角踏门而入'));
     expect(round.memorySummary, contains('第1轮'));
@@ -210,7 +212,7 @@ void main() {
     expect(round.worldState, '- 地点：青云宗');
   });
 
-  testWidgets('搜索开场白（准备帧无标题文本）不上屏也不阻塞：正文块只展示正文帧', (tester) async {
+  testWidgets('搜索开场白（调研回合无标题文本）不上屏也不阻塞：正文块只展示正文回合', (tester) async {
     final storyEndGate = Completer<void>();
     final settings = AiSettingsProvider();
     // 不 await：本地配置写入在 testWidgets 的 FakeAsync 下不会完成，而
@@ -221,7 +223,7 @@ void main() {
     const story = '## 剧情演绎\n真正的正文\n\n## 推荐行动\nx\n\n'
         '## 当前时间\n第一天 深夜\n\n## 世界状态\n- 地点：灯会';
     final ai = _ScriptedStreamResponsesService([
-      // 准备帧 1：说明性开场白（无标题）+ 联网搜索（搜索不是读取器，调研继续）。
+      // 调研回合 1：说明性开场白（无标题）+ 联网搜索（搜索不是读取器，调研继续）。
       _ScriptedFrame(
         chunks: const [
           AiStreamChunk(contentDelta: opener),
@@ -245,10 +247,10 @@ void main() {
           responseId: 'r1',
         ),
       ),
-      // 准备帧 2：读史结束调研 → 记忆帧编辑历史 → 正文帧标题正文。
+      // 调研回合 2：读史结束调研 → 正文回合标题正文 → 维护回合补记忆。
       _prepareReadFrame(id: 'fc_read'),
-      _memoryAppendFrame(entry: '- 第1轮｜日期：第一天 深夜｜观察到两人走入小巷'),
       _storyFrame(story, endGate: storyEndGate),
+      _maintenanceAppendFrame(entry: '- 第1轮｜日期：第一天 深夜｜观察到两人走入小巷'),
     ]);
     final provider = await pumpChatScreen(
       tester,
@@ -261,15 +263,15 @@ void main() {
     );
 
     final future = provider.sendRound(userInput: '搜索两人资料', book: book);
-    await _pumpUntil(tester, () => ai.calls == 4);
+    await _pumpUntil(tester, () => ai.calls == 3);
     await tester.pump();
 
-    // 正文帧已（同步）流式发出：正文块 = 正文帧正文，开场白从未上屏。
+    // 正文回合已（同步）流式发出：正文块 = 正文回合正文，开场白从未上屏。
     expect(provider.streamingContent, contains('真正的正文'));
     expect(provider.streamingContent, isNot(contains("I'll search")));
     expect(find.textContaining("I'll search"), findsNothing);
 
-    // 放行正文帧并完成本轮：落库正文 = 正文帧正文；搜索工具照常生效。
+    // 放行正文回合并完成本轮：落库正文 = 正文回合正文；搜索工具照常生效。
     storyEndGate.complete();
     await future;
     await waitSendDone(tester, provider);
@@ -291,7 +293,7 @@ void main() {
     const story = '## 剧情演绎\n查完资料后的正文\n\n## 推荐行动\nx\n\n'
         '## 当前时间\n第一天 午时';
     final ai = _ScriptedStreamResponsesService([
-      // 准备帧：仅搜索工具调用（流式预览 + 执行）；正文在最后一段。
+      // 调研回合：仅搜索工具调用（流式预览 + 执行）；正文在最后一段。
       _ScriptedFrame(
         chunks: const [
           AiStreamChunk(toolCallId: 'fc_search', toolName: 'narrchat_webSearch'),
@@ -315,8 +317,8 @@ void main() {
         ),
       ),
       _prepareReadFrame(id: 'fc_read'),
-      _memoryAppendFrame(entry: '- 第1轮｜日期：第一天 午时｜搜集两人资料'),
       _storyFrame(story, endGate: storyEndGate),
+      _maintenanceAppendFrame(entry: '- 第1轮｜日期：第一天 午时｜搜集两人资料'),
     ]);
     final provider = await pumpChatScreen(
       tester,
@@ -329,7 +331,7 @@ void main() {
     );
 
     final future = provider.sendRound(userInput: '搜索两人资料', book: book);
-    await _pumpUntil(tester, () => ai.calls == 4);
+    await _pumpUntil(tester, () => ai.calls == 3);
     await tester.pump();
 
     // 一次搜索调用 = 一个 Tool 框：不再并存「联网搜索」活动框与「Tool · …」框。
@@ -342,14 +344,52 @@ void main() {
     await waitSendDone(tester, provider);
   });
 
+  testWidgets('第二步维护：流式维护框可见，成功后出灰字「状态维护已完成」', (tester) async {
+    final maintenanceGate = Completer<void>();
+    const story = '## 剧情演绎\n正文\n\n## 推荐行动\n行动\n\n'
+        '## 当前时间\n第二天 午时';
+    final ai = _ScriptedStreamResponsesService([
+      _prepareReadFrame(),
+      _storyFrame(story),
+      _maintenanceAppendFrame(
+        entry: '- 第1轮｜日期：第二天 午时｜主角登场',
+        startGate: maintenanceGate,
+      ),
+    ]);
+    final settings = AiSettingsProvider();
+    final provider = await pumpChatScreen(
+      tester,
+      ai: ai,
+      settings: settings,
+      aiSettingsProvider: settings,
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    final future = provider.sendRound(userInput: '测试', book: book);
+    await _pumpUntil(tester, () => ai.calls == 3);
+    await tester.pump();
+
+    // 维护请求已发出但尚未返回：维护框 / 页眉处于「状态维护中」。
+    expect(provider.agentMaintenanceActive, isTrue);
+    expect(find.byKey(const ValueKey('agent_maintenance_box')), findsOneWidget);
+    expect(find.textContaining('状态维护中'), findsWidgets);
+
+    maintenanceGate.complete();
+    await future;
+    await waitSendDone(tester, provider);
+
+    expect(provider.agentMaintenanceActive, isFalse);
+    expect(find.byKey(const ValueKey('agent_maintenance_done')), findsOneWidget);
+    expect(find.text('状态维护已完成'), findsOneWidget);
+    expect(provider.roundWarningsFor(1), isEmpty);
+  });
+
   testWidgets('轮次常驻黄框：结束后警告仍挂在正文轮上，没有关闭入口', (tester) async {
-    // Lv.1 兜底流程：准备读史 → 3 次记忆空手（记忆阶段帧数上限）→ 正文 →
-    // 4 次维护空手（维护阶段帧数上限）→ 记忆总结缺项转常驻警告。
-    // 世界 / 角色不再由工具维护，不会再出现「世界状态本轮未更新」。
+    // Lv.1 两步流程：准备读史 → 正文 → 4 次维护空手（维护步帧数上限）
+    // → 记忆总结缺项转常驻警告。世界 / 角色不由工具维护，不会出现它们的警告。
     const story = '## 剧情演绎\n正文初稿\n\n## 推荐行动\n行动';
     final ai = _ScriptedStreamResponsesService([
       _prepareReadFrame(),
-      for (var i = 0; i < 3; i++) _emptyFrame('记忆阶段空手：没有调用编辑器。'),
       _storyFrame(story),
       for (var i = 0; i < 4; i++) _emptyFrame('维护阶段空手：没有调用编辑器。'),
     ]);
@@ -366,7 +406,7 @@ void main() {
     final future = provider.sendRound(userInput: '测试', book: book);
     await future;
     await waitSendDone(tester, provider);
-    expect(ai.calls, 9, reason: '1 准备 + 3 记忆 + 1 正文 + 4 维护');
+    expect(ai.calls, 6, reason: '1 调研 + 1 正文 + 4 维护');
 
     final idx = provider.rounds.last.roundIndex;
     expect(provider.roundWarningsFor(idx), ['记忆总结本轮未更新']);

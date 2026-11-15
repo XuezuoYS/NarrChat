@@ -281,7 +281,8 @@ void main() {
 
       final agent = promptInterface.user(requestOf(PromptMode.agentLv1));
       expect(agent, contains(kReadHistoryToolName));
-      expect(agent, contains('5 个区块'));
+      expect(agent, contains('5 个二级标题'));
+      expect(agent, contains('第二步'));
     });
 
     test('前置词 / 后置词：用户 + Mod 都在，顺序正确', () {
@@ -411,36 +412,30 @@ void main() {
       );
     });
 
-    test('阶段帧指令为 v2 文案（调研 / 记忆 / 正文 / 维护 / 修复）', () {
+    test('阶段回合指令为 v2 文案（调研 / 正文 / 维护 / 修复）', () {
       const lv1 = AgentStageRequest();
-      // 调研回合：只读史 + 按需联网，**不产出大纲**，且文本通道零输出。
+      // 调研回合：只读史 + 按需联网，不写记忆 / 正文，文本通道零输出。
       final prepare = promptInterface.stagePrepare(lv1);
       expect(prepare, startsWith('【调研回合】'));
       expect(prepare, contains('narrchat_readHistory'));
-      expect(prepare, contains('不写大纲'), reason: '大纲改由记忆回合的思考通道定');
-      expect(prepare, isNot(contains('把本轮大纲定下来')));
+      expect(prepare, contains('立刻发正文回合'));
+      expect(prepare, isNot(contains('记忆回合')));
       expect(prepare, contains('不要'), reason: '明确禁止文本通道输出');
-      expect(promptInterface.stageStory(lv1), startsWith('【正文回合】'));
 
-      final copy = copyOf();
-      final memory = promptInterface.stageMemory(AgentStageRequest(
-        workingCopy: copy,
-        first: true,
-      ));
-      // 记忆回合：同一回合内「推演剧情定大纲 + 落条目」，文本通道零输出。
-      expect(memory, contains('【记忆回合】'));
-      expect(memory, contains('大纲'));
-      expect(memory, contains('思考通道'));
-      expect(memory, contains('op=append'));
-      expect(memory, contains('一次做完'));
+      // 正文回合：调研结束后直接写 5 区块，记忆留到维护步。
+      final story = promptInterface.stageStory(lv1);
+      expect(story, startsWith('【正文回合】'));
+      expect(story, contains('5 个二级标题'));
+      expect(story, contains('不要调用历史编辑器'));
 
       final lv1State = promptInterface.stageState(const AgentStageRequest(
         problems: ['memorySummary栏目本轮既未编辑也未声明无变化'],
       ));
       // 维护首帧 = Lv.1 文案；修复帧（first:false）走 stateHeadFix。
       expect(lv1State, startsWith(PromptV2Sections.stateHeadLv1));
-      expect(lv1State, isNot(contains('narrchat_readWorldState')));
+      expect(lv1State, contains('只维护记忆总结'));
       expect(lv1State, contains(kEditHistoryToolName));
+      expect(lv1State, isNot(contains('narrchat_readWorldState')));
 
       final fixState = promptInterface.stageState(const AgentStageRequest(
         problems: ['memorySummary栏目本轮既未编辑也未声明无变化'],
@@ -451,11 +446,19 @@ void main() {
       expect(fixState, contains('- memorySummary栏目本轮既未编辑也未声明无变化'));
     });
 
-    test('记忆帧缺工作副本 → 显式报错', () {
-      expect(
-        () => promptInterface.stageMemory(const AgentStageRequest()),
-        throwsArgumentError,
+    test('维护回合已有本轮条目时明确提示不要重复追加', () {
+      final copy = AgentStateWorkingCopy(
+        roundIndex: 2,
+        lastRound: lastRound.copyWith(
+          memorySummary: '- 2 | 第三天 午时 | 已落地的条目',
+        ),
+        categoryNames: const [],
       );
+      final state = promptInterface.stageState(AgentStageRequest(
+        workingCopy: copy,
+        first: true,
+      ));
+      expect(state, contains(PromptV2Sections.stateHeadEntryExists));
     });
   });
 

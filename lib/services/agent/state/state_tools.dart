@@ -77,8 +77,8 @@ NarrAgentTool _editTool(AgentStateWorkingCopy copy, AgentStateSection section) =
 
 /// 状态读取器基类：纯只读、幂等、无副作用。
 ///
-/// 返回值 = **该栏目**工作副本当前渲染（准备 / 正文阶段调用 = 上一轮库内状态；
-/// 维护轮调用 = 上一轮 + 本轮正文之后的状态），应用侧无需区分调用时机。
+/// 返回值 = **该栏目**工作副本当前渲染（调研 / 正文回合调用 = 上一轮库内状态；
+/// 维护回合调用 = 上一轮 + 本轮正文之后的状态），应用侧无需区分调用时机。
 abstract class _SectionReadTool implements NarrAgentTool {
   _SectionReadTool(this.workingCopy, this.section);
 

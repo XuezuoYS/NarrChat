@@ -3143,6 +3143,10 @@ class _ChatScreenState extends State<ChatScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (roundProvider.maintenanceCompletedFor(round.uuid)) ...[
+                        const _MaintenanceDoneHint(),
+                        const SizedBox(height: 8),
+                      ],
                       if (warnings.isNotEmpty) ...[
                         _AgentWarningsBox(
                           warnings: warnings,
@@ -4694,6 +4698,112 @@ class _ToolEventBoxState extends State<_ToolEventBox> {
       );
 }
 
+/// 第二步「状态维护」的流式框：正文之后单独请求的维护过程。
+///
+/// 维护文本只在这里展示，绝不进入正文；工具调用仍由时间线的
+/// `Tool · narrchat_editHistory` 框承载。
+class _MaintenanceStreamBox extends StatelessWidget {
+  final String content;
+  final bool active;
+
+  const _MaintenanceStreamBox({
+    required this.content,
+    required this.active,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = content.trim();
+    return Container(
+      key: const ValueKey('agent_maintenance_box'),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.build_circle_outlined,
+                size: 15,
+                color: NarrChatTheme.primary,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                '状态维护',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: NarrChatTheme.primary,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  active ? '正在整理本轮记忆总结……' : '已完成',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: context.narrColors.textSecondary,
+                  ),
+                ),
+              ),
+              if (active)
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                const Icon(
+                  Icons.check_circle,
+                  size: 14,
+                  color: NarrChatTheme.primary,
+                ),
+            ],
+          ),
+          if (text.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            StreamingMarkdown(
+              data: content,
+              trailing: active ? '▍' : '',
+              base: TextStyle(
+                fontSize: 12,
+                height: 1.5,
+                color: context.narrColors.textPrimary,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 维护成功后的灰色临时提示：只在内存里活到下一轮 / 关闭 APP。
+class _MaintenanceDoneHint extends StatelessWidget {
+  const _MaintenanceDoneHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      '状态维护已完成',
+      key: const ValueKey('agent_maintenance_done'),
+      style: TextStyle(
+        fontSize: 12,
+        color: context.narrColors.textSecondary,
+      ),
+    );
+  }
+}
+
 /// 提示框（三态）：级别由 `round_stack.message_status` 决定——
 /// `warning`（黄，缺省）/ `error`（红）/ `info`（中性，预留给将来）。
 ///
@@ -5011,6 +5121,8 @@ class _StreamingSlot extends StatelessWidget {
       agentEvents: rp.agentEvents,
       contentBoundaryIndex: rp.contentBoundaryIndex,
       agentWarnings: rp.agentWarnings,
+      maintenanceActive: rp.agentMaintenanceActive,
+      maintenanceContent: rp.agentMaintenanceContent,
       retryStatus: rp.retryStatus,
       roundIndex: roundIndex,
     );
@@ -5030,8 +5142,14 @@ class _StreamingBubble extends StatefulWidget {
   /// 插入到事件序列的该下标位置（此前的块在正文上方、之后的块在下方）。
   final int contentBoundaryIndex;
 
-  /// AGENT 模式状态钳制警告（修复 2 次后仍失败、已跳过应用的修改项）。
+  /// AGENT 模式状态钳制警告（维护失败 / 取消 / 缺项）。
   final List<String> agentWarnings;
+
+  /// 第二步「状态维护」是否正在进行。
+  final bool maintenanceActive;
+
+  /// 维护回合的流式文本（只进维护框）。
+  final String maintenanceContent;
 
   /// 当前自动重试进度：(已重试次数, 总次数)；null = 无重试。
   final (int, int)? retryStatus;
@@ -5045,6 +5163,8 @@ class _StreamingBubble extends StatefulWidget {
     required this.roundIndex,
     this.contentBoundaryIndex = -1,
     this.agentWarnings = const [],
+    this.maintenanceActive = false,
+    this.maintenanceContent = '',
     this.retryStatus,
   });
 
@@ -5059,12 +5179,15 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
     final events = widget.agentEvents;
     final retry = widget.retryStatus;
     final warnings = widget.agentWarnings;
+    final headerText = widget.maintenanceActive
+        ? '第 ${widget.roundIndex} 轮 · 状态维护中……'
+        : '第 ${widget.roundIndex} 轮 · 正在生成中……';
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = constraints.maxWidth;
         final narrow = isNarrowWidth(available);
-        // 正文列（时间线块 + 警告 + 生成提示），三种布局共用。
+        // 正文列（时间线块 + 维护框 + 警告 + 生成提示），三种布局共用。
         final body = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -5073,7 +5196,16 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
             // AI 返回顺序**交错；正文是「块外」特殊块，插入到
             // [contentBoundaryIndex] 处（此前的块在上、之后的块在下）。
             ..._buildOrderedBlocks(context, events, content, retry),
-            // AGENT 模式钳制警告：修复 2 次后仍失败、已跳过应用的修改项。
+            // 第二步维护：正文之后单独的新请求，文本只进这个流式框。
+            if (widget.maintenanceActive ||
+                widget.maintenanceContent.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _MaintenanceStreamBox(
+                content: widget.maintenanceContent,
+                active: widget.maintenanceActive,
+              ),
+            ],
+            // AGENT 模式钳制警告：维护失败 / 取消 / 缺项。
             if (warnings.isNotEmpty) ...[
               const SizedBox(height: 8),
               _AgentWarningsBox(warnings: warnings),
@@ -5098,7 +5230,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                       const SizedBox(width: 10),
                       // 气泡页眉：窄屏「头像 + 第 n 轮 · 正在生成中…… + 转圈」。
                       Text(
-                        '第 ${widget.roundIndex} 轮 · 正在生成中……',
+                        headerText,
                         style: TextStyle(
                           // 软件二级描述文本色（次要文本色），随主题切换。
                           color: context.narrColors.textSecondary,
@@ -5145,7 +5277,7 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            '第 ${widget.roundIndex} 轮 · 正在生成中……',
+                            headerText,
                             style: TextStyle(
                               // 软件二级描述文本色（次要文本色），随主题切换。
                               color: context.narrColors.textSecondary,

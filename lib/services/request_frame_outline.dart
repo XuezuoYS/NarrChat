@@ -12,7 +12,7 @@ class RequestFrameOutline {
     required this.body,
   });
 
-  /// 稳定名标（如「准备帧」「工具循环续接帧」）；用于展示与排序。
+  /// 稳定名标（如「调研回合」「工具循环续接回合」）；用于展示与排序。
   final String label;
 
   /// 何时会发出这一帧 / 内容依赖什么（一行说明）。

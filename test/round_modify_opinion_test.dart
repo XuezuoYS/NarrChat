@@ -339,22 +339,22 @@ void main() {
                 completed('resp_r'),
                 '',
               ]);
-            // 帧 2 = 记忆：同回合推演 + 被重写轮（第 3 轮）条目落地。
+            // 帧 2 = 正文：Lv.1 的 5 区块（世界 / 角色 / 时间随正文携带）。
             case 2:
-              return sse([
-                ...editLines('h1', AgentStateSection.memorySummary, [
-                  {'op': 'append', 'newLine': '- 3 | 第三天 午时 | 重写后的事件。'},
-                ]),
-                completed('resp_h'),
-                '',
-              ]);
-            // 帧 3 = 正文：Lv.1 的 5 区块（世界 / 角色 / 时间随正文携带）。
-            default:
               return sse([
                 textDelta('## 剧情演绎\n重写后的正文。\n\n## 推荐行动\n继续赶路\n\n'
                     '## 当前时间\n第三天 午时\n\n## 世界状态\n- 地点：大殿\n\n'
                     '## 角色状态\n# 主角\n## 林远\n- 气血：70'),
                 completed('resp_s'),
+                '',
+              ]);
+            // 帧 3 = 维护：单独请求，只落被重写轮（第 3 轮）的记忆条目。
+            default:
+              return sse([
+                ...editLines('h1', AgentStateSection.memorySummary, [
+                  {'op': 'append', 'newLine': '- 3 | 第三天 午时 | 重写后的事件。'},
+                ]),
+                completed('resp_h'),
                 '',
               ]);
           }
@@ -377,8 +377,8 @@ void main() {
       );
 
       expect(ok, isTrue);
-      // 合规一轮仍是 3 帧（调研 → 记忆 → 正文，零额外请求）——轮号错位会多出补帧。
-      expect(bodies, hasLength(3), reason: '被重写轮号必须喂对，否则记忆阶段不会闭环');
+      // 合规一轮仍是 3 回合（调研 → 正文 → 维护）——轮号错位会让维护条目落错轮。
+      expect(bodies, hasLength(3), reason: '被重写轮号必须喂对，否则维护条目会落错轮');
 
       final first = jsonEncode(bodies.first);
       expect(first, contains('ROUND-TWO-INPUT'));

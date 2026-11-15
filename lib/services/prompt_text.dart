@@ -1,4 +1,4 @@
-/// **文本取用契约**（不依赖 Flutter）：system / user / Agent 阶段帧指令。
+/// **文本取用契约**（不依赖 Flutter）：system / user / Agent 阶段回合指令。
 ///
 /// 与 `prompt_interface.dart` 的分工：
 /// - 本文件 = 只产出**文本**的契约与请求对象（纯 Dart，任何工具 / 脚本可直接引用）；
@@ -85,7 +85,7 @@ class PromptRequest {
   final RewriteTarget? rewrite;
 }
 
-/// 取用 Agent 阶段帧指令所需的上下文（按阶段取用，未用到的字段忽略）。
+/// 取用 Agent 阶段回合指令所需的上下文（按步骤取用，未用到的字段忽略）。
 class AgentStageRequest {
   const AgentStageRequest({
     this.workingCopy,
@@ -94,16 +94,16 @@ class AgentStageRequest {
     this.problems = const [],
   });
 
-  /// 本轮状态工作副本（记忆帧判定「本轮条目 / 合并是否落地」必需）。
+  /// 本轮状态工作副本（维护步判定「本轮条目 / 合并是否落地」必需）。
   final AgentStateWorkingCopy? workingCopy;
 
   /// 本轮应执行的记忆合并动作（无动作时 null）。
   final MemoryMergePlan? memoryMergePlan;
 
-  /// 主帧 = true，修复帧 = false。
+  /// 主回合 = true，修复回合 = false。
   final bool first;
 
-  /// 维护 / 修复帧的待修清单（应用侧缺口，未排序未截断）。
+  /// 维护 / 修复回合的待修清单（应用侧缺口，未排序未截断）。
   final List<String> problems;
 }
 
@@ -120,20 +120,17 @@ abstract interface class UserPromptSource {
   String user(PromptRequest request);
 }
 
-/// **Agent 阶段帧指令**文本源。
+/// **Agent 阶段回合指令**文本源。
 ///
-/// 返回该帧 `role: user` 消息的正文（调用方包成消息条目）。各阶段帧指令是
+/// 返回该回合 `role: user` 消息的正文（调用方包成消息条目）。各阶段回合指令是
 /// 「同一轮内追加的指令」，不属于 system / 用户输入本身。
 abstract interface class StageDirectiveSource {
-  /// 调研回合：读史一次 + 按需联网；不写大纲 / 记忆 / 正文，文本零输出。
+  /// 调研回合：读史一次 + 按需联网；不写记忆 / 正文，文本零输出。
   String stagePrepare(AgentStageRequest request);
 
-  /// 记忆回合：同一回合内推演剧情（思考通道定大纲）+ 落本轮记忆条目。
-  String stageMemory(AgentStageRequest request);
-
-  /// 正文回合：按上一回合定下的大纲输出 5 区块正文。
+  /// 正文回合：调研结束后直接写 5 区块正文；记忆留到维护步。
   String stageStory(AgentStageRequest request);
 
-  /// 维护 / 修复回合：按缺口清单直接编辑（当前只有历史栏目）。
+  /// 维护 / 修复回合：只维护记忆总结（当前只有历史栏目）。
   String stageState(AgentStageRequest request);
 }

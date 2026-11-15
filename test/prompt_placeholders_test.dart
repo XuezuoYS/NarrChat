@@ -62,10 +62,10 @@ void main() {
       ...PromptV2Sections.memoryMergeAgentLines(mergePlan),
       ...PromptV2Sections.memoryMergeChatNote(mergePlan),
       PromptV2Sections.stagePrepare,
-      PromptV2Sections.stageMemoryBody(),
       PromptV2Sections.stageStory,
       PromptV2Sections.stateHeadLv1,
       PromptV2Sections.stateHeadFix,
+      PromptV2Sections.stateHeadEntryExists,
     ];
     for (final mode in PromptMode.values) {
       final request = PromptRequest(

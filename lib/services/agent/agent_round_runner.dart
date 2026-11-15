@@ -15,46 +15,42 @@ import 'state/state_coverage.dart';
 import 'state/state_tools.dart';
 import 'wire_adapters.dart';
 
-/// 维护轮（代码旧称「状态轮」，含其修复帧）的最大帧数：1 主帧 + 3 修复帧。
+/// 维护步（含其修复回合）的最大回合数：1 主回合 + 3 修复回合。
 const int kAgentMaxStateFrames = 4;
 
-/// **调研阶段**的最大帧数：读史 → 联网搜索 / 打开页（可多步），
-/// 联网一次典型消耗 3 帧（读史 + 搜索 + 打开页），再留空间给搜索上的重试。
+/// **第一步·调研**的最大回合数：读史 → 联网搜索 / 打开页（可多步），
+/// 联网一次典型消耗 3 个回合（读史 + 搜索 + 打开页），再留空间给搜索上的重试。
 const int kAgentMaxPrepFrames = 6;
 
-/// **记忆阶段**的最大帧数：1 主帧 + 2 次提醒。
-/// 每帧都要求模型在**同一回合**内推演剧情（思考通道）并直接调用历史编辑器，
-/// 正常 1 帧即完成。
-const int kAgentMaxMemoryFrames = 3;
-
-/// 正文轮的最大帧数（联网搜索会消耗多帧：开场白 → 搜索 → 打开页 → 正文）。
+/// 第一步·正文的最大回合数（联网搜索会消耗多回合：开场白 → 搜索 → 打开页 → 正文）。
 const int kAgentMaxStoryFrames = 8;
 
 /// 输出触顶的原因标识（Responses `incomplete_details.reason`）。
 const String kIncompleteMaxOutputTokens = 'max_output_tokens';
 
 /// 执行器运行阶段。
+///
+/// 一轮 = 两步，步下面是**回合**（一次请求—响应，执行器内部旧称「帧」）：
+/// - 第一步：调研（[prepare]）→ 正文（[story]）；
+/// - 第二步：状态维护（[state]，正文完成后单独发新请求）。
 enum AgentStage {
-  /// **调研阶段**：读历史（`narrchat_readHistory`
-  /// 一次）+ 按需联网搜索 / 打开页（可多步）。**不写大纲、不写记忆、不写正文**；
-  /// 本阶段文本一律不采纳（大纲在记忆阶段的思考通道里定）。
-  /// 退出条件：本帧没有工具调用（调研结束）；本帧工具**只有读取器**
-  /// （读完历史、没有联网意图 → 立即进入记忆阶段）；或本帧工具全是编辑器
-  /// （模型跳步抢写记忆）。
+  /// **第一步·调研**：读历史（`narrchat_readHistory` 一次）+
+  /// 按需联网搜索 / 打开页（可多步）。**不写记忆、不写正文**；
+  /// 本阶段文本一律不采纳。
+  ///
+  /// 退出条件：本回合没有工具调用（调研结束）；或本回合工具**只有读取器**
+  /// （读完历史、没有联网意图 → 立刻进入正文；或本回合工具全是编辑器
+  /// （模型跳步抢写状态，编辑会被拒绝，正文照样继续））。
   prepare,
 
-  /// **记忆阶段**：**同一个回合**内先推演剧情（思考通道定大纲），
-  /// 再用 `narrchat_editHistory`（`op=append`）追加本轮**恰好一条**记忆条目。
-  /// 记忆条目**先于正文**落地，成为正文的既定约束；文本通道关闭
-  /// （模型若在本帧抢写正文，一律丢弃，交给正文阶段重写）。
-  memory,
-
-  /// 维护轮：只调工具维护状态，**文本通道对界面完全关闭**。
-  /// 仅在记忆未落地 / 校验失败 / 截断等缺口出现时发起（合规流程零额外请求）。
-  state,
-
-  /// 正文阶段：产出本轮正文（唯一的正文采纳与上屏阶段）。
+  /// **第一步·正文**：产出本轮正文（唯一的正文采纳与上屏阶段）。
+  /// 状态编辑在第一步一律被拒绝，记忆维护留到第二步。
   story,
+
+  /// **第二步·状态维护**：正文完成后**单独发新请求**，只调工具维护
+  /// **记忆总结**；文本通道只进维护流式框，绝不进入正文。
+  /// 维护失败 / 取消不丢正文，最终由调用方落库并挂黄框提示。
+  state,
 }
 
 /// 一次帧请求的上下文（由 `buildBody` 组装成实际请求体）。
@@ -89,7 +85,7 @@ class AgentToolOutcome {
   /// 事件主体（UI 展示用）：搜索 = query、打开页 = url、其余 = [argsSummary]。
   final String subject;
 
-  /// 是否应用成功（状态工具校验失败 → 工具帧 / 维护轮反馈）。
+  /// 是否应用成功（状态工具校验失败 → 工具框 / 维护回合反馈）。
   final bool applied;
 
   /// **UI** 结果说明（一行摘要）。
@@ -98,7 +94,7 @@ class AgentToolOutcome {
   /// **回传模型**的结果全文（状态工具含该栏目当前全文）。
   final String modelOutput;
 
-  /// 是否状态类工具（校验失败走工具帧 / 维护轮语义）。
+  /// 是否状态类工具（校验失败走工具框 / 维护回合语义）。
   final bool isStateTool;
 
   const AgentToolOutcome({
@@ -138,16 +134,20 @@ class AgentRoundResult {
   /// 最后一次响应的 responseId（无状态平台为空）。
   final String responseId;
 
-  /// 是否发起过维护轮（正文之后仍有缺口 / 编辑失败时才发起）。
-  final bool stateTurnUsed;
+  /// 第二步维护是否真正完成：本轮记忆条目恰好一条、档位要求的合并已落地、
+  /// 且维护期间没有失败 / 取消。
+  final bool maintenanceCompleted;
 
-  /// 本轮**最后一帧**是否被服务端提前结束（截断）。
+  /// 第二步维护是否被用户取消（正文仍会由调用方落库并挂警告）。
+  final bool maintenanceCancelled;
+
+  /// 本轮**最后一回合**是否被服务端提前结束（截断）。
   final bool incomplete;
 
   /// 截断原因（`max_output_tokens` / `content_filter` / …；空 = 未截断）。
   final String incompleteReason;
 
-  /// 本轮总帧数（调研 + 记忆 + 正文 + 维护，含修复帧）。
+  /// 本轮**所有步、所有回合**的总回合数（调研 + 正文 + 维护，含修复回合）。
   final int frames;
 
   const AgentRoundResult({
@@ -159,64 +159,59 @@ class AgentRoundResult {
     required this.outcomes,
     required this.warnings,
     required this.responseId,
-    required this.stateTurnUsed,
+    required this.maintenanceCompleted,
+    required this.maintenanceCancelled,
     required this.frames,
     this.incomplete = false,
     this.incompleteReason = '',
   });
 }
 
-/// AGENT 单轮执行器（Responses 协议 + 状态自取 + 分阶段）。
+/// AGENT 单轮执行器（Responses 协议 + 状态自取 + 两步流程）。
+///
+/// ## 术语：轮 → 步 → 回合
+///
+/// - **轮**：一次用户发送到最终落库的一条 `Round`；
+/// - **步**：一轮内的两个生成步骤；
+/// - **回合**：一次 AI 请求—响应（代码里的 frame），是最基础单元。
 ///
 /// ## 档位（[AgentModeProfile]）
 ///
-/// 当前唯一的 Agent 档位（Lv.1）为**三段流程**（调研 → 记忆 → 正文；无联网时
-/// 恰好 3 次请求），差异全部来自 [profile]（不在本类里散落档位判断）。
-/// 世界状态 / 角色状态随正文文本携带，**只有历史（记忆总结）走工具**：
-/// 1. [AgentStage.prepare]**调研**：`narrchat_readHistory` 读一次 + 按需联网
-///    搜索 / 打开页（可多步）；**不写大纲、不写记忆、不写正文**，本阶段文本
-///    一律不采纳。读完历史那一帧即结束（无联网意图时不必再等模型收手）；
-/// 2. [AgentStage.memory]**记忆**：**同一回合**内先推演剧情定大纲（思考通道，
-///    这正是「思考剧情」这一步），再用 `op=append` 落**恰好一条**本轮记忆条目
-///    ——**先于正文落地**，成为正文的既定约束；
-/// 3. [AgentStage.story]**正文**：按上一回合定下的大纲输出五区块正文
-///    （严格执行提示词给出的输出格式；`## 记忆总结` 仍被剥离）。
-/// 维护轮退化为**兜底**：记忆阶段没把历史补齐（校验失败 / 空手帧 / 截断）
-/// 时才发起——合规流程下**零额外请求**。
+/// 当前唯一的 Agent 档位（Lv.1）为**两步流程**，差异全部来自 [profile]
+/// （不在本类里散落档位判断）。世界状态 / 角色状态随正文文本携带，
+/// **只有历史（记忆总结）走工具**：
+/// 1. **第一步·调研**（[AgentStage.prepare]）：`narrchat_readHistory` 读一次 +
+///    按需联网搜索 / 打开页（可多步）；**不写记忆、不写正文**，本步文本一律
+///    不采纳。读完历史那一回合即结束（无联网意图时不必再等模型收手）。
+/// 2. **第一步·正文**（[AgentStage.story]）：调研结束后**立刻**写 5 区块正文；
+///    状态编辑在第一步一律被拒绝，记忆维护留到第二步。
+/// 3. **第二步·状态维护**（[AgentStage.state]）：正文完成后**单独发新请求**，
+///    只根据正文的 `## 当前时间` 用 `op=append` 落**恰好一条**本轮记忆条目；
+///    维护失败 / 取消不丢正文，由调用方统一落库并挂黄框。
 ///
-/// 历史上的完整 Agent（Lv.2：正文三小节 + 六个状态工具）已移除；六工具实现
-/// 与「多栏目缺口」框架仍保留在 `state/` 下供后续档位复用，当前没有档位把
-/// 世界 / 角色栏目放进 [AgentModeProfile.toolSections]。
+/// 所有步都只累积在内存里；调用方在 [run] 返回后**统一入库一次**，token 取
+/// 所有回合的总和。历史上的完整 Agent（Lv.2：正文三小节 + 六个状态工具）已移除。
 ///
-/// ## 为什么分阶段
+/// ## 为什么分两步
 ///
 /// 旧版把「写正文」与「调状态工具」塞进同一响应，靠提示词命令模型
 /// 「正文先行、工具随后」——这与工具型模型「先调工具、再答」的先验相反；
 /// 加上续接帧不回传模型自己刚写的正文，导致一次请求里反复生成多份正文。
-/// 现在每个阶段各自只有一个正确动作：
+/// 现在每步各自只有一个正确动作：
 ///
-/// 1. **调研阶段**（[AgentStage.prepare]）：读史 + 联网（**不产出大纲**）。
-/// 2. **记忆阶段**（[AgentStage.memory]）：推演剧情（思考通道定大纲）
-///    **并**在同一回合落记忆条目，不输出文本（模型抢写正文也会被丢弃，
-///    正文只在正文阶段产生）。
-/// 3. **正文阶段**（[AgentStage.story]）：基于**上一轮
-///    状态 + 已落地的记忆 + 大纲**写正文；`## 当前时间` 是正文小节
-///    （时间不属于工具）。
-/// 4. **完整性判定**（[inspectState]，范围 = [AgentModeProfile.toolSections]）：
-///    栏目是否都处理、本轮是否恰好一条记忆（世界 / 角色检查为保留框架）。
-/// 5. **维护轮**（[AgentStage.state]；有缺口才发起）：按缺口清单逐栏目编辑；
-///    该阶段模型输出的任何文本**不会到达界面**——「一次请求多份正文」在新
-///    结构下不可能发生。
+/// 1. **第一步·调研**（[AgentStage.prepare]）：读史 + 联网，只备事实依据。
+/// 2. **第一步·正文**（[AgentStage.story]）：基于调研结果写正文；
+///    `## 当前时间` 是正文小节（时间不属于工具）。
+/// 3. **第二步·维护**（[AgentStage.state]）：正文已写完，单独维护记忆总结；
+///    维护文本只进流式维护框，不会成为正文。
 ///
-/// 「思考剧情」与「落记忆条目」**刻意合并在同一回合**：拆成两回合时，模型会在
-/// 第一回合的结尾用文本复述大纲（「准备完成 / 大纲如下 / 下一回合我就…」），
-/// 既浪费输出，又容易把「写条目」拖到下一回合甚至漏掉；合并后大纲只存在于
-/// 记忆阶段的思考通道，下一步就是工具调用本身。
+/// 记忆条目从正文派生（正文里的 `## 当前时间` 就是条目时间），不再要求模型
+/// 先凭大纲写记忆、再让正文与大纲对齐；偏差更小，也省掉一次长上下文回读。
 ///
-/// 工具调用完全靠**提示词纪律 + 工具描述**驱动（帧指令明确要求本回合直接调用
+/// 工具调用完全靠**提示词纪律 + 工具描述**驱动（回合指令明确要求本回合直接调用
 /// 对应编辑器），**不发送 `tool_choice`**：部分服务商在思考模式下以 400 拒绝该
-/// 参数（`Thinking mode does not support this tool_choice`），而帧语义并不依赖
-/// 它——缺项由完整性判定与维护轮兜底。
+/// 参数（`Thinking mode does not support this tool_choice`），而回合语义并不依赖
+/// 它——缺项由完整性判定与维护修复回合兜底。
 ///
 /// ## 状态自取（快照不作预置）
 ///
@@ -226,17 +221,17 @@ class AgentRoundResult {
 /// 现在读取器是**真实注册的只读工具**（每个栏目一个），模型必须主动调用才
 /// 拿得到状态：
 ///
-/// - 调用时机由模型承担，但**返回值语义统一** = 工作副本当前渲染（调研 / 正文
-///   阶段调用 → 上一轮库内状态；维护轮调用 → 正文之后的状态），应用侧不需要
-///   从调用序列推断「这是哪个阶段」；
+/// - 调用时机由模型承担，但**返回值语义统一** = 工作副本当前渲染（第一步调用
+///   → 上一轮库内状态；维护步调用 → 正文之后的状态），应用侧不需要从调用序列
+///   推断「这是哪一步」；
 /// - 读取结果以 `function_call_output` 形态进入上下文（**工具结果，
 ///   不是输出格式**，不再诱发格式模仿）；
 /// - 每栏**只保留最新一份**读取结果（[_pruneStaleReadState]，按工具名剔除），
-///   修复帧不再重复读取（指令明示复用已有结果与失败回传全文），
-///   每轮输入不会随修复帧数线性膨胀；
-/// - 非正文阶段（调研 / 记忆 / 维护）对「本轮已提供全文的栏目」的读取一律被拒
-///   （[_refusedRepeatRead]）：写正文不改变状态，调研阶段那一份就是唯一正确的
-///   锚点来源；
+///   修复回合不再重复读取（指令明示复用已有结果与失败回传全文），
+///   每轮输入不会随修复回合数线性膨胀；
+/// - 维护步对「本轮已提供全文的栏目」的读取一律被拒
+///   （[_refusedRepeatRead]）：写正文不改变状态，调研步那一份就是唯一正确的
+///   锚点来源；第一步漏读时仍允许补读；
 /// - 正文采纳时还会**剥离**正文里出现的、由工具维护的状态类二级标题段
 ///   （模型违规模仿格式的兜底清洗，见 [_stripStateSectionsIn]；
 ///   当前档位只剥离 `## 记忆总结`，世界 / 角色本就是正文的一部分）。
@@ -254,8 +249,8 @@ class AgentRoundResult {
 ///
 /// 采纳规则是「**最后一个标题帧胜出**」：模型写到一半去调工具、下一帧重写
 /// 完整正文时取到完整版（旧版「首个采纳、后续丢弃」会留下半截正文）。
-/// **只有 [AgentStage.story] 参与分类**：调研 / 记忆帧的正文（模型跳步抢写）
-/// 一律丢弃，且进入正文阶段前会清空候选，保证采纳的正文与已落地的记忆同源。
+/// **只有 [AgentStage.story] 参与分类**：调研 / 维护回合的正文（模型跳步抢写）
+/// 一律丢弃，且进入正文步前会清空候选，保证采纳的正文与维护内容互不污染。
 /// 门控在每帧正文首次上屏前发 [AiStreamChunk.narrativeReset]，界面重置正文块。
 ///
 /// ## 会话累积（修复帧不再「失忆」）
@@ -282,12 +277,12 @@ class AgentRoundResult {
 /// 只有内容校验类失败才走修复帧。
 ///
 /// **思考强度全程沿用用户设置**：本执行器不覆盖 `reasoning_effort` / 思考开关
-/// （历史上记忆 / 维护帧曾降到 `low`，现取消——用户设置就是唯一真源），
+/// （历史上记忆 / 维护回合曾降到 `low`，现取消——用户设置就是唯一真源），
 /// 因此也不存在「服务商拒绝中途调整强度」这类降级分支。
 ///
 /// ## 截断（`response.incomplete`）
 ///
-/// 记忆 / 维护轮输出的是逐字锚点的工具参数 JSON，而思考 token 同样计入输出
+/// 维护回合输出的是逐字锚点的工具参数 JSON，而思考 token 同样计入输出
 /// 上限，极易触顶。触顶**不是失败**：底层保留截断前的部分结果并标记
 /// [AiCallResult.incomplete]，本执行器据此（1）给下一帧补一条「拆短输出」
 /// 指令，（2）末帧仍截断时给用户一条可操作提示（由用户在设置里调高
@@ -303,10 +298,10 @@ class AgentRoundRunner {
     this.memoryMergePlan,
     this.chaining = false,
     this.maxPrepFrames = kAgentMaxPrepFrames,
-    this.maxMemoryFrames = kAgentMaxMemoryFrames,
     this.maxStoryFrames = kAgentMaxStoryFrames,
     this.maxStateFrames = kAgentMaxStateFrames,
     this.reduceReasoningReplay = false,
+    this.onStageStarted,
     this.onActivity,
     this.onToolStarted,
     this.onToolFinished,
@@ -327,35 +322,38 @@ class AgentRoundRunner {
   final List<NarrAgentTool> tools;
   final AgentStateWorkingCopy workingCopy;
 
-  /// 档位档案（决定正文契约、参与缺口的栏目；当前唯一档位走三段流程）。
+  /// 档位档案（决定正文契约、参与缺口的栏目；当前唯一档位走两步流程）。
   final AgentModeProfile profile;
 
   /// 本轮应执行的「记忆总结轮次合并」动作（档位 0 / 无动作时为 null）。
   ///
   /// 由调用方在生成前算定（输入 = 上一轮落库的记忆总结 + 本书档位，见
-  /// `memory_merge_planner.dart`）：Agent 期间并入记忆阶段帧指令并计入
-  /// [_memorySatisfied] 门槛（后续档位的维护轮清单同样复用），终态未落地
-  /// 转常驻警告。
+  /// `memory_merge_planner.dart`）：Agent 期间并入第二步维护指令并计入
+  /// [_maintenanceSatisfied] 门槛，终态未落地转常驻警告。
   final MemoryMergePlan? memoryMergePlan;
 
   final bool chaining;
 
-  /// 调研阶段的最大帧数：读史 + 联网搜索 / 打开页。
+  /// 调研步的最大回合数：读史 + 联网搜索 / 打开页。
   final int maxPrepFrames;
 
-  /// 记忆阶段的最大帧数：帧指令要求同回合内推演 + 调用历史编辑器。
-  final int maxMemoryFrames;
-
+  /// 正文步的最大回合数。
   final int maxStoryFrames;
+
+  /// 维护步的最大回合数：1 主回合 + 修复回合。
   final int maxStateFrames;
 
   /// 回传思考时是否精简（默认关 = 逐字节回传原文）。规则见 `reasoning_replay.dart`。
   final bool reduceReasoningReplay;
+
+  /// 某个步开始时回调（UI 据此显示「状态维护中」等状态）。
+  final void Function(AgentStage stage)? onStageStarted;
+
   final void Function(AgentActivity activity)? onActivity;
   final void Function(AgentToolOutcome outcome)? onToolStarted;
   final void Function(AgentToolOutcome outcome)? onToolFinished;
 
-  /// 阶段帧指令 / 工具集的**唯一取用入口**（`prompt_interface.dart`，当前绑定 v2）：
+  /// 阶段回合指令 / 工具集的**唯一取用入口**（`prompt_interface.dart`，当前绑定 v2）：
   /// 执行器只决定「何时发哪一帧」，帧指令文案与工具清单都由接口层给出。
   static const PromptInterface _prompt = promptInterface;
 
@@ -378,8 +376,8 @@ class AgentRoundRunner {
   String _lastFallback = '';
   void Function(AiStreamChunk chunk)? _sink;
 
-  /// 正文轮截断的补救说明——**不参与**「是否需要维护轮」的判定，只在确实
-  /// 进入维护轮时随首轮指令下发（为一个截断额外发一帧 `required` 只会逼模型
+  /// 正文回合截断的补救说明——**不参与**「是否需要维护回合」的判定，只在确实
+  /// 进入维护回合时随首回合指令下发（为一个截断额外发一回合 `required` 只会逼模型
   /// 重复调工具）。
   final List<String> _truncationNotes = [];
 
@@ -389,6 +387,10 @@ class AgentRoundRunner {
   /// 最后一帧是否被服务端提前结束（决定要不要给用户一条可操作提示）。
   bool _lastFrameTruncated = false;
   String _truncateReason = '';
+
+  /// 第二步维护是否被用户取消 / 是否发生异常（正文仍会落库）。
+  bool _maintenanceCancelled = false;
+  String? _maintenanceError;
 
   /// 开始一轮：设定输入起点并重置全部运行期状态。
   ///
@@ -412,6 +414,8 @@ class AgentRoundRunner {
     _truncationNotes.clear();
     _lastFrameTruncated = false;
     _truncateReason = '';
+    _maintenanceCancelled = false;
+    _maintenanceError = null;
     _frameReasoning = const [];
     _sectionsProvided.clear();
   }
@@ -431,36 +435,44 @@ class AgentRoundRunner {
     _beginRound(initialInputItems);
     _sink = onChunk;
 
-    // 当前唯一的 Agent 档位（Lv.1）= 三段流程（调研 → 记忆 → 正文）。
-    // 记忆条目**先于正文落地**（计划要求）：大纲在记忆阶段的思考通道里
-    // 定下（决定本轮结束时间与关键事件），记忆条目随即写入，正文再受它约束。
+    // 当前唯一的 Agent 档位（Lv.1）= 两步流程：
+    // 第一步「调研 → 正文」；第二步「状态维护」作为单独的新请求。
+    // 所有步都只累积在内存里，由调用方在 [run] 返回后统一落库。
+    onStageStarted?.call(AgentStage.prepare);
     await _runPrepareStage(stream, onRequestBody, isCancelled);
-    await _runMemoryStage(stream, onRequestBody, isCancelled);
+    onStageStarted?.call(AgentStage.story);
     await _runStoryStage(stream, onRequestBody, isCancelled);
     final story = _adopted.isNotEmpty ? _adopted : _lastFallback;
 
-    // 正文之后仍存在缺口（多为记忆未落地 / 校验失败 / 截断）→ 维护轮兜底；
-    // 合规流程下缺项为空 → **零额外请求**。
-    var gaps = _gaps(story);
-    final problems = [
-      ..._modelProblems,
-      for (final g in gaps) g.modelText,
-    ];
-    // 档位驱动的记忆合并：正文之后仍未落地 → 即使无缺口也强制发起一次维护轮
-    //（合并指令文案由接口层按 workingCopy + memoryMergePlan 生成）。
-    final needStateTurn =
-        story.isNotEmpty && (problems.isNotEmpty || _hasPendingMemoryMerge);
-    if (needStateTurn) {
-      await _runStateStage(
-        stream: stream,
-        onRequestBody: onRequestBody,
-        isCancelled: isCancelled,
-        problems: problems,
-      );
+    // 第二步：维护记忆总结。**无条件**发起（合规流程也要写本轮条目）；
+    // 维护失败 / 取消都只转成警告，不丢正文。
+    if (story.isNotEmpty) {
+      final problems = [..._modelProblems, ..._truncationNotes];
+      _truncationNotes.clear();
+      onStageStarted?.call(AgentStage.state);
+      try {
+        await _runStateStage(
+          stream: stream,
+          onRequestBody: onRequestBody,
+          isCancelled: isCancelled,
+          problems: problems,
+        );
+      } on AiCancelledException {
+        _maintenanceCancelled = true;
+      } catch (e) {
+        // 维护是正文之后的独立步骤：失败不能让整轮正文作废。
+        _maintenanceError = '$e';
+      }
     }
-    // 终态复检：仍存在的缺口 + 未修复的编辑失败，转为常驻警告。
+
+    // 终态复检：维护失败 / 取消 + 仍存在的缺口 + 未修复的编辑失败 → 警告。
     _warnings.clear();
-    // 末帧仍被截断 → 先给用户一条可操作的根因提示（下面的缺项多是它的后果）。
+    if (_maintenanceCancelled) {
+      _warnings.add('状态维护已中断（本轮正文已保存，记忆总结未补全）');
+    } else if (_maintenanceError != null) {
+      _warnings.add('状态维护未完成（本轮正文已保存）：$_maintenanceError');
+    }
+    // 末回合仍被截断 → 先给用户一条可操作的根因提示（下面的缺项多是它的后果）。
     if (_lastFrameTruncated) {
       _warnings.add(
         _truncateReason == kIncompleteMaxOutputTokens
@@ -486,6 +498,11 @@ class AgentRoundRunner {
       _warnings.add('${s.label}最后一次编辑未成功，本轮该项未落地');
     }
 
+    final maintenanceCompleted = story.isNotEmpty &&
+        !_maintenanceCancelled &&
+        _maintenanceError == null &&
+        _maintenanceSatisfied();
+
     return AgentRoundResult(
       content: story,
       reasoningContent: _reasoning.toString(),
@@ -493,9 +510,10 @@ class AgentRoundRunner {
       completionTokens: _completionTokens,
       cachedTokensIn: _cachedTokensIn,
       outcomes: _outcomes,
-      warnings: _warnings,
+      warnings: List.unmodifiable(_warnings),
       responseId: _lastResponseId,
-      stateTurnUsed: needStateTurn,
+      maintenanceCompleted: maintenanceCompleted,
+      maintenanceCancelled: _maintenanceCancelled,
       frames: _frames,
       incomplete: _lastFrameTruncated,
       incompleteReason: _truncateReason,
@@ -524,26 +542,23 @@ class AgentRoundRunner {
   // 调研阶段（读史 + 按需联网）
   // ---------------------------------------------------------------------------
 
-  /// 调研阶段：模型读历史（一次）、按需联网搜索 / 打开页（可多步）。
+  /// 调研步：模型读历史（一次）、按需联网搜索 / 打开页（可多步）。
   ///
-  /// **不产出大纲**（大纲属于记忆阶段的思考通道）：本阶段只负责把「事实依据」
-  /// （历史锚点 + 现实资料）备齐，模型在该阶段写什么都一律丢弃——文本通道在此
-  /// **不上屏、不采纳**（[_FrameGate] 只对正文阶段放行，[_absorbFrame] 也只对
-  /// 正文阶段做分类）。
+  /// **不产出记忆、不产出正文**：本步只负责把「事实依据」（历史锚点 +
+  /// 现实资料）备齐，模型在该步写什么都一律丢弃——文本通道在此
+  /// **不上屏、不采纳**（[_FrameGate] 只对正文回合放行，[_absorbFrame] 也只对
+  /// 正文回合做分类）。调研结束后由 `run` 立刻进入正文步。
   ///
-  /// 首帧先追加 `promptInterface.stagePrepare`（与系统契约同一真源），
-  /// 把「本阶段只做调研」说在最近处。
+  /// 首回合先追加 `promptInterface.stagePrepare`（与系统契约同一真源），
+  /// 把「本步只做调研」说在最近处。
   ///
   /// 退出条件（三者任一）：
-  /// 1. 本帧**没有工具调用**（调研结束）；
-  /// 2. 本帧工具**只有读取器**（`narrchat_readHistory`）——读完历史且没有联网
-  ///    意图，立刻进入记忆阶段：**无联网时整轮恰好 3 次请求**，也让模型没有
-  ///    「收尾复述大纲」的机会（此前那一步正是「中途步输出大纲文本」的来源）；
-  ///    若模型读完史才发现要联网，它可以在记忆阶段调搜索工具（工具集是超集，
-  ///    执行器照常执行，随后记忆指令会再点名「仍缺本轮条目」）；
-  /// 3. 本帧工具**全是编辑器**（模型跳步抢写记忆 / 状态）——那一帧的文本一律
-  ///    丢弃，「记忆是否已落地」交给随后的记忆阶段判定（[_memorySatisfied]），
-  ///    已落地就直接跳过记忆阶段，没落地才重发记忆指令。
+  /// 1. 本回合**没有工具调用**（调研结束）；
+  /// 2. 本回合工具**只有读取器**（`narrchat_readHistory`）——读完历史且没有联网
+  ///    意图，立刻进入正文；若模型读完史才发现要联网，它可以在正文回合调搜索
+  ///    工具（工具集是超集，执行器照常执行，随后正文继续）；
+  /// 3. 本回合工具**全是编辑器**（模型跳步抢写状态）——编辑器在第一步一律被
+  ///    拒绝，本回合文本同样丢弃，随后照常进入正文。
   Future<void> _runPrepareStage(
     bool stream,
     void Function(String requestBody)? onRequestBody,
@@ -568,99 +583,11 @@ class AgentRoundRunner {
   }
 
   // ---------------------------------------------------------------------------
-  // 记忆阶段（同回合「推演剧情 + 落本轮记忆条目」）
-  // ---------------------------------------------------------------------------
-
-  /// 记忆阶段：帧指令要求模型在**同一回合**内推演剧情（思考通道定大纲）并直接
-  /// 调用历史编辑器，把本轮条目**先于正文**落地。
-  ///
-  /// 进入阶段先判一次 [_memorySatisfied]（调研阶段已跳步落地时**零帧**直接跳过）；
-  /// 否则每帧追加 [_memoryDirective]（恰一条、只调工具不输出文本）再给一帧，
-  /// 帧后再判一次。判定完全基于工作副本事实，不采信模型自述。
-  /// 用尽仍失败 → 缺口 / 失败栏目由维护轮兜底。
-  Future<void> _runMemoryStage(
-    bool stream,
-    void Function(String requestBody)? onRequestBody,
-    bool Function()? isCancelled,
-  ) async {
-    // 正文只在正文阶段产生：进入记忆阶段先清空调研阶段的兜底候选。
-    _adopted = '';
-    _adoptedByHeading = false;
-    _lastFallback = '';
-    // 历史锚点来源：**调研阶段已读过**（`_noteSectionsProvided` 已登记）时，本阶段
-    // 与维护阶段的重复读取一律被拒，锚点用对话中已有的 `<memorySummary>` 块；
-    // 模型**跳步漏读**时不在登记之列，本阶段仍允许读一次（`prompt_v2_sections` 的合并指令行
-    // 会点名这一情形）——否则「合并」这类需要逐字锚点的动作将无从落地。
-    // 调研阶段若已把本轮条目落地（模型跳步抢写、或上一帧的编辑已生效），
-    // **直接跳过本阶段**：再发一帧 `required` 只会逼模型重复 `op=append`
-    // ——第二条条目会让 applyEdits 整栏失败并多烧两帧修复。
-    if (_memorySatisfied()) return;
-    for (var i = 0; i < maxMemoryFrames; i++) {
-      _appendStageDirective(AgentStage.memory, first: i == 0);
-      _modelProblems.clear();
-      final gate = _FrameGate(stage: AgentStage.memory, sink: _sink);
-      final result = await _callFrame(
-        stage: AgentStage.memory,
-        gate: gate,
-        stream: stream,
-        onRequestBody: onRequestBody,
-        isCancelled: isCancelled,
-      );
-      _absorbFrame(result, AgentStage.memory);
-      await _executeTools(result, isCancelled, AgentStage.memory);
-      if (_memorySatisfied()) {
-        // 记忆已落地：清掉本阶段的失败说明，避免它们把随后的正文阶段
-        // 误判成「有缺项」而多发起一轮维护。
-        _modelProblems.clear();
-        return;
-      }
-      // 不重复回传上一帧的失败说明：编辑失败时工具**已把该栏目当前全文**回传
-      // 到对话里（模型据此重锚），再塞一遍只会推高输入。
-    }
-  }
-
-  /// 记忆阶段完成判定（应用侧事实）：历史栏被真实编辑过、当前没有失败登记、
-  /// **恰好一条**本轮（轮次 = N）条目，且档位要求的合并已落地。
-  bool _memorySatisfied() {
-    const section = AgentStateSection.memorySummary;
-    if (!workingCopy.touchedSections.contains(section) ||
-        workingCopy.failedSections.contains(section) ||
-        memoryEntryCount(workingCopy.memorySummary, workingCopy.roundIndex) != 1) {
-      return false;
-    }
-    final plan = memoryMergePlan;
-    return plan == null ||
-        isMemoryMergeApplied(workingCopy.memorySummary, plan);
-  }
-
-  /// 是否仍有未落地的「记忆合并」要求（仅用于维护轮**循环控制**）。
-  ///
-  /// 合并指令的**文案**由 `_prompt.stageState` 按 `workingCopy` +
-  /// `memoryMergePlan` 生成（v1 / v2 各一份），这里只判「是否还要继续发帧」。
-  bool get _hasPendingMemoryMerge {
-    final plan = memoryMergePlan;
-    if (plan == null || !plan.hasAction) return false;
-    return !isMemoryMergeApplied(workingCopy.memorySummary, plan);
-  }
-
-  /// 记忆阶段指令（文案真源 = `promptInterface`）。
-  Map<String, dynamic> _memoryDirective({required bool first}) => {
-        'role': 'user',
-        'content': _prompt.stageMemory(AgentStageRequest(
-          workingCopy: workingCopy,
-          memoryMergePlan: memoryMergePlan,
-          first: first,
-        )),
-      };
-
-  // ---------------------------------------------------------------------------
   // 正文阶段
   // ---------------------------------------------------------------------------
 
-  /// 正文只在正文阶段产生：清空调研 / 记忆阶段可能留下的候选（模型跳步抢写
-  /// 的正文一律作废），保证采纳的正文与已落地的记忆同源。记忆阶段的失败说明
-  /// 同样清掉——「记忆是否缺」由 [_gaps] / [AgentStateWorkingCopy.failedSections]
-  /// 在正文之后重新判定，不靠上一阶段残留的诊断文本触发维护轮。
+  /// 正文只在正文阶段产生：清空调研阶段可能留下的候选（模型跳步抢写的正文
+  /// 一律作废）。状态编辑在第一步被拒绝，记忆是否齐全由维护步判定。
   Future<void> _runStoryStage(
     bool stream,
     void Function(String requestBody)? onRequestBody,
@@ -670,7 +597,7 @@ class AgentRoundRunner {
     _adoptedByHeading = false;
     _lastFallback = '';
     _modelProblems.clear();
-    // 把「历史与记忆条目已就位、现在只写五个区块」说在最近处
+    // 把「调研已结束、现在只写五个区块、记忆留到下一步」说在最近处
     // （文案真源 = `promptInterface.stageStory`，与系统契约口径一致）。
     _appendStageDirective(AgentStage.story);
     for (var i = 0; i < maxStoryFrames; i++) {
@@ -684,19 +611,19 @@ class AgentRoundRunner {
       );
       _absorbFrame(result, AgentStage.story);
       await _executeTools(result, isCancelled, AgentStage.story);
-      // 正文阶段退出条件（一次请求即闭环，不为「等模型停手」多花一帧）：
-      // - 本帧没有工具调用 → 就是终帧；
-      // - 已采纳标题正文，且本帧工具**全是状态编辑器** → 正文已完成，
-      //   补齐与否交给维护轮判定；
-      // - 含搜索 / 打开页面等**喂正文**的工具 → 继续下一帧（结果必须
-      //   回到上下文，模型要在下一帧写出完整正文）。
+      // 正文步退出条件（一次请求即闭环，不为「等模型停手」多花回合）：
+      // - 本回合没有工具调用 → 就是终回合；
+      // - 已采纳标题正文，且本回合工具**全是状态编辑器** → 正文已完成，
+      //   编辑器已被拒绝，补齐记忆交给第二步判定；
+      // - 含搜索 / 打开页面等**喂正文**的工具 → 继续下一回合（结果必须
+      //   回到上下文，模型要在下一回合写出完整正文）。
       if (result.toolCalls.isEmpty) return;
       if (_adoptedByHeading && result.toolCalls.every(_isEditToolCall)) return;
     }
   }
 
   /// 该调用是否为状态**编辑**工具（执行完即闭环；读取器是只读查阅，
-  /// 不算编辑，也不参与「本帧工具全是编辑器 → 阶段闭环」的判定）。
+  /// 不算编辑，也不参与「本回合工具全是编辑器 → 步闭环」的判定）。
   bool _isEditToolCall(AiToolCall tc) {
     final tool = _byName(tc.name);
     return tool != null &&
@@ -704,12 +631,12 @@ class AgentRoundRunner {
         tool.activityType == AgentActivityType.tooling;
   }
 
-  /// 该调用是否为**只读读取器**（调研阶段的结束信号：本帧只读了历史 =
-  /// 调研结束，立刻进入记忆阶段；搜索 / 打开页不是读取器，会把调研阶段留住）。
+  /// 该调用是否为**只读读取器**（调研步的结束信号：本回合只读了历史 =
+  /// 调研结束，立刻进入正文；搜索 / 打开页不是读取器，会把调研步留住）。
   bool _isReadToolCall(AiToolCall tc) => _byName(tc.name)?.isReadOnly ?? false;
 
   // ---------------------------------------------------------------------------
-  // 维护轮（兜底）
+  // 第二步：状态维护（正文之后单独的新请求）
   // ---------------------------------------------------------------------------
 
   Future<void> _runStateStage({
@@ -721,10 +648,8 @@ class AgentRoundRunner {
     var pending = [...problems, ..._truncationNotes];
     _truncationNotes.clear();
     for (var i = 0; i < maxStateFrames; i++) {
-      // 快照不再是应用预置：维护轮指令要求模型**先调用读取器**（此时
-      // 工作副本 = 上一轮 + 本轮正文之后的状态），再按返回的最新块复制锚点；
-      // 修复帧则复用上一帧读取结果与失败回传的「栏目当前全文」，
-      // 不重复读取（见 [_stateDirective]）。
+      // 维护步只维护记忆总结：读取结果优先复用第一步；第一步漏读时才允许补读。
+      // 修复回合复用上一回合的失败回传与栏目全文，不重复读取。
       _appendStageDirective(AgentStage.state, first: i == 0, problems: pending);
       _modelProblems.clear();
       final gate = _FrameGate(stage: AgentStage.state, sink: _sink);
@@ -742,19 +667,39 @@ class AgentRoundRunner {
         final gaps = _gaps(_storyForChecks);
         pending = [for (final g in gaps) g.modelText];
       }
-      // 档位要求的记忆合并仍未落地 → 继续修复帧（与缺口同一循环、同一帧数上限）；
-      // 合并指令行由接口层生成（见 [_hasPendingMemoryMerge]）。
-      if (pending.isEmpty && !_hasPendingMemoryMerge) return;
-      // 只要清单还有缺项就继续下一帧修复：模型「空手帧」（只回文本/只回读
-      // 取器）不再提前结束整轮——记忆/角色这类缺项应得到补修机会，帧数
-      // 上限（maxStateFrames）兜底。
+      // 档位要求的记忆合并仍未落地 → 继续修复回合（与缺口同一循环、同一上限）。
+      if (pending.isEmpty && !_hasPendingMemoryMerge && _maintenanceSatisfied()) {
+        return;
+      }
+      // 只要清单还有缺项 / 记忆仍不完整就继续下一回合修复：模型「空手回合」
+      // （只回文本 / 只试探读取）不再提前结束维护——上限兜底。
     }
+  }
+
+  /// 维护完成判定（应用侧事实）：历史栏被真实编辑过、当前没有失败登记、
+  /// **恰好一条**本轮（轮次 = N）条目，且档位要求的合并已落地。
+  bool _maintenanceSatisfied() {
+    const section = AgentStateSection.memorySummary;
+    if (!workingCopy.touchedSections.contains(section) ||
+        workingCopy.failedSections.contains(section) ||
+        memoryEntryCount(workingCopy.memorySummary, workingCopy.roundIndex) != 1) {
+      return false;
+    }
+    final plan = memoryMergePlan;
+    return plan == null || isMemoryMergeApplied(workingCopy.memorySummary, plan);
+  }
+
+  /// 是否仍有未落地的「记忆合并」要求（仅用于维护步**循环控制**）。
+  bool get _hasPendingMemoryMerge {
+    final plan = memoryMergePlan;
+    if (plan == null || !plan.hasAction) return false;
+    return !isMemoryMergeApplied(workingCopy.memorySummary, plan);
   }
 
   String get _storyForChecks =>
       _adopted.isNotEmpty ? _adopted : _lastFallback;
 
-  /// 本档位读取器名 → 栏目（维护轮重复读取护栏用）。
+  /// 本档位读取器名 → 栏目（维护回合重复读取护栏用）。
   late final Map<String, AgentStateSection> _readSectionByTool = {
     for (final s in profile.toolSections) agentReadToolName(s): s,
   };
@@ -768,7 +713,7 @@ class AgentRoundRunner {
   /// 非正文阶段对这些栏目的重复读取会被拒绝（[_refusedRepeatRead]）。
   final Set<AgentStateSection> _sectionsProvided = {};
 
-  /// 维护轮指令（简短中文概述；工具名按当前档位的栏目清单生成）。
+  /// 维护回合指令（简短中文概述；工具名按当前档位的栏目清单生成）。
   ///
   /// 当前档位只有历史这件事（世界 / 角色由正文携带、正文已产出，本阶段不得
   /// 改写正文），且它是「记忆条目没落地」的兜底。世界 / 角色栏目与编辑器仍保留
@@ -860,7 +805,7 @@ class AgentRoundRunner {
 
   /// 追加本阶段首帧的**帧指令**（若有）。
   ///
-  /// 各阶段帧指令的**唯一追加点**（文案真源仍由 [PromptInterface] 给出）：
+  /// 各阶段回合指令的**唯一追加点**（文案真源仍由 [PromptInterface] 给出）：
   /// 实发各阶段与 [outlineFrames] 都经这里，预览因此不会与实发漂移。
   void _appendStageDirective(
     AgentStage stage, {
@@ -873,8 +818,6 @@ class AgentRoundRunner {
           'role': 'user',
           'content': _prompt.stagePrepare(const AgentStageRequest()),
         });
-      case AgentStage.memory:
-        _items.add(_memoryDirective(first: first));
       case AgentStage.story:
         // 把「现在只写五个区块」说在最近处（与系统契约同一真源）。
         _items.add({
@@ -901,34 +844,27 @@ class AgentRoundRunner {
     _appendStageDirective(AgentStage.prepare);
     frames.add(
       RequestFrameOutline(
-        label: '准备帧',
-        note: '第一步：读历史、按需联网搜索 / 打开页'
-            '（本阶段遇工具调用会继续续帧，直到调研结束）。',
+        label: '调研回合',
+        note: '第一步·调研：读历史、按需联网搜索 / 打开页'
+            '（遇工具调用会继续续回合，直到调研结束；随后立刻生成正文）。',
         body: _frameBody(AgentStage.prepare),
-      ),
-    );
-    _appendStageDirective(AgentStage.memory);
-    frames.add(
-      RequestFrameOutline(
-        label: '记忆帧',
-        note: '调研结束、且本轮记忆条目尚未落地时发出（思考强度沿用用户设置）。',
-        body: _frameBody(AgentStage.memory),
       ),
     );
     _appendStageDirective(AgentStage.story);
     frames.add(
       RequestFrameOutline(
-        label: '正文帧',
-        note: '记忆条目已落地后发出：写本轮正文（后接状态维护兜底）。',
+        label: '正文回合',
+        note: '第一步·正文：调研结束后发出，写本轮 5 区块正文'
+            '（不写记忆总结、不调用历史编辑器）。',
         body: _frameBody(AgentStage.story),
       ),
     );
     _appendStageDirective(AgentStage.state);
     frames.add(
       RequestFrameOutline(
-        label: '维护帧',
-        note: '正文之后仍有缺项、或档位要求的记忆合并未落地时发出'
-            '（思考强度沿用用户设置；缺项清单由当时的缺项决定）。',
+        label: '维护回合',
+        note: '第二步·状态维护：正文完成后作为单独的新请求发出，'
+            '只补本轮记忆总结 / 合并（思考强度沿用用户设置）。',
         body: _frameBody(AgentStage.state),
       ),
     );
@@ -1030,10 +966,10 @@ class AgentRoundRunner {
         : 'The previous response ended early (${result.incompleteReason}). '
               'Re-issue only the missing tool calls. '
               '上一帧被提前结束（${result.incompleteReason}），只补齐缺失的工具调用。';
-    // 工具帧（记忆 / 维护）：进本帧反馈通道（下一帧指令与维护轮清单）；
-    // 正文 / 调研帧：只登记，避免仅因一次截断就额外触发一帧 `required`
+    // 维护回合：进本回合反馈通道（下一回合指令与维护清单）；
+    // 正文 / 调研回合：只登记，避免仅因一次截断就额外触发一帧 `required`
     // （那会逼模型重复调工具）。
-    if (stage == AgentStage.state || stage == AgentStage.memory) {
+    if (stage == AgentStage.state) {
       _modelProblems.add(note);
     } else {
       _truncationNotes.add(note);
@@ -1089,11 +1025,12 @@ class AgentRoundRunner {
     return kept.join('\n');
   }
 
-  /// 执行一帧的全部工具调用（并行语义：逐个执行，条目按调用顺序回传）。
+  /// 执行一回合的全部工具调用（并行语义：逐个执行，条目按调用顺序回传）。
   ///
-  /// [stage] 决定一条护栏：**非正文阶段**对「本轮已提供全文的栏目」的重复读取
-  /// 不执行（[_refusedRepeatRead]）——写正文 / 写大纲都不改变状态，调研阶段读到的
-  /// 那一份就是记忆帧与维护帧唯一正确的锚点来源。
+  /// [stage] 决定护栏：
+  /// - **第一步**（调研 / 正文）拒绝状态编辑器：记忆维护只允许在第二步做；
+  /// - **第二步**只允许记忆编辑器与必要的历史读取：拒绝联网，重复读取按
+  ///   [_refusedRepeatRead] 拒绝。
   Future<void> _executeTools(
     AiCallResult result,
     bool Function()? isCancelled,
@@ -1108,6 +1045,8 @@ class AgentRoundRunner {
           tool?.activityType == AgentActivityType.tooling;
       final subject = _subject(tc, summary);
       final refusedRead = _refusedRepeatRead(tc, stage);
+      final refusedEarlyEdit = _refusedEarlyStateEdit(tc, stage);
+      final refusedMaintenanceSearch = _refusedMaintenanceSearch(tc, stage);
       final outcome = tc.argumentsUnparsable
           ? AgentToolOutcome(
               name: tc.name,
@@ -1125,18 +1064,29 @@ class AgentRoundRunner {
               isStateTool: isStateTool,
             )
           : refusedRead
-              ? _refusedReadOutcome(tc, summary, subject, stage)
-              : await _runTool(tc, tool, summary, subject, isStateTool);
+              ? _refusedReadOutcome(tc, summary, subject)
+              : refusedEarlyEdit
+                  ? _refusedEarlyEditOutcome(tc, summary, subject)
+                  : refusedMaintenanceSearch
+                      ? _refusedMaintenanceSearchOutcome(tc, summary, subject)
+                      : await _runTool(tc, tool, summary, subject, isStateTool);
       _outcomes.add(outcome);
       // 工具卡片收口：完成 / 失败状态与一行结果说明（缺少这一步，UI 的
       // 工具框会永远停在「正在执行…」）。
       onToolFinished?.call(outcome);
-      if (!outcome.applied && isStateTool) {
+      if (!outcome.applied && outcome.isStateTool) {
         _modelProblems.add('${tc.name} → ${outcome.modelOutput}');
       }
-      // 本次调用带给模型的栏目全文（读取成功 / 编辑回传）：登记后，非正文阶段
+      // 本次调用带给模型的栏目全文（读取成功 / 编辑回传）：登记后，维护步
       // 对这些栏目的重复读取会被拒绝（[_refusedRepeatRead]）。
-      _noteSectionsProvided(tc, outcome, executed: !refusedRead);
+      _noteSectionsProvided(
+        tc,
+        outcome,
+        executed: !refusedRead &&
+            !refusedEarlyEdit &&
+            !refusedMaintenanceSearch &&
+            !tc.argumentsUnparsable,
+      );
       _appendCallItems(
         tc,
         outcome,
@@ -1146,15 +1096,28 @@ class AgentRoundRunner {
     }
   }
 
+  /// 第一步（调研 / 正文）拒绝所有状态编辑器：记忆维护只允许在第二步做。
+  bool _refusedEarlyStateEdit(AiToolCall tc, AgentStage stage) {
+    if (stage == AgentStage.state) return false;
+    return _editSectionByTool.containsKey(tc.name);
+  }
+
+  /// 第二步只维护记忆总结：联网工具在维护步一律不执行。
+  bool _refusedMaintenanceSearch(AiToolCall tc, AgentStage stage) {
+    if (stage != AgentStage.state) return false;
+    return tc.name == 'narrchat_webSearch' ||
+        tc.name == 'narrchat_webFetchPage';
+  }
+
   /// 非正文阶段护栏：**本轮已提供过全文的栏目**不再重复读取。
   ///
-  /// 写正文 / 写大纲不改变状态（只有编辑会），所以调研阶段读到的快照就是记忆帧
-  /// 与维护帧唯一正确的锚点来源——它们已在上下文中（`_pruneStaleReadState`
-  /// 之前不会失效）。模型习惯「写完再查一遍再改」时，这一次多余查询本身要花掉
-  /// 一个帧：这里直接不执行并回传一句方向性说明（下一帧指令还会再次点名），
+  /// 写正文不改变状态（只有编辑会），所以调研步读到的快照就是维护步唯一正确
+  /// 的锚点来源——它们已在上下文中（`_pruneStaleReadState` 之前不会失效）。
+  /// 模型习惯「写完再查一遍再改」时，这一次多余查询本身要花掉一个回合：
+  /// 这里直接不执行并回传一句方向性说明（下一回合指令还会再次点名），
   /// 促使它直接用已有全文的锚点编辑。
   ///
-  /// 未提供过的栏目（调研阶段漏读、或读取被截断）照常执行——非合规流程仍能
+  /// 未提供过的栏目（调研步漏读、或读取被截断）照常执行——非合规流程仍能
   /// 自我修复，不因护栏而失明。
   bool _refusedRepeatRead(AiToolCall tc, AgentStage stage) {
     if (stage == AgentStage.story || tc.argumentsUnparsable) return false;
@@ -1185,29 +1148,64 @@ class AgentRoundRunner {
     AiToolCall tc,
     String summary,
     String subject,
-    AgentStage stage,
   ) {
     final section = _readSectionByTool[tc.name]!;
     final editTool = agentEditToolName(section);
-    // 阶段不同，「该干什么」不同：记忆帧只接受历史编辑器；维护帧接受清单里的
-    // 编辑器（当前档位只有历史；世界 / 角色编辑器保留为框架）。
-    final onlyHistory = stage == AgentStage.memory;
-    final actionZh = onlyHistory
-        ? '并在本回合直接调用 $editTool（本回合只接受编辑器调用）'
-        : '并在本回合直接按清单调用对应编辑器（本栏用 $editTool）';
     return AgentToolOutcome(
       name: tc.name,
       callId: tc.id,
       argsSummary: summary,
       subject: subject,
       applied: false,
-      message: '本轮已提供该栏目全文，本阶段不再重复读取',
+      message: '本轮已提供该栏目全文，维护步不再重复读取',
       modelOutput:
           '该栏目的全文**已在对话中**（你本轮早先自己读取的结果；'
-              '写正文 / 写大纲不会改变状态，只有编辑会），本次不再重复读取：'
+              '写正文不会改变状态，只有编辑会），本次不再重复读取：'
               '请直接从上面已有的 `<${section.tag}>` 块**逐字复制** `before` 锚点，'
-              '$actionZh。',
+              '并在本回合直接按清单调用对应编辑器（本栏用 $editTool）。',
       // 非状态缺口：不写入缺项清单（它属于流程违规，不是待修栏目）。
+      isStateTool: false,
+    );
+  }
+
+  /// 第一步调用状态编辑器：不执行，提示留到第二步维护。
+  AgentToolOutcome _refusedEarlyEditOutcome(
+    AiToolCall tc,
+    String summary,
+    String subject,
+  ) {
+    final section = _editSectionByTool[tc.name]!;
+    return AgentToolOutcome(
+      name: tc.name,
+      callId: tc.id,
+      argsSummary: summary,
+      subject: subject,
+      applied: false,
+      message: '状态编辑只允许在第二步维护执行，本次未执行',
+      modelOutput:
+          '状态编辑只允许在第二步「状态维护」执行；第一步只做调研和正文。'
+              '本轮 ${section.label} 的维护指令会在正文写完后单独下发，'
+              '现在不要编辑状态，请继续完成正文。',
+      isStateTool: false,
+    );
+  }
+
+  /// 第二步调用联网工具：不执行，维护步只维护记忆总结。
+  AgentToolOutcome _refusedMaintenanceSearchOutcome(
+    AiToolCall tc,
+    String summary,
+    String subject,
+  ) {
+    return AgentToolOutcome(
+      name: tc.name,
+      callId: tc.id,
+      argsSummary: summary,
+      subject: subject,
+      applied: false,
+      message: '状态维护只维护记忆总结，维护步不联网',
+      modelOutput:
+          '这是第二步「状态维护」：只能维护记忆总结，不能联网搜索或打开页面。'
+              '请直接根据正文的 `## 当前时间` 用 narrchat_editHistory 追加本轮条目。',
       isStateTool: false,
     );
   }
@@ -1375,12 +1373,12 @@ class AgentRoundRunner {
 
 /// 帧级正文门控：把模型的原始 chunk 流转换成界面可安全消费的流。
 ///
-/// - **正文阶段**：帧内容先缓冲，出现 `## 剧情演绎` 标题才开始上屏（从标题处起），
-///   开场白永不可见；每帧首次上屏前先发 [AiStreamChunk.narrativeReset]，
+/// - **正文回合**：内容先缓冲，出现 `## 剧情演绎` 标题才开始上屏（从标题处起），
+///   开场白永不可见；每回合首次上屏前先发 [AiStreamChunk.narrativeReset]，
 ///   使「后到的完整标题帧覆盖前一帧」在界面上表现为正文块重置重流；
-/// - **调研 / 记忆 / 维护阶段**：文本通道关闭，正文增量一律丢弃——调研阶段的
-///   大纲与搜索开场白、记忆阶段的抢写正文、维护阶段的工具说明都不该出现在
-///   正文块里。
+/// - **调研回合**：文本通道关闭，增量一律丢弃；
+/// - **维护回合**：文本不进入正文，转发给 UI 的维护流式框（由 provider 按
+///   [AgentStage.state] 分流）。
 class _FrameGate {
   _FrameGate({required this.stage, required this.sink});
 
@@ -1393,6 +1391,10 @@ class _FrameGate {
   void process(AiStreamChunk chunk) {
     final emit = sink;
     if (chunk.contentDelta.isEmpty) {
+      emit?.call(chunk);
+      return;
+    }
+    if (stage == AgentStage.state) {
       emit?.call(chunk);
       return;
     }

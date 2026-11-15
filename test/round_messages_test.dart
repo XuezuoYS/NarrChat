@@ -40,8 +40,8 @@ void main() {
         headers: {'content-type': 'text/event-stream; charset=utf-8'},
       );
 
-  /// 每帧只回文本 + 完成：Lv.1 三段流程下记忆阶段始终不调编辑器 →
-  /// 本轮记忆条目没落地 → 维护轮也补不上 → 缺项转常驻提示
+  /// 每回合只回文本 + 完成：Lv.1 两步流程下维护回合始终不调编辑器 →
+  /// 本轮记忆条目没落地 → 缺项转常驻提示
   ///（与 agent_round_test 的「警告常驻」夹具同思路）。
   List<String> unappliedSse(int calls) => [
         'data: {"type":"response.output_text.delta","delta":"## 剧情演绎\\n正文。\\n\\n## 推荐行动\\n行动"}',

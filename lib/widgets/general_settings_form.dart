@@ -61,8 +61,8 @@ class GeneralSettingsForm extends StatelessWidget {
 /// 档位与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
 /// - **Lv.1**：仅历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），
-///   每轮三段：调研（读史 + 按需联网）→ 同一回合「推演剧情 + 落记忆条目」→
-///   输出正文（维护轮只作兜底）。
+///   每轮两步：第一步调研（读史 + 按需联网）后直接写正文；第二步在正文完成后
+///   单独发新请求维护记忆总结；所有步结束后统一入库，token 记录总用量。
 ///
 /// 历史上的完整 Agent（Lv.2，六工具 + 正文三小节）**已移除**：世界 / 角色工具
 /// 与多栏目缺口框架仍留在代码里作为后续档位的基础设施，当前不注册；旧配置值
@@ -70,7 +70,7 @@ class GeneralSettingsForm extends StatelessWidget {
 ///
 /// 交互与文案分工：
 /// - **整行任意位置可点**即可展开档位菜单（不必对准右侧箭头）；
-/// - 行内只保留**简要**介绍（工具 / 分阶段生成 + 指示器限制 + 破坏性变更声明），
+/// - 行内只保留**简要**介绍（工具 / 分步生成 + 指示器限制 + 破坏性变更声明），
 ///   各档位的差异写在**下拉选项内**（[AgentModeLevel.menuDetail]）；
 /// - 下拉行为统一由 [SettingsSelectRow] 提供（整行点击 + 菜单圆角继承主题）。
 class _ExperimentalSettingsSection extends StatefulWidget {
@@ -83,10 +83,11 @@ class _ExperimentalSettingsSection extends StatefulWidget {
 
 class _ExperimentalSettingsSectionState
     extends State<_ExperimentalSettingsSection> {
-  /// 简要介绍：工具 / 分阶段生成 + 指示器限制 + 破坏性变更声明（细节在选项内）。
+  /// 简要介绍：工具 / 两步生成 + 指示器限制 + 破坏性变更声明（细节在选项内）。
   static const String _agentModeDescription =
-      '实验性功能（默认「无」）：启用后调用自定义工具（narrchat_*）走分阶段生成'
-      '（调研 → 记忆 → 正文），由 Agent 托管部分状态——托管范围见下拉选项说明。'
+      '实验性功能（默认「无」）：启用后调用自定义工具（narrchat_*）走两步生成'
+      '（第一步调研并写正文 → 第二步单独维护记忆总结），由 Agent 托管记忆总结——'
+      '托管范围见下拉选项说明。'
       '⚠ 档位开启期间，模型已支持的功能（思考 / 流式 / 搜索）无法通过对话页'
       '指示器关闭；未来更新可能对本功能做出破坏性变更，正确性不保证。';
 

@@ -14,7 +14,7 @@ import 'package:narrchat/services/ai_service.dart';
 import 'helpers/fakes.dart';
 
 /// Agent 档位（实验性功能）**开启** + Chat 兼容协议：
-/// Lv.1 三段执行器在 Chat 通道运行（调研 → 记忆 → 正文）——帧转为合法的
+/// Lv.1 两步执行器在 Chat 通道运行（调研 → 正文 → 维护）——回合转为合法的
 /// Chat messages（assistant 携带 tool_calls、工具结果以 role:tool 回传），
 /// 无 instructions / previous_response_id / tool_choice；工具集只有历史
 /// 一读一写 + 联网两件；思考强度全帧沿用用户设置。
@@ -122,7 +122,7 @@ void main() {
           .map((t) => (t['function'] as Map).cast<String, dynamic>())
           .toList();
 
-  test('Agent Lv.1 开 + Chat 协议：调研/记忆/正文三帧（仅历史工具，世界/角色取自正文）', () async {
+  test('Agent Lv.1 开 + Chat 协议：调研/正文/维护三回合（仅历史工具，世界/角色取自正文）', () async {
     final stack = await TestStack.create();
     addTearDown(stack.dispose);
     await stack.seedBook(uuid: 'b1', title: '测试书');
@@ -133,28 +133,26 @@ void main() {
         bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         final idx = bodies.length;
         if (idx == 1) {
-          // 调研帧：无工具调用（模型直接收手）→ 调研阶段闭环（文本不采纳）。
-          return sse(
-            chatFrame(content: '本轮大纲：主角走向主殿，结束时间 = 第二天 辰时。'),
-          );
+          // 调研回合：读一次历史（只读 → 调研结束）。
+          return sse(chatFrame(tools: [readHistory('call_r')]));
         }
         if (idx == 2) {
-          // 记忆帧：本轮历史条目**先于正文**落地。
+          // 正文回合：5 区块（世界 / 角色随正文携带；正文不含记忆区块）。
+          // 角色状态按新契约带 ```markdown 围栏（提取时剥离，落库为纯文本）。
           return sse(
             chatFrame(
-              tools: [
-                editHistory('call_9', '- 第1轮｜日期：第二天 辰时｜殿前递帖'),
-              ],
+              content: '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n'
+                  '## 当前时间\n第二天 辰时\n\n## 世界状态\n- 地点：青云宗主殿\n\n'
+                  '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
             ),
           );
         }
-        // 正文帧：5 区块（世界 / 角色随正文携带；正文不含记忆区块）。
-        // 角色状态按新契约带 ```markdown 围栏（提取时剥离，落库为纯文本）。
+        // 维护回合：正文完成后单独请求，只落本轮记忆条目。
         return sse(
           chatFrame(
-            content: '## 剧情演绎\n殿前风冷。\n\n## 推荐行动\n递上名帖\n\n'
-                '## 当前时间\n第二天 辰时\n\n## 世界状态\n- 地点：青云宗主殿\n\n'
-                '## 角色状态\n```markdown\n## 林远\n- 气血：60\n```',
+            tools: [
+              editHistory('call_9', '- 第1轮｜日期：第二天 辰时｜殿前递帖'),
+            ],
           ),
         );
       }),
@@ -171,13 +169,12 @@ void main() {
     await provider.loadRounds('b1');
 
     expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
-    // 合规一轮 = 恰好 3 帧：调研 → 记忆 → 正文
-    //（维护轮只作兜底，不再「每轮必发」；工具调用靠帧指令驱动）。
-    expect(bodies, hasLength(3), reason: 'Lv.1 合规一轮 3 帧、零额外请求');
+    // 合规一轮 = 恰好 3 回合：调研 → 正文 → 维护（维护每轮必发）。
+    expect(bodies, hasLength(3), reason: 'Lv.1 合规一轮 3 回合');
     expect(
       bodies.every((b) => !b.containsKey('tool_choice')),
       isTrue,
-      reason: 'Agent 帧一律不发 tool_choice',
+      reason: 'Agent 回合一律不发 tool_choice',
     );
 
     // Chat 线路形态：messages + 嵌套 function schema，无 instructions / input。
@@ -201,7 +198,7 @@ void main() {
         isNot(contains('narrchat_readCharacterState')));
     expect((bodies.first['tools'] as List).first.containsKey('name'), isFalse,
         reason: 'Chat 线路为嵌套 function 形态');
-    // 三帧共用同一 system / tools 前缀（服务商上下文缓存依赖此）。
+    // 三回合共用同一 system / tools 前缀（服务商上下文缓存依赖此）。
     for (final b in bodies.skip(1)) {
       expect(jsonEncode(b['tools']), jsonEncode(bodies.first['tools']));
     }
@@ -211,20 +208,27 @@ void main() {
     expect('${system['content']}', contains('只输出 5 个二级标题'));
     expect('${system['content']}', contains('narrchat_readHistory'));
 
-    // 记忆帧的工具调用在 Chat 通道转为合法帧会话：assistant 携带 tool_calls、
-    // 工具结果以 `role: tool` 回传（出现在**正文帧**（第 3 帧）的 messages 里）。
-    final messages3 =
-        (bodies[2]['messages'] as List).cast<Map<String, dynamic>>();
-    final assistant = messages3.firstWhere(
+    // 调研回合的工具调用在 Chat 通道转为合法会话：assistant 携带 tool_calls、
+    // 工具结果以 `role: tool` 回传（出现在正文回合的 messages 里）。
+    final storyMessages =
+        (bodies[1]['messages'] as List).cast<Map<String, dynamic>>();
+    final assistant = storyMessages.firstWhere(
       (m) => m['role'] == 'assistant' && m['tool_calls'] != null,
     );
     expect((assistant['tool_calls'] as List), hasLength(1));
-    expect(((assistant['tool_calls'] as List).first as Map)['id'], 'call_9');
-    final toolMsg = messages3.firstWhere((m) => m['role'] == 'tool');
-    expect(toolMsg['tool_call_id'], 'call_9');
-    expect((toolMsg['content'] as String?) ?? '', contains('已更新'));
+    expect(((assistant['tool_calls'] as List).first as Map)['id'], 'call_r');
+    final toolMsg = storyMessages.firstWhere((m) => m['role'] == 'tool');
+    expect(toolMsg['tool_call_id'], 'call_r');
+    expect((toolMsg['content'] as String?) ?? '', contains('NARRCHAT_STATE'));
+    // 维护回合是独立请求，且带维护指令。
+    final maintenanceMessages =
+        (bodies[2]['messages'] as List).cast<Map<String, dynamic>>();
+    expect(
+      '${maintenanceMessages.last['content']}',
+      startsWith('[State-maintenance turn]'),
+    );
 
-    // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
+    // 落库：世界 / 角色 / 时间来自正文文本，历史来自维护工具落地。
     final round = (await stack.repos.rounds.loadChain('b1'))
         .rounds
         .firstWhere((r) => r.roundIndex == 1);
@@ -262,7 +266,7 @@ void main() {
     expect(body['messages'], isA<List>());
     expect(body.containsKey('instructions'), isFalse);
     expect(body.containsKey('tool_choice'), isFalse);
-    // Lv.1 首帧 = 调研帧：末条是「【调研回合】」指令，不是正文帧。
+    // Lv.1 首回合 = 调研回合：末条是「【调研回合】」指令，不是正文回合。
     final messages = (body['messages'] as List).cast<Map<String, dynamic>>();
     expect(messages.last['role'], 'user');
     expect('${messages.last['content']}', startsWith('【调研回合】'));
@@ -277,11 +281,11 @@ void main() {
     );
     expect(
       preview.subsequentFrames.map((f) => f.label).toList(),
-      ['记忆帧', '正文帧', '维护帧'],
+      ['正文回合', '维护回合'],
     );
   });
 
-  test('Agent Lv.1 开 + Chat 协议：思考强度全程沿用用户设置（调研/记忆/正文一致）', () async {
+  test('Agent Lv.1 开 + Chat 协议：思考强度全程沿用用户设置（调研/正文/维护一致）', () async {
     final stack = await TestStack.create();
     addTearDown(stack.dispose);
     await stack.seedBook(uuid: 'b1', title: '测试书');
@@ -293,25 +297,25 @@ void main() {
         bodies.add(body);
         served++;
         if (served == 1) {
-          // 调研帧：读一次历史（只读 → 调研阶段闭环）。
+          // 调研回合：读一次历史（只读 → 调研结束）。
           return sse(chatFrame(tools: [readHistory('call_r')]));
         }
         if (served == 2) {
-          // 记忆帧：历史条目落地。
+          // 正文回合：5 区块。
           return sse(
             chatFrame(
-              tools: [
-                editHistory('call_m', '- 1 | 第一天 午时 | 入门'),
-              ],
+              content: '## 剧情演绎\n正文。\n\n## 推荐行动\nx\n\n'
+                  '## 当前时间\n第一天 午时\n\n## 世界状态\n- 地点：青云宗\n\n'
+                  '## 角色状态\n## 林远\n- 气血：100',
             ),
           );
         }
-        // 正文帧：5 区块。
+        // 维护回合：历史条目落地。
         return sse(
           chatFrame(
-            content: '## 剧情演绎\n正文。\n\n## 推荐行动\nx\n\n'
-                '## 当前时间\n第一天 午时\n\n## 世界状态\n- 地点：青云宗\n\n'
-                '## 角色状态\n## 林远\n- 气血：100',
+            tools: [
+              editHistory('call_m', '- 1 | 第一天 午时 | 入门'),
+            ],
           ),
         );
       }),
@@ -335,15 +339,15 @@ void main() {
           .map((r) => r.message)
           .join('；'),
     );
-    // 3 帧（调研 / 记忆 / 正文）：所有帧的思考强度**都**来自用户设置
-    //（默认 high），执行器不为任何阶段覆盖。
+    // 3 回合（调研 / 正文 / 维护）：所有回合的思考强度**都**来自用户设置
+    //（默认 high），执行器不为任何步覆盖。
     expect(bodies, hasLength(3));
     expect(
       bodies.map((b) => b['reasoning_effort']).toSet(),
       {'high'},
-      reason: '任何帧都不覆盖用户设置的思考强度',
+      reason: '任何回合都不覆盖用户设置的思考强度',
     );
-    // Chat 线路每帧全量重发：帧会话只增不减。
+    // Chat 线路每回合全量重发：会话只增不减。
     expect(
       (bodies[1]['messages'] as List).length,
       greaterThan((bodies[0]['messages'] as List).length),

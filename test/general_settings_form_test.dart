@@ -272,7 +272,7 @@ void main() {
     // 简要介绍：指向下拉选项（细节不在卡片里堆砌）。
     expect(find.textContaining('托管范围见下拉选项说明'), findsOneWidget);
     expect(find.textContaining('narrchat_*'), findsOneWidget);
-    expect(find.textContaining('分阶段生成'), findsOneWidget);
+    expect(find.textContaining('两步生成'), findsOneWidget);
     // 指示器限制声明 + 破坏性变更声明 + 正确性声明。
     expect(find.textContaining('无法通过对话页指示器关闭'), findsOneWidget);
     expect(find.textContaining('破坏性变更'), findsOneWidget);

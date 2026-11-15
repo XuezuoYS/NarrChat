@@ -1173,11 +1173,11 @@ void main() {
     testWidgets('预览请求体含后续可用帧：默认折叠，展开后只显示增量字段', (tester) async {
       const frames = [
         PlannedFrame(
-          label: '记忆帧',
-          note: '调研结束、本轮记忆尚未落地时发出',
+          label: '维护回合',
+          note: '正文完成后单独请求，只补本轮记忆条目',
           addedFields: {
             'input': {
-              '…': '前 2 项同上一帧',
+              '…': '前 2 项同上一回合',
               '+': [
                 {'role': 'user', 'content': '阶段指令原文'},
               ],
@@ -1199,16 +1199,16 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('【后续可用帧 1】'), findsOneWidget);
-      expect(find.text('【记忆帧】'), findsOneWidget);
-      expect(find.text('调研结束、本轮记忆尚未落地时发出'), findsOneWidget);
+      expect(find.text('【维护回合】'), findsOneWidget);
+      expect(find.text('正文完成后单独请求，只补本轮记忆条目'), findsOneWidget);
       // 默认折叠：增量内容不上屏（只有请求体与后续帧两个块标题）。
       expect(_rawBlocks, findsNothing);
 
-      await tester.tap(find.text('【记忆帧】'));
+      await tester.tap(find.text('【维护回合】'));
       await tester.pumpAndSettle();
       final diff = _rawBlockText(tester, 0);
       expect(diff, contains('阶段指令原文'));
-      expect(diff, contains('前 2 项同上一帧'));
+      expect(diff, contains('前 2 项同上一回合'));
     });
 
     testWidgets('超预算的块分段渲染：跨段命中依旧处处可达', (tester) async {

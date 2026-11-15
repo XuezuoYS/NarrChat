@@ -134,7 +134,7 @@ void main() {
     expect(ai.streams, [false]);
     expect(provider.showTimeline, isTrue);
 
-    // 第 1 帧（准备）：思考 + 读历史，无正文。
+    // 第 1 回合（调研）：思考 + 读历史，无正文。
     gates[0].complete(
       AiCallResult(
         content: '',
@@ -151,7 +151,7 @@ void main() {
         responseId: 'r1',
       ),
     );
-    // 第 1 帧回放 + 工具执行 → 第 2 帧（记忆帧）请求发出。
+    // 第 1 回合回放 + 工具执行 → 第 2 回合（正文）请求发出。
     await pumpUntil(tester, () => ai.calls == 2);
     expect(ai.streams, [false, false]);
     // 思考块已上屏（按轮次展示，而不是等全部生成完）。
@@ -160,18 +160,40 @@ void main() {
         .toList();
     expect(firstThinking, hasLength(1));
     expect(firstThinking.single.content, '需要先读取历史。');
-    // 工具框执行过程中可见（准备帧已执行完，记忆帧进行中）。
     expect(find.textContaining('Tool · narrchat_readHistory'), findsWidgets);
-    expect(provider.streamingContent, isEmpty, reason: '记忆帧尚未返回正文');
+    expect(provider.streamingContent, isEmpty, reason: '正文回合尚未返回');
 
-    // 第 2 帧（记忆）：思考 + 编辑历史（追加本轮条目），无正文。
+    // 第 2 回合（正文）：标题帧正文（世界 / 角色 / 时间随正文携带）。
     gates[1].complete(
       const AiCallResult(
+        content: '## 剧情演绎\n非流式正文\n\n## 推荐行动\n行动\n\n'
+            '## 当前时间\n第一天 午时\n\n## 世界状态\n- 地点：青云宗\n\n'
+            '## 角色状态\n# 主角\n## 林远\n- 气血：80',
+        reasoningContent: '根据调研结果写正文。',
+        promptTokens: 2,
+        completionTokens: 2,
+        responseId: 'r2',
+      ),
+    );
+    // 正文回放逐渐上屏；回放完成 + 工具执行 → 第 3 回合（维护）请求发出。
+    await pumpUntil(tester, () => provider.streamingContent.isNotEmpty);
+    await pumpUntil(tester, () => ai.calls == 3);
+    expect(ai.streams, [false, false, false]);
+    final thinking = provider.agentEvents
+        .where((e) => e.type == AgentEventType.thinking)
+        .toList();
+    expect(thinking, hasLength(2));
+    expect(thinking.last.content, '根据调研结果写正文。');
+    expect(provider.streamingContent, contains('非流式正文'));
+
+    // 第 3 回合（维护）：只追加记忆条目，文本不进入正文。
+    gates[2].complete(
+      const AiCallResult(
         content: '',
-        reasoningContent: '根据历史推演剧情并落记忆条目。',
+        reasoningContent: '根据正文补本轮记忆。',
         toolCalls: [
           AiToolCall(
-            id: 'fc_2',
+            id: 'fc_3',
             name: 'narrchat_editHistory',
             arguments: {
               'edits': [
@@ -185,47 +207,17 @@ void main() {
         ],
         promptTokens: 2,
         completionTokens: 2,
-        responseId: 'r2',
-      ),
-    );
-    // 记忆帧回放 + 工具执行 → 第 3 帧（正文帧）请求发出。
-    await pumpUntil(tester, () => ai.calls == 3);
-    expect(ai.streams, [false, false, false]);
-    // 记忆帧的思考块另起一块（按轮次展示）。
-    final thinking = provider.agentEvents
-        .where((e) => e.type == AgentEventType.thinking)
-        .toList();
-    expect(thinking, hasLength(2));
-    expect(thinking.last.content, '根据历史推演剧情并落记忆条目。');
-    expect(find.textContaining('Tool · narrchat_editHistory'), findsWidgets);
-    expect(provider.streamingContent, isEmpty, reason: '正文帧尚未返回');
-
-    // 第 3 帧（正文）：标题帧正文（世界 / 角色 / 时间随正文携带）。
-    gates[2].complete(
-      const AiCallResult(
-        content: '## 剧情演绎\n非流式正文\n\n## 推荐行动\n行动\n\n'
-            '## 当前时间\n第一天 午时\n\n## 世界状态\n- 地点：青云宗\n\n'
-            '## 角色状态\n# 主角\n## 林远\n- 气血：80',
-        reasoningContent: '根据记忆条目写正文。',
-        promptTokens: 2,
-        completionTokens: 2,
         responseId: 'r3',
       ),
-    );
-    // 回放仍在进行中：正文块应渐进出现（内容已开始上屏，尚未全部完成时
-    // 结束状态也未恢复）。逐步推进定时器直至生成结束。
-    await pumpUntil(
-      tester,
-      () => provider.streamingContent.isNotEmpty,
     );
     await pumpUntil(tester, () => !provider.isSending);
     expect(await future, isTrue);
     await waitSendDone(tester, provider);
 
-    // 生成的第二轮：正文按「正文帧」落库，未被思考文本污染；时间线复位。
+    // 正文按正文回合落库，未被思考文本污染；记忆由维护回合追加。
     final round = provider.rounds.firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('非流式正文'));
-    expect(round.aiNarrative, isNot(contains('根据记忆条目写正文')));
+    expect(round.aiNarrative, isNot(contains('根据调研结果写正文')));
     expect(round.memorySummary, contains('第1轮'));
     expect(round.worldState, '- 地点：青云宗');
     expect(round.currentTime, '第一天 午时');
