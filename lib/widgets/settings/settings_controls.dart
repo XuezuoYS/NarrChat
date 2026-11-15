@@ -24,6 +24,9 @@ class SettingsRow extends StatelessWidget {
   /// 行标题（单行省略）。
   final String title;
 
+  /// 是否在行标题末尾追加黄色「（实验性）」标注。
+  final bool experimental;
+
   /// 行副标题（最多 3 行省略）。
   final String? subtitle;
 
@@ -50,6 +53,7 @@ class SettingsRow extends StatelessWidget {
     this.icon,
     this.leading,
     required this.title,
+    this.experimental = false,
     this.subtitle,
     this.subtitleWidget,
     this.trailing,
@@ -86,8 +90,9 @@ class SettingsRow extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
+                  SettingsTitleText(
+                    title: title,
+                    experimental: experimental,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -187,6 +192,9 @@ class SettingsSwitchRow extends StatelessWidget {
   /// 行标题。
   final String title;
 
+  /// 是否在行标题末尾追加黄色「（实验性）」标注。
+  final bool experimental;
+
   /// 行副标题（可选）。
   final String? subtitle;
 
@@ -206,6 +214,7 @@ class SettingsSwitchRow extends StatelessWidget {
     super.key,
     this.icon,
     required this.title,
+    this.experimental = false,
     this.subtitle,
     required this.value,
     required this.onChanged,
@@ -220,6 +229,7 @@ class SettingsSwitchRow extends StatelessWidget {
       child: SettingsRow(
         icon: icon,
         title: title,
+        experimental: experimental,
         subtitle: subtitle,
         enabled: enabled,
         onTap: enabled ? () => onChanged!(!value) : null,
@@ -342,6 +352,9 @@ class SettingsSelectRow<T> extends StatefulWidget {
   /// 行标题。
   final String title;
 
+  /// 是否在行标题末尾追加黄色「（实验性）」标注。
+  final bool experimental;
+
   /// 行副标题（可选）。
   final String? subtitle;
 
@@ -375,6 +388,7 @@ class SettingsSelectRow<T> extends StatefulWidget {
     super.key,
     this.icon,
     required this.title,
+    this.experimental = false,
     this.subtitle,
     required this.value,
     required this.options,
@@ -504,8 +518,9 @@ class _SettingsSelectRowState<T> extends State<SettingsSelectRow<T>> {
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                widget.title,
+                              SettingsTitleText(
+                                title: widget.title,
+                                experimental: widget.experimental,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(

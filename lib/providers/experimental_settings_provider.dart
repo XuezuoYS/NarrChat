@@ -18,7 +18,7 @@ import '../services/local_config_service.dart';
 /// 一律回落「关」（见 [load]）。
 ///
 /// 该档位属于实验性功能，可能产生错误或不被服务商支持（见「设置 → 通用设置 →
-/// 实验性设置」中的声明）。档位语义的统一映射见 `AgentModeProfile`。
+/// 会话工作模式（实验性）」中的声明）。档位语义的统一映射见 `AgentModeProfile`。
 ///
 /// 另含 **Agent 模式下的思考回传策略**（[reduceReasoningReplay]，默认关 =
 /// 逐字节回传原文；开启则精简，规则见 `services/agent/reasoning_replay.dart`）。

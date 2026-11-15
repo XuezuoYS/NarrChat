@@ -9,6 +9,25 @@ import 'package:narrchat/services/system_fonts_service.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/general_settings_form.dart';
 
+/// 取出标题富文本里「（实验性）」后缀的颜色（断言「全局警告黄」用）。
+///
+/// 标题是 `Text.rich`（本体 + 后缀同段富文本），`find.text` 需要
+/// `findRichText: true` 才能命中；这里顺带把后缀 span 的颜色捞出来。
+Color? experimentalTagColor(WidgetTester tester, String title) {
+  final rich = tester.widget<RichText>(find.text(title, findRichText: true));
+  Color? color;
+  void visit(InlineSpan span) {
+    if (span is! TextSpan) return;
+    if (span.text == '（实验性）') color = span.style?.color;
+    for (final child in span.children ?? const <InlineSpan>[]) {
+      visit(child);
+    }
+  }
+
+  visit(rich.text);
+  return color;
+}
+
 void main() {
   Widget buildApp(double width, {ExperimentalSettingsProvider? experimental}) {
     return ChangeNotifierProvider.value(
@@ -47,18 +66,27 @@ void main() {
     expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
   });
 
-  testWidgets('三个子模块分区齐全：UI 设置 / 其它设置 / 实验性设置', (tester) async {
+  testWidgets('三个子模块分区齐全：UI 设置 / 其它设置 / 会话工作模式（实验性）', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     await tester.pumpWidget(buildApp(1000));
     await tester.pump();
 
-    // 面板标题与三个子模块标题。
+    // 面板标题与三个子模块标题（实验性分区已改名，后缀为黄色标注）。
     expect(find.text('通用设置'), findsOneWidget);
     expect(find.text('UI 设置'), findsOneWidget);
     expect(find.text('其它设置'), findsOneWidget);
-    expect(find.text('实验性设置'), findsOneWidget);
+    expect(
+      find.text('会话工作模式（实验性）', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.text('实验性设置'), findsNothing);
+    expect(
+      experimentalTagColor(tester, '会话工作模式（实验性）'),
+      NarrChatColors.light.warning,
+      reason: '「（实验性）」应使用全局警告黄，而不是标题正文色',
+    );
 
     // UI 设置内容：主题设置可见。
     expect(find.text('主题'), findsOneWidget);
@@ -80,7 +108,15 @@ void main() {
       find.byKey(const ValueKey('experimental_agent_mode_card')),
       findsOneWidget,
     );
-    expect(find.text('Agent 模式'), findsOneWidget);
+    // 选项标题也带黄色「（实验性）」标注。
+    expect(
+      find.text('Agent 模式（实验性）', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      experimentalTagColor(tester, 'Agent 模式（实验性）'),
+      NarrChatColors.light.warning,
+    );
     expect(
       tester
           .widget<Text>(
@@ -118,7 +154,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 点击卡片**左侧的标题文字**（不靠近右侧箭头）也能展开菜单。
-    await tester.tap(find.text('Agent 模式'));
+    await tester.tap(find.text('Agent 模式（实验性）', findRichText: true));
     await tester.pumpAndSettle();
     // 菜单只剩两个档位（无 / Agent Lv.1），且每个选项自带一行说明。
     expect(
@@ -172,7 +208,14 @@ void main() {
     await tester.pumpAndSettle();
 
     // 说明文案点明用途、默认状态与代价（改写思考原文）。
-    expect(find.text('精简思考回传'), findsOneWidget);
+    expect(
+      find.text('精简思考回传（实验性）', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      experimentalTagColor(tester, '精简思考回传（实验性）'),
+      NarrChatColors.light.warning,
+    );
     expect(find.textContaining('只保留首段与末段'), findsOneWidget);
     expect(find.textContaining('默认关'), findsOneWidget);
     expect(
@@ -205,7 +248,9 @@ void main() {
 
     final toggle =
         find.byKey(const ValueKey('experimental_reduce_reasoning_switch'));
-    await tester.ensureVisible(find.text('精简思考回传'));
+    await tester.ensureVisible(
+      find.text('精简思考回传（实验性）', findRichText: true),
+    );
     await tester.pumpAndSettle();
     expect(provider.reduceReasoningReplay, isFalse);
 

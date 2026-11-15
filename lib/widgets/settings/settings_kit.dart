@@ -3,6 +3,7 @@
 /// 页面只需 `import '../widgets/settings/settings_kit.dart';` 一个文件：
 /// - 版式：`SettingsPageHeader / SettingsSection / SettingsCard /
 ///   SettingsCardHeader / SettingsExpandableCard`；
+/// - 标题：`SettingsTitleText`（标题本体 + 可选的黄色「（实验性）」后缀）；
 /// - 控件：`SettingsRow / SettingsLinkRow / SettingsSwitchRow /
 ///   SettingsCheckboxRow / SettingsSelectRow / SettingsSegmented /
 ///   SettingsSegmentedRow / SettingsToggleChip`；

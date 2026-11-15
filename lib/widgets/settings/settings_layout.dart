@@ -9,6 +9,7 @@ import '../../theme/app_theme.dart';
 /// 页面不要再手写其它圆角或曲线。
 ///
 /// 布局约定：
+/// - [SettingsTitleText]：设置项标题（本体 + 可选的黄色「（实验性）」后缀）；
 /// - [SettingsPageHeader]：每个面板顶部（标题 + 一行描述）；
 /// - [SettingsSection]：分区头在卡片外（大多数设置分区）；
 /// - [SettingsCardHeader]：分区头在卡片内（云同步 / 字体设置等特色卡片）；
@@ -20,6 +21,61 @@ abstract final class SettingsMotion {
   /// 按系统动画偏好返回实际时长。
   static Duration of(BuildContext context, Duration base) =>
       MediaQuery.disableAnimationsOf(context) ? Duration.zero : base;
+}
+
+/// 设置项标题文本：标题本体 +（可选）黄色「（实验性）」后缀。
+///
+/// 后缀与标题是**同一段富文本**（语义上是一个标题，超长时一起省略），
+/// 只把「（实验性）」染成主题警告色（[NarrChatColors.warning]，即全局给
+/// BETA / 试验版标注用的黄色）；字号 / 字重 / 行高全部跟随 [style]。
+class SettingsTitleText extends StatelessWidget {
+  /// 标题本体文字。
+  final String title;
+
+  /// 标题基础样式（后缀只在它之上覆盖颜色）。
+  final TextStyle style;
+
+  /// 是否在标题末尾追加黄色「（实验性）」后缀。
+  final bool experimental;
+
+  /// 最大行数（null = 不限）。
+  final int? maxLines;
+
+  /// 溢出处理（配合 [maxLines] 使用）。
+  final TextOverflow? overflow;
+
+  /// 「实验性」后缀文案（全局统一，含全角括号）。
+  static const String experimentalSuffix = '（实验性）';
+
+  const SettingsTitleText({
+    super.key,
+    required this.title,
+    required this.style,
+    this.experimental = false,
+    this.maxLines,
+    this.overflow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!experimental) {
+      return Text(title, style: style, maxLines: maxLines, overflow: overflow);
+    }
+    return Text.rich(
+      TextSpan(
+        text: title,
+        children: [
+          TextSpan(
+            text: experimentalSuffix,
+            style: TextStyle(color: context.narrColors.warning),
+          ),
+        ],
+      ),
+      style: style,
+      maxLines: maxLines,
+      overflow: overflow,
+    );
+  }
 }
 
 /// 设置面板页头：标题（18 / w700）+ 可选描述（12 / 次要色）。
@@ -144,6 +200,9 @@ class SettingsCardHeader extends StatelessWidget {
   /// 分区标题。
   final String title;
 
+  /// 是否在标题末尾追加黄色「（实验性）」标注。
+  final bool experimental;
+
   /// 分区副标题（可选）。
   final String? subtitle;
 
@@ -154,6 +213,7 @@ class SettingsCardHeader extends StatelessWidget {
     super.key,
     this.icon,
     required this.title,
+    this.experimental = false,
     this.subtitle,
     this.trailing,
   });
@@ -181,8 +241,9 @@ class SettingsCardHeader extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
+              SettingsTitleText(
+                title: title,
+                experimental: experimental,
                 style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
@@ -220,6 +281,9 @@ class SettingsSection extends StatelessWidget {
   /// 分区标题。
   final String title;
 
+  /// 是否在分区标题末尾追加黄色「（实验性）」标注。
+  final bool experimental;
+
   /// 分区副标题（可选）。
   final String? subtitle;
 
@@ -236,6 +300,7 @@ class SettingsSection extends StatelessWidget {
     super.key,
     this.icon,
     required this.title,
+    this.experimental = false,
     this.subtitle,
     this.trailing,
     required this.child,
@@ -251,6 +316,7 @@ class SettingsSection extends StatelessWidget {
         SettingsCardHeader(
           icon: icon,
           title: title,
+          experimental: experimental,
           subtitle: subtitle,
           trailing: trailing,
         ),

@@ -60,7 +60,7 @@ class AiPlatforms {
   ///
   /// 默认使用「OpenAI Response API 兼容」协议——协议只决定请求体 / 线路
   /// 格式；AGENT 模式（两阶段生成 + 自定义工具）由「设置 → 通用设置 →
-  /// 实验性功能」的独立开关控制（默认关闭），与协议选择正交。
+  /// 会话工作模式」中的独立档位控制（默认关闭），与协议选择正交。
   static AiPlatform buildDeepseekPlatform() {
     return AiPlatform(
       id: deepseekPlatformId,

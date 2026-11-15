@@ -3940,7 +3940,7 @@ class _ChatModeDropdown extends StatelessWidget {
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 320),
                     child: Text(
-                      '实验性功能：设置 → 通用设置 → 实验性功能 中选择档位；'
+                      '实验性功能：设置 → 通用设置 → 会话工作模式（实验性）里选择档位；'
                       '${_agentScopeNote(agentLevel)}；'
                       '思考 / 流式 / 搜索在本模式下强制开启（模型配置页关闭能力'
                       '即可禁用对应功能），兼容性不保证',

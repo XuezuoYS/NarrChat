@@ -13,7 +13,8 @@ import 'ui_settings_form.dart';
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
 /// - 其它设置：应用行为类杂项（「检查更新」开关 + 预发布版本开关 +
 ///   「立即检查更新」入口）；
-/// - 实验性设置：实验性功能档位（如「Agent 模式」两档：无 / Agent Lv.1）。
+/// - 会话工作模式（实验性）：实验性功能档位（如「Agent 模式」两档：
+///   无 / Agent Lv.1）；分区标题与两个选项标题都带黄色「（实验性）」标注。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
 class GeneralSettingsForm extends StatelessWidget {
@@ -44,7 +45,9 @@ class GeneralSettingsForm extends StatelessWidget {
         ),
         SettingsSection(
           icon: Icons.science_outlined,
-          title: '实验性设置',
+          // 实验性功能独立分区：分区标题与卡片内两个选项标题都带黄色标注。
+          title: '会话工作模式',
+          experimental: true,
           child: _ExperimentalSettingsSection(),
         ),
       ],
@@ -52,7 +55,8 @@ class GeneralSettingsForm extends StatelessWidget {
   }
 }
 
-/// 「实验性设置」子模块内容：Agent 模式档位（默认「无 / 使用传统 Chat 方式」）。
+/// 「会话工作模式（实验性）」子模块内容：Agent 模式档位（默认「无 / 使用传统
+/// Chat 方式」）+ Agent 模式专用的「精简思考回传」开关。
 ///
 /// 档位与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
@@ -117,6 +121,7 @@ class _ExperimentalSettingsSectionState
     return SettingsSelectRow<AgentModeLevel>(
       icon: Icons.psychology_outlined,
       title: 'Agent 模式',
+      experimental: true,
       subtitle: _agentModeDescription,
       value: experimental.agentModeLevel,
       // 行尾展示短标签（关 / Lv.1），菜单里展示语义化标题与说明。
@@ -141,6 +146,7 @@ class _ExperimentalSettingsSectionState
     return SettingsSwitchRow(
       icon: Icons.compress_outlined,
       title: '精简思考回传',
+      experimental: true,
       subtitle: 'Agent 模式专用（默认关）：开启后回传思考只保留首段与末段'
           '（单段则原样），降低每帧重发历史的输入 token。'
           '⚠ 会改写思考原文——自定义网关要求思考完整时请保持关闭。',
