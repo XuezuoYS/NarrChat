@@ -302,6 +302,7 @@ class AgentRoundRunner {
     this.maxStateFrames = kAgentMaxStateFrames,
     this.reduceReasoningReplay = false,
     this.onStageStarted,
+    this.onTurnStarted,
     this.onActivity,
     this.onToolStarted,
     this.onToolFinished,
@@ -348,6 +349,10 @@ class AgentRoundRunner {
 
   /// 某个步开始时回调（UI 据此显示「状态维护中」等状态）。
   final void Function(AgentStage stage)? onStageStarted;
+
+  /// 某个**回合**真正开始调用前回调：`stage` + 该步内第几回合（1-based）。
+  /// 供 RAW 记录「轮 → 步 → 回合」；重试 / 协议降级不会重复回调。
+  final void Function(AgentStage stage, int turnIndex)? onTurnStarted;
 
   final void Function(AgentActivity activity)? onActivity;
   final void Function(AgentToolOutcome outcome)? onToolStarted;
@@ -418,6 +423,8 @@ class AgentRoundRunner {
     _maintenanceError = null;
     _frameReasoning = const [];
     _sectionsProvided.clear();
+    _firstStepTurns = 0;
+    _maintenanceTurns = 0;
   }
 
   /// 运行一轮 AGENT 生成。
@@ -713,6 +720,11 @@ class AgentRoundRunner {
   /// 非正文阶段对这些栏目的重复读取会被拒绝（[_refusedRepeatRead]）。
   final Set<AgentStateSection> _sectionsProvided = {};
 
+  /// 第一步 / 第二步各自的回合序号（RAW 的「第 N 回合」）。
+  /// 第一步的调研与正文共用一个序号；重试不重复计数。
+  int _firstStepTurns = 0;
+  int _maintenanceTurns = 0;
+
   /// 维护回合指令（简短中文概述；工具名按当前档位的栏目清单生成）。
   ///
   /// 当前档位只有历史这件事（世界 / 角色由正文携带、正文已产出，本阶段不得
@@ -743,6 +755,12 @@ class AgentRoundRunner {
     void Function(String requestBody)? onRequestBody,
     bool Function()? isCancelled,
   }) async {
+    // 一个逻辑回合只回调一次：协议兼容降级在同一回合内重发，不应多算回合。
+    // 序号按「步」连续编号：调研与正文共用第一步的序号，维护单独从 1 开始。
+    final turnIndex = stage == AgentStage.state
+        ? ++_maintenanceTurns
+        : ++_firstStepTurns;
+    onTurnStarted?.call(stage, turnIndex);
     for (var attempt = 0;; attempt++) {
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
       onActivity?.call(

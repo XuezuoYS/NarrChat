@@ -1170,6 +1170,53 @@ void main() {
       expect(find.text('图 1 · png · 1 B'), findsOneWidget);
     });
 
+    testWidgets('Agent RAW：按轮 → 步 → 回合分组展示', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: '{"input":[]}',
+          roundIndex: 2,
+          step: RawAgentStep.first,
+          turnKind: RawTurnKind.research,
+          turnIndex: 1,
+        ),
+        RawExchange(
+          requestBody: '{"input":[{"role":"user","content":"正文"}]}',
+          roundIndex: 2,
+          step: RawAgentStep.first,
+          turnKind: RawTurnKind.story,
+          turnIndex: 2,
+        ),
+        RawExchange(
+          requestBody: '{"input":[{"role":"user","content":"维护"}]}',
+          roundIndex: 2,
+          step: RawAgentStep.maintenance,
+          turnKind: RawTurnKind.maintenance,
+          turnIndex: 1,
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: RawDialog(exchanges: exchanges)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('第 2 轮'), findsOneWidget);
+      expect(find.text('第一步 · 调研与正文'), findsOneWidget);
+      // 第一步内连续编号：调研=第 1 回合、正文=第 2 回合；维护重新从 1 开始。
+      expect(find.text('第 1 回合'), findsNWidgets(2));
+      expect(find.text('第 2 回合'), findsOneWidget);
+      expect(find.text('第二步 · 状态维护'), findsOneWidget);
+      // 不再显示调研 / 正文 / 维护的回合描述。
+      expect(find.textContaining('调研回合'), findsNothing);
+      expect(find.textContaining('正文回合'), findsNothing);
+      expect(find.textContaining('维护回合'), findsNothing);
+      // 三步 / 三回合仍各自有请求体块。
+      expect(find.text('【请求体 1】'), findsOneWidget);
+      expect(find.text('【请求体 2】'), findsOneWidget);
+      expect(find.text('【请求体 3】'), findsOneWidget);
+    });
+
     testWidgets('预览请求体含后续可用帧：默认折叠，展开后只显示增量字段', (tester) async {
       const frames = [
         PlannedFrame(

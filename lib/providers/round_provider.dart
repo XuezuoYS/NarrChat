@@ -111,6 +111,12 @@ class _BookGenState {
   /// 不写库，下一轮开始 / 关闭 APP 即消失。
   String? maintenanceCompletedUuid;
 
+  /// RAW 轨迹：当前 Agent 回合的轮号 / 步 / 回合类型与序号。
+  /// Chat 或非 Agent 请求保持 null / none。
+  int? rawRoundIndex;
+  AgentStage? rawStage;
+  int? rawTurnIndex;
+
   /// 本书**代级提示**的变更计数（对话列表据此失效缓存的条目高度）。
   ///
   /// R3 起提示直接挂在代上（`Round.message` / `messageStatus`），不再有本地副本，
@@ -1452,6 +1458,9 @@ class RoundProvider extends ChangeNotifier {
     gen.agentWarnings.clear();
     gen.agentMaintenanceActive = false;
     gen.agentMaintenanceContent = '';
+    gen.rawRoundIndex = null;
+    gen.rawStage = null;
+    gen.rawTurnIndex = null;
     // 上一轮的灰色「维护已完成」只在内存里活到下一轮开始。
     gen.maintenanceCompletedUuid = null;
     gen.newReasoningBlockPending = true;
@@ -1730,6 +1739,10 @@ class RoundProvider extends ChangeNotifier {
   }) async {
     final exchange = RawExchange(
       requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
+      roundIndex: gen.rawRoundIndex,
+      step: _rawStepOf(gen.rawStage),
+      turnKind: _rawTurnKindOf(gen.rawStage),
+      turnIndex: gen.rawTurnIndex,
     );
     gen.rawExchanges.add(exchange);
     final AiCallResult result;
@@ -2139,6 +2152,14 @@ class RoundProvider extends ChangeNotifier {
       onStageStarted: gen == null
           ? null
           : (stage) => _handleAgentStageStarted(stage, gen),
+      onTurnStarted: gen == null
+          ? null
+          : (stage, turn) => _handleAgentTurnStarted(
+                stage,
+                turn,
+                req.targetRoundIndex,
+                gen,
+              ),
       onActivity: gen == null
           ? null
           : (a) {
@@ -2331,6 +2352,10 @@ class RoundProvider extends ChangeNotifier {
   }) async {
     final exchange = RawExchange(
       requestBody: const JsonEncoder.withIndent('  ').convert(requestBody),
+      roundIndex: gen.rawRoundIndex,
+      step: _rawStepOf(gen.rawStage),
+      turnKind: _rawTurnKindOf(gen.rawStage),
+      turnIndex: gen.rawTurnIndex,
     );
     gen.rawExchanges.add(exchange);
     final AiCallResult result;
@@ -2367,6 +2392,21 @@ class RoundProvider extends ChangeNotifier {
       ..content = result.content;
     return result;
   }
+
+  /// Agent 回合阶段 → RAW 的「步」。
+  static RawAgentStep _rawStepOf(AgentStage? stage) => switch (stage) {
+        null => RawAgentStep.none,
+        AgentStage.prepare || AgentStage.story => RawAgentStep.first,
+        AgentStage.state => RawAgentStep.maintenance,
+      };
+
+  /// Agent 回合阶段 → RAW 的「回合类型」。
+  static RawTurnKind _rawTurnKindOf(AgentStage? stage) => switch (stage) {
+        null => RawTurnKind.none,
+        AgentStage.prepare => RawTurnKind.research,
+        AgentStage.story => RawTurnKind.story,
+        AgentStage.state => RawTurnKind.maintenance,
+      };
 
   /// 工具名 → 事件类型（同一工具调用只产生一个事件框；类型决定图标/标题）。
   static AgentEventType _toolEventType(String name) => switch (name) {
@@ -2561,6 +2601,19 @@ class RoundProvider extends ChangeNotifier {
       gen.agentMaintenanceActive = false;
       notifyListeners();
     }
+  }
+
+  /// RAW 轨迹：记录当前 Agent 回合的轮号 / 步 / 回合类型与序号。
+  /// 捕获 RawExchange 时直接读取，避免 UI 再从请求体里猜。
+  void _handleAgentTurnStarted(
+    AgentStage stage,
+    int turnIndex,
+    int roundIndex,
+    _BookGenState gen,
+  ) {
+    gen.rawRoundIndex = roundIndex;
+    gen.rawStage = stage;
+    gen.rawTurnIndex = turnIndex;
   }
 
   /// 将最近的未完成思考事件标记为完成（思考结束 / 开始搜索 / 进入正文时）。

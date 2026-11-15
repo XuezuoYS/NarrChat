@@ -377,6 +377,9 @@ const double _kScrollTopPadding = 40;
 ///   不渲染【AI返回】区（标题相应改为「预览请求体」）；
 /// - [subsequentFrames] 非空时，在请求体之后追加「后续可用帧」区（仅预览模式）：
 ///   每帧一个可折叠块，**只列出相对上一帧的增量字段**。
+/// - Agent 交换带轨迹元数据时，按「轮 → 步 → 回合」插入分组头：
+///   第 N 轮 / 第一步·调研与正文 / 第二步·状态维护，以及该步内的回合序号；
+///   Chat 交换（无元数据）保持原有平铺时间线。
 class RawDialog extends StatefulWidget {
   final List<RawExchange> exchanges;
 
@@ -964,9 +967,51 @@ class _RawDialogState extends State<RawDialog> {
     }
     final children = <Widget>[];
     var blockIndex = 0;
+    int? lastRound;
+    RawAgentStep lastStep = RawAgentStep.none;
     for (var i = 0; i < widget.exchanges.length; i++) {
+      final ex = widget.exchanges[i];
       if (i > 0) children.add(const SizedBox(height: 18));
-      final built = _buildExchange(context, widget.exchanges[i], i, blockIndex);
+      if (ex.isAgent) {
+        // 轮 → 步 → 回合：只在轮 / 步切换时插入分组头；每个回合都标序号。
+        if (ex.roundIndex != lastRound) {
+          children.add(
+            _traceHeader(
+              context,
+              ex.roundIndex == null ? '本轮' : '第 ${ex.roundIndex} 轮',
+              primary: true,
+              topPadding: i == 0 ? 0 : 4,
+            ),
+          );
+          lastRound = ex.roundIndex;
+          lastStep = RawAgentStep.none;
+        }
+        if (ex.step != lastStep) {
+          children.add(
+            _traceHeader(
+              context,
+              ex.step.label,
+              primary: false,
+              topPadding: 2,
+            ),
+          );
+          lastStep = ex.step;
+        }
+        if (ex.turnIndex != null) {
+          children.add(
+            _traceHeader(
+              context,
+              '第 ${ex.turnIndex} 回合',
+              primary: false,
+              topPadding: 4,
+            ),
+          );
+        }
+      } else {
+        lastRound = null;
+        lastStep = RawAgentStep.none;
+      }
+      final built = _buildExchange(context, ex, i, blockIndex);
       children.add(built.widget);
       blockIndex = built.nextBlockIndex;
     }
@@ -975,6 +1020,27 @@ class _RawDialogState extends State<RawDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: children,
+    );
+  }
+
+  /// RAW 轨迹头：轮 / 步 / 回合共用同一种轻量排版。
+  Widget _traceHeader(
+    BuildContext context,
+    String text, {
+    required bool primary,
+    required double topPadding,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(top: topPadding, bottom: 4),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: primary ? 14 : 12.5,
+          fontWeight: primary ? FontWeight.w700 : FontWeight.w600,
+          color: primary ? scheme.primary : scheme.onSurfaceVariant,
+        ),
+      ),
     );
   }
 

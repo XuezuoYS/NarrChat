@@ -9,6 +9,7 @@ import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/ai_platform.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/raw_exchange.dart';
 import 'package:narrchat/models/role_category.dart';
 import 'package:narrchat/models/round_send_intent.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
@@ -228,6 +229,18 @@ void main() {
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
     expect(provider.agentWarnings, isEmpty);
     expect(provider.rawExchangesFor(round.uuid), hasLength(3));
+    // RAW 轨迹元数据：轮 → 步 → 回合。
+    final raw = provider.rawExchangesFor(round.uuid)!;
+    expect(raw.map((e) => e.roundIndex).toSet(), {1});
+    expect(
+      raw.map((e) => e.step).toList(),
+      [RawAgentStep.first, RawAgentStep.first, RawAgentStep.maintenance],
+    );
+    expect(
+      raw.map((e) => e.turnKind).toList(),
+      [RawTurnKind.research, RawTurnKind.story, RawTurnKind.maintenance],
+    );
+    expect(raw.map((e) => e.turnIndex).toList(), [1, 2, 1]);
   });
 
   test('AGENT Lv.1 所有步结束后才入库：维护挂起时库里没有本轮，完成后只写一条总 token', () async {
