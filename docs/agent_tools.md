@@ -39,15 +39,15 @@
 
 ### 工具描述文案规范（全部工具统一）
 
-- **形态（v2 口径）**：`description` = **简明中文**——撤销中英双语，
-  英文只保留**工具名**（`narrchat_*`）、**状态块标签**
+- **形态（v3 口径）**：`description` = **准确的书面语**——表述精确、句式完整、术语统一；
+  不使用语气词与撒娇口吻；英文只保留**工具名**（`narrchat_*`）、**状态块标签**
   （`<worldState>` / `<characterState>` / `<memorySummary>`）、`op` 取值与参数名；
   不出现成句英文，也不出现 `【中】` / `[EN]` 一类语言标记；
 - **同一口径覆盖所有模型面向文本**：除各工具的 `description` 外（六个状态工具
   的文案都保留，无论当前是否注册），还包括
   状态快照块头（`AgentStateWorkingCopy._renderSections`，单行中文声明）、缺口指令
   `StateGap.modelText`、各类「本次未执行」拒绝说明（`AgentRoundRunner`）——
-  一律中文、无语言标记；
+  一律使用准确的书面语、无语言标记；
 - **单一出处**：联网工具的**全部调用指导只在 `description` 里**
   （`narrchat_webSearch` 点明「调用后必须紧接着用 `narrchat_webFetchPage`
   打开最相关的 1~3 个结果页面读正文」，打开页工具点明「拒绝访问时换用其它

@@ -122,7 +122,8 @@ const PromptInterface promptInterface = PromptV3();
 - **无内容即删块**：可选项为空就连标题一起删，不写「（无）」「未设置」；
 - **多行内容保留换行**（Mod / 书籍设定 / 世界书 / 文笔参考 / 类别格式 / 前后置词），
   只有单行字段（书籍名 / 分类 / 上轮时间 / 角色层级）才折叠换行；
-- 简明中文、口语化；英文只留工具名、状态块标签与 `[State-maintenance turn]`；
+- **准确的书面语**：术语统一、句式完整、仅在必要区域使用语气词与撒娇口吻；英文只留工具名、状态块标签与
+  `[State-maintenance turn]`；
 - 不举例：只用 `{}` 占位符表达形状；
 - 不约束思考链格式，但保留功能性要求（调研回合读一次记忆、调研结束**立刻**写正文、记忆只在
   维护回合做、按步执行）。
@@ -219,7 +220,7 @@ const PromptInterface promptInterface = PromptV3();
 |---|---|
 | `test/prompt_interface_test.dart` | 绑定实现；模块顺序与空行；标题层级（must / must- 无标题、结构标题不出现 `##`）；空块即删；多行保留；模式契约差异；**文风口径四处落点**；Mod 注入位（不标标题）与六个注入段的落点；工具路由与替身；`user()` / `stage*()` 与 system 的衔接；请求对象 |
 | `test/prompt_v3_modules_test.dart` | 逐模块断言：`systemSections()` 的名字与顺序；`mustReverse` 是 must 全部块（段1 + Mod 段）的逆序；`toolNames` 驱动的简要工具指南（有 / 无工具、Chat / Agent 两种组合） |
-| `test/prompt_v3_context_test.dart` | 上下文拼装：user 消息成分的顺序与 `---` 分隔、每类空成分的删除、两种模式的总协议2、四份回合指令与维护回合的补充清单 |
+| `test/prompt_v3_context_test.dart` | 上下文拼装：user 消息成分的顺序与 `---` 分隔、每类空成分的删除、两种模式的本轮输出契约、四份回合指令与维护回合的补充清单 |
 | `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一 |
 | `test/agent_tool_descriptions_test.dart` | 各工具的中文文案形态、联网指导落点、状态工具互指 |
 | `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态、占位、vision 图片） |
