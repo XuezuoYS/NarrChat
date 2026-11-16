@@ -33,6 +33,7 @@ class ModelSelector extends StatefulWidget {
     required this.onSelect,
     this.thinkingEnabled = true,
     this.caption,
+    this.menuHeader,
   });
 
   /// 全部平台（含模型与能力表）。
@@ -55,6 +56,12 @@ class ModelSelector extends StatefulWidget {
 
   /// 第二行小字（通常为「思考强度 · 实时字数」），随触发区一起点击。
   final Widget? caption;
+
+  /// 一级模型列表顶部的自定义提示（仅展开模型列表时显示，强度面板不显示）。
+  ///
+  /// Chat 页用它显示当前子模型的模型名 / 思考强度；「一句话创建新书」等复用
+  /// 本组件的场景不传，保持原有菜单不变。
+  final Widget? menuHeader;
 
   @override
   State<ModelSelector> createState() => _ModelSelectorState();
@@ -181,9 +188,14 @@ class _ModelSelectorState extends State<ModelSelector> {
     );
   }
 
-  /// 一级菜单：平台分组标题 + 每个模型一行。
+  /// 一级菜单：可选顶部提示 + 平台分组标题 + 每个模型一行。
   List<Widget> _modelMenuItems(Color gray, ColorScheme scheme) {
     final items = <Widget>[];
+    if (widget.menuHeader != null) {
+      items
+        ..add(widget.menuHeader!)
+        ..add(const Divider(height: 8));
+    }
     for (final platform in widget.platforms) {
       items.add(
         Padding(

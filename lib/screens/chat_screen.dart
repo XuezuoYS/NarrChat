@@ -36,6 +36,7 @@ import '../providers/round_provider.dart';
 import '../providers/sidebar_provider.dart';
 import '../providers/ui_settings_provider.dart';
 import '../providers/world_book_provider.dart';
+import '../services/agent/agent_sub_model.dart';
 import '../services/app_repositories.dart';
 import '../services/branch_rules.dart';
 import '../services/clipboard_paste_service.dart';
@@ -3501,9 +3502,21 @@ class _ChatScreenState extends State<ChatScreen>
     bool isSending,
   ) {
     final aiSettings = context.watch<AiSettingsProvider>();
+    final experimental = context.watch<ExperimentalSettingsProvider>();
     // Agent 档位驱动左下角徽标与菜单（关 = 传统 Chat 摘要）。
-    final agentLevel =
-        context.watch<ExperimentalSettingsProvider>().agentModeLevel;
+    final agentLevel = experimental.agentModeLevel;
+    // 模型菜单顶部的子模型提示：Chat 模式（Agent 关）用不到，不传。
+    final subagentHint = agentLevel.isOn
+        ? resolveChatSubagentHint(
+            platforms: aiSettings.platforms,
+            mainPlatformId: aiSettings.selectedPlatformId,
+            mainModelId: aiSettings.model,
+            mainReasoningEffort: aiSettings.reasoningEffort,
+            configuredPlatformId: experimental.subagentPlatformId,
+            configuredModelId: experimental.subagentModelId,
+            configuredReasoningEffort: experimental.subagentReasoningEffort,
+          )
+        : null;
     // 模型选择器第二行的思考强度文案：
     // - 模型不支持思考 ⇒ 【无思考】；
     // - 支持思考但本轮关闭（且 Agent 未强制开启）⇒ 【思考off】；
@@ -3690,6 +3703,11 @@ class _ChatScreenState extends State<ChatScreen>
                                 modelId,
                                 reasoningEffort: reasoningEffort,
                               ),
+                          // Agent 模式下在模型菜单顶部提示当前子模型；Chat 模式
+                          // 用不到子模型，不显示这一行。
+                          menuHeader: subagentHint == null
+                              ? null
+                              : _SubagentMenuHint(summary: subagentHint.summary),
                           // 思考强度 + 实时字数：常驻显示（空输入为 0 字）。
                           // 字数内部监听控制器，仅本子树随键入重建。
                           caption: ModelStatusCaption(
@@ -5405,5 +5423,57 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
 
   Widget _retryLine(BuildContext context, (int, int) retry) {
     return _RetryStatusText(attempt: retry.$1, total: retry.$2);
+  }
+}
+
+/// Chat 页模型菜单顶部的「当前子模型」提示行。
+///
+/// 只在 Agent 模式下由 [ModelSelector.menuHeader] 插入一级模型列表顶部；
+/// 内容由 [resolveChatSubagentHint] 计算（模型名 + 思考强度；与当前模型相同
+/// 时明确写出「与当前模型相同」）。纯展示，不拦截菜单的点击与关闭行为。
+class _SubagentMenuHint extends StatelessWidget {
+  const _SubagentMenuHint({required this.summary});
+
+  final String summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('chat_subagent_model_hint'),
+      margin: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.alt_route, size: 14, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            '子模型',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              summary,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.25,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

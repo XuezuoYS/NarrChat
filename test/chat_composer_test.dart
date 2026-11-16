@@ -489,6 +489,108 @@ void main() {
     );
   });
 
+  testWidgets('模型菜单：Chat 模式（Agent 关）不显示子模型提示', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(tester, settings: settings);
+
+    await tester.tap(find.text('DeepSeek V4.1 Flash').first);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('chat_subagent_model_hint')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('模型菜单：Agent 模式显示子模型提示；跟随主模型显示与当前模型相同', (
+    tester,
+  ) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(
+      tester,
+      settings: settings,
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    await tester.tap(find.text('DeepSeek V4.1 Flash').first);
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('chat_subagent_model_hint'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('与当前模型相同')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: hint,
+        matching: find.textContaining('DeepSeek V4.1 Flash · high'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('模型菜单：子模型另选模型时显示模型名与记住的思考强度', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(
+      tester,
+      settings: settings,
+      experimentalSettings: AgentModeSettings(
+        subagentPlatformId: AiPlatforms.defaultPlatformId,
+        subagentModelId: 'deepseek-v4-pro',
+        subagentReasoningEffort: 'low',
+      ),
+    );
+
+    await tester.tap(find.text('DeepSeek V4.1 Flash').first);
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('chat_subagent_model_hint'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(
+        of: hint,
+        matching: find.textContaining('deepseek-v4-pro · low'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('与当前模型相同')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('模型菜单：选择与当前模型相同也提示「与当前模型相同」', (tester) async {
+    final settings = AiSettingsProvider();
+    await pumpChatScreen(
+      tester,
+      settings: settings,
+      experimentalSettings: AgentModeSettings(
+        subagentPlatformId: AiPlatforms.defaultPlatformId,
+        subagentModelId: AiPlatforms.defaultModelId,
+        subagentReasoningEffort: 'max',
+      ),
+    );
+
+    await tester.tap(find.text('DeepSeek V4.1 Flash').first);
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('chat_subagent_model_hint'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('与当前模型相同')),
+      findsOneWidget,
+    );
+    // 同模型会被折叠成未启用，提示按主模型当前强度（high），不是子设置的 max。
+    expect(
+      find.descendant(
+        of: hint,
+        matching: find.textContaining('DeepSeek V4.1 Flash · high'),
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('识图模型：功能菜单出现「导入图片」', (tester) async {
     final settings = AiSettingsProvider();
     // 不 await：FakeAsync 下真实文件 I/O 的 Future 不会完成，但内存态同步生效。

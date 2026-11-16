@@ -51,6 +51,7 @@ Future<List<_Pick>> _pumpSelector(
   String selectedPlatformId = 'p1',
   String selectedModelId = 'flash',
   bool thinkingEnabled = true,
+  Widget? menuHeader,
 }) async {
   final picks = <_Pick>[];
   await tester.pumpWidget(
@@ -68,6 +69,7 @@ Future<List<_Pick>> _pumpSelector(
             onSelect: (platformId, modelId, effort) =>
                 picks.add(_Pick(platformId, modelId, effort)),
             caption: const Text('caption'),
+            menuHeader: menuHeader,
           ),
         ),
       ),
@@ -122,6 +124,33 @@ void main() {
       NarrChatTheme.primary,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('菜单顶部：menuHeader 只在模型列表显示，强度面板不显示', (tester) async {
+    await _pumpSelector(
+      tester,
+      platforms: [_platform()],
+      menuHeader: const Padding(
+        key: ValueKey('test_menu_header'),
+        padding: EdgeInsets.all(8),
+        child: Text('子模型提示'),
+      ),
+    );
+    await _openMenu(tester);
+
+    expect(find.byKey(const ValueKey('test_menu_header')), findsOneWidget);
+    expect(find.text('子模型提示'), findsOneWidget);
+
+    // 进入思考强度面板：顶部提示让位给面板标题，不在二级页面重复。
+    await tester.tap(find.text('Custom'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('test_menu_header')), findsNothing);
+    expect(find.text('选择思考强度'), findsOneWidget);
+
+    // 返回模型列表后提示恢复。
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('test_menu_header')), findsOneWidget);
   });
 
   testWidgets('无思考模型：点击直接选中并关闭菜单，effort 为 null', (tester) async {

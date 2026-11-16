@@ -61,3 +61,89 @@ AgentSubModel? resolveAgentSubModel({
   }
   return target;
 }
+
+/// Chat 页模型菜单里「当前子模型」一行的展示数据：模型名 + 思考强度。
+///
+/// 这是**展示**口径，不是生成口径：
+/// - 未配置 / 选择失效 / 恰好与当前主模型相同 → [sameAsMain] 为 true，
+///   展示主模型与主模型当前强度（生成侧也会折叠成未启用）；
+/// - 其它情况展示子模型自己的名称与强度（用户选过用选过的，没选过用默认）；
+/// - 任一侧不支持思考 → 强度显示「无思考」。
+class ChatSubagentHint {
+  const ChatSubagentHint({
+    required this.sameAsMain,
+    required this.modelLabel,
+    required this.effortLabel,
+  });
+
+  final bool sameAsMain;
+  final String modelLabel;
+  final String effortLabel;
+
+  /// 菜单内一行摘要；调用方再补「子模型」前缀。
+  String get summary => sameAsMain
+      ? '与当前模型相同（$modelLabel · $effortLabel）'
+      : '$modelLabel · $effortLabel';
+}
+
+/// 解析 Chat 页菜单里的子模型提示。
+///
+/// [mainReasoningEffort] 传 Chat 页当前记住的主模型强度（通常
+/// `AiSettingsProvider.reasoningEffort`）。
+ChatSubagentHint resolveChatSubagentHint({
+  required List<AiPlatform> platforms,
+  required String mainPlatformId,
+  required String mainModelId,
+  required String mainReasoningEffort,
+  required String configuredPlatformId,
+  required String configuredModelId,
+  required String configuredReasoningEffort,
+}) {
+  final mainPlatform = _platformById(platforms, mainPlatformId);
+  final mainModel =
+      mainPlatform?.modelById(mainModelId) ?? mainPlatform?.defaultModel;
+  final mainLabel = mainModel?.displayLabel ?? mainModelId;
+  final mainEffort = mainModel == null || !mainModel.supportsThinking
+      ? '无思考'
+      : (mainReasoningEffort.trim().isNotEmpty
+            ? mainReasoningEffort.trim()
+            : mainModel.effectiveReasoningEffort);
+
+  final target = findAgentSubModel(
+    platforms: platforms,
+    platformId: configuredPlatformId,
+    modelId: configuredModelId,
+  );
+  final sameAsMain =
+      target == null ||
+      (target.platform.id == mainPlatformId.trim() &&
+          target.model.id == mainModelId.trim());
+  if (sameAsMain) {
+    return ChatSubagentHint(
+      sameAsMain: true,
+      modelLabel: mainLabel,
+      effortLabel: mainEffort,
+    );
+  }
+
+  final configured = configuredReasoningEffort.trim();
+  final effort = target.model.supportsThinking
+      ? (configured.isNotEmpty
+            ? configured
+            : target.model.effectiveReasoningEffort)
+      : '无思考';
+  return ChatSubagentHint(
+    sameAsMain: false,
+    modelLabel: target.model.displayLabel,
+    effortLabel: effort,
+  );
+}
+
+AiPlatform? _platformById(List<AiPlatform> platforms, String id) {
+  final wanted = id.trim();
+  if (wanted.isEmpty) return null;
+  for (final platform in platforms) {
+    if (platform.id == wanted) return platform;
+  }
+  return null;
+}

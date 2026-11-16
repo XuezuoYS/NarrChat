@@ -14,7 +14,12 @@ void main() {
     apiType: ApiType.openAiCompatible,
     baseUrl: 'https://example.com/v1',
     models: [
-      AiModel(id: 'cheap-model', shortLabel: '便宜模型'),
+      // 不支持思考：供 Chat 提示的「无思考」用例使用。
+      AiModel(
+        id: 'cheap-model',
+        shortLabel: '便宜模型',
+        supportsThinking: false,
+      ),
       AiModel(id: 'deepseek-flash'),
     ],
   );
@@ -92,6 +97,92 @@ void main() {
       );
       expect(sameAsMain, isNotNull);
       expect(sameAsMain!.model.id, 'deepseek-flash');
+    });
+  });
+
+  group('resolveChatSubagentHint', () {
+    test('跟随主模型：提示与当前模型相同 + 主模型当前强度', () {
+      final hint = resolveChatSubagentHint(
+        platforms: platforms,
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'low',
+        configuredPlatformId: '',
+        configuredModelId: '',
+        configuredReasoningEffort: '',
+      );
+      expect(hint.sameAsMain, isTrue);
+      expect(hint.modelLabel, 'DeepSeek V4.1 Flash');
+      expect(hint.effortLabel, 'low');
+      expect(hint.summary, '与当前模型相同（DeepSeek V4.1 Flash · low）');
+    });
+
+    test('另选思考模型：显示子模型名与记住的强度；没记住用默认值', () {
+      final custom = resolveChatSubagentHint(
+        platforms: platforms,
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'high',
+        configuredPlatformId: AiPlatforms.deepseekPlatformId,
+        configuredModelId: 'deepseek-v4-pro',
+        configuredReasoningEffort: 'low',
+      );
+      expect(custom.sameAsMain, isFalse);
+      expect(custom.modelLabel, 'deepseek-v4-pro');
+      expect(custom.effortLabel, 'low');
+      expect(custom.summary, 'deepseek-v4-pro · low');
+
+      final defaulted = resolveChatSubagentHint(
+        platforms: platforms,
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'high',
+        configuredPlatformId: AiPlatforms.deepseekPlatformId,
+        configuredModelId: 'deepseek-v4-pro',
+        configuredReasoningEffort: '',
+      );
+      expect(defaulted.effortLabel, 'high', reason: 'Pro 的默认强度是 high');
+    });
+
+    test('选择与当前模型相同：明确 same，并按主模型当前强度展示', () {
+      final hint = resolveChatSubagentHint(
+        platforms: platforms,
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'low',
+        configuredPlatformId: AiPlatforms.deepseekPlatformId,
+        configuredModelId: 'deepseek-flash',
+        configuredReasoningEffort: 'max',
+      );
+      expect(hint.sameAsMain, isTrue);
+      expect(hint.modelLabel, 'DeepSeek V4.1 Flash');
+      expect(hint.effortLabel, 'low', reason: '同模型折叠，实际用主模型强度');
+    });
+
+    test('失效配置回退为与当前模型相同；无思考模型显示无思考', () {
+      final stale = resolveChatSubagentHint(
+        platforms: platforms,
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'high',
+        configuredPlatformId: 'missing',
+        configuredModelId: 'missing-model',
+        configuredReasoningEffort: 'low',
+      );
+      expect(stale.sameAsMain, isTrue);
+
+      final noThink = resolveChatSubagentHint(
+        platforms: withOther(),
+        mainPlatformId: AiPlatforms.deepseekPlatformId,
+        mainModelId: 'deepseek-flash',
+        mainReasoningEffort: 'high',
+        configuredPlatformId: otherPlatform.id,
+        configuredModelId: 'cheap-model',
+        configuredReasoningEffort: 'low',
+      );
+      expect(noThink.sameAsMain, isFalse);
+      expect(noThink.modelLabel, '便宜模型');
+      expect(noThink.effortLabel, '无思考');
     });
   });
 
