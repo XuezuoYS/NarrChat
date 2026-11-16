@@ -3,6 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:narrchat/models/agent_mode_level.dart';
+import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
@@ -319,7 +321,7 @@ void main() {
     );
     expect(experimental.hasSubagentModel, isFalse);
 
-    // 打开选择器 → 选第二个模型（DeepSeek V4 Pro）。
+    // 打开选择器 → 选第二个模型（DeepSeek V4 Pro，支持思考）→ 进入强度面板。
     await tester.tap(row);
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('subagent_model_dialog')), findsOneWidget);
@@ -329,25 +331,55 @@ void main() {
     expect(option, findsOneWidget);
     await tester.tap(option);
     await tester.pumpAndSettle();
+    // 和 Chat 页一致：点支持思考的模型不会立刻关闭，而是进入二级强度面板。
+    expect(
+      find.byKey(const ValueKey('subagent_model_strength_back')),
+      findsOneWidget,
+    );
+    expect(find.text('选择思考强度'), findsOneWidget);
+    // 返回不改变原配置。
+    await tester.tap(
+      find.byKey(const ValueKey('subagent_model_strength_back')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('subagent_model_follow_main')),
+      findsOneWidget,
+    );
+    expect(experimental.hasSubagentModel, isFalse);
+
+    // 再进一次强度面板，选 max。
+    await tester.tap(option);
+    await tester.pumpAndSettle();
+    final effort = find.byKey(
+      const ValueKey(
+        'subagent_model_effort___default___deepseek-v4-pro_max',
+      ),
+    );
+    expect(effort, findsOneWidget);
+    await tester.tap(effort);
+    await tester.pumpAndSettle();
 
     expect(experimental.hasSubagentModel, isTrue);
     expect(experimental.subagentPlatformId, '__default__');
     expect(experimental.subagentModelId, 'deepseek-v4-pro');
+    expect(experimental.subagentReasoningEffort, 'max');
     expect(
       tester
           .widget<Text>(
             find.byKey(const ValueKey('experimental_subagent_model_label')),
           )
           .data,
-      'deepseek-v4-pro',
+      'deepseek-v4-pro · max',
     );
 
-    // 再打开 → 选回「与当前激活主模型一致」。
+    // 再打开 → 选回「与当前激活主模型一致」，强度一并清空。
     await tester.tap(row);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('subagent_model_follow_main')));
     await tester.pumpAndSettle();
     expect(experimental.hasSubagentModel, isFalse);
+    expect(experimental.subagentReasoningEffort, isEmpty);
     expect(
       tester
           .widget<Text>(
@@ -355,6 +387,45 @@ void main() {
           )
           .data,
       '与当前激活主模型一致',
+    );
+  });
+
+  testWidgets('子模型选择器：不支持思考的模型直接选中，不需要强度面板', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final experimental = ExperimentalSettingsProvider();
+    final ai = _NoThinkingSettings();
+    await tester.pumpWidget(buildApp(1000, experimental: experimental, ai: ai));
+    await tester.pump();
+
+    final row = find.byKey(const ValueKey('experimental_subagent_model_card'));
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey('subagent_model_option_text-platform_text-model'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('subagent_model_strength_back')),
+      findsNothing,
+    );
+    expect(experimental.subagentPlatformId, 'text-platform');
+    expect(experimental.subagentModelId, 'text-model');
+    expect(experimental.subagentReasoningEffort, isEmpty);
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('experimental_subagent_model_label')),
+          )
+          .data,
+      'text-model · 无思考',
     );
   });
 
@@ -377,4 +448,34 @@ void main() {
     expect(find.textContaining('previous_response_id'), findsNothing);
     expect(find.textContaining('narrchat_editWorldState'), findsNothing);
   });
+}
+
+/// 只有一个「不支持思考」模型的设置替身：验证子模型选择器会直接选中、
+/// 不进入思考强度面板。
+class _NoThinkingSettings extends AiSettingsProvider {
+  static const AiPlatform _platform = AiPlatform(
+    id: 'text-platform',
+    displayName: '文本平台',
+    apiType: ApiType.openAiCompatible,
+    baseUrl: 'https://example.com/v1',
+    models: [AiModel(id: 'text-model', supportsThinking: false)],
+  );
+
+  @override
+  List<AiPlatform> get platforms => const [_platform];
+
+  @override
+  AiPlatform get selectedPlatform => _platform;
+
+  @override
+  String get selectedPlatformId => _platform.id;
+
+  @override
+  String get selectedModelId => 'text-model';
+
+  @override
+  AiModel get selectedModel => _platform.models.first;
+
+  @override
+  String get model => 'text-model';
 }

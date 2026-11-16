@@ -1233,6 +1233,15 @@ class RoundProvider extends ChangeNotifier {
             mainModelId: model,
           )
         : null;
+    // 子模型思考强度在选择器里单独记住；空 = 用该模型自己的默认强度。
+    // 在组装时快照，生成中途改设置不会让同一轮的维护帧强度漂移。
+    final configuredSubagentEffort =
+        _experimentalSettings?.subagentReasoningEffort.trim() ?? '';
+    final subagentReasoningEffort = subagent == null
+        ? ''
+        : (configuredSubagentEffort.isNotEmpty
+              ? configuredSubagentEffort
+              : subagent.model.effectiveReasoningEffort);
 
     // AGENT 模式：两步执行器（Lv.1 = 第一步调研 → 正文；第二步单独维护记忆总结）
     // + 自定义状态/搜索工具。完整 Agent（Lv.2）已移除。
@@ -1305,6 +1314,7 @@ class RoundProvider extends ChangeNotifier {
         responsesWire: responsesWire,
         agentValues: agentValues,
         subagent: subagent,
+        subagentReasoningEffort: subagentReasoningEffort,
         agentChaining:
             responsesWire && settings.selectedPlatform.supportsResponseChaining,
         memoryMergePlan: memoryMergePlan,
@@ -2164,7 +2174,9 @@ class RoundProvider extends ChangeNotifier {
             messages: values.messages,
             temperature: subagent.model.temperature,
             thinking: subagent.model.supportsThinking,
-            reasoningEffort: subagent.model.effectiveReasoningEffort,
+            reasoningEffort: req.subagentReasoningEffort.isNotEmpty
+                ? req.subagentReasoningEffort
+                : subagent.model.effectiveReasoningEffort,
             maxTokens: subagent.model.maxTokens,
             stream: subagent.model.supportsStreaming,
             tools: agentToolSchemas(
@@ -3232,6 +3244,12 @@ class _RoundRequest {
   /// `AgentStage.state` 的帧交给子调用。
   final AgentSubModel? subagent;
 
+  /// 子模型本轮实际发送的思考强度（组装时快照）；子模型未启用时为空串。
+  ///
+  /// 用户在选择器里选过强度 → 用它；没选过 → 用子模型自己的默认强度。
+  /// 子模型不支持思考时这个值不会进入请求体（`thinking=false`）。
+  final String subagentReasoningEffort;
+
   /// 平台是否支持有状态链式续接（previous_response_id）。默认关：
   /// 许多 OpenAI 兼容实现无此字段，关闭时全量重发（前缀不变仍可命中缓存）；
   /// Chat 线路不支持续接，恒为 false。
@@ -3264,6 +3282,7 @@ class _RoundRequest {
     this.responsesWire = false,
     this.agentValues,
     this.subagent,
+    this.subagentReasoningEffort = '',
     this.agentChaining = false,
     this.memoryMergePlan,
     required this.targetRoundIndex,

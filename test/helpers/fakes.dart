@@ -365,12 +365,14 @@ class AgentModeSettings extends ExperimentalSettingsProvider {
     bool compressAllReasoning = false,
     String subagentPlatformId = '',
     String subagentModelId = '',
+    String subagentReasoningEffort = '',
   }) : super(
          initialLevel: level,
          initialCompressNonBodyReasoning: compressNonBodyReasoning,
          initialCompressAllReasoning: compressAllReasoning,
          initialSubagentPlatformId: subagentPlatformId,
          initialSubagentModelId: subagentModelId,
+         initialSubagentReasoningEffort: subagentReasoningEffort,
        );
 }
 

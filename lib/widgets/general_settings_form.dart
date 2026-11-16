@@ -176,7 +176,13 @@ class _ExperimentalSettingsSectionState
       platformId: experimental.subagentPlatformId,
       modelId: experimental.subagentModelId,
     );
-    final label = target == null ? '与当前激活主模型一致' : target.model.displayLabel;
+    final configuredEffort = experimental.subagentReasoningEffort.trim();
+    final label = target == null
+        ? '与当前激活主模型一致'
+        : target.model.supportsThinking
+        ? '${target.model.displayLabel} · '
+              '${configuredEffort.isNotEmpty ? configuredEffort : target.model.effectiveReasoningEffort}'
+        : '${target.model.displayLabel} · 无思考';
     final scheme = Theme.of(context).colorScheme;
     return SettingsRow(
       icon: Icons.alt_route,
@@ -237,20 +243,28 @@ class _ExperimentalSettingsSectionState
     ExperimentalSettingsProvider experimental,
     AiSettingsProvider aiSettings,
   ) async {
-    final choice = await showDialog<({String platformId, String modelId})>(
-      context: context,
-      builder: (context) => _SubagentModelDialog(
-        platforms: aiSettings.platforms,
-        mainPlatformId: aiSettings.selectedPlatformId,
-        mainModelId: aiSettings.model,
-        selectedPlatformId: experimental.subagentPlatformId,
-        selectedModelId: experimental.subagentModelId,
-      ),
-    );
+    final choice =
+        await showDialog<
+          ({String platformId, String modelId, String reasoningEffort})
+        >(
+          context: context,
+          builder: (context) => _SubagentModelDialog(
+            platforms: aiSettings.platforms,
+            mainPlatformId: aiSettings.selectedPlatformId,
+            mainModelId: aiSettings.model,
+            selectedPlatformId: experimental.subagentPlatformId,
+            selectedModelId: experimental.subagentModelId,
+            selectedReasoningEffort: experimental.subagentReasoningEffort,
+          ),
+        );
     if (choice == null || !mounted) return;
     // Provider 内先乐观生效并异步持久化（与 Agent 档位 / 压缩开关同一口径），
     // 不在这里 await 磁盘写入。
-    experimental.setSubagentModel(choice.platformId, choice.modelId);
+    experimental.setSubagentModel(
+      choice.platformId,
+      choice.modelId,
+      reasoningEffort: choice.reasoningEffort,
+    );
   }
 
   /// 主开关：「压缩非正文步模型所获取到的思考链」（默认开）。
@@ -290,17 +304,21 @@ class _ExperimentalSettingsSectionState
   }
 }
 
-/// 子模型选择对话框：顶部「与当前激活主模型一致」+ 按平台分组的模型列表。
+/// 子模型选择对话框：顶部「与当前激活主模型一致」+ 按平台分组的模型列表；
+/// 点击支持思考的模型后进入二级「思考强度」面板（与 Chat 页模型选择器同款
+/// 交互：模型列表 → 强度面板 → 选中生效）。
 ///
-/// 只返回「平台 id + 模型 id」；空串组合 = 跟随主模型。真正是否拆分请求由
+/// 返回「平台 id + 模型 id + 思考强度」；平台 / 模型为空串 = 跟随主模型，
+/// 强度为空串 = 使用该模型自己的默认强度。真正是否拆分请求由
 /// `resolveAgentSubModel` 在生成前判断（同平台同模型会自动折叠成未启用）。
-class _SubagentModelDialog extends StatelessWidget {
+class _SubagentModelDialog extends StatefulWidget {
   const _SubagentModelDialog({
     required this.platforms,
     required this.mainPlatformId,
     required this.mainModelId,
     required this.selectedPlatformId,
     required this.selectedModelId,
+    required this.selectedReasoningEffort,
   });
 
   final List<AiPlatform> platforms;
@@ -308,18 +326,76 @@ class _SubagentModelDialog extends StatelessWidget {
   final String mainModelId;
   final String selectedPlatformId;
   final String selectedModelId;
+  final String selectedReasoningEffort;
+
+  @override
+  State<_SubagentModelDialog> createState() => _SubagentModelDialogState();
+}
+
+class _SubagentModelDialogState extends State<_SubagentModelDialog> {
+  // 二级强度面板的临时目标；null = 当前显示模型列表。
+  String? _targetPlatformId;
+  String? _targetModelId;
+
+  AiPlatform? get _targetPlatform {
+    final id = _targetPlatformId;
+    if (id == null) return null;
+    for (final platform in widget.platforms) {
+      if (platform.id == id) return platform;
+    }
+    return null;
+  }
+
+  AiModel? get _targetModel {
+    final platform = _targetPlatform;
+    final id = _targetModelId;
+    if (platform == null || id == null) return null;
+    return platform.modelById(id);
+  }
+
+  void _resetTarget() {
+    setState(() {
+      _targetPlatformId = null;
+      _targetModelId = null;
+    });
+  }
+
+  void _openStrength(AiPlatform platform, AiModel model) {
+    setState(() {
+      _targetPlatformId = platform.id;
+      _targetModelId = model.id;
+    });
+  }
+
+  /// 某个模型当前生效的强度：当前选中的子模型用记住的强度，其它模型用默认值。
+  String _effectiveEffortFor(AiPlatform platform, AiModel model) {
+    final configured = widget.selectedReasoningEffort.trim();
+    if (platform.id == widget.selectedPlatformId &&
+        model.id == widget.selectedModelId &&
+        configured.isNotEmpty) {
+      return configured;
+    }
+    return model.effectiveReasoningEffort;
+  }
+
+  /// 强度选项：模型配置的档位去重；当前值不在列表时补到首位（不静默改写）。
+  List<String> _effortOptionsFor(AiModel model, String current) {
+    final seen = <String>{};
+    final options = <String>[];
+    for (final raw in model.effectiveReasoningEffortOptions) {
+      final value = raw.trim();
+      if (value.isEmpty) continue;
+      if (seen.add(value)) options.add(value);
+    }
+    if (!seen.contains(current)) options.insert(0, current);
+    return options;
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final selected = findAgentSubModel(
-      platforms: platforms,
-      platformId: selectedPlatformId,
-      modelId: selectedModelId,
-    );
-    final mainPlatform = _platformById(mainPlatformId);
-    final mainModel =
-        mainPlatform?.modelById(mainModelId) ?? mainPlatform?.defaultModel;
+    final targetPlatform = _targetPlatform;
+    final targetModel = _targetModel;
     final size = MediaQuery.sizeOf(context);
     // 窄屏（手机 / 分屏）按可用宽度收窄；高度也留出标题与按钮空间。
     final width = (size.width - 96).clamp(260.0, 440.0).toDouble();
@@ -333,72 +409,9 @@ class _SubagentModelDialog extends StatelessWidget {
       content: SizedBox(
         width: width,
         height: height,
-        child: ListView(
-          children: [
-            ListTile(
-              key: const ValueKey('subagent_model_follow_main'),
-              selected: selected == null,
-              selectedTileColor: scheme.primary.withValues(alpha: 0.07),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              leading: Icon(
-                selected == null ? Icons.check_circle : Icons.circle_outlined,
-                size: 20,
-                color: selected == null
-                    ? scheme.primary
-                    : scheme.onSurfaceVariant,
-              ),
-              title: const Text(
-                '与当前激活主模型一致',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              subtitle: Text(
-                mainPlatform == null || mainModel == null
-                    ? '跟随对话页当前选中的模型'
-                    : '当前主模型：${mainPlatform.displayName} / '
-                          '${mainModel.displayLabel}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-              ),
-              onTap: () =>
-                  Navigator.of(context).pop((platformId: '', modelId: '')),
-            ),
-            const Divider(height: 16),
-            if (platforms.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 18,
-                ),
-                child: Text(
-                  '尚无可选模型，请先在 API 设置中添加平台与模型。',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            for (final platform in platforms) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 8, 14, 2),
-                child: Text(
-                  platform.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              for (final model in platform.models)
-                _modelTile(context, platform, model, selected),
-            ],
-          ],
-        ),
+        child: targetPlatform != null && targetModel != null
+            ? _buildStrengthPanel(scheme, targetPlatform, targetModel)
+            : _buildModelList(scheme),
       ),
       actions: [
         TextButton(
@@ -409,18 +422,91 @@ class _SubagentModelDialog extends StatelessWidget {
     );
   }
 
+  Widget _buildModelList(ColorScheme scheme) {
+    final selected = findAgentSubModel(
+      platforms: widget.platforms,
+      platformId: widget.selectedPlatformId,
+      modelId: widget.selectedModelId,
+    );
+    final mainPlatform = _platformById(widget.mainPlatformId);
+    final mainModel =
+        mainPlatform?.modelById(widget.mainModelId) ??
+        mainPlatform?.defaultModel;
+    return ListView(
+      children: [
+        ListTile(
+          key: const ValueKey('subagent_model_follow_main'),
+          selected: selected == null,
+          selectedTileColor: scheme.primary.withValues(alpha: 0.07),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          leading: Icon(
+            selected == null ? Icons.check_circle : Icons.circle_outlined,
+            size: 20,
+            color: selected == null ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+          title: const Text(
+            '与当前激活主模型一致',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            mainPlatform == null || mainModel == null
+                ? '跟随对话页当前选中的模型'
+                : '当前主模型：${mainPlatform.displayName} / '
+                      '${mainModel.displayLabel}',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+          onTap: () =>
+              Navigator.of(context)
+                  .pop((platformId: '', modelId: '', reasoningEffort: '')),
+        ),
+        const Divider(height: 16),
+        if (widget.platforms.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+            child: Text(
+              '尚无可选模型，请先在 API 设置中添加平台与模型。',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ),
+        for (final platform in widget.platforms) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 2),
+            child: Text(
+              platform.displayName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          for (final model in platform.models)
+            _modelTile(scheme, platform, model, selected),
+        ],
+      ],
+    );
+  }
+
   Widget _modelTile(
-    BuildContext context,
+    ColorScheme scheme,
     AiPlatform platform,
     AiModel model,
     AgentSubModel? selected,
   ) {
-    final scheme = Theme.of(context).colorScheme;
     final picked =
         selected != null &&
         selected.platform.id == platform.id &&
         selected.model.id == model.id;
-    final isMain = platform.id == mainPlatformId && model.id == mainModelId;
+    final isMain =
+        platform.id == widget.mainPlatformId && model.id == widget.mainModelId;
+    final supportsThinking = model.supportsThinking;
+    final subtitle = supportsThinking && picked
+        ? '${model.id} · 思考强度 ${_effectiveEffortFor(platform, model)}'
+        : model.id;
     return ListTile(
       key: ValueKey('subagent_model_option_${platform.id}_${model.id}'),
       selected: picked,
@@ -442,36 +528,144 @@ class _SubagentModelDialog extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        model.id,
+        subtitle,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
       ),
-      trailing: isMain
-          ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: scheme.primary.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(4),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isMain) ...[_mainBadge(scheme), const SizedBox(width: 6)],
+          if (supportsThinking)
+            Icon(Icons.chevron_right, size: 18, color: scheme.onSurfaceVariant)
+          else
+            Text(
+              '无思考',
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+            ),
+        ],
+      ),
+      onTap: supportsThinking
+          ? () => _openStrength(platform, model)
+          : () => Navigator.of(context).pop((
+              platformId: platform.id,
+              modelId: model.id,
+              reasoningEffort: '',
+            )),
+    );
+  }
+
+  Widget _buildStrengthPanel(
+    ColorScheme scheme,
+    AiPlatform platform,
+    AiModel model,
+  ) {
+    final current = _effectiveEffortFor(platform, model);
+    final options = _effortOptionsFor(model, current);
+    return ListView(
+      children: [
+        Row(
+          children: [
+            IconButton(
+              key: const ValueKey('subagent_model_strength_back'),
+              onPressed: _resetTarget,
+              icon: const Icon(Icons.arrow_back, size: 20),
+              tooltip: '返回模型列表',
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    model.displayLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '选择思考强度',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-              child: Text(
-                '主模型',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w700,
-                  color: scheme.primary,
-                ),
+            ),
+          ],
+        ),
+        const Divider(height: 8),
+        for (final effort in options)
+          ListTile(
+            key: ValueKey(
+              'subagent_model_effort_${platform.id}_${model.id}_$effort',
+            ),
+            selected: effort == current,
+            selectedTileColor: scheme.primary.withValues(alpha: 0.07),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            leading: Icon(
+              effort == current ? Icons.check_circle : Icons.circle_outlined,
+              size: 20,
+              color: effort == current
+                  ? scheme.primary
+                  : scheme.onSurfaceVariant,
+            ),
+            title: Text(
+              effort,
+              style: TextStyle(
+                fontSize: 14,
+                color: effort == current ? scheme.primary : scheme.onSurface,
+                fontWeight: effort == current
+                    ? FontWeight.w600
+                    : FontWeight.w400,
               ),
-            )
-          : null,
-      onTap: () =>
-          Navigator.of(context)
-              .pop((platformId: platform.id, modelId: model.id)),
+            ),
+            onTap: () => Navigator.of(context).pop((
+              platformId: platform.id,
+              modelId: model.id,
+              reasoningEffort: effort,
+            )),
+          ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 2, 14, 12),
+          child: Text(
+            '强度选项来自该模型配置，只用于非创作步（第二步状态维护）。',
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _mainBadge(ColorScheme scheme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        '主模型',
+        style: TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w700,
+          color: scheme.primary,
+        ),
+      ),
     );
   }
 
   AiPlatform? _platformById(String id) {
-    for (final platform in platforms) {
+    for (final platform in widget.platforms) {
       if (platform.id == id) return platform;
     }
     return null;

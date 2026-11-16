@@ -27,10 +27,11 @@ import '../services/local_config_service.dart';
 ///
 /// 压缩规则见 `services/agent/reasoning_replay.dart`。
 ///
-/// 另含**非创作步子模型**（[subagentPlatformId] / [subagentModelId]，默认空 =
-/// 与当前激活主模型一致）：只作用于第二步状态维护（非创作步）；配置与主模型
-/// 完全相同时按「未启用」处理。跨模型无法命中主模型的上下文缓存，设置页会
-/// 提示确保子模型成本足够低。
+/// 另含**非创作步子模型**（[subagentPlatformId] / [subagentModelId] +
+/// [subagentReasoningEffort]，默认空 = 与当前激活主模型一致）：只作用于第二步
+/// 状态维护（非创作步）；配置与主模型完全相同时按「未启用」处理。思考强度由
+/// 子模型选择器单独记住，空 = 用该模型自己的默认强度。跨模型无法命中主模型的
+/// 上下文缓存，设置页会提示确保子模型成本足够低。
 class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 允许测试直接注入初值（不触碰真实配置文件）。
   ExperimentalSettingsProvider({
@@ -39,17 +40,20 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
     bool initialCompressAllReasoning = false,
     String initialSubagentPlatformId = '',
     String initialSubagentModelId = '',
+    String initialSubagentReasoningEffort = '',
   }) : _level = initialLevel,
        _compressNonBodyReasoning = initialCompressNonBodyReasoning,
        _compressAllReasoning = initialCompressAllReasoning,
        _subagentPlatformId = initialSubagentPlatformId.trim(),
-       _subagentModelId = initialSubagentModelId.trim() {
+       _subagentModelId = initialSubagentModelId.trim(),
+       _subagentReasoningEffort = initialSubagentReasoningEffort.trim() {
     // 主开关关闭时子开关永远无效（构造注入也遵守同一不变量）。
     if (!_compressNonBodyReasoning) _compressAllReasoning = false;
     // 子模型必须平台 + 模型成对出现；只给一半等于没配置。
     if (_subagentPlatformId.isEmpty || _subagentModelId.isEmpty) {
       _subagentPlatformId = '';
       _subagentModelId = '';
+      _subagentReasoningEffort = '';
     }
   }
 
@@ -73,11 +77,19 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 非创作步（第二步状态维护）所用子模型的模型 id；空 = 跟随主模型。
   static const String keySubagentModelId = 'agentSubagentModelId';
 
+  /// 子模型选择器记住的思考强度；空 = 用该模型自己的默认强度。
+  ///
+  /// 与 Chat 页的「按模型记住强度」分开存：子模型设置是独立的一份配置，
+  /// 不应因为用户在对话页切换主模型强度而被动改变。
+  static const String keySubagentReasoningEffort =
+      'agentSubagentReasoningEffort';
+
   AgentModeLevel _level;
   bool _compressNonBodyReasoning;
   bool _compressAllReasoning;
   String _subagentPlatformId;
   String _subagentModelId;
+  String _subagentReasoningEffort;
 
   /// 当前 Agent 档位（默认关闭）。
   AgentModeLevel get agentModeLevel => _level;
@@ -97,6 +109,9 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
 
   /// 子模型配置的模型 id（空 = 跟随当前激活主模型）。
   String get subagentModelId => _subagentModelId;
+
+  /// 子模型选择器记住的思考强度（空 = 用模型默认强度）。
+  String get subagentReasoningEffort => _subagentReasoningEffort;
 
   /// 是否配置了具体子模型（平台 + 模型成对出现）。
   bool get hasSubagentModel =>
@@ -133,10 +148,13 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
       _compressAllReasoning = parent && child;
       _subagentPlatformId = _readId(config[keySubagentPlatformId]);
       _subagentModelId = _readId(config[keySubagentModelId]);
-      // 平台 + 模型必须成对；只有一半（旧缓存 / 手改配置）按未配置处理。
+      _subagentReasoningEffort = _readId(config[keySubagentReasoningEffort]);
+      // 平台 + 模型必须成对；只有一半（旧缓存 / 手改配置）按未配置处理，
+      // 强度也随配置一起清空（不能留下一个没有模型的孤立强度）。
       if (_subagentPlatformId.isEmpty || _subagentModelId.isEmpty) {
         _subagentPlatformId = '';
         _subagentModelId = '';
+        _subagentReasoningEffort = '';
       }
     } catch (_) {
       _level = AgentModeLevel.off;
@@ -144,6 +162,7 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
       _compressAllReasoning = false;
       _subagentPlatformId = '';
       _subagentModelId = '';
+      _subagentReasoningEffort = '';
     }
     notifyListeners();
   }
@@ -201,22 +220,30 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
     }
   }
 
-  /// 设置非创作步使用的子模型。
+  /// 设置非创作步使用的子模型（可同时记住思考强度）。
   ///
   /// [platformId] / [modelId] 任一为空表示「与当前激活主模型一致」（会同时清空
-  /// 两个键，避免留下半套失效配置）。先乐观生效再异步持久化，保存失败仅记录；
-  /// 下一次组装会瞬时读到新值，不打断进行中的请求。
-  Future<bool> setSubagentModel(String platformId, String modelId) async {
+  /// 平台 / 模型 / 强度三个键，避免留下半套失效配置）。
+  /// [reasoningEffort] 为空 = 用该模型自己的默认强度；非空 = 用户在选择器里
+  /// 明确选择的强度。先乐观生效再异步持久化，保存失败仅记录；下一次组装会
+  /// 瞬时读到新值，不打断进行中的请求。
+  Future<bool> setSubagentModel(
+    String platformId,
+    String modelId, {
+    String reasoningEffort = '',
+  }) async {
     final platform = platformId.trim();
     final model = modelId.trim();
     final valid = platform.isNotEmpty && model.isNotEmpty;
     _subagentPlatformId = valid ? platform : '';
     _subagentModelId = valid ? model : '';
+    _subagentReasoningEffort = valid ? reasoningEffort.trim() : '';
     notifyListeners();
     try {
       await LocalConfigService.update({
         keySubagentPlatformId: _subagentPlatformId,
         keySubagentModelId: _subagentModelId,
+        keySubagentReasoningEffort: _subagentReasoningEffort,
       });
       return true;
     } catch (e) {

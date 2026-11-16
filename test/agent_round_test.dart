@@ -995,6 +995,7 @@ void main() {
       experimentalSettings: AgentModeSettings(
         subagentPlatformId: AiPlatforms.deepseekPlatformId,
         subagentModelId: 'deepseek-v4-pro',
+        subagentReasoningEffort: 'low',
       ),
       retryDelay: Duration.zero,
     );
@@ -1006,6 +1007,11 @@ void main() {
     expect(captured[0]['model'], 'deepseek-flash', reason: '调研用主模型');
     expect(captured[1]['model'], 'deepseek-flash', reason: '正文用主模型');
     expect(captured[2]['model'], 'deepseek-v4-pro', reason: '维护用子模型');
+    expect(
+      captured[2]['reasoning'],
+      {'effort': 'low'},
+      reason: '维护步用子模型选择器记住的思考强度',
+    );
 
     final round = (await stack.repos.rounds.loadChain('b1')).rounds.single;
     expect(round.modelName, 'deepseek-flash');
