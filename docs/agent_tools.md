@@ -73,7 +73,7 @@
   在解析产物上还原，存储与锚点仍是原始字节。
   例外（不算占位符，不改写）：`<worldState>` / `<characterState>` /
   `<memorySummary>` 是读取结果的**字面块标签**；
-  真源见 `docs/prompt_v3.md` 顶部「不举例」与提示词文案文件 `prompt_v3_sections.dart`
+  真源见 `docs/prompt_v3_system.md` 顶部「不举例」与提示词文案文件 `prompt_v3_sections.dart`
   （Mod 文案不受此约定约束）；
 - **参数 schema 文案**沿用同一简明中文写法（如 `before` / `reason` 的说明）；
 - 契约由 `test/agent_tool_descriptions_test.dart`（工具描述形态与调用指导）、
@@ -150,7 +150,7 @@
   结果即后续唯一锚点来源，维护回合的重复读取会被护栏拒绝，并要求**第一个维护
   回合就完成**（直接编辑）；
 - **不约束思考链**：任何模式都不限定思考的语言与写法；但功能性步骤照旧
-  （调研回合读史、调研结束后**立刻**写正文、记忆只在第二步维护）。
+  （调研回合读一次记忆、调研结束后**立刻**写正文、记忆只在第二步维护）。
   回合指令文案见 `prompt_v2_sections.dart`。
 
 ## 命名规范

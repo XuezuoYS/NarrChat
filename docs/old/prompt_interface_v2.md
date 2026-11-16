@@ -1,7 +1,7 @@
 # Prompt 取用接口（`prompt_interface`）
 
 > **已归档**：v2 取用接口自 **v3.1.0** 起由 `docs/prompt_v3_interface.md` 取代，
-> 文案真源见 `docs/prompt_v3.md`。本文只作历史参照，不再维护；归档于 2026-11-17。
+> 文案真源见 `docs/prompt_v3_system.md`。本文只作历史参照，不再维护；归档于 2026-11-17。
 
 本文档说明「发送给 AI 的文本与工具」的**唯一取用入口**——分源接口套件
 `lib/services/prompt_interface.dart`，以及唯一实现（v2，按 `docs/old/ai_prompt_v2.md`

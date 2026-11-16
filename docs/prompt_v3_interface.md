@@ -1,12 +1,13 @@
 # Prompt 取用接口（v3）
 
-> **配对文档**：设计与文案真源见 `docs/prompt_v3.md`。
+> **配对文档**：system 侧设计见 `docs/prompt_v3_system.md`，上下文设计见
+> `docs/prompt_v3_context.md`。
 > **适用版本**：v3.1.0（v2 接口文档已归档到 `docs/old/prompt_interface_v2.md`）。
 
 本文说明「发送给 AI 的文本与工具」的**唯一取用入口**——分源接口套件
-`lib/services/prompt_interface.dart`；实现是 `prompt_v3_sections.dart`（文案）+
-`prompt_v3_build.dart`（拼合）+ `prompt_v3_tools.dart`（工具清单），按 `docs/prompt_v3.md`
-的 7 模块拼合。
+`lib/services/prompt_interface.dart`；实现是 `prompt_v3_sections.dart`（system 文案）+
+`prompt_v3_build.dart`（system 拼合）+ `prompt_v3_context.dart`（上下文文案与拼装）+
+`prompt_v3_tools.dart`（工具清单），按 system 文档的 7 模块与上下文文档的成分顺序拼合。
 
 > 接口套件本身不换：`prompt_text.dart` / `prompt_interface.dart` 只多一个「按模块取」的读法
 > （见 §二），调用方与报文 / 历史层一概不动。
@@ -20,8 +21,8 @@
 |---|---|---|
 | ✅ | **拼合后**的 system（instructions）文本 | 接口 `system()` |
 | ✅ | **按模块切分**的 system（调试 / 预览 / 测试用） | 接口 `systemSections()` |
-| ✅ | **拼合后**的本轮 user 消息文本 | 接口 `user()` |
-| ✅ | Agent **回合指令**（调研 / 正文 / 维护 / 修复） | 接口 `stage*()` |
+| ✅ | **拼合后**的本轮 user 消息文本（设计见 `docs/prompt_v3_context.md`） | 接口 `user()` |
+| ✅ | Agent **回合指令**（调研 / 正文 / 维护 / 修复；设计同上） | 接口 `stage*()` |
 | ✅ | **工具集**（状态工具 + 联网工具；工具定义即文本） | 接口 `tools()` |
 | ❌ | **历史 messages + 请求体** | `wire_messages.dart` + `RoundProvider` + `wire_adapters` + `ai_request_body_builder`：这一侧只消费接口产出的纯文本 / 工具清单，不引用任何提示词模块 |
 | ❌ | vision 图片 content 多部分拼装 | `RoundProvider` |
@@ -102,17 +103,18 @@ const PromptInterface promptInterface = PromptV3();
 
 | 文件 | 职责 |
 |---|---|
-| `prompt_v3_sections.dart` | **全部文案**：固定行、7 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、回合指令、工具指南条目 |
-| `prompt_v3_build.dart` | **拼合**：按序取模块 → 空模块丢弃 → must 的块序列反转出 `mustReverse` → 空行 join；实现 `prompt_text.dart` 的四个文本源（纯 Dart 依赖） |
+| `prompt_v3_sections.dart` | **system 文案**：固定行、7 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
+| `prompt_v3_build.dart` | **system 拼合**：按序取模块 → 空模块丢弃 → must 的块序列反转出 `mustReverse` → 空行 join；实现 `system()` / `systemSections()`（纯 Dart 依赖） |
+| `prompt_v3_context.dart` | **上下文**：本轮 user 消息与 Agent 回合指令的文案 + 拼装，实现 `user()` / `stage*()`（纯 Dart 依赖） |
 | `prompt_v3_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表（沿用 v2 路由） |
 
-两条实现规矩（与 `docs/prompt_v3.md` 一致）：
+两条实现规矩（与 `docs/prompt_v3_system.md` 一致）：
 
 - **模块只在一个地方排序**：模块顺序写死在 `prompt_v3_build` 的一个常量列表里，文案层只管
   各模块正文，不许自己排；
 - **空模块在 `systemSections()` 就丢掉**：`system()` 不再做第二轮过滤，避免两处判断不一致。
 
-设计口径（与 `docs/prompt_v3.md` 一致）：
+设计口径（与 `docs/prompt_v3_system.md` 一致）：
 
 - 模块 / 子模块一律 `#` 一级标题；**must 与 must- 例外**——它们是不带标题的段落序列
   （段1 + Mod 段），块内分条只用 `- `（不用数字序号）；
@@ -122,12 +124,12 @@ const PromptInterface promptInterface = PromptV3();
   只有单行字段（书籍名 / 分类 / 上轮时间 / 角色层级）才折叠换行；
 - 简明中文、口语化；英文只留工具名、状态块标签与 `[State-maintenance turn]`；
 - 不举例：只用 `{}` 占位符表达形状；
-- 不约束思考链格式，但保留功能性要求（调研回合读史一次、调研结束**立刻**写正文、记忆只在
+- 不约束思考链格式，但保留功能性要求（调研回合读一次记忆、调研结束**立刻**写正文、记忆只在
   维护回合做、按步执行）。
 
 ## 四、模块与来源
 
-7 个模块的顺序、每个块装什么、空块怎么删——以 `docs/prompt_v3.md` 的「模块顺序」与
+7 个模块的顺序、每个块装什么、空块怎么删——以 `docs/prompt_v3_system.md` 的「模块顺序」与
 「模块 × 来源」两张表为准，本文不抄第二份（抄了必然不同步）。
 
 接口侧只记三条：
@@ -197,14 +199,16 @@ const PromptInterface promptInterface = PromptV3();
 
 ## 八、改版与扩展约定
 
-1. 文案改动：先改 `docs/prompt_v3.md`，再同步 `prompt_v3_sections.dart`；
+1. 文案改动：先改 `docs/prompt_v3_system.md`，再同步 `prompt_v3_sections.dart`；
 2. 结构改动：改 `prompt_v3_build.dart` 的模块顺序与空块规则——模块顺序只在这里有一份；
-3. 新增模块：`PromptSection` 名字表、`docs/prompt_v3.md` 的「模块 × 来源」表、测试锚点三处
+3. 新增模块：`PromptSection` 名字表、`docs/prompt_v3_system.md` 的「模块 × 来源」表、测试锚点三处
    一起补；
 4. 契约扩展（新增槽位 / 新增源）：改 `prompt_text.dart` / `prompt_interface.dart`，调用方与
    报文 / 历史层**不动**；
-5. Mod 新增注入位：先给 `ModsBundle` 加段，再在 `prompt_v3_sections` / `prompt_v3_build` 的
-   对应块接上，`docs/prompt_v3.md` 的「Mod 注入位」表同步。
+5. Mod 新增注入位：先给 `ModsBundle` 加段，再在 `prompt_v3_sections` / `prompt_v3_build` /
+   `prompt_v3_context` 的对应块接上，文档的「Mod 注入位」表同步；
+6. 上下文改动（user 消息成分 / 回合指令）：先改 `docs/prompt_v3_context.md`，再同步
+   `prompt_v3_context.dart`。
 
 契约约定：调用方**只调用** `PromptInterface` 上的方法，不得绕过接口直接读取实现细节；
 接口返回的是最终文本，调用方不再拼接或改写。
@@ -213,10 +217,10 @@ const PromptInterface promptInterface = PromptV3();
 
 | 测试文件 | 锁住什么 |
 |---|---|
-| `test/prompt_interface_test.dart` | 绑定实现；模块顺序与空行；标题层级（must / must- 无标题、结构标题不出现 `##`）；空块即删；多行保留；模式契约差异；**文风口径四处落点**；Mod 注入位（不标标题）与六个注入段的落点；记忆合并档位与注入；工具路由与替身；回合文案；请求对象 |
+| `test/prompt_interface_test.dart` | 绑定实现；模块顺序与空行；标题层级（must / must- 无标题、结构标题不出现 `##`）；空块即删；多行保留；模式契约差异；**文风口径四处落点**；Mod 注入位（不标标题）与六个注入段的落点；工具路由与替身；`user()` / `stage*()` 与 system 的衔接；请求对象 |
 | `test/prompt_v3_modules_test.dart` | 逐模块断言：`systemSections()` 的名字与顺序；`mustReverse` 是 must 全部块（段1 + Mod 段）的逆序；`toolNames` 驱动的简要工具指南（有 / 无工具、Chat / Agent 两种组合） |
+| `test/prompt_v3_context_test.dart` | 上下文拼装：user 消息成分的顺序与 `---` 分隔、每类空成分的删除、两种模式的总协议2、四份回合指令与维护回合的补充清单 |
 | `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一 |
-| `test/prompt_rewrite_test.dart` | 修改轮 user 注入：头部两处差异、与新建轮逐字同构、空时间不注入、模式合同一致 |
 | `test/agent_tool_descriptions_test.dart` | 各工具的中文文案形态、联网指导落点、状态工具互指 |
 | `test/wire_messages_test.dart` | 报文侧历史 messages 拼装（三种 assistant 形态、占位、vision 图片） |
 
@@ -229,13 +233,15 @@ const PromptInterface promptInterface = PromptV3();
 |---|---|
 | `lib/services/prompt_text.dart` | **文本契约**（`PromptMode` + 请求对象 + `PromptSection` + 文本源，纯 Dart） |
 | `lib/services/prompt_interface.dart` | 工具契约 + `PromptInterface` 聚合 + `PromptV3` 聚合实现 + 唯一绑定 |
-| `lib/services/prompt_v3_sections.dart` | 文案真源 |
-| `lib/services/prompt_v3_build.dart` | 文本实现（模块拼合 / 空块删除 / `mustReverse`；纯 Dart 依赖） |
+| `lib/services/prompt_v3_sections.dart` | system 文案真源 |
+| `lib/services/prompt_v3_build.dart` | system 实现（模块拼合 / 空块删除 / `mustReverse`；纯 Dart 依赖） |
+| `lib/services/prompt_v3_context.dart` | 上下文实现（user 消息成分 / 回合指令；纯 Dart 依赖） |
 | `lib/services/prompt_v3_tools.dart` | 工具清单 |
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |
 | `lib/services/agent/state/state_tools.dart` | 六个状态工具（Lv.1 只注册历史一读一写，其余是保留框架） |
-| `docs/prompt_v3.md` | 提示词设计（7 模块模板，文案的评审真源） |
+| `docs/prompt_v3_system.md` | system 设计（7 模块模板，system 文案的评审真源） |
+| `docs/prompt_v3_context.md` | 上下文设计（user 消息成分 / 历史形态 / 回合指令） |
 | `docs/prompt_v3_interface.md` | 本文档 |
 
 ## 十一、设计约束与影响
@@ -246,4 +252,4 @@ const PromptInterface promptInterface = PromptV3();
 | 工具指南与缓存 | 工具开关一变，system 前缀就变，服务商缓存从改动处失效——接受这个代价，让模型临笔前看见工具清单更值 |
 | `must` 的两段来源 | 段1 = 固定行；段2~n = `ModsBundle.mustPrompts`，为空就只剩段1 |
 | `mustReverse` 的代价 | 整段 must 在 system 里出现两次（正序 + 倒序），换来的是开头结尾双向强调 |
-| user 侧 | 不切分，继续走 v2 模板；模块化只做在 system |
+| user 侧 | 不切分：模块化只做在 system；user 消息按上下文文档的成分顺序拼成一条 |
