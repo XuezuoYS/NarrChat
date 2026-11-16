@@ -228,4 +228,25 @@ void main() {
       modDeAi,
     ], reason: 'sort_order 只在点保存后统一写库');
   });
+
+  testWidgets('摘要：多个 system 通道共用一次「System 提示词 - 」前缀', (tester) async {
+    final uuid = await stack.seedMod(
+      name: '多通道 Mod',
+      prePrompt: '前置内容',
+      systemMust: '强指令内容',
+      systemWritingStyle: '文笔内容',
+    );
+    await pumpPanel(tester, enabledUuids: [uuid]);
+
+    // 顺序 = 面板顺序（文笔在强指令之前），前缀只出现一次、通道之间用 ` & `。
+    final summary = find.text(
+      '含：前置词、System 提示词 - 文笔要求与参考段落 & 强指令',
+    );
+    expect(summary, findsOneWidget);
+    expect(
+      'System 提示词'.allMatches(tester.widget<Text>(summary).data!).length,
+      1,
+      reason: '重复前缀正是这次要修的问题',
+    );
+  });
 }

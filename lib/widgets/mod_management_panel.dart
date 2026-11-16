@@ -455,16 +455,21 @@ class _ModTile extends StatelessWidget {
 
   /// 非空内容段摘要（辅助辨识）。
   ///
-  /// 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 → 杂项 → 设定 →
-  /// 文笔 → 强指令 → 世界书。
+  /// 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 →
+  /// **System 提示词的一段**（杂项 & 设定 & 文笔 & 强指令）→ 世界书。
+  /// 四个 system 通道共用一次前缀（[systemPanelsSummary]），避免列表里
+  /// 「System 提示词 - 」连排四遍。
   String get _fieldsSummary {
+    final systemNames = <String>[
+      if (mod.systemPrompt.trim().isNotEmpty) kModPanelMiscName,
+      if (mod.systemSetting.trim().isNotEmpty) kModPanelSettingName,
+      if (mod.systemWritingStyle.trim().isNotEmpty) kModPanelWritingName,
+      if (mod.systemMust.trim().isNotEmpty) kModPanelMustName,
+    ];
     final parts = <String>[
       if (mod.prePrompt.trim().isNotEmpty) '前置词',
       if (mod.postPrompt.trim().isNotEmpty) '后置词',
-      if (mod.systemPrompt.trim().isNotEmpty) kModPanelMiscTitle,
-      if (mod.systemSetting.trim().isNotEmpty) kModPanelSettingTitle,
-      if (mod.systemWritingStyle.trim().isNotEmpty) kModPanelWritingTitle,
-      if (mod.systemMust.trim().isNotEmpty) kModPanelMustTitle,
+      if (systemNames.isNotEmpty) systemPanelsSummary(systemNames),
       if (mod.worldBookEntries.isNotEmpty) '世界书',
     ];
     return parts.isEmpty ? '（无内容）' : '含：${parts.join('、')}';

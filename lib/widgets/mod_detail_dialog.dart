@@ -61,17 +61,37 @@ enum ModPanel { basic, pre, post, misc, setting, writing, must, worldBook }
 
 /// 四个 **system 通道**面板的显示名（单一来源：对话框与两个 Mod 列表共用）。
 ///
-/// 统一带 `System 提示词 - ` 前缀，一眼能看出这几段是往 system 里塞的；
+/// 统一带 [kModPanelSystemPrefix] 前缀，一眼能看出这几段是往 system 里塞的；
 /// 文笔那一栏用完整的「文笔要求与参考段落」（它注入的块就叫这个名字）。
-const String kModPanelMiscTitle = 'System 提示词 - 杂项';
-const String kModPanelSettingTitle = 'System 提示词 - 设定';
-const String kModPanelWritingTitle = 'System 提示词 - 文笔要求与参考段落';
-const String kModPanelMustTitle = 'System 提示词 - 强指令';
+///
+/// **列表摘要**别直接拿完整名一个个排——那样会把前缀重复四遍，
+/// 用 [systemPanelsSummary] 把多个通道合成一段。
+const String kModPanelSystemPrefix = 'System 提示词 - ';
+
+/// 四个 system 通道的**短名**（不含前缀；摘要里用它们拼）。
+const String kModPanelMiscName = '杂项';
+const String kModPanelSettingName = '设定';
+const String kModPanelWritingName = '文笔要求与参考段落';
+const String kModPanelMustName = '强指令';
+
+/// 四个 system 通道的**完整面板标题**（对话框导航 / 下拉选择器用）。
+const String kModPanelMiscTitle = '$kModPanelSystemPrefix$kModPanelMiscName';
+const String kModPanelSettingTitle = '$kModPanelSystemPrefix$kModPanelSettingName';
+const String kModPanelWritingTitle = '$kModPanelSystemPrefix$kModPanelWritingName';
+const String kModPanelMustTitle = '$kModPanelSystemPrefix$kModPanelMustName';
+
+/// 列表摘要里的一段「system 通道」：前缀只出现一次，通道之间用 ` & ` 连接。
+///
+/// 例：`System 提示词 - 强指令 & 文笔要求与参考段落`
+/// （顺序要按调用方传的顺序；空列表返回空串，调用方直接跳过即可）。
+String systemPanelsSummary(List<String> shortNames) => shortNames.isEmpty
+    ? ''
+    : '$kModPanelSystemPrefix${shortNames.join(' & ')}';
 
 /// Mod 详情对话框（新建 / 编辑 / 只读查看共用）。
 ///
 /// 宽屏（可用宽度 ≥720）左右分栏：左侧 8 个面板导航、右侧编辑区；
-/// 窄屏整页：顶栏 + 面板下拉选择器 + 撑满的编辑区 + 底部等宽按钮。
+/// 窄屏是悬浮窗：标题 + 面板下拉选择器 + 撑满的编辑区 + 底部按钮。
 class ModDetailDialog extends StatefulWidget {
   final Mod? mod;
   final bool readOnly;

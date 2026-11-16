@@ -100,6 +100,31 @@ void main() {
     );
     expect(spanWithText(root, '1').style?.color, JsonSyntaxColors.light.number);
   });
+
+  testWidgets('列表摘要：多个 system 通道共用一次「System 提示词 - 」前缀', (tester) async {
+    await stack.seedMod(
+      name: '多通道 Mod',
+      prePrompt: '前置内容',
+      systemMust: '强指令内容',
+      systemWritingStyle: '文笔内容',
+    );
+    await pumpPanel(tester);
+
+    // 顺序 = 面板顺序（文笔在强指令之前），前缀只出现一次、通道之间用 ` & `。
+    final summary = find.text(
+      '含：前置词、System 提示词 - 文笔要求与参考段落 & 强指令',
+    );
+    expect(summary, findsOneWidget);
+    expect(
+      'System 提示词'.allMatches(tester.widget<Text>(summary).data!).length,
+      1,
+      reason: '重复前缀正是这次要修的问题',
+    );
+    expect(
+      find.textContaining('System 提示词 - 文笔要求与参考段落、System 提示词'),
+      findsNothing,
+    );
+  });
 }
 
 /// 输入框真正排版用的 [RenderEditable] 里的 span 树（即控制器的 `buildTextSpan`）。

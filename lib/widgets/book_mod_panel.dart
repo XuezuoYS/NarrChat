@@ -398,15 +398,19 @@ class _BookModTile extends StatelessWidget {
     if (mod != null && mod!.description.trim().isNotEmpty) {
       return mod!.description.trim();
     }
-    // 顺序 = 面板顺序（`docs/mods.md` §七）；四个 system 通道用统一定义的显示名。
+    // 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 →
+    // System 提示词的一段（杂项 & 设定 & 文笔 & 强指令）→ 世界书。
+    final systemNames = <String>[
+      if (mod?.systemPrompt.trim().isNotEmpty ?? false) kModPanelMiscName,
+      if (mod?.systemSetting.trim().isNotEmpty ?? false) kModPanelSettingName,
+      if (mod?.systemWritingStyle.trim().isNotEmpty ?? false)
+        kModPanelWritingName,
+      if (mod?.systemMust.trim().isNotEmpty ?? false) kModPanelMustName,
+    ];
     final fields = <String>[
       if (mod?.prePrompt.trim().isNotEmpty ?? false) '前置词',
       if (mod?.postPrompt.trim().isNotEmpty ?? false) '后置词',
-      if (mod?.systemPrompt.trim().isNotEmpty ?? false) kModPanelMiscTitle,
-      if (mod?.systemSetting.trim().isNotEmpty ?? false) kModPanelSettingTitle,
-      if (mod?.systemWritingStyle.trim().isNotEmpty ?? false)
-        kModPanelWritingTitle,
-      if (mod?.systemMust.trim().isNotEmpty ?? false) kModPanelMustTitle,
+      if (systemNames.isNotEmpty) systemPanelsSummary(systemNames),
       if (mod?.worldBookEntries.isNotEmpty ?? false) '世界书',
     ];
     return fields.isEmpty ? '（无内容）' : '含：${fields.join('、')}';
