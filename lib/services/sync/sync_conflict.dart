@@ -257,7 +257,7 @@ class ModEntryPreview {
   final String prePrompt;
   final String postPrompt;
 
-  /// 杂项要求（`system_prompt`，原「系统提示词」）。
+  /// 通用约束（`system_prompt`，原「系统提示词」）。
   final String systemPrompt;
 
   /// 设定（`system_setting`，v26 新增）。
@@ -266,7 +266,7 @@ class ModEntryPreview {
   /// 文笔要求与参考段落（`system_writing_style`，v26 新增）。
   final String systemWritingStyle;
 
-  /// 强指令（`system_must`，v26 新增）。
+  /// 最高优先约束（`system_must`，v26 新增）。
   final String systemMust;
 
   final int worldBookCount;

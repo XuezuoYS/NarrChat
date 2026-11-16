@@ -44,9 +44,9 @@ void main() {
   const mods = ModsBundle(
     prePrompts: '（Mod 前置词示例）',
     postPrompts: '（Mod 后置词示例）',
-    mustPrompts: '（Mod 强指令示例）',
-    mustSegments: ['（Mod 强指令示例）'],
-    systemPrompts: '（Mod 杂项要求示例）',
+    mustPrompts: '（Mod 最高优先约束示例）',
+    mustSegments: ['（Mod 最高优先约束示例）'],
+    systemPrompts: '（Mod 通用约束示例）',
     settingPrompts: '（Mod 设定示例）',
     worldBooks: '（Mod 世界书示例）',
     writingStylePrompts: '（Mod 文笔与参考段落示例）',

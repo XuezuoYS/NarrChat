@@ -341,7 +341,7 @@ void main() {
         'description': '老简介',
         'pre_prompt': '老前置',
         'post_prompt': '老后置',
-        'system_prompt': '老杂项',
+        'system_prompt': '老通用约束',
         'world_book': '[]',
         'created_at': '2026-01-01T00:00:00.000Z',
         'updated_at': '2026-01-02T00:00:00.000Z',
@@ -384,7 +384,7 @@ void main() {
       expect(old, isNotNull);
       expect(old!.name, '老 Mod');
       expect(old.prePrompt, '老前置');
-      expect(old.systemPrompt, '老杂项');
+      expect(old.systemPrompt, '老通用约束');
       expect(old.systemMust, '');
       expect(old.systemSetting, '');
       expect(old.systemWritingStyle, '');

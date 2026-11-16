@@ -466,7 +466,7 @@ void main() {
         Mod(
           uuid: 'm1',
           name: '甲',
-          systemMust: '强指令',
+          systemMust: '最高优先约束',
           createdAt: DateTime.utc(2026, 1, 1),
           updatedAt: DateTime.utc(2026, 1, 1),
         ),

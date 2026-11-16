@@ -302,7 +302,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
         const SettingsPageHeader(
           title: 'Mod 管理',
           description:
-              'Mod 是两段对话词（前置 / 后置）加五段 system 内容（强指令、杂项要求、设定、文笔）与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
+              'Mod 是两段对话词（前置 / 后置）加五段 system 内容（最高优先约束、通用约束、设定、文笔）与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
         ),
         if (provider.modsDowngraded) ...[
           _DowngradedHint(onDismiss: provider.dismissModsDowngraded),
@@ -456,7 +456,7 @@ class _ModTile extends StatelessWidget {
   /// 非空内容段摘要（辅助辨识）。
   ///
   /// 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 →
-  /// **System 提示词的一段**（杂项 & 设定 & 文笔 & 强指令）→ 世界书。
+  /// **System 提示词的一段**（通用约束 & 设定 & 文笔 & 最高优先约束）→ 世界书。
   /// 四个 system 通道共用一次前缀（[systemPanelsSummary]），避免列表里
   /// 「System 提示词 - 」连排四遍。
   String get _fieldsSummary {

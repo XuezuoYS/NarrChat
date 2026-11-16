@@ -122,7 +122,7 @@ const PromptInterface promptInterface = PromptV3();
 - 模块 / 子模块一律 `#` 一级标题；**must 与 must- 例外**——它们是不带标题的段落序列
   （段1 + Mod 段），块内分条只用 `- `（不用数字序号）；
 - **Mod 内容不单独起标题、不标 Mod 字样**：紧贴宿主块往下接。例外是 `extra`——它没有宿主块，
-  标题由程序给（`# 杂项要求：`）；
+  标题由程序给（`# 通用约束：`）；
 - **无内容即删块**：可选项为空就连标题一起删，不写「（无）」「未设置」；
 - **多行内容保留换行**（Mod / 书籍设定 / 世界书 / 文笔参考 / 类别格式 / 前后置词），
   只有单行字段（书籍名 / 分类 / 上轮时间 / 角色层级）才折叠换行；
@@ -155,7 +155,7 @@ const PromptInterface promptInterface = PromptV3();
 | `prePrompts` | user 消息前置词区 | `pre_prompt` |
 | `postPrompts` | user 消息后置词区 | `post_prompt` |
 | `mustPrompts` | `must` 的段 2~n（不标标题、不标 Mod 字样） | `system_must` |
-| `systemPrompts` | `extra` 的 `# 杂项要求：` 下 | `system_prompt` |
+| `systemPrompts` | `extra` 的 `# 通用约束：` 下 | `system_prompt` |
 | `settingPrompts` | `setting` 的 `# 书籍设定和要求：` 内，紧随书籍设定 | `system_setting` |
 | `worldBooks` | `setting` 的 `# 世界书：` 内，紧随书籍世界书 | `world_book` |
 | `writingStylePrompts` | `writingStyle` 的 `# 文笔要求与参考段落：`（不标 Mod 字样） | `system_writing_style` |
@@ -163,7 +163,7 @@ const PromptInterface promptInterface = PromptV3();
 四条约定：
 
 - **`ModsBundle` 多出三段**：`mustPrompts` / `settingPrompts` / `writingStylePrompts` 分别承载
-  Mod 的强指令、设定、文笔；`systemPrompts` 的语义收窄为「杂项要求」，字段名不变；
+  Mod 的最高优先约束、设定、文笔；`systemPrompts` 的语义收窄为「通用约束」，字段名不变；
 - **注入文本不标身份**：不出现 Mod 字样、不起标题——立一块标题，模型就容易把 Mod 当成
   "另一套规则"分而治之。`extra` 的标题是程序给的、中性名，不属于 Mod 文案；
 - **空段不接**：`writingStylePrompts` 为空时连标题一起删、`systemPrompts` 为空时整个 `extra`

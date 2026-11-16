@@ -20,7 +20,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// 23：library 增加删除时的轮号（回收站展示用）。
 /// 24：书库 `book_meta` 增加 `book_cover_img`（书籍自定义封面）。
 /// 25：`round_stack` 增加非创作步子模型（subagent）统计四列。
-/// 26：`mods` 增加强指令 / 设定 / 文笔三列（v3 提示词的 Mod 七通道）。
+/// 26：`mods` 增加最高优先约束 / 设定 / 文笔三列（v3 提示词的 Mod 七通道）。
 const int userDataDbVersion = 26;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。

@@ -19,8 +19,8 @@ void main() {
     name: '文笔润色',
     description: '让文风更流畅',
     prePrompt: '前置词内容',
-    systemPrompt: '杂项内容',
-    systemMust: '强指令内容',
+    systemPrompt: '通用约束内容',
+    systemMust: '最高优先约束内容',
     systemSetting: '设定内容',
     systemWritingStyle: '文笔内容',
     worldBookEntries: [ModWorldBookEntry(keyword: '宗门', content: '宗门设定')],
@@ -116,8 +116,8 @@ void main() {
       expect(find.text(title), findsOneWidget, reason: '导航缺少：$title');
     }
     expect(kModPanelWritingTitle, 'System 提示词 - 文笔要求与参考段落');
-    expect(find.text('杂项要求'), findsNothing);
-    expect(find.text('强指令'), findsNothing);
+    expect(find.text('通用约束'), findsNothing);
+    expect(find.text('最高优先约束'), findsNothing);
   });
 
   testWidgets('宽屏：切到新列面板显示列名 / 注入位置与 3.0 提醒条', (tester) async {
@@ -198,7 +198,7 @@ void main() {
 
     expect(find.byKey(const ValueKey('mod_panel_content_must')), findsOneWidget);
     expect(find.text('该列在 3.0 不生效'), findsOneWidget);
-    expect(find.text(kModPanelMustTitle), findsOneWidget, reason: '选择器已切到强指令');
+    expect(find.text(kModPanelMustTitle), findsOneWidget, reason: '选择器已切到最高优先约束');
   });
 
   testWidgets('小屏（360×640）：长标题下也不溢出、编辑区可用', (tester) async {
@@ -245,8 +245,8 @@ void main() {
     expect(lastResult, isNotNull);
     expect(lastResult!.name, '文笔润色');
     expect(lastResult!.prePrompt, '前置词内容');
-    expect(lastResult!.systemMust, '强指令内容');
-    expect(lastResult!.systemPrompt, '杂项内容');
+    expect(lastResult!.systemMust, '最高优先约束内容');
+    expect(lastResult!.systemPrompt, '通用约束内容');
     expect(lastResult!.systemSetting, '设定内容');
     expect(lastResult!.systemWritingStyle, '文笔内容');
     expect(lastResult!.worldBookEntries, hasLength(1));

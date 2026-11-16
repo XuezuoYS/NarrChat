@@ -69,10 +69,10 @@ enum ModPanel { basic, pre, post, misc, setting, writing, must, worldBook }
 const String kModPanelSystemPrefix = 'System 提示词 - ';
 
 /// 四个 system 通道的**短名**（不含前缀；摘要里用它们拼）。
-const String kModPanelMiscName = '杂项';
+const String kModPanelMiscName = '通用约束';
 const String kModPanelSettingName = '设定';
 const String kModPanelWritingName = '文笔要求与参考段落';
-const String kModPanelMustName = '强指令';
+const String kModPanelMustName = '最高优先约束';
 
 /// 四个 system 通道的**完整面板标题**（对话框导航 / 下拉选择器用）。
 const String kModPanelMiscTitle = '$kModPanelSystemPrefix$kModPanelMiscName';
@@ -82,7 +82,7 @@ const String kModPanelMustTitle = '$kModPanelSystemPrefix$kModPanelMustName';
 
 /// 列表摘要里的一段「system 通道」：前缀只出现一次，通道之间用 ` & ` 连接。
 ///
-/// 例：`System 提示词 - 强指令 & 文笔要求与参考段落`
+/// 例：`System 提示词 - 最高优先约束 & 文笔要求与参考段落`
 /// （顺序要按调用方传的顺序；空列表返回空串，调用方直接跳过即可）。
 String systemPanelsSummary(List<String> shortNames) => shortNames.isEmpty
     ? ''
@@ -537,7 +537,7 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
       panel: ModPanel.misc,
       title: kModPanelMiscTitle,
       column: 'system_prompt',
-      injection: '`{system_extra}` 的「杂项要求」块',
+      injection: '`{system_extra}` 的「通用约束」块',
       activeIn30: true,
     ),
     _ModPanelMeta(

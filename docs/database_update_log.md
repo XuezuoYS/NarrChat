@@ -11,13 +11,13 @@
 
 Mod 库 `mods` 增加三列，全部非空、默认空串：
 
-- `system_must TEXT NOT NULL DEFAULT ''`：强指令，进 `{system_must}` 的段 2~n，
+- `system_must TEXT NOT NULL DEFAULT ''`：最高优先约束，进 `{system_must}` 的段 2~n，
   并在 system 末尾以逆序复述一次（token 翻倍）；
 - `system_setting TEXT NOT NULL DEFAULT ''`：设定，紧随书籍设定注入；
 - `system_writing_style TEXT NOT NULL DEFAULT ''`：文笔要求与参考段落，
   排在书范文之前。
 
-`system_prompt` 的语义收窄为「杂项要求」（列名不变，老内容原样保留、只是注入位置
+`system_prompt` 的语义收窄为「通用约束」（列名不变，老内容原样保留、只是注入位置
 改到 `{system_extra}`）。三列的物理位置在 `deleted_at` 之后：老库只能 `ALTER TABLE`
 追加到表尾，新装库照同一位置写。
 

@@ -78,7 +78,7 @@ class PromptRequest {
   /// 已按关键词命中筛好的世界书条目文本（扫描在调用方完成）。
   final String worldBookEntries;
 
-  /// 本书启用的 Mod 束（七段：前置 / 后置 / 强指令 / 杂项 / 设定 / 世界书 / 文笔）。
+  /// 本书启用的 Mod 束（七段：前置 / 后置 / 最高优先约束 / 通用约束 / 设定 / 世界书 / 文笔）。
   final ModsBundle? mods;
 
   /// 修改轮目标（null = 新建轮）。

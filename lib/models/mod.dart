@@ -70,7 +70,7 @@ class ModWorldBookEntry {
 /// - 用户自定义 Mod：可查看、编辑、导出与导入（[uuid] 即数据库主键、[presetKey] 为 null）。
 ///
 /// 七列的语义与落点见 `docs/mods.md` §二；其中 [systemPrompt] 自 v3 起语义收窄为
-/// 「杂项要求」，[systemMust] / [systemSetting] / [systemWritingStyle] 是 v26 新增的
+/// 「通用约束」，[systemMust] / [systemSetting] / [systemWritingStyle] 是 v26 新增的
 /// 三列（v25 及更早的 Mod 一律为空）。
 class Mod {
   /// 数据库主键（UUID v4，用户 Mod 才有）。本地新建时由 [ModDao.insertMod] 生成；
@@ -92,10 +92,10 @@ class Mod {
   /// 后置词内容（发送请求时自动置入用户提示词的后置词区）。
   final String postPrompt;
 
-  /// 强指令内容：进 `{system_must}` 的段 2~n，并在 system 末尾逆序复现一次。
+  /// 最高优先约束内容：进 `{system_must}` 的段 2~n，并在 system 末尾逆序复现一次。
   final String systemMust;
 
-  /// 杂项要求内容：进 `{system_extra}` 的「杂项要求」块（原「系统提示词」）。
+  /// 通用约束内容：进 `{system_extra}` 的「通用约束」块（原「系统提示词」）。
   final String systemPrompt;
 
   /// 设定内容：紧随书籍设定之后注入（`{system_setting}` 的设定块）。
@@ -248,7 +248,7 @@ class Mod {
 
   /// 导出 / 分享用的 JSON 结构（仅包含内容与辨识字段，不包含数据库 id）。
   ///
-  /// `version: 2` 起带上强指令 / 设定 / 文笔三个键；v1（缺这三个键）仍可导入，
+  /// `version: 2` 起带上最高优先约束 / 设定 / 文笔三个键；v1（缺这三个键）仍可导入，
   /// 缺失的键按空串落地。
   Map<String, dynamic> toJson() {
     return {
@@ -323,7 +323,7 @@ class ModsBundle {
   /// 拼合层就退化成「整段视作一块」。
   final List<String> mustSegments;
 
-  /// `{system_extra}` 的「杂项要求」块（原「系统提示词」）。
+  /// `{system_extra}` 的「通用约束」块（原「系统提示词」）。
   final String systemPrompts;
 
   /// `{system_setting}` 的设定块（紧随书籍设定）。

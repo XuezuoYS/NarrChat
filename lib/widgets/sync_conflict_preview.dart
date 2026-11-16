@@ -448,13 +448,13 @@ class _SyncConflictPreviewDialogState
               remoteText: remote?.postPrompt ?? '',
             ),
             _LongCompareField(
-              label: '强指令',
+              label: '最高优先约束',
               localText: local?.systemMust ?? '',
               remoteText: remote?.systemMust ?? '',
               markdown: true,
             ),
             _LongCompareField(
-              label: '杂项要求',
+              label: '通用约束',
               localText: local?.systemPrompt ?? '',
               remoteText: remote?.systemPrompt ?? '',
               markdown: true,

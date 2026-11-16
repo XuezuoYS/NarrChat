@@ -56,9 +56,9 @@ void main() {
   const mods = ModsBundle(
     prePrompts: 'MOD 前置词',
     postPrompts: 'MOD 后置词',
-    mustPrompts: 'MOD 强指令',
-    mustSegments: ['MOD 强指令'],
-    systemPrompts: 'MOD 杂项要求',
+    mustPrompts: 'MOD 最高优先约束',
+    mustSegments: ['MOD 最高优先约束'],
+    systemPrompts: 'MOD 通用约束',
     settingPrompts: 'MOD 设定',
     worldBooks: 'MOD 世界书',
     writingStylePrompts: 'MOD 文笔与参考段落',
@@ -139,7 +139,7 @@ void main() {
         '# 角色状态栏内容：',
         '# 文笔参考范文：',
         '# 文笔要求与参考段落：',
-        '# 杂项要求：',
+        '# 通用约束：',
         '# 简要工具指南：',
       ]) {
         expect(system, isNot(contains(absent)), reason: absent);
@@ -205,9 +205,9 @@ void main() {
         ],
       );
       const multiMods = ModsBundle(
-        mustPrompts: 'MOD 强指令第一行\nMOD 强指令第二行',
-        mustSegments: ['MOD 强指令第一行\nMOD 强指令第二行'],
-        systemPrompts: 'MOD 杂项第一行\nMOD 杂项第二行',
+        mustPrompts: 'MOD 最高优先约束第一行\nMOD 最高优先约束第二行',
+        mustSegments: ['MOD 最高优先约束第一行\nMOD 最高优先约束第二行'],
+        systemPrompts: 'MOD 通用约束第一行\nMOD 通用约束第二行',
         settingPrompts: 'MOD 设定第一行\nMOD 设定第二行',
         writingStylePrompts: 'MOD 文笔第一行\nMOD 文笔第二行',
         worldBooks: 'MOD 世界书第一行\nMOD 世界书第二行',
@@ -223,8 +223,8 @@ void main() {
         '第一行设定\n第二行设定',
         '要求一\n要求二',
         '范例第一行\n范例第二行',
-        'MOD 强指令第一行\nMOD 强指令第二行',
-        'MOD 杂项第一行\nMOD 杂项第二行',
+        'MOD 最高优先约束第一行\nMOD 最高优先约束第二行',
+        'MOD 通用约束第一行\nMOD 通用约束第二行',
         'MOD 设定第一行\nMOD 设定第二行',
         'MOD 文笔第一行\nMOD 文笔第二行',
         '世界书第一行\n世界书第二行',
@@ -268,30 +268,30 @@ void main() {
   });
 
   group('v3 · Mod 注入位', () {
-    test('五个 system 注入位各就各位，除杂项外不标 Mod 字样', () {
+    test('五个 system 注入位各就各位，除通用约束外不标 Mod 字样', () {
       final system = promptInterface.system(
         requestOf(PromptMode.chat, modsBundle: mods),
       );
-      final mustAt = system.indexOf('MOD 强指令');
-      final extraAt = system.indexOf('# 杂项要求：');
+      final mustAt = system.indexOf('MOD 最高优先约束');
+      final extraAt = system.indexOf('# 通用约束：');
       final settingAt = system.indexOf('MOD 设定');
       final worldAt = system.indexOf('MOD 世界书');
       final writingAt = system.indexOf('MOD 文笔与参考段落');
       for (final at in [mustAt, extraAt, settingAt, worldAt, writingAt]) {
         expect(at, greaterThan(0));
       }
-      // 强指令在最前（must），杂项在 accord 之后，设定/世界书在中段，文笔在范文之前。
+      // 最高优先约束在最前（must），通用约束在 accord 之后，设定/世界书在中段，文笔在范文之前。
       final accordAt = system.indexOf('# 当前请求协议：');
-      expect(mustAt, lessThan(accordAt), reason: '强指令在协议之前');
-      expect(extraAt, greaterThan(accordAt), reason: '杂项在协议之后');
+      expect(mustAt, lessThan(accordAt), reason: '最高优先约束在协议之前');
+      expect(extraAt, greaterThan(accordAt), reason: '通用约束在协议之后');
       expect(settingAt, greaterThan(extraAt));
       expect(writingAt, greaterThan(worldAt));
       // Mod 内容不单独起标题、不出现「Mod」字样。
-      expect(system, isNot(contains('MOD 强指令：')));
+      expect(system, isNot(contains('MOD 最高优先约束：')));
       expect(system, isNot(contains('Mod')));
       expect(system, isNot(contains('mod')));
-      // 强指令会被逆序复述一次：system 里出现两次。
-      expect('MOD 强指令'.allMatches(system).length, 2);
+      // 最高优先约束会被逆序复述一次：system 里出现两次。
+      expect('MOD 最高优先约束'.allMatches(system).length, 2);
     });
 
     test('前置 / 后置词进 user 消息（不进 system）', () {

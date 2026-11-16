@@ -207,7 +207,7 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         const SettingsPageHeader(
           title: 'Mod 管理',
-          description: '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词与五段 system 内容（强指令、杂项要求、设定、文笔）以及世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。改动在点击顶栏「保存」后生效。',
+          description: '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词与五段 system 内容（最高优先约束、通用约束、设定、文笔）以及世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。改动在点击顶栏「保存」后生效。',
         ),
         SettingsCard(
           padding: const EdgeInsets.all(12),
@@ -399,7 +399,7 @@ class _BookModTile extends StatelessWidget {
       return mod!.description.trim();
     }
     // 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 →
-    // System 提示词的一段（杂项 & 设定 & 文笔 & 强指令）→ 世界书。
+    // System 提示词的一段（通用约束 & 设定 & 文笔 & 最高优先约束）→ 世界书。
     final systemNames = <String>[
       if (mod?.systemPrompt.trim().isNotEmpty ?? false) kModPanelMiscName,
       if (mod?.systemSetting.trim().isNotEmpty ?? false) kModPanelSettingName,

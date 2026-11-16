@@ -70,7 +70,7 @@ void main() {
     expect(bundle.systemPrompts, 'S1\n\nS2');
     expect(bundle.settingPrompts, 'T1\n\nT2');
     expect(bundle.writingStylePrompts, 'W1\n\nW2');
-    // 强指令的逐块形态与拼合结果同源（mustReverse 要按块反转）。
+    // 最高优先约束的逐块形态与拼合结果同源（mustReverse 要按块反转）。
     expect(bundle.mustSegments, ['M1', 'M2']);
   });
 
@@ -185,7 +185,7 @@ void main() {
       expect(bundle.worldBooks, contains('宗门类场景需补充'));
       expect(bundle.worldBooks, contains('场景描写基准'));
 
-      // 不串位：强指令不跑到杂项去，文笔不跑到设定去。
+      // 不串位：最高优先约束不跑到通用约束去，文笔不跑到设定去。
       expect(bundle.systemPrompts, isNot(contains('世界细节基准')));
       expect(bundle.settingPrompts, isNot(contains('文笔要求')));
       expect(bundle.writingStylePrompts, isNot(contains('世界细节基准')));

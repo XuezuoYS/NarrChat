@@ -233,14 +233,14 @@ void main() {
     final uuid = await stack.seedMod(
       name: '多通道 Mod',
       prePrompt: '前置内容',
-      systemMust: '强指令内容',
+      systemMust: '最高优先约束内容',
       systemWritingStyle: '文笔内容',
     );
     await pumpPanel(tester, enabledUuids: [uuid]);
 
-    // 顺序 = 面板顺序（文笔在强指令之前），前缀只出现一次、通道之间用 ` & `。
+    // 顺序 = 面板顺序（文笔在最高优先约束之前），前缀只出现一次、通道之间用 ` & `。
     final summary = find.text(
-      '含：前置词、System 提示词 - 文笔要求与参考段落 & 强指令',
+      '含：前置词、System 提示词 - 文笔要求与参考段落 & 最高优先约束',
     );
     expect(summary, findsOneWidget);
     expect(

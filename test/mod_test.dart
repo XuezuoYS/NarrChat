@@ -18,8 +18,8 @@ void main() {
         description: '用于测试',
         prePrompt: '前置内容',
         postPrompt: '后置内容',
-        systemMust: '强指令内容',
-        systemPrompt: '杂项内容',
+        systemMust: '最高优先约束内容',
+        systemPrompt: '通用约束内容',
         systemSetting: '设定内容',
         systemWritingStyle: '文笔内容',
         worldBookEntries: [
@@ -31,8 +31,8 @@ void main() {
       expect(json['type'], 'narrchat_mod');
       expect(json['version'], 2);
       expect(json['name'], '测试 Mod');
-      expect(json['systemMust'], '强指令内容');
-      expect(json['systemPrompt'], '杂项内容');
+      expect(json['systemMust'], '最高优先约束内容');
+      expect(json['systemPrompt'], '通用约束内容');
       expect(json['systemSetting'], '设定内容');
       expect(json['systemWritingStyle'], '文笔内容');
 
@@ -42,8 +42,8 @@ void main() {
       expect(restored.description, '用于测试');
       expect(restored.prePrompt, '前置内容');
       expect(restored.postPrompt, '后置内容');
-      expect(restored.systemMust, '强指令内容');
-      expect(restored.systemPrompt, '杂项内容');
+      expect(restored.systemMust, '最高优先约束内容');
+      expect(restored.systemPrompt, '通用约束内容');
       expect(restored.systemSetting, '设定内容');
       expect(restored.systemWritingStyle, '文笔内容');
       expect(restored.worldBookEntries, hasLength(2));
@@ -488,7 +488,7 @@ void main() {
       final system = promptInterface.system(requestOf(mods: mods));
       final user = promptInterface.user(requestOf(mods: mods));
 
-      // System：强指令在最前、杂项在协议之后、设定紧随书籍设定、
+      // System：最高优先约束在最前、通用约束在协议之后、设定紧随书籍设定、
       // 文笔排在书范文之前（本请求没有书文笔要求，故只比出现位置）。
       expect(system, contains('MOD_MUST'));
       expect(system, contains('MOD_SYS'));
@@ -541,10 +541,10 @@ void main() {
       final system = promptInterface.system(request);
       final user = promptInterface.user(request);
 
-      // ① 强指令：进 must，并在末尾逆序复述一次（system 里出现两次）。
+      // ① 最高优先约束：进 must，并在末尾逆序复述一次（system 里出现两次）。
       expect(system, contains(example.systemMust.trim()));
       expect(example.systemMust.trim().allMatches(system).length, 2);
-      // ② 杂项要求：extra 的 `# 杂项要求：` 下。
+      // ② 通用约束：extra 的 `# 通用约束：` 下。
       expect(system, contains(example.systemPrompt));
       // ③ 设定：紧随书籍设定。
       expect(system, contains('世界细节基准'));

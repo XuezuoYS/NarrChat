@@ -59,7 +59,7 @@ class ModsDb implements ModsStore {
   /// 唯一来源，读写两侧都从这里取，避免列清单漂移。
   ///
   /// 列序 = `docs/mods.md` §二的「列名顺序」（`system_prompt` → 设定 → 文笔 →
-  /// 强指令 → 世界书），与数据库物理列序无关。
+  /// 最高优先约束 → 世界书），与数据库物理列序无关。
   static const List<String> _rowColumns = [
     'mod_uuid AS uuid',
     'name',

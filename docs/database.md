@@ -105,12 +105,12 @@ local_config/local_db/              ← 本地数据（不云备份）
 | `description` | TEXT | DEFAULT `''` | 说明 |
 | `pre_prompt` | TEXT | DEFAULT `''` | 前置词 |
 | `post_prompt` | TEXT | DEFAULT `''` | 后置词 |
-| `system_prompt` | TEXT | DEFAULT `''` | 杂项要求（原「系统提示词」） |
+| `system_prompt` | TEXT | DEFAULT `''` | 通用约束（原「系统提示词」） |
 | `world_book` | TEXT | DEFAULT `''` | 世界书 |
 | `created_at` | TEXT | NOT NULL | 创建时间 |
 | `updated_at` | TEXT | NOT NULL | 更新时间 |
 | `deleted_at` | TEXT | NULL | 软删墓碑 |
-| `system_must` | TEXT | NOT NULL DEFAULT `''` | 强指令（v26，进 `{system_must}` 段 2~n） |
+| `system_must` | TEXT | NOT NULL DEFAULT `''` | 最高优先约束（v26，进 `{system_must}` 段 2~n） |
 | `system_setting` | TEXT | NOT NULL DEFAULT `''` | 设定（v26，紧随书籍设定） |
 | `system_writing_style` | TEXT | NOT NULL DEFAULT `''` | 文笔（v26，书范文之前） |
 

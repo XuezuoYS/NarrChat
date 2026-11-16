@@ -42,10 +42,10 @@ void main() {
         ),
         'description': '新简介',
         'post_prompt': '新后置词',
-        'system_prompt': '新杂项',
+        'system_prompt': '新通用约束',
         'system_setting': '新设定',
         'system_writing_style': '新文笔',
-        'system_must': '新强指令',
+        'system_must': '新最高优先约束',
         'world_book': '[{"keyword":"关键词","content":"内容"}]',
       },
     ]);
@@ -56,10 +56,10 @@ void main() {
     expect(saved.description, '新简介');
     expect(saved.prePrompt, '新前置词');
     expect(saved.postPrompt, '新后置词');
-    expect(saved.systemPrompt, '新杂项');
+    expect(saved.systemPrompt, '新通用约束');
     expect(saved.systemSetting, '新设定');
     expect(saved.systemWritingStyle, '新文笔');
-    expect(saved.systemMust, '新强指令');
+    expect(saved.systemMust, '新最高优先约束');
     expect(saved.worldBookEntries.single.keyword, '关键词');
     expect(saved.worldBookEntries.single.content, '内容');
     expect(saved.createdAt, updatedAt);

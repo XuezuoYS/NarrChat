@@ -14,7 +14,7 @@ import 'package:narrchat/utils/memory_entry_format.dart';
 /// - 8 个模块按固定顺序：must → accord → extra → about → setting →
 ///   writingStyle → accordEnding → mustReverse；
 /// - must / mustReverse **不带标题**，块序列整体反转（Mod 段一起参与）；
-/// - `extra` 是唯一带程序标题的 Mod 注入位（`# 杂项要求：`）；
+/// - `extra` 是唯一带程序标题的 Mod 注入位（`# 通用约束：`）；
 /// - 空模块整块消失，绝不写「（无）」「未设置」。
 ///
 /// 接口层（绑定 / 工具 / user 衔接）在 `test/prompt_interface_test.dart`，
@@ -38,9 +38,9 @@ void main() {
   const mods = ModsBundle(
     prePrompts: 'MOD 前置词',
     postPrompts: 'MOD 后置词',
-    mustPrompts: 'MOD1 强指令\n\nMOD2 强指令',
-    mustSegments: ['MOD1 强指令', 'MOD2 强指令'],
-    systemPrompts: 'MOD 杂项要求',
+    mustPrompts: 'MOD1 最高优先约束\n\nMOD2 最高优先约束',
+    mustSegments: ['MOD1 最高优先约束', 'MOD2 最高优先约束'],
+    systemPrompts: 'MOD 通用约束',
     settingPrompts: 'MOD 设定',
     worldBooks: 'MOD 世界书',
     writingStylePrompts: 'MOD 文笔',
@@ -100,8 +100,8 @@ void main() {
       expect(must, startsWith('你是一名喜爱创作，涉猎文学、艺术的作者'));
       expect(must, isNot(contains('# 必须遵循')));
       expect(must, isNot(contains('# ')), reason: 'must 里不应出现任何标题');
-      final mod1 = must.indexOf('MOD1 强指令');
-      final mod2 = must.indexOf('MOD2 强指令');
+      final mod1 = must.indexOf('MOD1 最高优先约束');
+      final mod2 = must.indexOf('MOD2 最高优先约束');
       expect(mod1, greaterThan(must.indexOf(PromptV3Sections.mustSegment1)));
       expect(mod1, lessThan(mod2), reason: '保持用户设定的 Mod 顺序');
     });
@@ -110,7 +110,7 @@ void main() {
       final reverse = sectionsOf(requestOf(modsBundle: mods))['mustReverse']!;
       expect(
         reverse,
-        'MOD2 强指令\n\nMOD1 强指令\n\n${PromptV3Sections.mustSegment1}',
+        'MOD2 最高优先约束\n\nMOD1 最高优先约束\n\n${PromptV3Sections.mustSegment1}',
       );
     });
 
@@ -185,14 +185,14 @@ void main() {
   });
 
   group('extra（唯一带程序标题的 Mod 注入位）', () {
-    test('有 Mod 杂项 → 带 # 杂项要求：标题，且不含 Mod 字样', () {
+    test('有 Mod 通用约束 → 带 # 通用约束：标题，且不含 Mod 字样', () {
       final extra = sectionsOf(requestOf(modsBundle: mods))['extra']!;
-      expect(extra, startsWith('# 杂项要求：'));
-      expect(extra, contains('MOD 杂项要求'));
+      expect(extra, startsWith('# 通用约束：'));
+      expect(extra, contains('MOD 通用约束'));
       expect(extra, isNot(contains('Mod')));
     });
 
-    test('没有 Mod 杂项 → 整个模块消失', () {
+    test('没有 Mod 通用约束 → 整个模块消失', () {
       final sections = sectionsOf(requestOf(modsBundle: const ModsBundle()));
       expect(sections.containsKey('extra'), isFalse);
       expect(sections.containsKey('about'), isTrue);

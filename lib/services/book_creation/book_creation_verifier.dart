@@ -306,10 +306,10 @@ class BookCreationVerifier {
       );
     }
 
-    // 七段逐一确认落点：强指令进 must（system 里会出现两次：正序 + 逆序复述）、
-    // 杂项进 extra、设定紧随书籍设定、文笔进「文笔要求与参考段落」。
-    _expectContains(problems, system, '所选 Mod 的强指令', bundle.mustPrompts);
-    _expectContains(problems, system, '所选 Mod 的杂项要求', bundle.systemPrompts);
+    // 七段逐一确认落点：最高优先约束进 must（system 里会出现两次：正序 + 逆序复述）、
+    // 通用约束进 extra、设定紧随书籍设定、文笔进「文笔要求与参考段落」。
+    _expectContains(problems, system, '所选 Mod 的最高优先约束', bundle.mustPrompts);
+    _expectContains(problems, system, '所选 Mod 的通用约束', bundle.systemPrompts);
     _expectContains(problems, system, '所选 Mod 的设定', bundle.settingPrompts);
     _expectContains(
       problems,
