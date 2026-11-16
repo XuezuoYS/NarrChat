@@ -299,7 +299,11 @@ class TestStack {
     String description = '',
     String prePrompt = '',
     String postPrompt = '',
+    String systemMust = '',
     String systemPrompt = '',
+    String systemSetting = '',
+    String systemWritingStyle = '',
+    List<ModWorldBookEntry> worldBookEntries = const [],
   }) {
     return repos.mod.createMod(
       Mod(
@@ -307,7 +311,11 @@ class TestStack {
         description: description,
         prePrompt: prePrompt,
         postPrompt: postPrompt,
+        systemMust: systemMust,
         systemPrompt: systemPrompt,
+        systemSetting: systemSetting,
+        systemWritingStyle: systemWritingStyle,
+        worldBookEntries: worldBookEntries,
       ),
     );
   }

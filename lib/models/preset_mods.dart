@@ -4,6 +4,12 @@ import 'mod.dart';
 ///
 /// 预置 Mod 以稳定字符串 [Mod.presetKey] 标识，书籍通过 `book_mods` 表的
 /// `preset_key` 列引用；预置内容随应用版本更新，不存入数据库。
+///
+/// **v3 内容口径**：本批只把 Mod 通道从 4 个扩到 7 个，预置文案一字未改——
+/// 现有的 `systemPrompt` 继续落「杂项要求」(`{system_extra}`)，用户已启用预置
+/// Mod 的书籍效果完全不变。是否把文笔类改投 `systemWritingStyle`、把约束 / 破甲类
+/// 改投 `systemMust`，属于**内容调整**（会改变提示词权重，强指令还会以正反两份
+/// 进上下文），需要单独评估后再动。
 class PresetMods {
   PresetMods._();
 

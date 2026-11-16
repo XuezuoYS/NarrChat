@@ -20,7 +20,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// 23：library 增加删除时的轮号（回收站展示用）。
 /// 24：书库 `book_meta` 增加 `book_cover_img`（书籍自定义封面）。
 /// 25：`round_stack` 增加非创作步子模型（subagent）统计四列。
-const int userDataDbVersion = 25;
+/// 26：`mods` 增加强指令 / 设定 / 文笔三列（v3 提示词的 Mod 七通道）。
+const int userDataDbVersion = 26;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。
 ///
@@ -64,6 +65,11 @@ Future<void> createLibrarySchema(Database db) async {
 /// Mod 库：用户自定义 Mod。
 ///
 /// 预置 Mod 不落本表（程序内置），引用标识固定 `preset::<id>`。
+///
+/// v26 的三个提示词列（`system_must` / `system_setting` / `system_writing_style`）
+/// **追加在末尾**：老库是用 `ALTER TABLE ... ADD COLUMN` 补的，只能落在表尾，
+/// 新装库照同一位置写，升级库与新装库的物理列序因此完全一致（所有读写都按
+/// 列名取，不依赖顺序，这里只为快照对比与调试时看着整齐）。
 Future<void> createModsSchema(Database db) async {
   await db.execute('''
     CREATE TABLE IF NOT EXISTS meta (
@@ -82,7 +88,10 @@ Future<void> createModsSchema(Database db) async {
       world_book    TEXT DEFAULT '',
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL,
-      deleted_at    TEXT
+      deleted_at    TEXT,
+      system_must          TEXT NOT NULL DEFAULT '',
+      system_setting       TEXT NOT NULL DEFAULT '',
+      system_writing_style TEXT NOT NULL DEFAULT ''
     )
   ''');
 }

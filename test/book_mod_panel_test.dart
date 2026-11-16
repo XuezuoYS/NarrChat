@@ -4,6 +4,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/providers/mod_provider.dart';
 import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/book_mod_panel.dart';
+import 'package:narrchat/widgets/mod_detail_dialog.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 import 'package:provider/provider.dart';
 
@@ -91,13 +92,21 @@ void main() {
     await tester.tap(find.text('文笔润色'));
     await settle(tester);
 
-    // 打开的是只读「查看 Mod」对话框：5 个内容标签 + 仅「关闭」按钮。
+    // 打开的是只读「查看 Mod」对话框：宽屏下左侧导航列出 8 个面板，仅「关闭」按钮。
     expect(find.text('查看 Mod'), findsOneWidget);
-    expect(find.text('基本信息'), findsOneWidget);
-    expect(find.text('前置词'), findsOneWidget);
-    expect(find.text('后置词'), findsOneWidget);
-    expect(find.text('系统提示词'), findsOneWidget);
-    expect(find.text('世界书'), findsOneWidget);
+    for (final panel in ModPanel.values) {
+      expect(
+        find.byKey(ValueKey('mod_panel_nav_${panel.name}')),
+        findsOneWidget,
+        reason: '缺少面板导航：${panel.name}',
+      );
+    }
+    // 当前面板（基本信息）的标题与「列名 / 注入位置」灰字可见。
+    expect(
+      find.byKey(const ValueKey('mod_panel_editor_basic')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('仅用于辨识，不发送给 AI'), findsWidgets);
     expect(
       find.widgetWithText(TextField, '文笔润色'),
       findsOneWidget,

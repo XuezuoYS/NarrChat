@@ -5,7 +5,7 @@ import 'package:narrchat/services/agent/agent_mode_profile.dart';
 import 'package:narrchat/services/agent/state/agent_state_working_copy.dart';
 import 'package:narrchat/services/agent/state/state_tools.dart';
 import 'package:narrchat/services/prompt_text.dart';
-import 'package:narrchat/services/prompt_v2_sections.dart';
+import 'package:narrchat/services/prompt_v3_sections.dart';
 import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// `AgentStateWorkingCopy` 锚定式编辑单元测试。
@@ -349,7 +349,7 @@ void main() {
           baseRound.memorySummary);
     });
 
-    test('读取器描述与 v2 契约引用的标签 / 工具名与渲染器一致（历史栏目）', () {
+    test('读取器描述与 v3 契约引用的标签 / 工具名与渲染器一致（历史栏目）', () {
       final c = copy(lastRound: baseRound);
       final tools = {
         for (final tool in buildStateTools(
@@ -358,10 +358,10 @@ void main() {
         ))
           tool.name: tool,
       };
-      // v2 实发文本：Lv.1 正文契约 + 状态工具契约（当前档位只托管历史）。
+      // v3 实发文本：Lv.1 的 accord 契约（含输出区块契约与状态工具契约）。
       final contract = [
-        ...PromptV2Sections.modeContractLines(PromptMode.agentLv1),
-        ...PromptV2Sections.toolContractLines(),
+        PromptV3Sections.accord(PromptMode.agentLv1, 0),
+        PromptV3Sections.stateToolContract,
       ].join('\n');
       for (final section in AgentModeProfile.lv1.toolSections) {
         final tag = '<${section.tag}>';

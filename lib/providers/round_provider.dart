@@ -1153,14 +1153,27 @@ class RoundProvider extends ChangeNotifier {
     final agentMode = profile.isOn;
     final responsesWire =
         settings?.selectedPlatform.apiType.isResponses ?? false;
-    // 提示词取用**唯一入口**（`prompt_interface.dart`，当前绑定 v2）：
+    // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
+    // 无设置注入时按预设能力回退（仅测试/降级路径）。
+    // Agent 档位下 思考 / 流式 / 搜索**强制开启**（只受模型配置页的能力开关
+    // 限制）：组合时快照覆盖，**不改写**用户已保存的 Chat 每轮选项，
+    // 关闭 Agent 后立即恢复用户原设置。
+    //
+    // 位置必须早于提示词取用：system 的「简要工具指南」要按本轮**实际注册**的
+    // 工具现生成（见 `PromptRequest.toolNames`），而工具名由档位 + 联网开关决定。
+    final useSearch = settings == null
+        ? AiPlatforms.defaultSupportsSearch
+        : agentMode
+            ? settings.supportsSearch
+            : (settings.supportsSearch && settings.lastSearch);
+    // 提示词取用**唯一入口**（`prompt_interface.dart`，当前绑定 v3）：
     // 本轮 system / user 文本与工具集都只经接口取用；报文与历史消息不在此列。
     final promptRequest = PromptRequest(
       book: book,
       mode: profile.promptMode,
       // 修改轮：基座 = 被重写轮的上一轮；新建轮：上一轮。
       lastRound: lastRound,
-      // 修改轮：本轮 user 消息的【主人的输入】= 用户填写的修改意见。
+      // 修改轮：本轮 user 消息的【用户输入】= 用户填写的修改意见。
       userInput: rewrite?.opinion ?? userInput,
       worldBookEntries: worldBookEntries,
       mods: modsBundle,
@@ -1170,6 +1183,8 @@ class RoundProvider extends ChangeNotifier {
               roundIndex: targetRoundIndex,
               roundTime: rewrite.target.currentTime,
             ),
+      // 工具名与同一轮的 `tools()` 同源：档位栏目 + 联网开关，纯计算不造工具。
+      toolNames: promptToolNames(level: agentLevel, useSearch: useSearch),
     );
     final systemPrompt = promptInterface.system(promptRequest);
 
@@ -1198,16 +1213,6 @@ class RoundProvider extends ChangeNotifier {
         ? _userContentWithImages(userText, currentImages, imageDataUrls)
         : userText;
 
-    // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
-    // 无设置注入时按预设能力回退（仅测试/降级路径）。
-    // Agent 档位下 思考 / 流式 / 搜索**强制开启**（只受模型配置页的能力开关
-    // 限制）：组合时快照覆盖，**不改写**用户已保存的 Chat 每轮选项，
-    // 关闭 Agent 后立即恢复用户原设置。
-    final useSearch = settings == null
-        ? AiPlatforms.defaultSupportsSearch
-        : agentMode
-            ? settings.supportsSearch
-            : (settings.supportsSearch && settings.lastSearch);
     final useStream = agentMode
         ? (settings?.supportsStreaming ?? true)
         : (settings?.streaming ?? true);

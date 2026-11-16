@@ -24,7 +24,9 @@ const int backupDigestVersion = 1;
 ///   （墓碑只取"是否删除"这个布尔，否则一台设备只要打开过一次就会认为内容变了）；
 /// - `branches.branch_working`：本机当前看哪个分支，不是内容；
 /// - `meta` / `book_meta` 的 `master_uuid` 与 `database_version`：身份与镜像值；
-/// - `raw_response`：当前恒空，但它是内容列，参与哈希更安全（将来会填）。
+/// - `raw_response`：当前恒空，但它是内容列，参与哈希更安全（将来会填）；
+/// - `mods` 的 v26 三个新列**值为空时完全不出现在哈希里**（见
+///   [_DigestTable.omitIfEmpty]）：加列不升版本、也不让升级首同步凭空制造冲突。
 ///
 /// 为什么必须排除时间戳：每台设备每次保存都会刷新 `updated_at`，
 /// 如果它进摘要，两台设备会永远觉得对方"又改了"，无限互推代数。
@@ -60,7 +62,18 @@ class BackupDigest {
             'pre_prompt',
             'post_prompt',
             'system_prompt',
+            'system_setting',
+            'system_writing_style',
+            'system_must',
             'world_book',
+          ],
+          // v26 的三个新列**空值不参与哈希**（缺列时也等于空）：
+          // 这样未填写新列的 Mod 摘要与升级前逐字节一致，升级后首次同步不会
+          // 把每个单元误判成「本地改过」而弹冲突。
+          omitIfEmpty: [
+            'system_setting',
+            'system_writing_style',
+            'system_must',
           ],
           deletedColumn: 'deleted_at',
           orderBy: ['mod_uuid'],
@@ -151,18 +164,37 @@ class BackupDigest {
     input.add(utf8.encode('$backupDigestVersion|${unit.unitKey}\n'));
     for (final spec in tables) {
       input.add(utf8.encode('## ${spec.table}\n'));
-      final rows = await db.rawQuery(spec.sql);
+      // 列可能还不存在（例如升级前从未打开过的 v25 文件被同步读到）：
+      // 缺列等价于「空值」，与 `omitIfEmpty` 的处理口径一致。
+      final existing = await _columnsOf(db, spec.table);
+      final rows = await db.rawQuery(spec.sqlFor(existing));
       for (final row in rows) {
-        input.add(utf8.encode(jsonEncode(row)));
+        final payload = spec.omitIfEmpty.isEmpty
+            ? row
+            : <String, Object?>{
+                for (final entry in row.entries)
+                  if (!spec.isEmptyOmitted(entry.key, entry.value))
+                    entry.key: entry.value,
+              };
+        input.add(utf8.encode(jsonEncode(payload)));
         input.add(const [10]);
       }
     }
     input.close();
     return sink.value.toString();
   }
+
+  /// 表的实际列名集合（`PRAGMA table_info`，只用来容忍缺列）。
+  static Future<Set<String>> _columnsOf(
+    DatabaseExecutor db,
+    String table,
+  ) async {
+    final rows = await db.rawQuery('PRAGMA table_info("$table")');
+    return {for (final row in rows) row['name'] as String? ?? ''};
+  }
 }
 
-/// 一条摘要查询：表名 + 列清单 (+ 墓碑布尔 + 排序)。
+/// 一条摘要查询：表名 + 列清单 (+ 墓碑布尔 + 排序 + 空值省略)。
 ///
 /// **列名一律加引号**：SQLite 会把裸写的 `current_time` 解析成 `CURRENT_TIME`
 /// 关键字（查询时刻的墙上时间），摘要于是每秒都变，同步就"没改也 +1 代"。
@@ -173,6 +205,7 @@ class _DigestTable {
     required this.columns,
     this.deletedColumn,
     this.orderBy = const [],
+    this.omitIfEmpty = const [],
   });
 
   /// 表名。
@@ -187,15 +220,28 @@ class _DigestTable {
   /// 排序键；空 = 不排序（单行表）。
   final List<String> orderBy;
 
-  String get sql {
+  /// 值为 `null` / 空串时**从行里删掉**的列。
+  ///
+  /// 用途：加列不升 `backupDigestVersion` 也不制造冲突——旧行本来就没有这些值，
+  /// 让"空"等价于"不存在"。缺列（老快照）同样按不存在处理。
+  final List<String> omitIfEmpty;
+
+  /// 该键值是否属于「空值省略」。
+  bool isEmptyOmitted(String? key, Object? value) =>
+      key != null &&
+      omitIfEmpty.contains(key) &&
+      (value == null || (value is String && value.isEmpty));
+
+  /// 按表的**实际列**拼 SELECT：`existing` 里没有的列直接不取。
+  String sqlFor(Set<String> existing) {
     final parts = <String>[
-      ...columns.map(_quote),
-      if (deletedColumn != null)
+      ...columns.where(existing.contains).map(_quote),
+      if (deletedColumn != null && existing.contains(deletedColumn))
         '(${_quote(deletedColumn!)} IS NOT NULL) AS "is_deleted"',
     ];
     final order = orderBy.isEmpty
         ? ''
-        : ' ORDER BY ${orderBy.map(_quote).join(', ')}';
+        : ' ORDER BY ${orderBy.where(existing.contains).map(_quote).join(', ')}';
     return 'SELECT ${parts.join(', ')} FROM ${_quote(table)}$order';
   }
 

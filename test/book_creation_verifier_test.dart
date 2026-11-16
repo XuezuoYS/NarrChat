@@ -179,6 +179,9 @@ class _EmptyPromptInterface implements PromptInterface {
   String system(PromptRequest request) => '';
 
   @override
+  List<PromptSection> systemSections(PromptRequest request) => const [];
+
+  @override
   String user(PromptRequest request) => '';
 
   @override

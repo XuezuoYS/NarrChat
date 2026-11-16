@@ -19,6 +19,11 @@ class ModRepository {
 
   Future<Mod?> getMod(String uuid) => mods.get(uuid);
 
+  /// 库是否被旧版本（3.0）访问过：版本停在 25、但 v26 的新列已存在。
+  ///
+  /// 旧版本保存 Mod 时整行覆盖，三个新列因此可能已被清空；界面据此提示一次。
+  Future<bool> modsDowngraded() => mods.downgraded();
+
   /// 新建 Mod，返回 uuid。
   Future<String> createMod(Mod mod) async {
     final uuid = mod.uuid.isEmpty ? UuidUtils.generateUuidV4() : mod.uuid;

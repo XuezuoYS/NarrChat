@@ -380,14 +380,14 @@ void main() {
       final messages = (preview.firstFrame['messages'] as List)
           .cast<Map<String, dynamic>>();
       expect(messages.last['role'], 'user');
-      // 如实反映：用户消息仍在（模板骨架），但【主人的输入】为空。
+      // 如实反映：用户消息仍在（模板骨架），但【用户输入】为空。
       final content = messages.last['content'] as String;
-      expect(content, contains('【主人的输入】'));
+      expect(content, contains('【用户输入】'));
       expect(
         content
-            .split('【主人的输入】')
+            .split('【用户输入】')
             .last
-            .split('【主人的输入stop】')
+            .split('【用户输入结束】')
             .first
             .trim(),
         isEmpty,

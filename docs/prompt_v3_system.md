@@ -478,7 +478,9 @@ Mod 的文笔块（`# 文笔要求与参考段落：`）算作「文笔要求」
 | `lib/services/prompt_v3_build.dart` | **system 拼合**：按序取模块、空模块删除、空行 join、`must-` 逆序；只依赖纯 Dart |
 | `lib/services/prompt_v3_context.dart` | **上下文**：本轮 user 消息与 Agent 回合指令的文案 + 拼装（见 `docs/prompt_v3_context.md`） |
 | `lib/services/prompt_v3_tools.dart` | 工具清单（沿用 v2 的 `listPromptTools` 路由，不重写） |
-| `lib/services/prompt_text.dart` | 新增 `PromptSection`（name + text）与 `systemSections()` 契约；`PromptRequest` 增 `toolNames` |
+| `lib/services/prompt_tool_names.dart` | 工具名字投影（纯 Dart）：`toolNames` 与工具实例同源，供拼 system 之前调用 |
+| `lib/services/prompt_text_format.dart` | 拼装纯函数（多行保留 / 单行折叠 / 段间空行），文案层共用 |
+| `lib/services/prompt_text.dart` | 新增 `PromptSection`（name + text）、`SystemSectionSource` 与 `systemSections()` 契约；`PromptRequest` 增 `toolNames` |
 | `lib/services/prompt_interface.dart` | `PromptV3` 聚合 + 唯一绑定改一行 |
 
 两条实现规矩：

@@ -261,7 +261,8 @@ Lv.1 的世界状态 / 角色状态随**正文文本**携带（复用 Chat 的�
 编辑会改变它——所以维护步的锚点就是此前那一份。Lv.1 同理：**调研步读取一次，
 维护步直接复用**。为此：
 
-- **提示词**：`prompt_v2_sections.dart` 的模式契约与维护回合指令都明确
+- **提示词**：`prompt_v3_sections.dart`（system 的状态工具契约）与
+  `prompt_v3_context.dart`（维护回合指令）都明确
   「重复读取会被拒绝 / 锚点从对话中已有的结果逐字复制」，
   并要求**第一个维护回合就完成**（经 `promptInterface.stageState` 取用）；
 - **执行器护栏**（`_refusedRepeatRead`）：**维护步**对

@@ -10,6 +10,7 @@ import 'package:narrchat/models/branch.dart';
 import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/round_generation.dart';
 import 'package:narrchat/services/cloud_backup/backup_digest.dart';
+import 'package:narrchat/services/cloud_backup/backup_mods_conflict.dart';
 import 'package:narrchat/services/cloud_backup/backup_unit.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -366,6 +367,153 @@ void main() {
       final changed = await BackupDigest.ofMods(BackupUnit.mods, db3);
       await db3.close();
       expect(changed, isNot(before));
+    });
+
+    /// 造一个 v25 结构的 Mod 库（**没有** v26 的三个提示词列）。
+    Future<String> createV25File(String dir) async {
+      final path = p.join(dir, 'narrchat_mods.db');
+      final db = await openDb(path);
+      await db.execute(
+        'CREATE TABLE meta (master_uuid TEXT PRIMARY KEY, '
+        'database_version INTEGER NOT NULL)',
+      );
+      await db.execute('''
+        CREATE TABLE mods (
+          mod_uuid      TEXT PRIMARY KEY,
+          name          TEXT NOT NULL,
+          description   TEXT DEFAULT '',
+          pre_prompt    TEXT DEFAULT '',
+          post_prompt   TEXT DEFAULT '',
+          system_prompt TEXT DEFAULT '',
+          world_book    TEXT DEFAULT '',
+          created_at    TEXT NOT NULL,
+          updated_at    TEXT NOT NULL,
+          deleted_at    TEXT
+        )
+      ''');
+      await db.insert('meta', {
+        'master_uuid': 'm',
+        'database_version': 25,
+      });
+      await db.insert('mods', {
+        'mod_uuid': 'm1',
+        'name': '甲',
+        'description': '',
+        'pre_prompt': '前置',
+        'post_prompt': '',
+        'system_prompt': '',
+        'world_book': '[]',
+        'created_at': '2026-01-01T00:00:00.000Z',
+        'updated_at': '2026-01-01T00:00:00.000Z',
+      });
+      await db.execute('PRAGMA user_version = 25');
+      return path;
+    }
+
+    test('v26 新列为空：摘要与 v25 旧算法逐字节一致（升级不制造冲突）', () async {
+      final dir = newTempDir('digest_mods_empty_');
+      final v25Path = await createV25File(dir);
+
+      // v26 库：同样的内容，三个新列留空。
+      final v26Path = p.join(dir, 'narrchat_mods_v26.db');
+      final v26 = ModsDb(pathOverride: v26Path, masterUuidOverride: 'm');
+      await v26.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          prePrompt: '前置',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      await v26.close();
+
+      final db25Read = await openDb(v25Path);
+      final v25Digest = await BackupDigest.ofMods(BackupUnit.mods, db25Read);
+      await db25Read.close();
+
+      final db26 = await openDb(v26Path);
+      final v26Digest = await BackupDigest.ofMods(BackupUnit.mods, db26);
+      await db26.close();
+
+      expect(
+        v26Digest,
+        v25Digest,
+        reason: '新列为空时摘要必须与旧算法一致，否则升级首同步会凭空冲突',
+      );
+    });
+
+    test('v26 新列填了内容 → 摘要变化', () async {
+      final dir = newTempDir('digest_mods_new_');
+      final path = p.join(dir, 'narrchat_mods.db');
+      final empty = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      await empty.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      await empty.close();
+
+      final db = await openDb(path);
+      final before = await BackupDigest.ofMods(BackupUnit.mods, db);
+      await db.close();
+
+      final withMust = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      await withMust.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          systemMust: '强指令',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      await withMust.close();
+
+      final db2 = await openDb(path);
+      final after = await BackupDigest.ofMods(BackupUnit.mods, db2);
+      await db2.close();
+
+      expect(after, isNot(before), reason: '填了新列就是内容变化');
+    });
+
+    test('读 v25 快照（缺新列）不报错，行结构与指纹与 v26 空列一致', () async {
+      final dir = newTempDir('digest_mods_v25rows_');
+      final v25Path = await createV25File(dir);
+      final db25 = await openDb(v25Path);
+      final v25Rows = await readModRowsFromDatabase(db25);
+      await db25.close();
+      expect(v25Rows, hasLength(1));
+      // 缺列在固定位置用空串占位，列序不变。
+      expect(v25Rows.single.keys.toList(), modRowColumns);
+      expect(v25Rows.single['system_must'], '');
+      expect(v25Rows.single['system_setting'], '');
+      expect(v25Rows.single['system_writing_style'], '');
+
+      final v26Path = p.join(dir, 'narrchat_mods_v26b.db');
+      final v26 = ModsDb(pathOverride: v26Path, masterUuidOverride: 'm');
+      await v26.upsert(
+        Mod(
+          uuid: 'm1',
+          name: '甲',
+          prePrompt: '前置',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      await v26.close();
+      final db26 = await openDb(v26Path);
+      final v26Rows = await readModRowsFromDatabase(db26);
+      await db26.close();
+
+      expect(
+        ModContentDigest.ofRow(v25Rows.single),
+        ModContentDigest.ofRow(v26Rows.single),
+        reason: '缺列按空串参与指纹：升级前后同一个 Mod 不会被判为内容不同',
+      );
     });
   });
 

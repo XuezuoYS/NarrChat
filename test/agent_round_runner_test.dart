@@ -272,7 +272,7 @@ void main() {
       '${maintenanceInput['content']}',
       startsWith('[State-maintenance turn]'),
     );
-    expect('${maintenanceInput['content']}', contains('只维护记忆总结'));
+    expect('${maintenanceInput['content']}', contains('**仅维护记忆总结**'));
     expect('${maintenanceInput['content']}', isNot(contains('【记忆回合】')));
   });
 

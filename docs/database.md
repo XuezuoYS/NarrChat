@@ -1,4 +1,4 @@
-# 数据库（R3，schema 25）
+# 数据库（R3，schema 26）
 
 > 本文是当前数据库设计指南。上一个版本（单库 `narrchat.db`）已归档到
 > [`docs/old/database_r2.md`](old/database_r2.md)。
@@ -21,8 +21,9 @@ R3 随 v3.0 做破坏性更新，升级后的结构不能交给 1.x / 2.x 使用
   `lib/utils/timestamp_format.dart`，不要自行拼接，也不要用 `datetime()` / `strftime()`
   参与索引查询。
 - 布尔一律用 INTEGER 的 `0` / `1`，并声明 `NOT NULL`。
-- `user_data/` 下各库共用 `PRAGMA user_version = 25`；`local_config/` 下各库独立管理版本。
+- `user_data/` 下各库共用 `PRAGMA user_version = 26`；`local_config/` 下各库独立管理版本。
   `meta` / `book_meta` 里的 `database_version` 只是迁移后写入的调试镜像，不能用来判断版本。
+  库版本**高于**当前应用支持的版本时直接拒绝打开（不静默降级，见 `openAppDatabase`）。
 - 索引按实际查询在 DDL 中建设和调整，本文不逐项列索引。
 - 下文是结构和行为指南；具体 DDL 的唯一来源是 `lib/database/db_schema.dart`。
 
@@ -104,11 +105,18 @@ local_config/local_db/              ← 本地数据（不云备份）
 | `description` | TEXT | DEFAULT `''` | 说明 |
 | `pre_prompt` | TEXT | DEFAULT `''` | 前置词 |
 | `post_prompt` | TEXT | DEFAULT `''` | 后置词 |
-| `system_prompt` | TEXT | DEFAULT `''` | 系统提示词 |
+| `system_prompt` | TEXT | DEFAULT `''` | 杂项要求（原「系统提示词」） |
 | `world_book` | TEXT | DEFAULT `''` | 世界书 |
 | `created_at` | TEXT | NOT NULL | 创建时间 |
 | `updated_at` | TEXT | NOT NULL | 更新时间 |
 | `deleted_at` | TEXT | NULL | 软删墓碑 |
+| `system_must` | TEXT | NOT NULL DEFAULT `''` | 强指令（v26，进 `{system_must}` 段 2~n） |
+| `system_setting` | TEXT | NOT NULL DEFAULT `''` | 设定（v26，紧随书籍设定） |
+| `system_writing_style` | TEXT | NOT NULL DEFAULT `''` | 文笔（v26，书范文之前） |
+
+后三列是 v26 新增的，物理位置在 `deleted_at` 之后（老库只能 `ALTER TABLE` 追加到表尾，
+新装库照同一位置写）；**列语义与 UI 顺序以 `docs/mods.md` 为准**，与物理列序无关。
+三个新列为空时**不参与整库内容摘要**，所以升级后首次同步不会制造冲突。
 
 ### `narrbook_<book_uuid>.db`
 
@@ -330,6 +338,10 @@ Token 统计卡只显示主模型；否则分别显示主模型 / 子模型 / �
 - `round_stack` 的四个 `subagent_*` 列是**展示统计元数据**，刻意不参与摘要：
   加列不升 `backupDigestVersion`，避免升级后首次同步对每个单元弹摘要版本冲突；
   统计会随书库快照正常上传，只是不单独作为“内容变了”的依据。
+- `mods` 的三个提示词新列（`system_must` / `system_setting` / `system_writing_style`）
+  采用同一思路但更严格：**值为空时整列不进哈希**，所以「升级后新列还是空的」与
+  「升级前根本没有这一列」算出的摘要逐字节一致，升级首同步不会凭空冲突。
+  逐 Mod 指纹与行读取对缺列（v25 快照）按空串处理，两侧空值仍然判「一致」。
 - **云端清单同时记内容指标**：`latestRoundIndex`（最新轮号）、
   `roundGenerationCount`（`round_stack` 行数 = 代数）、`contentUpdatedAt`
   （书籍 PK 用；Mod 库只做时间兜底展示）、`savedAt`、`deviceId`。

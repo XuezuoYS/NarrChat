@@ -271,7 +271,11 @@ class BackupPreviewReader {
       description: _textOf(row, 'description'),
       prePrompt: _textOf(row, 'pre_prompt'),
       postPrompt: _textOf(row, 'post_prompt'),
+      // 缺列（v25 快照 / 未迁移的 v25 文件）一律按空串。
       systemPrompt: _textOf(row, 'system_prompt'),
+      systemSetting: _textOf(row, 'system_setting'),
+      systemWritingStyle: _textOf(row, 'system_writing_style'),
+      systemMust: _textOf(row, 'system_must'),
       worldBookCount: _worldBookCountOf(_textOf(row, 'world_book')),
       updatedAt: parseTimestamp(row['updated_at']),
       deleted: row['deleted_at'] != null,

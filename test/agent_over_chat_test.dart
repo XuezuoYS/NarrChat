@@ -205,7 +205,7 @@ void main() {
     final system =
         (bodies.first['messages'] as List).first as Map<String, dynamic>;
     expect(system['role'], 'system');
-    expect('${system['content']}', contains('只输出 5 个二级标题'));
+    expect('${system['content']}', contains('仅输出 5 个二级标题'));
     expect('${system['content']}', contains('narrchat_readHistory'));
 
     // 调研回合的工具调用在 Chat 通道转为合法会话：assistant 携带 tool_calls、

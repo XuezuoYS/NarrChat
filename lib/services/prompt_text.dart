@@ -17,8 +17,10 @@ import 'memory_merge_planner.dart';
 
 /// 生成模式：决定取用哪一份文本契约。
 ///
-/// v1 提示词已移除后，本枚举是**唯一真源**：`prompt_v2_sections` /
-/// `prompt_v2_build` / `AgentModeProfile` 都由它分派（不再有格式规格对象）。
+/// v1 / v2 提示词已移除后，本枚举是**唯一真源**：`prompt_v3_sections` /
+/// `prompt_v3_build` / `prompt_v3_context` / `AgentModeProfile` 都由它分派
+/// （不再有格式规格对象）。
+///
 /// 历史上的 `agentLv2`（完整 Agent：正文三小节 + 六状态工具）已移除；其提示词
 /// 模板不再生成，多栏目工具框架仍保留在 `agent/state/` 下供后续档位复用。
 enum PromptMode {
@@ -29,7 +31,7 @@ enum PromptMode {
   agentLv1,
 }
 
-/// 修改轮（按意见重写某一轮）的目标描述（见 `docs/old/ai_prompt_v2.md` 修改轮模板）。
+/// 修改轮（按意见重写某一轮）的目标描述（见 `docs/prompt_v3_context.md` §二）。
 ///
 /// 与 [PromptRequest.lastRound] 的分工：
 /// - [PromptRequest.lastRound] = **生成基座**，即被重写轮的**上一轮**——上轮时间、
@@ -57,6 +59,7 @@ class PromptRequest {
     this.worldBookEntries = '',
     this.mods,
     this.rewrite,
+    this.toolNames = const [],
   });
 
   /// 本书（书籍名 / 分类 / 设定 / 文笔 / 角色类别 / 记忆合并档位等全在内）。
@@ -75,7 +78,7 @@ class PromptRequest {
   /// 已按关键词命中筛好的世界书条目文本（扫描在调用方完成）。
   final String worldBookEntries;
 
-  /// 本书启用的 Mod 束（system / 前置词 / 后置词 / 世界书）。
+  /// 本书启用的 Mod 束（七段：前置 / 后置 / 强指令 / 杂项 / 设定 / 世界书 / 文笔）。
   final ModsBundle? mods;
 
   /// 修改轮目标（null = 新建轮）。
@@ -83,6 +86,13 @@ class PromptRequest {
   /// 非 null 时 [lastRound] 是**被重写轮的上一轮**（生成基座），[userInput] 是用户
   /// 填写的修改意见；`user()` 因此走「重写第 {轮次} 轮」模板，其余与新建轮同构。
   final RewriteTarget? rewrite;
+
+  /// 本轮**实际注册**的工具名（`['narrchat_readHistory', …]`）。
+  ///
+  /// 只用来生成 `accordEnding` 的简要工具指南：空列表 = 本轮没有工具 = 指南整块
+  /// 删；不认识的工具名被忽略（不映射、不报错）——工具清单的真源永远是
+  /// `AgentToolSource.tools()`，这里只是同一轮注册结果的名字投影。
+  final List<String> toolNames;
 }
 
 /// 取用 Agent 阶段回合指令所需的上下文（按步骤取用，未用到的字段忽略）。
@@ -112,6 +122,34 @@ abstract interface class SystemPromptSource {
   /// 返回**拼合完成**的 system 文本：调用方不得再增删改写（线路层只负责把它
   /// 放进 `system` 消息或 `instructions` 字段）。
   String system(PromptRequest request);
+}
+
+/// **按模块切分**的 system 文本源（调试 / 预览 / 测试用）。
+///
+/// [SystemPromptSource.system] 就是把这里各模块的 [PromptSection.text] 用**一个
+/// 空行**串起来（空模块本来就不出现），所以两者永远不会打架：要报文用 `system()`，
+/// 要断言 / 预览某一块就用 `systemSections()`。
+abstract interface class SystemSectionSource {
+  /// 按拼合顺序返回 system 的模块；空模块不出现。
+  List<PromptSection> systemSections(PromptRequest request);
+}
+
+/// system 里的一个模块：稳定的名字 + 拼好的一段正文。
+///
+/// [name] 是测试与预览的锚点（改名等于改测试锚点，别随手改）；[text] 不含模块
+/// 之间那一个空行。
+class PromptSection {
+  const PromptSection({required this.name, required this.text});
+
+  /// 稳定标识：`must` / `accord` / `extra` / `about` / `setting` /
+  /// `writingStyle` / `accordEnding` / `mustReverse`。
+  final String name;
+
+  /// 该模块的最终正文。
+  final String text;
+
+  @override
+  String toString() => 'PromptSection($name, ${text.length} chars)';
 }
 
 /// **本轮 user 消息**文本源（历史 user / assistant 消息不在此列）。

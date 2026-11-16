@@ -199,7 +199,7 @@ void main() {
     expect(names, isNot(contains('narrchat_readCharacterState')));
     // instructions = Lv.1 的 5 区块契约 + 历史工具契约；三回合共用同一前缀
     //（服务商上下文缓存依赖此）。
-    expect('${capturedBodies.first['instructions']}', contains('只输出 5 个二级标题'));
+    expect('${capturedBodies.first['instructions']}', contains('仅输出 5 个二级标题'));
     expect(
       '${capturedBodies.first['instructions']}',
       contains('narrchat_readHistory'),
@@ -362,8 +362,8 @@ void main() {
                 .lastWhere((i) => i['role'] == 'user')['content']
             as String;
     expect(prepareDirective, startsWith('【调研回合】'));
-    expect(prepareDirective, contains('不要'));
-    expect(prepareDirective, contains('立刻发正文回合'));
+    expect(prepareDirective, contains('不得在文本通道输出任何内容'));
+    expect(prepareDirective, contains('将立即发起正文回合'));
     expect(
       capturedBodies.every((b) => !b.containsKey('tool_choice')),
       isTrue,
@@ -410,7 +410,7 @@ void main() {
     );
     final body = preview.firstFrame;
     expect(body['model'], 'deepseek-flash');
-    expect('${body['instructions']}', contains('只输出 5 个二级标题'));
+    expect('${body['instructions']}', contains('仅输出 5 个二级标题'));
     expect('${body['instructions']}', contains('narrchat_readHistory'));
     expect(body['input'], isA<List>());
     // 首回合 = 调研回合：末条是紧随用户输入之后的「【调研回合】」指令，
@@ -767,7 +767,7 @@ void main() {
             )['content']
             as String;
     expect(maintenance, startsWith('[State-maintenance turn]'));
-    expect(maintenance, contains('只维护记忆总结'));
+    expect(maintenance, contains('**仅维护记忆总结**'));
     expect(maintenance, contains('narrchat_editHistory'));
     expect(maintenance, isNot(contains('不输出任何文本')));
     expect(maintenance, contains('重复读取'));

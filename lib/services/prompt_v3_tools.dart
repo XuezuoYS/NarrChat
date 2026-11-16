@@ -1,10 +1,14 @@
-/// **v2 工具清单**：列出并返回本轮发给 AI 的工具（工具定义即文本）。
+/// **v3 工具清单**：列出并返回本轮发给 AI 的工具（工具定义即文本）。
+///
+/// 两个职责，都在本模块，避免"名字"与"实例"两套路由漂移：
+/// - [listPromptTools]：本轮**工具实例**清单（唯一实现，`PromptV3.tools` 调用）；
+/// - [promptToolNames]：同一轮注册结果的**名字投影**（纯 Dart，见
+///   `prompt_tool_names.dart`），只喂 `PromptRequest.toolNames`（生成
+///   `accordEnding` 的简要工具指南）。两者一致性由
+///   `test/prompt_interface_test.dart` 逐一比对锁住。
 ///
 /// 状态工具按档位栏目现构（绑定本轮工作副本），联网工具按需叠加
-/// （搜索 → 打开页）；本函数是唯一实现，`PromptV2`（接口绑定）调用它。
-///
-/// 工具定义（名字 / schema / description / 参数说明）为 v2 口径：
-/// 简明中文，英文只保留工具名 / 状态块标签 / `op` 取值（见 `docs/agent_tools.md`）。
+/// （搜索 → 打开页）。
 ///
 /// 顺序即请求体 `tools` 数组顺序：状态工具在前（读取器 → 编辑器），联网工具在后；
 /// 任何顺序变化都会改动请求前缀、使服务商上下文缓存失效，不得随意调整。
@@ -19,6 +23,9 @@ import 'agent/state/agent_state_working_copy.dart';
 import 'agent/state/state_tools.dart';
 import 'agent/web_search_tool.dart';
 import 'html_search_service.dart';
+import 'prompt_tool_names.dart';
+
+export 'prompt_tool_names.dart';
 
 /// 列出本轮工具：`…状态工具, …联网工具`。
 ///

@@ -1,6 +1,7 @@
 import '../html_search_service.dart';
 import 'agent_activity.dart';
 import 'narr_agent_tool.dart';
+import 'web_tool_names.dart';
 
 /// 打开网页工具：从搜索结果中选定页面，抓取正文回传模型深入阅读。
 ///
@@ -54,9 +55,9 @@ class FetchPageTool implements NarrAgentTool {
   AgentActivityType get activityType => AgentActivityType.fetching;
 
   @override
-  String get name => 'narrchat_webFetchPage';
+  String get name => kWebFetchPageToolName;
 
-  /// 工具说明（v2 口径）：**简明中文**；英文只保留工具名与必要的标识。
+  /// 工具说明（v3 口径）：**简明中文**；英文只保留工具名与必要的标识。
   ///
   /// 与 `WebSearchTool.description` 组成同一流程的唯一说明来源：搜索 → 打开
   /// 页面读正文 → 再创作，不再向 system 注入联网指令。
