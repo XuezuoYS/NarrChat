@@ -35,7 +35,9 @@ import '../widgets/storage_management_panel.dart';
 /// - 关于：应用信息（宽屏下水平居中排版）。
 ///
 /// 表单状态（API 设置 + 云同步）由本页持有，切换面板不丢失；
-/// 右上角「保存」为全局保存：一次性校验并落库全部改动，不退出设置页。
+/// 右上角「保存」为统一保存：一次性校验并落库全部改动，不退出设置页。
+/// 只有这两块是「点保存才生效」的草稿——有未保存改动时顶栏显示黄色提示；
+/// 通用设置里的即时生效项不参与该提示。
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -86,6 +88,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final SettingsFormState _form;
   bool _isSaving = false;
 
+  /// 「存在变更未保存」的缓存：只在真假翻转时刷新界面，
+  /// 避免每次输入都重建设置页（API 面板自身已在监听表单）。
+  bool _hasUnsavedChanges = false;
+
   @override
   void initState() {
     super.initState();
@@ -93,15 +99,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ai: context.read<AiSettingsProvider>(),
       sync: context.read<CloudSyncProvider>(),
     );
+    _form.addListener(_onFormChanged);
   }
 
   @override
   void dispose() {
+    _form.removeListener(_onFormChanged);
     _form.dispose();
     super.dispose();
   }
 
-  /// 全局保存：统一校验并落库 API 设置 + 云同步，成功后不退出页面。
+  /// 表单任一改动（含 API Key / 云同步输入）后重新判定是否显示黄色提示。
+  void _onFormChanged() {
+    if (!mounted) return;
+    final dirty = _form.hasUnsavedChanges;
+    if (dirty == _hasUnsavedChanges) return;
+    setState(() => _hasUnsavedChanges = dirty);
+  }
+
+  /// 统一保存：校验并落库 API 设置 + 云同步，成功后不退出页面。
   Future<void> _saveAll() async {
     final notices = context.notices;
     setState(() => _isSaving = true);
@@ -129,14 +145,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SettingsNavItem(icon: Icons.cloud_outlined, label: '云同步'),
         SettingsNavItem(icon: Icons.storage_outlined, label: '存储管理'),
         // 「关于」是信息型短面板：豁免靠左骨架，在内容区内居中。
-        SettingsNavItem(
-          icon: Icons.info_outline,
-          label: '关于',
-          centered: true,
-        ),
+        SettingsNavItem(icon: Icons.info_outline, label: '关于', centered: true),
       ],
       actions: [
-        // 全局保存：对 API 设置 + 云同步的所有改动统一保存（不退出设置页）。
+        // 只有 API 设置 / 云同步这类「点保存才生效」的改动才提示；
+        // 通用设置里的即时项不会让这里出现黄字。
+        if (_hasUnsavedChanges)
+          const SettingsUnsavedHint(key: ValueKey('settings_unsaved_hint')),
+        // 统一保存：对 API 设置 + 云同步的所有改动统一保存（不退出设置页）。
         FilledButton.icon(
           onPressed: _isSaving ? null : _saveAll,
           icon: const Icon(Icons.save_outlined, size: 18),
@@ -156,9 +172,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           case SettingsScreen.pageIndexStorage:
             return const StorageManagementPanel();
           case SettingsScreen.pageIndexAbout:
-            return _AboutPanel(
-              externalLinkOpener: widget.externalLinkOpener,
-            );
+            return _AboutPanel(externalLinkOpener: widget.externalLinkOpener);
           default:
             return const GeneralSettingsForm();
         }
@@ -209,9 +223,7 @@ class _AboutPanelState extends State<_AboutPanel> {
       Uri.parse(AppConfig.githubRepoUrl),
     );
     if (opened || !mounted) return;
-    await Clipboard.setData(
-      const ClipboardData(text: AppConfig.githubRepoUrl),
-    );
+    await Clipboard.setData(const ClipboardData(text: AppConfig.githubRepoUrl));
     if (!mounted) return;
     context.notices.warning('无法打开浏览器，GitHub 链接已复制');
   }
@@ -255,10 +267,7 @@ class _AboutPanelState extends State<_AboutPanel> {
               ),
               if (ReleaseInfo.flutterVersion.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                _AboutRow(
-                  label: 'Flutter',
-                  value: ReleaseInfo.flutterVersion,
-                ),
+                _AboutRow(label: 'Flutter', value: ReleaseInfo.flutterVersion),
               ],
               const SizedBox(height: 14),
               Text(
@@ -325,10 +334,7 @@ class _AboutRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final valueText = Text(
       value,
-      style: TextStyle(
-        fontSize: 13,
-        color: context.narrColors.textPrimary,
-      ),
+      style: TextStyle(fontSize: 13, color: context.narrColors.textPrimary),
     );
     // 值可能是很长的版本号（beta / 构建号 / 本地标记）：整行给值留出
     // 剩余宽度并允许换行，避免把 Row 撑爆（曾经在关于页出现黄黑条纹）。

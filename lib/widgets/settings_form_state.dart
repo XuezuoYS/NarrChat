@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../config/ai_platforms.dart';
@@ -12,6 +15,10 @@ import '../services/sync/sync_models.dart';
 /// 由 [SettingsScreen] 持有并注入各面板：面板切换时表单状态不丢失，
 /// 右上角「保存」按钮可任意时机统一校验并落库（类似书籍设置的机制）；
 /// 保存成功后不退出设置页，仅弹出成功/失败提示。
+///
+/// **未保存提示只覆盖「点保存才生效」的内容**：API 设置（平台 / 模型 /
+/// API Key）与云同步（连接信息 / 同步模式）。图片大小上限、jpg 转换等
+/// 即时落库项改了立刻生效，[hasUnsavedChanges] 不会因此变真。
 ///
 /// AI 编辑采用「工作副本」：[_working] 为平台/模型列表的不可变快照，
 /// 每次编辑以 `copyWith` 替换，保证输入不互相污染。平台级文本（名称/Base URL）
@@ -31,17 +38,24 @@ class SettingsFormState extends ChangeNotifier {
   SettingsFormState({
     required AiSettingsProvider ai,
     required CloudSyncProvider sync,
-  })  : _ai = ai,
-        _sync = sync,
-        _working = List.of(ai.platforms),
-        webdavUrl = TextEditingController(text: sync.webdavUrl),
-        webdavUsername = TextEditingController(text: sync.webdavUsername),
-        webdavPassword = TextEditingController(text: sync.webdavPassword),
-        webdavFolder = TextEditingController(text: sync.folder),
-        syncMode = sync.syncMode {
+  }) : _ai = ai,
+       _sync = sync,
+       _working = List.of(ai.platforms),
+       webdavUrl = TextEditingController(text: sync.webdavUrl),
+       webdavUsername = TextEditingController(text: sync.webdavUsername),
+       webdavPassword = TextEditingController(text: sync.webdavPassword),
+       webdavFolder = TextEditingController(text: sync.folder),
+       syncMode = sync.syncMode {
     for (final p in _working) {
       _ensurePlatformControllers(p.id);
     }
+    for (final controller in _syncControllers) {
+      controller.addListener(_onDraftFieldChanged);
+    }
+    // 打开设置页时的值就是「已保存基线」。
+    _savedPlatformSignatures = _platformSignatures;
+    _savedApiKeys = _currentApiKeys;
+    _savedSync = _currentSyncSnapshot;
   }
 
   final AiSettingsProvider _ai;
@@ -74,6 +88,29 @@ class SettingsFormState extends ChangeNotifier {
   bool obscurePassword = true;
 
   // ---------------------------------------------------------------------------
+  // 未保存判定基线（只含「点保存才生效」的内容）
+  // ---------------------------------------------------------------------------
+  /// 已保存的平台结构：每个平台一份 JSON，顺序即工作副本顺序。
+  late List<String> _savedPlatformSignatures;
+
+  /// 已保存的各平台 API Key（去首尾空白）。
+  late Map<String, String> _savedApiKeys;
+
+  /// 已保存的云同步草稿。
+  late _SyncSnapshot _savedSync;
+
+  /// 批量改写控制器时抑制逐字段通知（如「删除连接」后统一复位）。
+  bool _suppressDraftNotifications = false;
+
+  /// 云同步连接相关的控制器（统一挂监听，输入即可刷新未保存状态）。
+  List<TextEditingController> get _syncControllers => [
+    webdavUrl,
+    webdavUsername,
+    webdavPassword,
+    webdavFolder,
+  ];
+
+  // ---------------------------------------------------------------------------
   // 派生：API 设置
   // ---------------------------------------------------------------------------
   List<AiPlatform> get platforms => _working;
@@ -86,13 +123,26 @@ class SettingsFormState extends ChangeNotifier {
 
   /// 工作副本里缺失的内置预置平台（可一键恢复，顺序同预置注册表）。
   List<AiPlatform> get missingPresetPlatforms => [
-        for (final preset in AiPlatforms.presetPlatforms)
-          if (!_working.any((p) => p.id == preset.id)) preset,
-      ];
+    for (final preset in AiPlatforms.presetPlatforms)
+      if (!_working.any((p) => p.id == preset.id)) preset,
+  ];
 
   /// 该平台是否仍与软件内置预置完全一致（非预置平台 → false，即"自定义"）。
   bool platformUnchanged(AiPlatform platform) =>
       AiPlatforms.isPresetUnchanged(platform);
+
+  /// 是否存在需要点右上角「保存」才会生效的未保存改动。
+  ///
+  /// 覆盖范围仅 API 设置（平台 / 模型 / API Key）与云同步（连接信息 /
+  /// 同步模式）；图片大小上限、jpg 转换等即时落库项不在判定内。
+  /// 改了又改回去（或只多出会被保存逻辑归一化的空白 / 斜杠）不算改动。
+  bool get hasUnsavedChanges {
+    if (!listEquals(_platformSignatures, _savedPlatformSignatures)) return true;
+    for (final entry in _currentApiKeys.entries) {
+      if (entry.value != (_savedApiKeys[entry.key] ?? '')) return true;
+    }
+    return _currentSyncSnapshot != _savedSync;
+  }
 
   /// 单张图片大小上限（MB，默认 16，可在设置中调整）。
   int get maxImageSizeMB => _ai.maxImageSizeMB;
@@ -115,6 +165,36 @@ class SettingsFormState extends ChangeNotifier {
       _baseUrlCtrls[platformId]!;
   TextEditingController apiKeyCtrlFor(String platformId) =>
       _apiKeyCtrls[platformId]!;
+
+  // ---------------------------------------------------------------------------
+  // 云同步草稿
+  // ---------------------------------------------------------------------------
+  /// 更新同步模式草稿（与连接信息一起随「保存」落库）。
+  void setSyncMode(SyncMode mode) {
+    if (syncMode == mode) return;
+    syncMode = mode;
+    notifyListeners();
+  }
+
+  /// 「删除连接」成功后的草稿复位。
+  ///
+  /// 删除连接本身是**即时落库**操作，清空后的连接信息就是新的已保存状态，
+  /// 因此同步这部分基线，不让顶栏出现「未保存」提示；AI 等其它未保存草稿
+  /// 不受影响，仍会继续提示。
+  void resetSyncDraftAfterDisconnect() {
+    _suppressDraftNotifications = true;
+    try {
+      webdavUrl.clear();
+      webdavUsername.clear();
+      webdavPassword.clear();
+      webdavFolder.text = CloudSyncProvider.defaultFolder;
+      syncMode = SyncMode.auto;
+    } finally {
+      _suppressDraftNotifications = false;
+    }
+    _savedSync = _currentSyncSnapshot;
+    notifyListeners();
+  }
 
   // ---------------------------------------------------------------------------
   // 平台编辑
@@ -195,7 +275,11 @@ class SettingsFormState extends ChangeNotifier {
   // 模型编辑（每个模型独立展开编辑）
   // ---------------------------------------------------------------------------
   /// 添加模型（任何平台均可添加；重名忽略）。
-  void addModel(String platformId, {required String id, String shortLabel = ''}) {
+  void addModel(
+    String platformId, {
+    required String id,
+    String shortLabel = '',
+  }) {
     if (id.trim().isEmpty) return;
     final index = _working.indexWhere((p) => p.id == platformId);
     if (index < 0) return;
@@ -295,12 +379,12 @@ class SettingsFormState extends ChangeNotifier {
           errors.add('API 设置：模型名称不能为空');
         }
         if (m.reasoningEffort.trim().isEmpty) {
-          errors.add(
-            'API 设置（${_displayPlatformName(p)}/${m.id}）：推理强度不能为空',
-          );
+          errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：推理强度不能为空');
         }
         if (m.maxTokens != null && m.maxTokens! <= 0) {
-          errors.add('API 设置（${_displayPlatformName(p)}/${m.id}）：最大输出 Tokens 需为正整数或留空');
+          errors.add(
+            'API 设置（${_displayPlatformName(p)}/${m.id}）：最大输出 Tokens 需为正整数或留空',
+          );
         }
       }
     }
@@ -312,9 +396,14 @@ class SettingsFormState extends ChangeNotifier {
 
     // 组装各平台 API Key（平台 id → 控制器文本）。
     final apiKeys = <String, String>{
-      for (final p in _working)
-        p.id: (_apiKeyCtrls[p.id]?.text ?? '').trim(),
+      for (final p in _working) p.id: (_apiKeyCtrls[p.id]?.text ?? '').trim(),
     };
+
+    // 保存期间用户仍可能继续输入：基线取「实际提交出去的那一刻」，
+    // 成功时只把提交出去的这部分记为已保存，后续输入仍会提示未保存。
+    final submittedPlatformSignatures = _platformSignatures;
+    final submittedApiKeys = Map<String, String>.of(apiKeys);
+    final submittedSync = _currentSyncSnapshot;
 
     final results = await Future.wait([
       // 对话目标（平台/模型）不因本页改动而变化：沿用 Provider 当前选中项。
@@ -333,11 +422,13 @@ class SettingsFormState extends ChangeNotifier {
           syncMode: syncMode,
         ),
     ]);
-    if (!results[0]) {
+    final aiSaved = results[0];
+    final syncSaved = syncConfigured && results[1];
+    if (!aiSaved) {
       errors.add('API 设置保存失败：${_ai.error ?? '未知错误'}');
     }
     if (syncConfigured) {
-      if (!results[1]) {
+      if (!syncSaved) {
         errors.add('云同步保存失败：${_sync.error ?? '未知错误'}');
       }
     } else {
@@ -347,12 +438,44 @@ class SettingsFormState extends ChangeNotifier {
             : '云同步填写不完整，已跳过云同步保存',
       );
     }
+    if (aiSaved) {
+      _savedPlatformSignatures = submittedPlatformSignatures;
+      _savedApiKeys = submittedApiKeys;
+    }
+    if (syncSaved) _savedSync = submittedSync;
+    if (aiSaved || syncSaved) notifyListeners();
     return SettingsSaveResult(errors: errors, notes: notes);
   }
 
   // ---------------------------------------------------------------------------
   // 内部
   // ---------------------------------------------------------------------------
+  /// 当前平台结构的 JSON 快照（顺序与全字段都比较）。
+  List<String> get _platformSignatures => [
+    for (final platform in _working) jsonEncode(platform.toJson()),
+  ];
+
+  /// 当前各平台 API Key（去首尾空白，与保存逻辑同口径）。
+  Map<String, String> get _currentApiKeys => {
+    for (final platform in _working)
+      platform.id: _apiKeyCtrls[platform.id]!.text.trim(),
+  };
+
+  /// 当前云同步草稿（归一化口径与 `CloudSyncProvider.save` 一致）。
+  _SyncSnapshot get _currentSyncSnapshot => (
+    url: webdavUrl.text.trim(),
+    username: webdavUsername.text.trim(),
+    password: webdavPassword.text,
+    folder: CloudSyncProvider.normalizeFolder(webdavFolder.text),
+    mode: syncMode,
+  );
+
+  /// API Key / 云同步控制器变化：刷新未保存状态。
+  void _onDraftFieldChanged() {
+    if (_suppressDraftNotifications) return;
+    notifyListeners();
+  }
+
   void _ensurePlatformControllers(String id) {
     final existing = _working.firstWhere(
       (p) => p.id == id,
@@ -366,10 +489,11 @@ class SettingsFormState extends ChangeNotifier {
       id,
       () => TextEditingController(text: existing.baseUrl),
     );
-    _apiKeyCtrls.putIfAbsent(
-      id,
-      () => TextEditingController(text: _ai.apiKeyFor(id)),
-    );
+    _apiKeyCtrls.putIfAbsent(id, () {
+      final controller = TextEditingController(text: _ai.apiKeyFor(id));
+      controller.addListener(_onDraftFieldChanged);
+      return controller;
+    });
   }
 
   void _disposePlatformControllers(String id) {
@@ -384,10 +508,7 @@ class SettingsFormState extends ChangeNotifier {
     _baseUrlCtrls[platform.id]?.text = platform.baseUrl;
   }
 
-  void _replacePlatform(
-    String id,
-    AiPlatform Function(AiPlatform) fn,
-  ) {
+  void _replacePlatform(String id, AiPlatform Function(AiPlatform) fn) {
     final index = _working.indexWhere((p) => p.id == id);
     if (index < 0) return;
     _working = [..._working];
@@ -416,6 +537,15 @@ class SettingsFormState extends ChangeNotifier {
     super.dispose();
   }
 }
+
+/// 云同步草稿的结构化快照（记录类型自带按字段的 `==`，便于整体比较）。
+typedef _SyncSnapshot = ({
+  String url,
+  String username,
+  String password,
+  String folder,
+  SyncMode mode,
+});
 
 /// 设置页统一保存结果。
 ///

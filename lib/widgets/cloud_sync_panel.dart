@@ -84,13 +84,9 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
       _showSnack('删除失败：${provider.error}', kind: NoticeKind.error);
       return;
     }
-    setState(() {
-      _form.webdavUrl.clear();
-      _form.webdavUsername.clear();
-      _form.webdavPassword.clear();
-      _form.webdavFolder.text = CloudSyncProvider.defaultFolder;
-      _form.syncMode = SyncMode.auto;
-    });
+    // 删除连接是即时落库操作：草稿与基线一起复位，不产生「未保存」提示。
+    _form.resetSyncDraftAfterDisconnect();
+    setState(() {});
     _showSnack('已删除连接', kind: NoticeKind.success);
   }
 
@@ -477,7 +473,10 @@ class _CloudSyncPanelState extends State<CloudSyncPanel> {
                 description: '仅在你点击「同步」时同步',
               ),
             ],
-            onChanged: (mode) => setState(() => _form.syncMode = mode),
+            onChanged: (mode) {
+              _form.setSyncMode(mode);
+              setState(() {});
+            },
           ),
           const SizedBox(height: 12),
           Text(

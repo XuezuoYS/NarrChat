@@ -23,6 +23,55 @@ abstract final class SettingsMotion {
       MediaQuery.disableAnimationsOf(context) ? Duration.zero : base;
 }
 
+/// 顶栏「存在变更未保存」黄色提示（放在「保存」按钮左侧）。
+///
+/// 书籍设置与全局设置共用同一份视觉：
+/// - 宽屏显示完整文案；
+/// - 窄屏（手机宽度）顶栏空间有限，退化为「未保存」小字 + 完整文案气泡。
+///
+/// 调用方用 `key` 区分页面（如 `book_settings_unsaved_hint` /
+/// `settings_unsaved_hint`），测试按 key 定位。
+class SettingsUnsavedHint extends StatelessWidget {
+  /// 窄屏阈值：屏幕宽度小于该值时只显示「未保存」。
+  final double compactBreakpoint;
+
+  const SettingsUnsavedHint({super.key, this.compactBreakpoint = 600});
+
+  /// 完整提示文案（同时作为气泡内容）。
+  static const String message = '存在变更未保存';
+
+  @override
+  Widget build(BuildContext context) {
+    final color = context.narrColors.warning;
+    final compact = MediaQuery.sizeOf(context).width < compactBreakpoint;
+    return Tooltip(
+      message: message,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 8, right: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              compact ? '未保存' : message,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 设置项标题文本：标题本体 +（可选）黄色「（实验性）」后缀。
 ///
 /// 后缀与标题是**同一段富文本**（语义上是一个标题，超长时一起省略），
@@ -264,10 +313,7 @@ class SettingsCardHeader extends StatelessWidget {
             ],
           ),
         ),
-        if (trailing != null) ...[
-          const SizedBox(width: 12),
-          trailing!,
-        ],
+        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
       ],
     );
   }
@@ -420,10 +466,7 @@ class _SettingsExpandableCardState extends State<SettingsExpandableCard> {
                     decoration: widget.showGuideLine
                         ? BoxDecoration(
                             border: Border(
-                              left: BorderSide(
-                                color: outlineVariant,
-                                width: 2,
-                              ),
+                              left: BorderSide(color: outlineVariant, width: 2),
                             ),
                           )
                         : null,

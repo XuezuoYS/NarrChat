@@ -19,6 +19,30 @@ class _FakeAiSettingsProvider extends AiSettingsProvider {
   final bool saveResult;
   int saveCalls = 0;
 
+  /// 即时落库的图片设置：内存态即可，不触碰真实配置文件。
+  int _maxImageSizeMB = 16;
+  bool _convertJpgToJpeg = false;
+
+  @override
+  int get maxImageSizeMB => _maxImageSizeMB;
+
+  @override
+  bool get convertJpgToJpeg => _convertJpgToJpeg;
+
+  @override
+  Future<bool> setMaxImageSizeMB(int mb) async {
+    _maxImageSizeMB = mb;
+    notifyListeners();
+    return true;
+  }
+
+  @override
+  Future<bool> setConvertJpgToJpeg(bool value) async {
+    _convertJpgToJpeg = value;
+    notifyListeners();
+    return true;
+  }
+
   @override
   Future<bool> save({
     required List<AiPlatform> platforms,
@@ -131,7 +155,10 @@ void main() {
 
   group('SettingsFormState 平台/模型编辑', () {
     test('addPlatform：生成自定义平台，API 类型按传入协议（默认 Response 兼容）', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final before = form.platforms.length;
 
@@ -150,13 +177,13 @@ void main() {
     });
 
     test('setPlatformApiType：切换默认平台接入协议（Response ↔ Chat）', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
 
-      expect(
-        form.platforms.first.apiType.id,
-        ApiType.openAiResponses.id,
-      );
+      expect(form.platforms.first.apiType.id, ApiType.openAiResponses.id);
       form.setPlatformApiType(
         AiPlatforms.defaultPlatformId,
         ApiType.openAiCompatibleId,
@@ -170,7 +197,10 @@ void main() {
     });
 
     test('removePlatform：最后一个平台不可删，预置平台可删（可再恢复）', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final defaultId = AiPlatforms.defaultPlatformId;
 
@@ -194,7 +224,10 @@ void main() {
     });
 
     test('addModel / removeModel：维护至少一个模型（自定义平台）', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       form.addPlatform(
         name: 'gw',
@@ -220,7 +253,10 @@ void main() {
     });
 
     test('内置预置平台：模型可增删（限制已放开），仍保证至少一个模型', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final defaultId = AiPlatforms.defaultPlatformId;
       final before = form.platforms.first.models.length;
@@ -248,7 +284,10 @@ void main() {
     });
 
     test('updateModel：按模型 id 写回参数（含默认平台模型）', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final platformId = form.platforms.first.id;
       final model = form.platforms.first.models.first;
@@ -256,7 +295,11 @@ void main() {
       form.updateModel(
         platformId,
         model.id,
-        model.copyWith(temperature: 0.6, reasoningEffort: 'low', shortLabel: 'V4P'),
+        model.copyWith(
+          temperature: 0.6,
+          reasoningEffort: 'low',
+          shortLabel: 'V4P',
+        ),
       );
 
       final updated = form.platforms.first.modelById(model.id)!;
@@ -268,11 +311,15 @@ void main() {
 
   group('SettingsFormState 预置平台重置与恢复', () {
     test('resetPlatform：只还原内置预置平台，自添加平台逐字段不受影响', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final presetId = AiPlatforms.defaultPlatformId;
-      final presetModels =
-          AiPlatforms.defaultPlatform.models.map((m) => m.id).toList();
+      final presetModels = AiPlatforms.defaultPlatform.models
+          .map((m) => m.id)
+          .toList();
 
       // 改动内置预置平台：连接设置 + 模型参数 + 增删模型。
       form.setPlatformName(presetId, '我的 DeepSeek');
@@ -315,8 +362,14 @@ void main() {
       expect(form.platformUnchanged(restored), isTrue);
 
       // 平台级文本控制器同步（界面输入框不残留旧值）。
-      expect(form.nameCtrlFor(presetId).text, AiPlatforms.defaultPlatform.displayName);
-      expect(form.baseUrlCtrlFor(presetId).text, AiPlatforms.defaultPlatform.baseUrl);
+      expect(
+        form.nameCtrlFor(presetId).text,
+        AiPlatforms.defaultPlatform.displayName,
+      );
+      expect(
+        form.baseUrlCtrlFor(presetId).text,
+        AiPlatforms.defaultPlatform.baseUrl,
+      );
       // 重置计数自增：UI 据此重建模型编辑器（丢弃旧文本控制器）。
       expect(form.resetRevision, revisionBefore + 1);
 
@@ -333,7 +386,10 @@ void main() {
     });
 
     test('resetPlatform：无其它自定义时整体状态恢复"内置预置"', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final presetId = AiPlatforms.defaultPlatformId;
       final model = form.platforms.first.models.first;
@@ -346,7 +402,10 @@ void main() {
     });
 
     test('resetPlatform：非预置平台 / 不存在的平台无操作', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       form.addPlatform(
         name: 'gw',
@@ -359,15 +418,15 @@ void main() {
       form.resetPlatform(customId);
       form.resetPlatform('custom_不存在');
 
-      expect(
-        [for (final p in form.platforms) jsonEncode(p.toJson())],
-        before,
-      );
+      expect([for (final p in form.platforms) jsonEncode(p.toJson())], before);
       expect(form.resetRevision, 0);
     });
 
     test('missingPresetPlatforms / restorePresetPlatform：删除后一键恢复', () {
-      final form = SettingsFormState(ai: AiSettingsProvider(), sync: CloudSyncProvider());
+      final form = SettingsFormState(
+        ai: AiSettingsProvider(),
+        sync: CloudSyncProvider(),
+      );
       addTearDown(form.dispose);
       final presetId = AiPlatforms.defaultPlatformId;
 
@@ -386,13 +445,151 @@ void main() {
       expect(AiPlatforms.isPresetUnchanged(form.platforms.last), isTrue);
       expect(form.missingPresetPlatforms, isEmpty);
       // 恢复后控制器就绪（可被界面直接使用）。
-      expect(form.baseUrlCtrlFor(presetId).text, AiPlatforms.defaultPlatform.baseUrl);
+      expect(
+        form.baseUrlCtrlFor(presetId).text,
+        AiPlatforms.defaultPlatform.baseUrl,
+      );
 
       // 已存在时再恢复无效果；非预置 id 同样无效果。
       final length = form.platforms.length;
       form.restorePresetPlatform(presetId);
       form.restorePresetPlatform('custom_不存在');
       expect(form.platforms.length, length);
+    });
+  });
+
+  group('SettingsFormState 未保存判定（只含保存生效项）', () {
+    SettingsFormState makeForm({
+      AiSettingsProvider? ai,
+      CloudSyncProvider? sync,
+    }) {
+      final form = SettingsFormState(
+        ai: ai ?? _FakeAiSettingsProvider(),
+        sync: sync ?? _FakeCloudSyncProvider(),
+      );
+      addTearDown(form.dispose);
+      return form;
+    }
+
+    test('初始为干净；即时落库的图片设置不产生未保存提示', () {
+      final form = makeForm();
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.setMaxImageSizeMB(32);
+      form.setConvertJpgToJpeg(true);
+
+      expect(form.hasUnsavedChanges, isFalse);
+    });
+
+    test('平台 / API Key 改动标记未保存，改回原值恢复干净', () {
+      final form = makeForm();
+      final platform = form.platforms.first;
+      final originalName = platform.displayName;
+      final originalKey = form.apiKeyCtrlFor(platform.id).text;
+
+      form.setPlatformName(platform.id, '我的网关');
+      expect(form.hasUnsavedChanges, isTrue);
+      form.setPlatformName(platform.id, originalName);
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.apiKeyCtrlFor(platform.id).text = 'sk-test';
+      expect(form.hasUnsavedChanges, isTrue);
+      form.apiKeyCtrlFor(platform.id).text = originalKey;
+      expect(form.hasUnsavedChanges, isFalse);
+    });
+
+    test('模型参数改动标记未保存', () {
+      final form = makeForm();
+      final platform = form.platforms.first;
+      final model = platform.models.first;
+
+      form.updateModel(platform.id, model.id, model.copyWith(temperature: 0.2));
+
+      expect(form.hasUnsavedChanges, isTrue);
+    });
+
+    test('云同步连接 / 同步模式改动标记未保存，归一化后等价时不算改动', () {
+      final form = makeForm();
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.webdavUrl.text = 'https://dav.example.com/dav/';
+      expect(form.hasUnsavedChanges, isTrue);
+      form.webdavUrl.clear();
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.webdavUsername.text = 'user';
+      form.webdavPassword.text = 'pass';
+      expect(form.hasUnsavedChanges, isTrue);
+      form.webdavUsername.clear();
+      form.webdavPassword.clear();
+      expect(form.hasUnsavedChanges, isFalse);
+
+      // 文件夹带多余斜杠 / 空白时按保存逻辑归一化，等于原值不算改动。
+      form.webdavFolder.text = ' /narrchat/ ';
+      expect(form.hasUnsavedChanges, isFalse);
+      form.webdavFolder.text = 'other';
+      expect(form.hasUnsavedChanges, isTrue);
+      form.webdavFolder.text = 'narrchat';
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.setSyncMode(SyncMode.manual);
+      expect(form.hasUnsavedChanges, isTrue);
+      form.setSyncMode(SyncMode.auto);
+      expect(form.hasUnsavedChanges, isFalse);
+    });
+
+    test('保存成功：已提交改动清除提示', () async {
+      final ai = _FakeAiSettingsProvider();
+      final form = makeForm(ai: ai);
+      form.setPlatformName(form.platforms.first.id, '我的网关');
+      expect(form.hasUnsavedChanges, isTrue);
+
+      final result = await form.saveAll();
+
+      expect(result.ok, isTrue);
+      expect(ai.saveCalls, 1);
+      expect(form.hasUnsavedChanges, isFalse);
+    });
+
+    test('保存失败：未保存提示保留', () async {
+      final ai = _FakeAiSettingsProvider(saveResult: false);
+      final form = makeForm(ai: ai);
+      form.setPlatformName(form.platforms.first.id, '我的网关');
+
+      final result = await form.saveAll();
+
+      expect(result.ok, isFalse);
+      expect(form.hasUnsavedChanges, isTrue);
+    });
+
+    test('云同步填写不完整：跳过云同步落库，连接草稿仍算未保存', () async {
+      final form = makeForm();
+      form.webdavUrl.text = 'https://dav.example.com/dav/';
+
+      final result = await form.saveAll();
+
+      expect(result.ok, isTrue);
+      expect(result.notes, contains('云同步填写不完整，已跳过云同步保存'));
+      // AI 已保存，但云同步地址没有落库，提示应继续保留。
+      expect(form.hasUnsavedChanges, isTrue);
+    });
+
+    test('删除连接后的复位不产生未保存提示，其它草稿仍提示', () {
+      final form = makeForm();
+      form.webdavUrl.text = 'https://dav.example.com/dav/';
+      form.webdavUsername.text = 'user';
+      form.setSyncMode(SyncMode.manual);
+
+      form.resetSyncDraftAfterDisconnect();
+
+      expect(form.webdavUrl.text, isEmpty);
+      expect(form.webdavFolder.text, 'narrchat');
+      expect(form.syncMode, SyncMode.auto);
+      expect(form.hasUnsavedChanges, isFalse);
+
+      form.setPlatformName(form.platforms.first.id, '我的网关');
+      form.resetSyncDraftAfterDisconnect();
+      expect(form.hasUnsavedChanges, isTrue);
     });
   });
 }

@@ -721,41 +721,6 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
     );
   }
 
-  /// 顶栏「存在变更未保存」提示（保存按钮左侧）。
-  ///
-  /// 窄屏（手机宽度）顶栏空间有限，退化为「未保存」小字 + 提示气泡；
-  /// 宽屏显示完整文案。
-  Widget _buildUnsavedHint(BuildContext context) {
-    final color = context.narrColors.warning;
-    final compact = MediaQuery.sizeOf(context).width < 600;
-    return Tooltip(
-      message: '存在变更未保存',
-      child: Padding(
-        padding: const EdgeInsets.only(left: 8, right: 10),
-        child: Row(
-          key: const ValueKey('book_settings_unsaved_hint'),
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              compact ? '未保存' : '存在变更未保存',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: color,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final isEdit = widget.book != null;
@@ -790,7 +755,10 @@ class _BookSettingsScreenState extends State<BookSettingsScreen> {
             const SettingsNavItem(icon: Icons.tune_outlined, label: '其它设置'),
         ],
         actions: [
-          if (_hasUnsavedChanges) _buildUnsavedHint(context),
+          if (_hasUnsavedChanges)
+            const SettingsUnsavedHint(
+              key: ValueKey('book_settings_unsaved_hint'),
+            ),
           FilledButton.icon(
             onPressed: _isSaving ? null : _save,
             icon: const Icon(Icons.save_outlined, size: 18),
