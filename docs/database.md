@@ -1,4 +1,4 @@
-# 数据库（R3，schema 24）
+# 数据库（R3，schema 25）
 
 > 本文是当前数据库设计指南。上一个版本（单库 `narrchat.db`）已归档到
 > [`docs/old/database_r2.md`](old/database_r2.md)。
@@ -21,7 +21,7 @@ R3 随 v3.0 做破坏性更新，升级后的结构不能交给 1.x / 2.x 使用
   `lib/utils/timestamp_format.dart`，不要自行拼接，也不要用 `datetime()` / `strftime()`
   参与索引查询。
 - 布尔一律用 INTEGER 的 `0` / `1`，并声明 `NOT NULL`。
-- `user_data/` 下各库共用 `PRAGMA user_version = 24`；`local_config/` 下各库独立管理版本。
+- `user_data/` 下各库共用 `PRAGMA user_version = 25`；`local_config/` 下各库独立管理版本。
   `meta` / `book_meta` 里的 `database_version` 只是迁移后写入的调试镜像，不能用来判断版本。
 - 索引按实际查询在 DDL 中建设和调整，本文不逐项列索引。
 - 下文是结构和行为指南；具体 DDL 的唯一来源是 `lib/database/db_schema.dart`。
@@ -184,10 +184,20 @@ library（目录库）→ book（书库）→ branch（分支）→ round（逻�
 | `operated_at` | TEXT | NOT NULL | 创建或最后一次手动编辑时间 |
 | `message_status` | TEXT | DEFAULT `''` | `info` 蓝框 / `warning` 黄框 / `error` 红框；空 = info |
 | `message` | TEXT | DEFAULT `''` | 信息、警告或错误文案；空白不显示提示框 |
-| `model_name` | TEXT | DEFAULT `''` | 本代实际模型名 |
-| `tokens_in` | INTEGER | NULL | 输入 Token（含缓存）；NULL = 无数据，0 = 真实 0 |
-| `tokens_cached_in` | INTEGER | NULL | 命中缓存的输入 Token；NULL / 0 语义同上 |
-| `tokens_out` | INTEGER | NULL | 输出 Token；NULL / 0 语义同上 |
+| `model_name` | TEXT | DEFAULT `''` | 本代主模型名（第一步调研 + 正文） |
+| `tokens_in` | INTEGER | NULL | 主模型输入 Token（含缓存）；NULL = 无数据，0 = 真实 0 |
+| `tokens_cached_in` | INTEGER | NULL | 主模型命中缓存的输入 Token；NULL / 0 语义同上 |
+| `tokens_out` | INTEGER | NULL | 主模型输出 Token；NULL / 0 语义同上 |
+| `subagent_model_name` | TEXT | NULL | 非创作步（第二步状态维护）子模型名；NULL = 未启用 |
+| `subagent_tokens_in` | INTEGER | NULL | 子模型输入 Token；NULL = 无数据 |
+| `subagent_tokens_out` | INTEGER | NULL | 子模型输出 Token；NULL = 无数据 |
+| `subagent_cached_tokens_in` | INTEGER | NULL | 子模型缓存命中输入 Token；NULL = 无数据 |
+
+**Token 分桶口径（v25 起）**：启用子模型时，`model_name` / `tokens_*` 只记
+**第一步（调研 + 正文，创作步）**；第二步（状态维护，非创作步）的模型名与用量
+记在四个 `subagent_*` 列。四个子模型列**全为 NULL** = 未启用子模型，界面的
+Token 统计卡只显示主模型；否则分别显示主模型 / 子模型 / 总计。子模型配置与主
+模型「平台 + 模型」完全相同时按未启用处理（同一模型、缓存照常命中）。
 
 内容列：
 
@@ -317,6 +327,9 @@ library（目录库）→ book（书库）→ branch（分支）→ round（逻�
 - 已删除的书不占活书列表，末尾单独一个“已删除”入口，进入“书籍回收站”。
 - **摘要只按文件内容计算**，排除所有时间戳、`branch_working`、meta 身份列，
   避免“只是打开看了一下”也被当成内容变更。
+- `round_stack` 的四个 `subagent_*` 列是**展示统计元数据**，刻意不参与摘要：
+  加列不升 `backupDigestVersion`，避免升级后首次同步对每个单元弹摘要版本冲突；
+  统计会随书库快照正常上传，只是不单独作为“内容变了”的依据。
 - **云端清单同时记内容指标**：`latestRoundIndex`（最新轮号）、
   `roundGenerationCount`（`round_stack` 行数 = 代数）、`contentUpdatedAt`
   （书籍 PK 用；Mod 库只做时间兜底展示）、`savedAt`、`deviceId`。

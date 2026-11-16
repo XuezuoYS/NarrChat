@@ -3,7 +3,44 @@
 > 本文件只记**数据结构**的变更。功能层面的更新见 `update_log.md`。
 > R2 及更早的账号在 [`docs/old/database_update_log_r2.md`](old/database_update_log_r2.md)。
 
-## schema 24 —— 书籍自定义封面（当前）
+## schema 25 —— 非创作步子模型统计（当前）
+
+`user_data` 下四个库的版本从 24 升到 25。
+
+### 新增字段
+
+书库 `round_stack` 增加四列，全部可空：
+
+- `subagent_model_name TEXT`：非创作步（第二步状态维护）实际使用的子模型名，
+  NULL = 未启用子模型；
+- `subagent_tokens_in INTEGER`：子模型输入 Token；
+- `subagent_tokens_out INTEGER`：子模型输出 Token；
+- `subagent_cached_tokens_in INTEGER`：子模型缓存命中输入 Token。
+
+`model_name` / `tokens_in` / `tokens_cached_in` / `tokens_out` 的语义收窄为
+**主模型（第一步调研 + 正文）**；第二步的用量进 `subagent_*`。四列全 NULL
+表示未启用子模型（与主模型相同也会折叠成未启用）。
+
+### 迁移
+
+- `BookDb` 打开旧书库时按 `PRAGMA table_info` 预检后
+  `ALTER TABLE round_stack ADD COLUMN ...`；先确认 `round_stack` 存在，缺表的
+  极老测试库/损坏库不会让迁移直接报错。
+- 书库是一本一个文件，老书在各自第一次打开时补列；重复执行 / 降级再升都幂等。
+- 目录库 / Mod 库 / 缓存库的表结构不变，只把 `database_version` 镜像写成 25。
+
+### 行为变化
+
+- 设置页「通用设置 → 会话工作模式（实验性）」新增「非创作步所使用的模型
+  （子模型）」：跟随当前激活主模型，或选任意平台下的模型。
+- 维护步按子模型自己的温度 / 思考 / 最大输出 / 流式能力 / 默认思考强度请求；
+  系统提示词不变，工具 schema 按子平台协议重新生成；进入维护步前断开
+  `previous_response_id`。
+- Token 统计卡在有子模型时拆成主模型 / 子模型 / 总计三组；无子模型时保持原样。
+- 四个 `subagent_*` 列**不参与内容摘要**，`backupDigestVersion` 保持不变，
+  避免升级后全量同步冲突；统计随快照上传。
+
+## schema 24 —— 书籍自定义封面（上一版）
 
 `user_data` 下的库版本从 23 升到 24；本地缓存库 `library_cache.db` 从 1 升到 2。
 
