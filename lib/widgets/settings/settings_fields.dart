@@ -81,6 +81,16 @@ class SettingsTextField extends StatelessWidget {
   /// 最大行数（默认 1；传 null 表示不限行）。
   final int? maxLines;
 
+  /// 是否铺满父级给的高度（多行编辑区用）。
+  ///
+  /// 为 true 时 [TextField] 自己滚动，外层不要再套 `SingleChildScrollView`；
+  /// 必须同时 `maxLines: null`、`minLines: null`（Flutter 的硬约束）。
+  final bool expands;
+
+  /// 文字在框内的垂直对齐（`expands` 时务必传 [TextAlignVertical.top]，
+  /// 否则 Flutter 会把单行文字垂直居中，看起来像「内容飘在中间」）。
+  final TextAlignVertical? textAlignVertical;
+
   /// 内部 TextField 的 key（测试 / 自动化定位用）。
   final Key? fieldKey;
 
@@ -108,6 +118,8 @@ class SettingsTextField extends StatelessWidget {
     this.onTapOutside = unfocusOnTapOutside,
     this.minLines,
     this.maxLines = 1,
+    this.expands = false,
+    this.textAlignVertical,
     this.fieldKey,
   });
 
@@ -129,6 +141,8 @@ class SettingsTextField extends StatelessWidget {
       maxLength: maxLength,
       minLines: minLines,
       maxLines: maxLines,
+      expands: expands,
+      textAlignVertical: textAlignVertical,
       style: style ??
           TextStyle(
             fontSize: multiline ? 13 : 14,

@@ -59,9 +59,19 @@ class ModFormData {
 /// 数据库物理列序是追加的，UI 顺序以本枚举与 [_ModPanelMeta] 为准。
 enum ModPanel { basic, pre, post, misc, setting, writing, must, worldBook }
 
+/// 四个 **system 通道**面板的显示名（单一来源：对话框与两个 Mod 列表共用）。
+///
+/// 统一带 `System 提示词 - ` 前缀，一眼能看出这几段是往 system 里塞的；
+/// 文笔那一栏用完整的「文笔要求与参考段落」（它注入的块就叫这个名字）。
+const String kModPanelMiscTitle = 'System 提示词 - 杂项';
+const String kModPanelSettingTitle = 'System 提示词 - 设定';
+const String kModPanelWritingTitle = 'System 提示词 - 文笔要求与参考段落';
+const String kModPanelMustTitle = 'System 提示词 - 强指令';
+
 /// Mod 详情对话框（新建 / 编辑 / 只读查看共用）。
 ///
-/// 使用 5 个标签页：基本信息、前置词、后置词、系统提示词、世界书。
+/// 宽屏（可用宽度 ≥720）左右分栏：左侧 8 个面板导航、右侧编辑区；
+/// 窄屏整页：顶栏 + 面板下拉选择器 + 撑满的编辑区 + 底部等宽按钮。
 class ModDetailDialog extends StatefulWidget {
   final Mod? mod;
   final bool readOnly;
@@ -141,53 +151,77 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
 
   /// 多行输入框（md 高亮由 [MarkdownEditingController] 提供）。
   ///
-  /// 外层再包一层滚动：`maxLines: null` 的输入框会随内容长高，面板本身不滚动
-  /// 的话长文本会把对话框撑破。
+  /// 用 `expands` 让它**铺满面板剩余高度、自己在框内滚动**：窄屏整页布局下
+  /// 这是编辑区最省地方的形态，也不会出现「外层滚动 + 内层滚动」两层套娃。
+  /// `textAlignVertical: top` 是必须的——`expands` 时 Flutter 默认把文字垂直居中，
+  /// 看起来就像「输入框里内容飘在中间」。
   Widget _multiline(TextEditingController controller, String hint) {
-    return SingleChildScrollView(
-      child: SettingsTextField(
-        controller: controller,
-        hint: hint,
-        readOnly: _readOnly,
-        minLines: 12,
-        maxLines: null,
-        style: const TextStyle(fontSize: 13, height: 1.5),
-      ),
+    return SettingsTextField(
+      controller: controller,
+      hint: hint,
+      readOnly: _readOnly,
+      expands: true,
+      maxLines: null,
+      textAlignVertical: TextAlignVertical.top,
+      style: const TextStyle(fontSize: 13, height: 1.5),
     );
   }
 
-  /// 宽屏断点：可用宽度 `>= 720` 用左右分栏，否则单栏 + 顶部下拉。
+  /// 宽屏断点：可用宽度 `>= 720` 用左右分栏，否则整页（全屏 Dialog）+ 顶部选择器。
   ///
   /// 与全局 `kResponsiveBreakpoint`（520）不同——Mod 面板里有长文本编辑框，
-  /// 200px 导航 + 编辑区需要更宽，否则正文会被挤成一行。
+  /// 侧边导航 + 编辑区需要更宽，否则正文会被挤成一行。
   static const double _kWideBreakpoint = 720;
+
+  /// 对话框标题（新建 / 编辑 / 查看）。
+  String get _dialogTitle =>
+      _readOnly ? '查看 Mod' : (_isEdit ? '编辑 Mod' : '新建 Mod');
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final isWide = size.width >= _kWideBreakpoint;
+    return size.width >= _kWideBreakpoint
+        ? _buildWideDialog(context, size)
+        : _buildNarrowDialog(context);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 宽屏：左侧面板导航 + 右侧编辑区
+  // ---------------------------------------------------------------------------
+
+  Widget _buildWideDialog(BuildContext context, Size size) {
     return Dialog(
-      // 窄屏占满可用区域：8 个面板 + 长文本在手机上才放得下。
-      insetPadding: isWide ? const EdgeInsets.all(24) : EdgeInsets.zero,
+      insetPadding: const EdgeInsets.all(24),
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: isWide ? 960 : size.width,
-          maxHeight: isWide ? size.height - 48 : size.height,
-        ),
+        constraints: BoxConstraints(maxWidth: 960, maxHeight: size.height - 48),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildHeader(context),
+              _buildTitleRow(context),
               const SizedBox(height: 10),
               // 七个内容面板都会注入提示词：与书籍设置各页共用同一条灰字提示。
               const PromptInputHint(),
               const SizedBox(height: 10),
               Expanded(
-                child: isWide
-                    ? _buildWideBody(context)
-                    : _buildNarrowBody(context),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // 224 而不是 200：四个 system 通道的标题带前缀，需要稍宽。
+                    SizedBox(
+                      width: 224,
+                      child: ListView(
+                        children: [
+                          for (final meta in _panelMetas)
+                            _buildNavTile(context, meta),
+                        ],
+                      ),
+                    ),
+                    const VerticalDivider(width: 17),
+                    Expanded(child: _buildPanelBody(context, showTitle: true)),
+                  ],
+                ),
               ),
               const SizedBox(height: 12),
               _buildFooter(context),
@@ -198,28 +232,85 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
     );
   }
 
-  /// 顶部标题（「新建 / 编辑 / 查看 Mod」）。
-  Widget _buildHeader(BuildContext context) {
-    final title = _readOnly ? '查看 Mod' : (_isEdit ? '编辑 Mod' : '新建 Mod');
-    return Row(
-      children: [
-        const Icon(Icons.extension_outlined, size: 20),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            title,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: context.narrColors.textPrimary,
-            ),
+  // ---------------------------------------------------------------------------
+  // 窄屏：悬浮窗（单栏 + 顶部面板选择器）
+  // ---------------------------------------------------------------------------
+
+  Widget _buildNarrowDialog(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: ConstrainedBox(
+        // 宽一些的窄屏（平板竖屏）也别把窗口拉满：520 之外留白更像悬浮窗。
+        constraints: BoxConstraints(
+          maxWidth: 520,
+          maxHeight: size.height - 48,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildTitleRow(context),
+              const SizedBox(height: 10),
+              // 下拉框本身就是「当前面板」的标题，窄屏不再重复标题行。
+              _buildPanelSelector(context),
+              const SizedBox(height: 10),
+              // 面板说明（列名 / 注入位置 / 3.0 提醒）紧贴选择器，一并属于这块。
+              Expanded(child: _buildPanelBody(context, showTitle: false)),
+              const SizedBox(height: 6),
+              // #/## 提示挪到编辑区下方当脚注，上面留出更多空间给正文。
+              const PromptInputHint(),
+              const SizedBox(height: 6),
+              _buildFooter(context),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 
-  /// 底部按钮（只读模式只有「关闭」）。
+  /// 窄屏面板选择器（下拉框本身就是标题，不再单独重复一行面板名）。
+  Widget _buildPanelSelector(BuildContext context) {
+    final colors = context.narrColors;
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+        border: Border.all(color: colors.divider),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<ModPanel>(
+          key: const ValueKey('mod_panel_dropdown'),
+          value: _panel,
+          isExpanded: true,
+          isDense: true,
+          borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          icon: const Icon(Icons.expand_more, size: 20),
+          items: [
+            for (final meta in _panelMetas)
+              DropdownMenuItem<ModPanel>(
+                value: meta.panel,
+                child: Text(
+                  meta.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13.5),
+                ),
+              ),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            _selectPanel(value);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 底部按钮（两种布局共用；只读模式只有「关闭」）。
   Widget _buildFooter(BuildContext context) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
@@ -238,45 +329,22 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
     );
   }
 
-  /// 宽屏：左侧面板导航 + 右侧编辑区（任何宽度都不出现横向滚动）。
-  Widget _buildWideBody(BuildContext context) {
+  /// 宽屏顶部标题。
+  Widget _buildTitleRow(BuildContext context) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(
-          width: 200,
-          child: ListView(
-            children: [
-              for (final meta in _panelMetas) _buildNavTile(context, meta),
-            ],
+        const Icon(Icons.extension_outlined, size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            _dialogTitle,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: context.narrColors.textPrimary,
+            ),
           ),
         ),
-        const VerticalDivider(width: 17),
-        Expanded(child: _buildPanel(context, _metaOf(_panel))),
-      ],
-    );
-  }
-
-  /// 窄屏：顶部面板选择器 + 全宽编辑区。
-  Widget _buildNarrowBody(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        DropdownButton<ModPanel>(
-          key: const ValueKey('mod_panel_dropdown'),
-          value: _panel,
-          isExpanded: true,
-          items: [
-            for (final meta in _panelMetas)
-              DropdownMenuItem(value: meta.panel, child: Text(meta.title)),
-          ],
-          onChanged: (value) {
-            if (value == null) return;
-            _selectPanel(value);
-          },
-        ),
-        const SizedBox(height: 8),
-        Expanded(child: _buildPanel(context, _metaOf(_panel))),
       ],
     );
   }
@@ -286,7 +354,7 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
     setState(() => _panel = panel);
   }
 
-  /// 宽屏左侧导航项（选中高亮）。
+  /// 宽屏左侧导航项（选中高亮；标题较长时最多两行）。
   Widget _buildNavTile(BuildContext context, _ModPanelMeta meta) {
     final selected = meta.panel == _panel;
     final colors = context.narrColors;
@@ -300,9 +368,11 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
           borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
           onTap: () => _selectPanel(meta.panel),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
             child: Text(
               meta.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
@@ -315,24 +385,33 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
     );
   }
 
-  /// 面板正文：标题 + 「数据库列 / 注入位置」灰字 +（新列）提醒条 + 内容。
-  Widget _buildPanel(BuildContext context, _ModPanelMeta meta) {
+  /// 面板正文：标题（宽屏才有）+ 列名 / 注入位置灰字 +（新列）提醒条 + 内容。
+  ///
+  /// 窄屏不重复标题——顶部选择器已经写着当前面板名，省下的高度全给编辑区。
+  Widget _buildPanelBody(BuildContext context, {required bool showTitle}) {
+    final meta = _metaOf(_panel);
     final colors = context.narrColors;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          meta.title,
-          key: ValueKey('mod_panel_editor_${meta.panel.name}'),
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: colors.textPrimary,
+        if (showTitle) ...[
+          Text(
+            meta.title,
+            key: ValueKey('mod_panel_title_${meta.panel.name}'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: colors.textPrimary,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
+          const SizedBox(height: 4),
+        ],
         Text(
           meta.caption,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
         ),
         if (!meta.activeIn30) ...[
@@ -340,7 +419,12 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
           _buildInactiveReminder(context),
         ],
         const SizedBox(height: 10),
-        Expanded(child: _buildPanelContent(meta.panel)),
+        Expanded(
+          child: KeyedSubtree(
+            key: ValueKey('mod_panel_content_${meta.panel.name}'),
+            child: _buildPanelContent(meta.panel),
+          ),
+        ),
       ],
     );
   }
@@ -431,28 +515,28 @@ class _ModDetailDialogState extends State<ModDetailDialog> {
     ),
     _ModPanelMeta(
       panel: ModPanel.misc,
-      title: '杂项要求',
+      title: kModPanelMiscTitle,
       column: 'system_prompt',
       injection: '`{system_extra}` 的「杂项要求」块',
       activeIn30: true,
     ),
     _ModPanelMeta(
       panel: ModPanel.setting,
-      title: '设定',
+      title: kModPanelSettingTitle,
       column: 'system_setting',
       injection: '书籍设定之后（设定块）',
       activeIn30: false,
     ),
     _ModPanelMeta(
       panel: ModPanel.writing,
-      title: '文笔',
+      title: kModPanelWritingTitle,
       column: 'system_writing_style',
       injection: '「文笔要求与参考段落」块（书范文之前）',
       activeIn30: false,
     ),
     _ModPanelMeta(
       panel: ModPanel.must,
-      title: '强指令',
+      title: kModPanelMustTitle,
       column: 'system_must',
       injection: '「必须遵循」段 2~n，末尾会复述一次（token ×2）',
       activeIn30: false,

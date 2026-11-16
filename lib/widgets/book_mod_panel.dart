@@ -398,14 +398,15 @@ class _BookModTile extends StatelessWidget {
     if (mod != null && mod!.description.trim().isNotEmpty) {
       return mod!.description.trim();
     }
-    // 顺序 = 面板顺序（`docs/mods.md` §七）。
+    // 顺序 = 面板顺序（`docs/mods.md` §七）；四个 system 通道用统一定义的显示名。
     final fields = <String>[
       if (mod?.prePrompt.trim().isNotEmpty ?? false) '前置词',
       if (mod?.postPrompt.trim().isNotEmpty ?? false) '后置词',
-      if (mod?.systemPrompt.trim().isNotEmpty ?? false) '杂项',
-      if (mod?.systemSetting.trim().isNotEmpty ?? false) '设定',
-      if (mod?.systemWritingStyle.trim().isNotEmpty ?? false) '文笔',
-      if (mod?.systemMust.trim().isNotEmpty ?? false) '强指令',
+      if (mod?.systemPrompt.trim().isNotEmpty ?? false) kModPanelMiscTitle,
+      if (mod?.systemSetting.trim().isNotEmpty ?? false) kModPanelSettingTitle,
+      if (mod?.systemWritingStyle.trim().isNotEmpty ?? false)
+        kModPanelWritingTitle,
+      if (mod?.systemMust.trim().isNotEmpty ?? false) kModPanelMustTitle,
       if (mod?.worldBookEntries.isNotEmpty ?? false) '世界书',
     ];
     return fields.isEmpty ? '（无内容）' : '含：${fields.join('、')}';
@@ -469,7 +470,7 @@ class _BookModTile extends StatelessWidget {
       title: _buildTitle(name, isPreset),
       subtitle: Text(
         description,
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(fontSize: 12, color: context.narrColors.textSecondary),
       ),

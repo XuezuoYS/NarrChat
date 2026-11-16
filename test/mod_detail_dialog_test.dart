@@ -6,11 +6,13 @@ import 'package:narrchat/theme/app_theme.dart';
 import 'package:narrchat/widgets/mod_detail_dialog.dart';
 import 'package:narrchat/widgets/prompt_input_hint.dart';
 
-/// Mod 编辑对话框的**响应式布局**与面板元数据。
+/// Mod 编辑 / 查看对话框的**响应式布局**与面板元数据。
 ///
-/// 规格（`docs/mods.md` §七）：宽屏左右分栏（左导航、右编辑区）、窄屏顶部选择器；
-/// 任何宽度都不横向滚动；8 个面板都能到达；三个新列显示「该列在 3.0 不生效」；
-/// 切换面板不丢草稿。
+/// 规格（`docs/mods.md` §七）：
+/// - 宽屏（可用宽度 ≥720）：左侧 8 个面板导航 + 右侧编辑区；
+/// - 窄屏：整页布局（全屏对话框）+ 顶栏 + 面板下拉选择器 + 撑满的编辑区；
+/// - 四个 system 通道统一叫 `System 提示词 - …`；
+/// - 三个新列显示「该列在 3.0 不生效」；切换面板不丢草稿。
 void main() {
   const sample = Mod(
     uuid: 'm1',
@@ -69,6 +71,13 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> pickPanel(WidgetTester tester, String title) async {
+    await tester.tap(find.byKey(const ValueKey('mod_panel_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(title).last);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('宽屏：左侧 8 个面板导航 + 右侧编辑区（无 TabBar）', (tester) async {
     await open(tester, size: const Size(1200, 800));
 
@@ -81,9 +90,13 @@ void main() {
     }
     expect(find.byType(TabBar), findsNothing);
     expect(
-      find.byKey(const ValueKey('mod_panel_editor_basic')),
+      find.byKey(const ValueKey('mod_panel_title_basic')),
       findsOneWidget,
       reason: '默认停在基本信息',
+    );
+    expect(
+      find.byKey(const ValueKey('mod_panel_content_basic')),
+      findsOneWidget,
     );
     // 基本信息：没有数据库列，灰字只写「仅用于辨识」。
     expect(find.textContaining('仅用于辨识，不发送给 AI'), findsWidgets);
@@ -91,11 +104,27 @@ void main() {
     expect(find.text(PromptInputHint.text), findsOneWidget);
   });
 
+  testWidgets('四个 system 通道统一用「System 提示词 - …」命名', (tester) async {
+    await open(tester, size: const Size(1200, 800));
+
+    for (final title in const [
+      kModPanelMiscTitle,
+      kModPanelSettingTitle,
+      kModPanelWritingTitle,
+      kModPanelMustTitle,
+    ]) {
+      expect(find.text(title), findsOneWidget, reason: '导航缺少：$title');
+    }
+    expect(kModPanelWritingTitle, 'System 提示词 - 文笔要求与参考段落');
+    expect(find.text('杂项要求'), findsNothing);
+    expect(find.text('强指令'), findsNothing);
+  });
+
   testWidgets('宽屏：切到新列面板显示列名 / 注入位置与 3.0 提醒条', (tester) async {
     await open(tester, size: const Size(1200, 800));
 
     await tapPanel(tester, ModPanel.must);
-    expect(find.byKey(const ValueKey('mod_panel_editor_must')), findsOneWidget);
+    expect(find.byKey(const ValueKey('mod_panel_title_must')), findsOneWidget);
     expect(
       find.text(
         '数据库列 system_must · 注入位置：「必须遵循」段 2~n，末尾会复述一次（token ×2）',
@@ -103,6 +132,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('该列在 3.0 不生效'), findsOneWidget);
+    // 导航 + 编辑区标题各一份。
+    expect(find.text(kModPanelMustTitle), findsNWidgets(2));
 
     await tapPanel(tester, ModPanel.setting);
     expect(find.textContaining('数据库列 system_setting'), findsOneWidget);
@@ -130,20 +161,59 @@ void main() {
     expect(find.text('新写的前置词'), findsOneWidget);
   });
 
-  testWidgets('窄屏：顶部下拉切换面板，没有左侧导航', (tester) async {
+  testWidgets('多行编辑区铺满高度、文字顶部对齐（不垂直居中）', (tester) async {
+    await open(tester, size: const Size(1200, 800));
+
+    await tapPanel(tester, ModPanel.misc);
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    expect(field.expands, isTrue, reason: '编辑区应铺满面板剩余高度');
+    expect(field.maxLines, isNull);
+    expect(
+      field.textAlignVertical,
+      TextAlignVertical.top,
+      reason: 'expands 时默认会垂直居中，必须显式顶对齐',
+    );
+  });
+
+  testWidgets('窄屏：仍是悬浮窗（不贴屏幕边缘）+ 下拉切换面板，没有左侧导航', (tester) async {
     await open(tester, size: const Size(420, 780));
 
     expect(find.byKey(const ValueKey('mod_panel_dropdown')), findsOneWidget);
     expect(find.byKey(const ValueKey('mod_panel_nav_basic')), findsNothing);
-    expect(find.byKey(const ValueKey('mod_panel_editor_basic')), findsOneWidget);
+    // 窄屏不重复面板标题：选择器本身就是标题。
+    expect(find.byKey(const ValueKey('mod_panel_title_basic')), findsNothing);
+    expect(find.byKey(const ValueKey('mod_panel_content_basic')), findsOneWidget);
+    expect(find.text('基本信息'), findsOneWidget, reason: '选择器里显示当前面板');
+    // 悬浮窗：不贴屏幕边缘（全屏时下拉框左边距只等于内容内边距 16）。
+    final dropdown = find.byKey(const ValueKey('mod_panel_dropdown'));
+    expect(tester.getTopLeft(dropdown).dx, greaterThan(24));
+    expect(tester.getSize(dropdown).width, lessThan(420 - 48));
+    // 底部按钮与宽屏一致。
+    expect(find.text('取消'), findsOneWidget);
+    expect(find.text('保存'), findsOneWidget);
+    // #/## 提示仍在（窄屏挪到编辑区下方当脚注），全文只出现一次。
+    expect(find.text(PromptInputHint.text), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('mod_panel_dropdown')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('强指令').last);
-    await tester.pumpAndSettle();
+    await pickPanel(tester, kModPanelMustTitle);
 
-    expect(find.byKey(const ValueKey('mod_panel_editor_must')), findsOneWidget);
+    expect(find.byKey(const ValueKey('mod_panel_content_must')), findsOneWidget);
     expect(find.text('该列在 3.0 不生效'), findsOneWidget);
+    expect(find.text(kModPanelMustTitle), findsOneWidget, reason: '选择器已切到强指令');
+  });
+
+  testWidgets('小屏（360×640）：长标题下也不溢出、编辑区可用', (tester) async {
+    await open(tester, size: const Size(360, 640));
+
+    await pickPanel(tester, kModPanelWritingTitle);
+    expect(find.byKey(const ValueKey('mod_panel_content_writing')), findsOneWidget);
+    expect(find.text(kModPanelWritingTitle), findsOneWidget);
+    // 长标题被省略号截断而不是撑破布局（不出现 RenderFlex overflow 异常）。
+    expect(tester.takeException(), isNull);
+
+    // 编辑区铺满剩余高度：多行输入框可用并可输入。
+    await tester.enterText(find.byType(TextField).first, '窄屏也能写');
+    await tester.pump();
+    expect(find.text('窄屏也能写'), findsOneWidget);
   });
 
   testWidgets('只读：没有保存按钮，提醒条照常显示', (tester) async {
@@ -155,6 +225,15 @@ void main() {
 
     await tapPanel(tester, ModPanel.must);
     expect(find.text('该列在 3.0 不生效'), findsOneWidget);
+  });
+
+  testWidgets('只读（窄屏）：底部只有「关闭」，没有保存', (tester) async {
+    await open(tester, size: const Size(420, 780), readOnly: true);
+
+    expect(find.text('查看 Mod'), findsOneWidget);
+    expect(find.text('保存'), findsNothing);
+    expect(find.text('关闭'), findsOneWidget);
+    expect(find.text('取消'), findsNothing);
   });
 
   testWidgets('保存回传七个通道的内容', (tester) async {

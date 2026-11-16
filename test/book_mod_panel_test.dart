@@ -103,7 +103,7 @@ void main() {
     }
     // 当前面板（基本信息）的标题与「列名 / 注入位置」灰字可见。
     expect(
-      find.byKey(const ValueKey('mod_panel_editor_basic')),
+      find.byKey(const ValueKey('mod_panel_title_basic')),
       findsOneWidget,
     );
     expect(find.textContaining('仅用于辨识，不发送给 AI'), findsWidgets);

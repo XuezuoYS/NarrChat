@@ -461,10 +461,10 @@ class _ModTile extends StatelessWidget {
     final parts = <String>[
       if (mod.prePrompt.trim().isNotEmpty) '前置词',
       if (mod.postPrompt.trim().isNotEmpty) '后置词',
-      if (mod.systemPrompt.trim().isNotEmpty) '杂项',
-      if (mod.systemSetting.trim().isNotEmpty) '设定',
-      if (mod.systemWritingStyle.trim().isNotEmpty) '文笔',
-      if (mod.systemMust.trim().isNotEmpty) '强指令',
+      if (mod.systemPrompt.trim().isNotEmpty) kModPanelMiscTitle,
+      if (mod.systemSetting.trim().isNotEmpty) kModPanelSettingTitle,
+      if (mod.systemWritingStyle.trim().isNotEmpty) kModPanelWritingTitle,
+      if (mod.systemMust.trim().isNotEmpty) kModPanelMustTitle,
       if (mod.worldBookEntries.isNotEmpty) '世界书',
     ];
     return parts.isEmpty ? '（无内容）' : '含：${parts.join('、')}';
