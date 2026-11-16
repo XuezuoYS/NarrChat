@@ -12,14 +12,14 @@ system 由若干带顺序的模块拼起来，谁产出的信息谁注入，空�
 
 | 项 | v2 | v3 |
 |---|---|---|
-| system 结构 | 一整段，`#` 区域 + `---` 分隔 | **7 个模块**按固定顺序拼合，模块之间只空一行，不再有 `---` |
+| system 结构 | 一整段，`#` 区域 + `---` 分隔 | **8 个模块**按固定顺序拼合，模块之间只空一行，不再有 `---` |
 | 模块来源 | 拼装函数一把梭 | 分三类：固定行（程序写死）/ 书籍数据（用户填）/ Mod 注入 |
 | 文案语体 | 口语化，顺着猫娘小女仆的口吻 | **准确的书面语**：术语统一、句式完整、仅在必要的猫娘人格赋予和约束时使用语气词与撒娇口吻 |
 | 结尾强调 | 只有 `# 执行惩罚和奖励：` 收尾 | 新增 `{system_must-}`：must 的**块序列整体逆序**再拼一遍（Mod 块一起参与） |
 | 书籍信息 | 混在人设头里 | 独立模块 `{system_about}`，带书籍名 / 分类 |
 | 角色状态 | 数据与规则挤在同一个区 | **规则进 accord**（格式 + 完整性），**数据进 about**（层级 + 类别格式） |
-| Mod 注入位 | system 一处（抬升）+ 前后置词两处 | system 四处（必须遵循段 / 设定 / 世界书 / 文笔与参考段落）+ 前后置词两处 |
-| Mod 标题 | 注入内容原样贴着宿主块 | **一律不单独起标题、不标 Mod 字样**（免得模型把它当成独立的一块分开处理） |
+| Mod 注入位 | system 一处（抬升）+ 前后置词两处 | system 五处（强指令 / 杂项 / 设定 / 世界书 / 文笔与参考段落）+ 前后置词两处 |
+| Mod 标题 | 注入内容原样贴着宿主块 | **默认不单独起标题、不标 Mod 字样**（免得模型把它当成独立的一块分开处理）；杂项要求例外——它没有宿主块，用程序标题 `# 杂项要求：` |
 | 文风口径 | 藏在 `# 执行惩罚和奖励：` 顶部 | 独立子模块 `# 文风口径：`，排在 `accord_ending` 末尾 |
 | 工具指导 | 只写在工具 `description` 与状态工具契约里 | `accord_ending` 前半加一段**简要工具指南**，按本轮实际注册的工具现生成 |
 | `【…】` 行内标签 | `【记忆条目格式】`、`【状态工具契约】` 这类 | 一律升级成 `#` 子模块标题 |
@@ -28,11 +28,12 @@ system 由若干带顺序的模块拼起来，谁产出的信息谁注入，空�
 
 1. 角色状态的格式规则从「共用输出契约」里拆出来，独立成子模块；
 2. must 收成「段1 + Mod 段（段2~n）」的连续段落：惩罚与奖励并入段1、补一条禁止违背命令、must 内部不再有子标题；
-3. Mod 注入内容不单独起标题、不标 Mod 字样（设定 / 世界书 / 文笔三处都是紧贴宿主块往下接）；
+3. Mod 注入内容不单独起标题、不标 Mod 字样（设定 / 世界书 / 文笔三处紧贴宿主块往下接；杂项没有宿主块，单独成 `{system_extra}` 并用程序标题）；
 4. `# 文笔要求` 的冲突标记说清范围——「与本书其它设定冲突时以此为准」；
 5. 区块契约里对记忆格式的指路从 `【…】` 改成「上文『…』」（那是标题不是标签了）；
 6. 角色状态格式要求里「类别顺序与**上面**的角色层级排序规则一致」改成「与**本书**的角色层级排序规则一致」——v3 的层级数据在 about 里，位置在 accord 之后，原文的「上面」指不准；
-7. 去掉 `---`。
+7. 去掉 `---`；
+8. Mod 的 system 注入拆成五路：强指令 → `{system_must}` 段 2~n、杂项 → 独立模块 `{system_extra}`、设定 → `{system_setting}`、文笔 → `{system_writing_style}`、世界书 → `{world_book}`；列 `system_prompt` 的语义收窄为「杂项要求」。
 
 > **与 v2 代码对齐的说明**：v2 文档与 v2 代码曾有几处不同步（共用契约的第三条、状态工具
 > 契约的「编辑只在维护步」一条、Chat 区块契约与 user 契约的措辞）。v3 一律以**代码实际下发**
@@ -40,11 +41,12 @@ system 由若干带顺序的模块拼起来，谁产出的信息谁注入，空�
 
 ## 二、模块顺序
 
-system 按这 7 个模块拼，顺序不许挪：
+system 按这 8 个模块拼，顺序不许挪：
 
 ```markdown
 {system_must}
 {system_accord}
+{system_extra}
 {system_about}
 {system_setting}
 {system_writing_style}
@@ -54,17 +56,18 @@ system 按这 7 个模块拼，顺序不许挪：
 
 | # | 模块 | 装什么 | 谁产出 | 可空 |
 |---|---|---|---|---|
-| 1 | `{system_must}` | 段1（人设 / 沙箱位置 / 绝对服从 / 惩罚与奖励 / 禁止违背）+ 段2~n（Mod 必须遵循） | 程序 + Mod | 否 |
+| 1 | `{system_must}` | 段1（人设 / 沙箱位置 / 绝对服从 / 惩罚与奖励 / 禁止违背）+ 段2~n（Mod 强指令） | 程序 + Mod | 否 |
 | 2 | `{system_accord}` | 当前请求协议 / 通用输出契约 / 角色状态格式与完整性 / 记忆条目格式与合并 / 输出区块契约 / 状态工具契约 | 程序 | 否 |
-| 3 | `{system_about}` | 书籍名、分类、角色层级排序规则、角色类别格式 | 书籍设置 | 是 |
-| 4 | `{system_setting}` | 书籍设定 + Mod 设定 / 书籍世界书 + Mod 世界书（两块内各合并） | 书籍设置 + Mod | 是 |
-| 5 | `{system_writing_style}` | 文笔要求 / 文笔要求与参考段落（Mod）/ 文笔参考范文 | 书籍设置 + Mod | 是 |
-| 6 | `{system_accord_ending}` | 简要工具指南 / 文风口径 | 程序（工具指南按本轮工具现生成） | 否 |
-| 7 | `{system_must-}` | must 全部块（段1 + Mod 段）逆序复现 | 程序 | 否 |
+| 3 | `{system_extra}` | 杂项要求（`# 杂项要求：` 下的 Mod 补充） | Mod | 是 |
+| 4 | `{system_about}` | 书籍名、分类、角色层级排序规则、角色类别格式 | 书籍设置 | 是 |
+| 5 | `{system_setting}` | 书籍设定 + Mod 设定 / 书籍世界书 + Mod 世界书（两块内各合并） | 书籍设置 + Mod | 是 |
+| 6 | `{system_writing_style}` | 文笔要求 / 文笔要求与参考段落（Mod）/ 文笔参考范文 | 书籍设置 + Mod | 是 |
+| 7 | `{system_accord_ending}` | 简要工具指南 / 文风口径 | 程序（工具指南按本轮工具现生成） | 否 |
+| 8 | `{system_must-}` | must 全部块（段1 + Mod 段）逆序复现 | 程序 | 否 |
 
 一句话记法：**模块之间一个空行；模块内子模块之间、must 的段与段之间也是一个空行；哪块没内容就
-连标题一起删。** 前两个模块给"规矩"（must / accord），中间两个给"这本书"（about / setting），
-第五个给文笔，最后两个给"动手前的提醒 + 再把硬约束顶一遍"。
+连标题一起删。** 前两个模块给"规矩"（must / accord），第三个给"Mod 补充"（extra），中间两个给
+"这本书"（about / setting），第六个给文笔，最后两个给"动手前的提醒 + 再把硬约束顶一遍"。
 
 ## 三、逐模块模板
 
@@ -91,7 +94,7 @@ system 按这 7 个模块拼，顺序不许挪：
 
 【段2~n（Mods）】
 
-这里是 system must 字段的 mod 置入块，按用户规定的顺序置入其中。无需另行标注，每个 mod 之间需空一行
+这里承接 Mod 的强指令（列 `system_must`），按用户规定的顺序置入；无需另行标注，每个 Mod 之间空一行。
 
 ### 2. `{system_accord}`
 
@@ -176,7 +179,19 @@ Mod 注入器**：只装程序管理的规则，任何 Mod 都改不动它。
 - 当前时间不设工具：该值位于正文的 `## 当前时间` 小节，由应用从正文中提取。
 ```
 
-### 3. `{system_about}`
+### 3. `{system_extra}`
+
+任务说明：Mod 的**杂项要求**——跨模块的通用补充（格式偏好、口吻、禁忌等）。它没有书籍数据的
+宿主块可挂，所以单独成一块；没有 Mod 提供内容时整块不出现。标题 `# 杂项要求：` 由程序给、
+是中性名——Mod 文案里不出现「Mod」字样。
+
+```markdown
+# 杂项要求：
+
+{Mod 的 `system_prompt` 注入，按用户设定顺序依次排开，Mod 之间空一行，不标 Mod 字样}
+```
+
+### 4. `{system_about}`
 
 任务说明：这本书"是什么"——书名、分类，加上用户在角色栏目里填的层级与类别格式。只放
 **数据**，规则在 accord 里；数据全空时整个模块不出现在 system 里。
@@ -204,7 +219,7 @@ Mod 注入器**：只装程序管理的规则，任何 Mod 都改不动它。
 - 层级空 → `角色层级排序规则：` 那行删；类别格式全空（一条都没填）→ 类别段整块删；
 - 上面两块都空 → 整个 `{system_about}` 不出现。
 
-### 4. `{system_setting}`
+### 5. `{system_setting}`
 
 任务说明：这本书"发生在哪儿、有哪些设定"——书籍基础设定、Mod 追加的设定、书籍世界书、
 Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书）：Mod 内容紧贴对应书籍内容往下接、
@@ -215,13 +230,13 @@ Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书�
 
 {书籍设置-基础设定栏的内容}
 
-{mod 提供的 system 设定注入，原样照抄、不合并、不换序}
+{Mod 的 `system_setting` 注入，原样照抄、不合并、不换序}
 
 # 世界书：
 
 {书籍世界书按关键词扫描后的注入文本}
 
-{mod 世界书按关键词扫描后的注入文本}
+{Mod 的 `world_book` 按关键词扫描后的注入文本}
 ```
 
 多个 Mod 时，同一个子模块内按用户在书籍设置里排的顺序依次排开，Mod 与 Mod 之间空一行，且不单独标注 Mod 标题避免 AI 模型分开处理：
@@ -232,7 +247,7 @@ Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书�
 {mod2}
 ```
 
-### 5. `{system_writing_style}`
+### 6. `{system_writing_style}`
 
 任务说明：文笔要求的三个来源——用户填的要求、Mod 注入的要求与参考段落、用户填的参考范文。
 **范文是最高优先级的文风依据**，所以导语跟着正文一起走，没有范文就整块删。
@@ -244,7 +259,7 @@ Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书�
 
 # 文笔要求与参考段落：
 
-{mod 注入的文笔要求和参考段落，空 → 连标题一起删，注意不标识 Mod 字样}
+{Mod 的 `system_writing_style` 注入，空 → 连标题一起删，注意不标识 Mod 字样}
 
 # 文笔参考范文：
 
@@ -253,7 +268,7 @@ Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书�
 {用户设置的文笔参考段落}
 ```
 
-### 6. `{system_accord_ending}`
+### 7. `{system_accord_ending}`
 
 任务说明：协议收尾——前半是**简要工具指南**（本轮有哪些工具、各管什么，一句话一个），
 后半是文风口径收口句。放这么后，是让模型动手之前最后再看一遍工具和文风。
@@ -281,7 +296,7 @@ Mod 世界书，四份按顺序排进两个子模块（书籍设定 / 世界书�
 组合规则：Chat 模式只有联网两个（开启联网时）；Agent 档位是历史一读一写 + 联网两个（联网在
 Agent 期间强制开启）。工具的具体契约仍以各自 `description` 为准，这里只讲「什么时候用哪个」。
 
-### 7. `{system_must-}`
+### 8. `{system_must-}`
 
 任务说明：must 的**块序列整体逆序**——块与块调头，块内文案一字不改（Mod 段一起参与），例如：
 
@@ -302,12 +317,13 @@ must-: {mod3}{mod2}{mod1}{text段1}
 | `{用户规定的顺序}` | about / 角色状态栏内容 | `book.roleHierarchy`（单行，折叠换行） |
 | `{类别名}` / `{用户设置的类别格式}` | about / 角色状态栏内容 | `book.roleCategories`（多行，保留换行） |
 | 书籍设定 | setting / 书籍设定和要求 | `book.baseSetting`（多行） |
-| Mod 设定 | setting / 书籍设定和要求（紧随书籍设定） | `ModsBundle.systemPrompts`（多行） |
+| Mod 设定 | setting / 书籍设定和要求（紧随书籍设定） | `ModsBundle.settingPrompts` ← 列 `system_setting`（多行） |
 | 书籍世界书 | setting / 世界书 | `PromptRequest.worldBookEntries`（已按关键词筛好） |
-| Mod 世界书 | setting / 世界书（紧随书籍世界书） | `ModsBundle.worldBooks`（多行） |
-| Mod 必须遵循 | must / 段2~n | `ModsBundle.mustPrompts`（多行） |
+| Mod 世界书 | setting / 世界书（紧随书籍世界书） | `ModsBundle.worldBooks` ← 列 `world_book`（多行） |
+| Mod 杂项要求 | extra / 杂项要求 | `ModsBundle.systemPrompts` ← 列 `system_prompt`（多行） |
+| Mod 强指令 | must / 段2~n | `ModsBundle.mustPrompts` ← 列 `system_must`（多行） |
 | 文笔要求 | writing_style / 文笔要求 | `book.writingRequirements`（多行） |
-| Mod 文笔要求与参考段落 | writing_style / 文笔要求与参考段落 | `ModsBundle.writingPrompts`（多行） |
+| Mod 文笔要求与参考段落 | writing_style / 文笔要求与参考段落 | `ModsBundle.writingStylePrompts` ← 列 `system_writing_style`（多行） |
 | 文笔参考段落 | writing_style / 文笔参考范文 | `book.writingStyle`（多行） |
 | `{T}` / `{2T}` | accord / 记忆总结轮次合并 | `book.memorySummaryRounds` |
 | `{轮次}` / `{时间}` / `{记忆内容}` / `{开头轮}` / `{结尾轮}` / `{开头轮时间}` / `{结尾轮时间}` | accord / 记忆条目格式 | 模型输出形状，不是应用填的值 |
@@ -324,8 +340,10 @@ user 侧的占位符（`{轮次}` / `{上轮时间}` / `{此轮时间}` / `{用�
   一个 `#` 一级标题；**must 与 must- 没有标题**——它们是连续段落（段1 + Mod 段），system 开篇
   直接就是人设那句，末尾直接就是逆序复现的块。`##` 只出现在**模型输出格式**里
   （`## 剧情演绎` 这类区块名、角色状态围栏里的 `## 角色名`），不作提示词的结构标题。
-- **Mod 注入内容不单独起标题、不标 Mod 字样**：紧贴宿主块的内容往下接、空一行。给它立一块
-  标题，模型就容易把 Mod 当成"另一套规则"分而治之，反而压不住通用协议。
+- **Mod 内容不单独起标题、不标 Mod 字样**：紧贴宿主块的内容往下接、空一行。给它单独立块，
+  模型就容易把 Mod 当成"另一套规则"分而治之，反而压不住通用协议。**唯一例外**是承载杂项
+  要求的 `{system_extra}`：它本来就没有宿主块，标题由程序给（`# 杂项要求：`），中性名、不出现
+  在 Mod 文案里。
 - **空行由程序加**：模块之间、子模块之间、must 的段与段之间各一个空行；同一子模块内的分条用
   `- ` 连续写，条与条之间不插空行。
 - **不用 `---`**：`#` 已经切干净了，再画分隔线只是白烧 token。这条只管 **system**；user 侧
@@ -350,7 +368,7 @@ user 侧的占位符（`{轮次}` / `{上轮时间}` / `{此轮时间}` / `{用�
 | 模块 | 块 | 来源 | 空则 |
 |---|---|---|---|
 | must | 段1（人设 / 位置 / 服从 / 惩罚与奖励 / 禁止违背） | 固定行 | 永在 |
-| must | 段2~n（Mod 必须遵循） | Mod 的「必须遵循」段，不标标题 | 删 |
+| must | 段2~n（Mod 强指令） | Mod 的 `system_must`，不标标题 | 删 |
 | accord | 当前请求协议 | `PromptMode` | 永在 |
 | accord | 通用输出契约 | 固定行 | 永在 |
 | accord | 角色状态格式要求 | 固定行 | 永在 |
@@ -359,12 +377,13 @@ user 侧的占位符（`{轮次}` / `{上轮时间}` / `{此轮时间}` / `{用�
 | accord | 记忆总结轮次合并 | `book.memorySummaryRounds` | 永在 |
 | accord | 输出区块契约 | 按模式取 | 永在 |
 | accord | 状态工具契约 | 按模式取（Agent 才有） | 删 |
+| extra | 杂项要求 | Mod 的 `system_prompt`，程序标题 `# 杂项要求：` | 删 |
 | about | 书籍信息 | `book.title` / `book.category` | 删 |
 | about | 角色状态栏内容 | `book.roleHierarchy` / `book.roleCategories` | 删 |
-| setting | 书籍设定和要求 | `book.baseSetting` + `mods.systemPrompts` | 都空才删 |
+| setting | 书籍设定和要求 | `book.baseSetting` + `mods.settingPrompts` | 都空才删 |
 | setting | 世界书 | `worldBookEntries` + `mods.worldBooks` | 都空才删 |
 | writing_style | 文笔要求 | `book.writingRequirements` | 删 |
-| writing_style | 文笔要求与参考段落 | Mod 的「文笔要求与参考段落」段，不标 Mod 字样 | 删 |
+| writing_style | 文笔要求与参考段落 | Mod 的 `system_writing_style`，不标 Mod 字样 | 删 |
 | writing_style | 文笔参考范文 | `book.writingStyle` | 删 |
 | accord_ending | 简要工具指南 | 本轮实际注册的工具 | 删 |
 | accord_ending | 文风口径 | 固定行 | 永在 |
@@ -407,14 +426,15 @@ Agent Lv.1 的 `# 输出区块契约：`：
 
 ## 八、Mod 注入位
 
-system 侧一共 4 个 Mod 注入位，各管一段，互不重叠：
+system 侧一共 5 个 Mod 注入位，各管一段，互不重叠：
 
-| 注入位 | 落在哪儿 | 数据源 |
+| 注入位 | 落在哪儿 | 数据源（列 → bundle） |
 |---|---|---|
-| 必须遵循 | `{system_must}` 的段 2~n（不标标题、不标 Mod） | `ModsBundle.mustPrompts` |
-| 设定 | `{system_setting}` 的 `# 书籍设定和要求：` 内，紧随书籍设定 | `ModsBundle.systemPrompts` |
-| 世界书 | `{system_setting}` 的 `# 世界书：` 内，紧随书籍世界书 | `ModsBundle.worldBooks` |
-| 文笔与参考段落 | `{system_writing_style}` 的 `# 文笔要求与参考段落：` | `ModsBundle.writingPrompts` |
+| 强指令 | `{system_must}` 的段 2~n（不标标题、不标 Mod） | `system_must` → `ModsBundle.mustPrompts` |
+| 杂项要求 | `{system_extra}`（程序标题 `# 杂项要求：`） | `system_prompt` → `ModsBundle.systemPrompts` |
+| 设定 | `{system_setting}` 的 `# 书籍设定和要求：` 内，紧随书籍设定 | `system_setting` → `ModsBundle.settingPrompts` |
+| 世界书 | `{system_setting}` 的 `# 世界书：` 内，紧随书籍世界书 | `world_book` → `ModsBundle.worldBooks` |
+| 文笔与参考段落 | `{system_writing_style}` 的 `# 文笔要求与参考段落：` | `system_writing_style` → `ModsBundle.writingStylePrompts` |
 
 另外两个注入位是前/后置词，落在 user 消息里（属于上下文侧），见 `docs/prompt_v3_context.md`。
 
@@ -422,12 +442,15 @@ system 侧一共 4 个 Mod 注入位，各管一段，互不重叠：
 
 - **原样照抄**：Mod 文案不改写、不合并、不换序；多个 Mod 之间补一个空行。除了末尾的逆序
   复现，别处都保持用户设定的顺序；
-- **不标标题、不标 Mod 字样**：注入内容紧贴宿主块往下接。给它单独立一块，模型就容易把 Mod
-  当成"另一套规则"分开处理，反而压不住通用协议；
-- **must 段参与逆序**：`{system_must-}` 是 `[段1, Mod 段…]` 整体反转，所以 Mod 的「必须遵循」
-  在末尾复现时排在段1 前面；
-- **位置说明**：v2 把 Mod system 抬到总协议之前是为了抢注意力；v3 的设定 / 世界书 / 文笔落在
-  中后段，靠 `must-` 把硬约束顶到最后——两头都占住了，不再额外搬块。
+- **不标标题、不标 Mod 字样**：注入内容紧贴宿主块往下接。给它单独立块，模型就容易把 Mod
+  当成"另一套规则"分开处理，反而压不住通用协议。唯一例外是杂项要求——它没有宿主块，用
+  程序给的 `# 杂项要求：`；
+- **must 段参与逆序**：`{system_must-}` 是 `[段1, Mod 段…]` 整体反转，所以 Mod 的强指令在末尾
+  复现时排在段1 前面——这是有意的（硬指令前置优先）；
+- **文笔只补充**：Mod 的文笔块排在书范文之前，范文仍是最高优先级；Mod 只做补充，不压书；
+- **位置说明**：v2 把 Mod system 抬到总协议之前是为了抢注意力；v3 拆成强指令（最前）、杂项
+  （协议之后）与设定 / 世界书 / 文笔（中后段），靠 `must-` 再把硬约束顶到最后——注意力分配
+  更精确，不再额外搬块。
 
 ## 九、文风口径
 
@@ -444,11 +467,14 @@ v3 的四处落点：
 
 system 侧不再另设「文本口径」固定条目。
 
+Mod 的文笔块（`# 文笔要求与参考段落：`）算作「文笔要求」的一部分、排在书范文之前，所以范文
+仍压它一头；Mod 只做补充，不覆盖书。
+
 ## 十、实现落点
 
 | 文件 | 职责 |
 |---|---|
-| `lib/services/prompt_v3_sections.dart` | **system 文案**：固定行、7 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
+| `lib/services/prompt_v3_sections.dart` | **system 文案**：固定行、8 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
 | `lib/services/prompt_v3_build.dart` | **system 拼合**：按序取模块、空模块删除、空行 join、`must-` 逆序；只依赖纯 Dart |
 | `lib/services/prompt_v3_context.dart` | **上下文**：本轮 user 消息与 Agent 回合指令的文案 + 拼装（见 `docs/prompt_v3_context.md`） |
 | `lib/services/prompt_v3_tools.dart` | 工具清单（沿用 v2 的 `listPromptTools` 路由，不重写） |
@@ -471,6 +497,7 @@ final mustBlocks = <String>[presetSegment, ...modSegments];
 final modules = <PromptSection>[
   PromptSection(name: 'must', text: mustBlocks.join('\n\n')),
   accord,
+  extra,         // 可空：只有 Mod 提供杂项要求时才有
   about,         // 可空
   setting,       // 可空
   writingStyle,  // 可空
@@ -485,7 +512,10 @@ return modules.map((m) => m.text).join('\n\n'); // system()
 ## 十一、设计边界
 
 - **must / must- 不带标题**：与其它模块不同——system 开篇直接是段1，结尾直接是逆序复现的块；
-- **Mod 内容不标身份**：不标签、不分块，紧贴宿主内容往下接。这是硬约束，不是排版偏好；
+- **Mod 内容不标身份**：不标签、不分块，紧贴宿主内容往下接。这是硬约束，不是排版偏好。
+  唯一的例外是 `{system_extra}`——它没有宿主块，标题由程序给；
+- **Mod 文笔只补充**：排在书范文之前，范文仍是最高优先级；不给 Mod 留"压书"的口子；
+- **Mod 强指令参与逆序**：这是有意的——末尾复现时硬指令排在段1 之前，宁可让人设让位；
 - **简要工具指南跟着工具走**：本轮注册了什么就写什么，工具开关一变 system 前缀就变、服务商
   缓存从改动处失效——这个代价接受，让模型临笔前看见工具清单更值；
 - **user 侧不模块化**：模块化只做在 system；user 消息按 `docs/prompt_v3_context.md` 的拼装
@@ -495,7 +525,7 @@ return modules.map((m) => m.text).join('\n\n'); // system()
 
 改 v3 文案 / 结构时按这份单子过一遍：
 
-1. 模块顺序、空行、标题层级没变（must / must- 不带标题这条别破）；
+1. 模块顺序、空行、标题层级没变（8 个模块的次序、must / must- 不带标题这两条别破）；
 2. 新加的子模块要么有内容来源、要么能整块删；
 3. 空块能整块删，删完不留孤立标题、不留 `---`；
 4. 没有具体取值示例，占位符一律 `{中文名}`；
@@ -503,6 +533,8 @@ return modules.map((m) => m.text).join('\n\n'); // system()
 6. `must` 里的段落能独立成立（它要被逆序复现）；
 7. 文风口径四处落点没漏：文笔要求标题标记、范文导语、accord_ending 收口句（这三处在 system），
    以及 user 消息里那句（见上下文文档）；
-8. 改完同步 `prompt_v3_sections.dart`（上下文改动同步 `prompt_v3_context.dart`），并跑
+8. Mod 五个通道各就各位：强指令进 must 段2~n、杂项进 extra、设定进 setting、文笔进 writing、
+   世界书进 setting 的世界书块；除 extra 外都不带标题、不标 Mod 字样；
+9. 改完同步 `prompt_v3_sections.dart`（上下文改动同步 `prompt_v3_context.dart`），并跑
    `flutter test`；
-9. 注入文案使用**准确的书面语**：仅在模型人设部分用语气词与撒娇口吻，术语与占位符写法保持统一。
+10. 注入文案使用**准确的书面语**：仅在模型人设部分用语气词与撒娇口吻，术语与占位符写法保持统一。

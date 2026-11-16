@@ -7,7 +7,7 @@
 本文说明「发送给 AI 的文本与工具」的**唯一取用入口**——分源接口套件
 `lib/services/prompt_interface.dart`；实现是 `prompt_v3_sections.dart`（system 文案）+
 `prompt_v3_build.dart`（system 拼合）+ `prompt_v3_context.dart`（上下文文案与拼装）+
-`prompt_v3_tools.dart`（工具清单），按 system 文档的 7 模块与上下文文档的成分顺序拼合。
+`prompt_v3_tools.dart`（工具清单），按 system 文档的 8 模块与上下文文档的成分顺序拼合。
 
 > 接口套件本身不换：`prompt_text.dart` / `prompt_interface.dart` 只多一个「按模块取」的读法
 > （见 §二），调用方与报文 / 历史层一概不动。
@@ -69,6 +69,7 @@ class PromptSection {
 |---|---|---|
 | `must` | `{system_must}` | 否 |
 | `accord` | `{system_accord}` | 否 |
+| `extra` | `{system_extra}` | 是 |
 | `about` | `{system_about}` | 是 |
 | `setting` | `{system_setting}` | 是 |
 | `writingStyle` | `{system_writing_style}` | 是 |
@@ -103,7 +104,7 @@ const PromptInterface promptInterface = PromptV3();
 
 | 文件 | 职责 |
 |---|---|
-| `prompt_v3_sections.dart` | **system 文案**：固定行、7 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
+| `prompt_v3_sections.dart` | **system 文案**：固定行、8 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
 | `prompt_v3_build.dart` | **system 拼合**：按序取模块 → 空模块丢弃 → must 的块序列反转出 `mustReverse` → 空行 join；实现 `system()` / `systemSections()`（纯 Dart 依赖） |
 | `prompt_v3_context.dart` | **上下文**：本轮 user 消息与 Agent 回合指令的文案 + 拼装，实现 `user()` / `stage*()`（纯 Dart 依赖） |
 | `prompt_v3_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表（沿用 v2 路由） |
@@ -118,7 +119,8 @@ const PromptInterface promptInterface = PromptV3();
 
 - 模块 / 子模块一律 `#` 一级标题；**must 与 must- 例外**——它们是不带标题的段落序列
   （段1 + Mod 段），块内分条只用 `- `（不用数字序号）；
-- **Mod 注入内容不单独起标题、不标 Mod 字样**：紧贴宿主块往下接；
+- **Mod 内容不单独起标题、不标 Mod 字样**：紧贴宿主块往下接。例外是 `extra`——它没有宿主块，
+  标题由程序给（`# 杂项要求：`）；
 - **无内容即删块**：可选项为空就连标题一起删，不写「（无）」「未设置」；
 - **多行内容保留换行**（Mod / 书籍设定 / 世界书 / 文笔参考 / 类别格式 / 前后置词），
   只有单行字段（书籍名 / 分类 / 上轮时间 / 角色层级）才折叠换行；
@@ -130,12 +132,13 @@ const PromptInterface promptInterface = PromptV3();
 
 ## 四、模块与来源
 
-7 个模块的顺序、每个块装什么、空块怎么删——以 `docs/prompt_v3_system.md` 的「模块顺序」与
+8 个模块的顺序、每个块装什么、空块怎么删——以 `docs/prompt_v3_system.md` 的「模块顺序」与
 「模块 × 来源」两张表为准，本文不抄第二份（抄了必然不同步）。
 
 接口侧只记三条：
 
-1. **模块顺序**：`must → accord → about → setting → writingStyle → accordEnding → mustReverse`；
+1. **模块顺序**：`must → accord → extra → about → setting → writingStyle → accordEnding →
+   mustReverse`；
 2. **`mustReverse` 不是文案**：由 `prompt_v3_build` 把 `must` 的块序列（段1 + 各 Mod 段）
    整体反转，块内文案原样、不加标题；文案层没有它的手写稿；
 3. **`toolNames` 只喂 `accordEnding`**：其余模块不看它；Chat / Agent 的差异仍由 `mode` 决定，
@@ -143,26 +146,28 @@ const PromptInterface promptInterface = PromptV3();
 
 ## 五、Mod 注入位
 
-`ModsBundle` 按注入位提供 6 段（段内顺序由调用方按用户设定排好）：
+`ModsBundle` 按注入位提供 7 段（段内顺序由调用方按用户设定排好）：
 
-| 字段 | 落到哪儿 |
-|---|---|
-| `prePrompts` | user 消息前置词区 |
-| `postPrompts` | user 消息后置词区 |
-| `systemPrompts` | `setting` 的 `# 书籍设定和要求：` 内，紧随书籍设定 |
-| `worldBooks` | `setting` 的 `# 世界书：` 内，紧随书籍世界书 |
-| `mustPrompts` | `must` 的段 2~n（不标标题、不标 Mod 字样） |
-| `writingPrompts` | `writing_style` 的 `# 文笔要求与参考段落：`（不标 Mod 字样） |
+| 字段 | 落到哪儿 | 来源列 |
+|---|---|---|
+| `prePrompts` | user 消息前置词区 | `pre_prompt` |
+| `postPrompts` | user 消息后置词区 | `post_prompt` |
+| `mustPrompts` | `must` 的段 2~n（不标标题、不标 Mod 字样） | `system_must` |
+| `systemPrompts` | `extra` 的 `# 杂项要求：` 下 | `system_prompt` |
+| `settingPrompts` | `setting` 的 `# 书籍设定和要求：` 内，紧随书籍设定 | `system_setting` |
+| `worldBooks` | `setting` 的 `# 世界书：` 内，紧随书籍世界书 | `world_book` |
+| `writingStylePrompts` | `writingStyle` 的 `# 文笔要求与参考段落：`（不标 Mod 字样） | `system_writing_style` |
 
 四条约定：
 
-- **`ModsBundle` 多出两段**：`mustPrompts` / `writingPrompts` 分别承载 Mod 的「必须遵循」与
-  「文笔要求与参考段落」，其余四段与 v2 同名同义；
+- **`ModsBundle` 多出三段**：`mustPrompts` / `settingPrompts` / `writingStylePrompts` 分别承载
+  Mod 的强指令、设定、文笔；`systemPrompts` 的语义收窄为「杂项要求」，字段名不变；
 - **注入文本不标身份**：不出现 Mod 字样、不起标题——立一块标题，模型就容易把 Mod 当成
-  "另一套规则"分而治之；
-- **空段不接**：`writingPrompts` 为空时连标题一起删，其余段为空就是少一段内容；
+  "另一套规则"分而治之。`extra` 的标题是程序给的、中性名，不属于 Mod 文案；
+- **空段不接**：`writingStylePrompts` 为空时连标题一起删、`systemPrompts` 为空时整个 `extra`
+  模块消失；其余段为空就是少一段内容；
 - **`mustPrompts` 参与逆序**：`mustReverse` 是 `[段1, mustPrompts…]` 整体反转，所以 Mod 段在
-  末尾以倒序复现。
+  末尾以倒序复现（有意为之）。
 
 ## 六、工具清单
 
@@ -196,7 +201,7 @@ const PromptInterface promptInterface = PromptV3();
 
 纯 Dart 预览：`dart run tool/preview_prompt.dart` 只引用 `prompt_text.dart` +
 `prompt_v3_build.dart`（不含工具 / 抓取服务），因此在 Flutter 之外也能打印真实 system / user
-文本；想把 7 个模块分开看，就打印 `systemSections()`。
+文本；想把 8 个模块分开看，就打印 `systemSections()`。
 
 ## 八、改版与扩展约定
 
@@ -218,7 +223,7 @@ const PromptInterface promptInterface = PromptV3();
 
 | 测试文件 | 锁住什么 |
 |---|---|
-| `test/prompt_interface_test.dart` | 绑定实现；模块顺序与空行；标题层级（must / must- 无标题、结构标题不出现 `##`）；空块即删；多行保留；模式契约差异；**文风口径四处落点**；Mod 注入位（不标标题）与六个注入段的落点；工具路由与替身；`user()` / `stage*()` 与 system 的衔接；请求对象 |
+| `test/prompt_interface_test.dart` | 绑定实现；模块顺序与空行；标题层级（must / must- 无标题、`extra` 有程序标题、结构标题不出现 `##`）；空块即删；多行保留；模式契约差异；**文风口径四处落点**；Mod 注入位（除 `extra` 外不标标题）与七个注入段的落点；工具路由与替身；`user()` / `stage*()` 与 system 的衔接；请求对象 |
 | `test/prompt_v3_modules_test.dart` | 逐模块断言：`systemSections()` 的名字与顺序；`mustReverse` 是 must 全部块（段1 + Mod 段）的逆序；`toolNames` 驱动的简要工具指南（有 / 无工具、Chat / Agent 两种组合） |
 | `test/prompt_v3_context_test.dart` | 上下文拼装：user 消息成分的顺序与 `---` 分隔、每类空成分的删除、两种模式的本轮输出契约、四份回合指令与维护回合的补充清单 |
 | `test/prompt_placeholders_test.dart` | 内置文案的占位符约定（`{中文名}`、不写死取值）+ 记忆模板与格式优先级统一 |
@@ -241,7 +246,8 @@ const PromptInterface promptInterface = PromptV3();
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |
 | `lib/services/agent/state/state_tools.dart` | 六个状态工具（Lv.1 只注册历史一读一写，其余是保留框架） |
-| `docs/prompt_v3_system.md` | system 设计（7 模块模板，system 文案的评审真源） |
+| `docs/prompt_v3_system.md` | system 设计（8 模块模板，system 文案的评审真源） |
+| `docs/mods.md` | Mod 设计（七列 / 七个注入位 / 导出格式 / 3.0 兼容口径） |
 | `docs/prompt_v3_context.md` | 上下文设计（user 消息成分 / 历史形态 / 回合指令） |
 | `docs/prompt_v3_interface.md` | 本文档 |
 
