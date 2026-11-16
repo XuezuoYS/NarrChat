@@ -11,7 +11,8 @@ import '../theme/app_theme.dart';
 import '../utils/search_utils.dart';
 import 'app_empty_hint.dart';
 import 'app_notice_overlay.dart';
-import 'markdown_preview.dart';
+import 'json_editing_controller.dart';
+import 'json_view.dart';
 import 'mod_detail_dialog.dart';
 import 'responsive_builder.dart';
 import 'settings/settings_kit.dart';
@@ -131,7 +132,7 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
     );
   }
 
-  /// 导出为 JSON 文本（可复制分享）。
+  /// 导出为 JSON 文本（可复制分享）；正文用 [JsonView] 着色展示。
   Future<void> _exportMod(Mod mod) async {
     final jsonText = const JsonEncoder.withIndent('  ').convert(mod.toJson());
     await showDialog<void>(
@@ -161,16 +162,8 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
                   border: Border.all(color: ctx.narrColors.divider),
                 ),
                 child: SingleChildScrollView(
-                  child: SelectableTextArea(
-                    child: Text(
-                      jsonText,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
+                  // 文本已是 2 空格缩进的合法 JSON，别再解析一遍。
+                  child: JsonView(data: jsonText, prettyPrint: false),
                 ),
               ),
             ],
@@ -198,8 +191,11 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
   }
 
   /// 导入：粘贴 JSON 文本（支持单个对象或对象数组）。
+  ///
+  /// 输入框用 [JsonEditingController]：粘贴的 JSON 一边输一边着色，格式写错时
+  /// 也能从颜色上看出问题（宽容词法，不因半截内容报错）。
   Future<void> _importMods() async {
-    final controller = TextEditingController();
+    final controller = JsonEditingController();
     final text = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(

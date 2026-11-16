@@ -16,6 +16,7 @@ import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
 import 'package:narrchat/services/html_search_service.dart';
 import 'package:narrchat/services/request_frame_outline.dart';
+import 'package:narrchat/widgets/json_syntax_colors.dart';
 import 'package:narrchat/widgets/raw_dialog.dart';
 
 import 'helpers/fakes.dart';
@@ -201,6 +202,89 @@ void main() {
       expect(spans[0].style?.backgroundColor, const Color(0xFFFFF176));
       expect(spans[1].style?.backgroundColor, isNull); // 中间空格普通
       expect(spans[2].style?.backgroundColor, const Color(0xFFFFB74D));
+    });
+
+    test('overlayMatchBackground 只叠底色，前景色原样保留', () {
+      const base = TextStyle(fontSize: 12, color: Color(0xFF98C379));
+      const highlight = Color(0xFFFFF176);
+      const current = Color(0xFFFFB74D);
+      const text = 'a青云b青云';
+      final spans = <TextSpan>[
+        const TextSpan(text: 'a', style: base),
+        const TextSpan(text: '青云', style: base),
+        const TextSpan(text: 'b', style: base),
+        const TextSpan(text: '青云', style: base),
+      ];
+
+      final out = overlayMatchBackground(
+        spans,
+        text,
+        '青云',
+        highlightColor: highlight,
+        currentColor: current,
+        currentIndex: 1,
+      );
+
+      expect(out.map((s) => s.text).join(), text, reason: '文字与顺序不能变');
+      expect(out, hasLength(4));
+      expect(out[0].style?.backgroundColor, isNull, reason: '非命中不加底色');
+      expect(out[1].style?.color, base.color, reason: '前景色（语法色）保留');
+      expect(out[1].style?.backgroundColor, highlight);
+      expect(out[2].style?.backgroundColor, isNull);
+      expect(out[3].style?.backgroundColor, current, reason: '当前定位用橙底');
+    });
+
+    test('overlayMatchBackground 命中跨语法区间边界时按边界切分', () {
+      const green = TextStyle(color: Color(0xFF98C379));
+      const text = '"ab"';
+      final spans = <TextSpan>[const TextSpan(text: text, style: green)];
+
+      final out = overlayMatchBackground(
+        spans,
+        text,
+        'ab',
+        highlightColor: const Color(0xFFFFF176),
+        currentColor: const Color(0xFFFFB74D),
+      );
+
+      expect(out.map((s) => s.text), ['"', 'ab', '"']);
+      expect(out.every((s) => s.style?.color == green.color), isTrue);
+      expect(out[1].style?.backgroundColor, const Color(0xFFFFF176));
+    });
+
+    test('overlayMatchBackground：空查询 / 区间不铺满全文时原样返回', () {
+      const base = TextStyle(fontSize: 12);
+      const highlight = Color(0xFFFFF176);
+      const current = Color(0xFFFFB74D);
+      final spans = <TextSpan>[const TextSpan(text: 'abc', style: base)];
+      expect(
+        identical(
+          overlayMatchBackground(
+            spans,
+            'abc',
+            '',
+            highlightColor: highlight,
+            currentColor: current,
+          ),
+          spans,
+        ),
+        isTrue,
+      );
+      // 区间没铺满全文：宁可不处理，也不出错位底色。
+      final partial = <TextSpan>[const TextSpan(text: 'a', style: base)];
+      expect(
+        identical(
+          overlayMatchBackground(
+            partial,
+            'abc',
+            'b',
+            highlightColor: highlight,
+            currentColor: current,
+          ),
+          partial,
+        ),
+        isTrue,
+      );
     });
 
     test('splitAtNewlines 只在换行后切，拼回逐字相同', () {
@@ -901,6 +985,74 @@ void main() {
       final current = const Color(0xFFFFB74D).withValues(alpha: 0.6);
       expect(styles.first.backgroundColor, current);
       expect(styles.skip(1).every((s) => s.backgroundColor != current), isTrue);
+    });
+
+    testWidgets('请求体按 JSON 语法着色', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: '{\n  "name": "青云宗",\n  "n": 12,\n  "ok": true\n}',
+          thinking: '无',
+          toolCalls: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: RawDialog(exchanges: exchanges)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('【请求体 1】'));
+      await tester.pumpAndSettle();
+
+      final spans = _rawBlockSpans(tester, 0);
+      TextStyle styleOf(String text) =>
+          spans.firstWhere((s) => s.toPlainText() == text).style!;
+
+      expect(styleOf('"name"').color, JsonSyntaxColors.light.key);
+      expect(styleOf('"青云宗"').color, JsonSyntaxColors.light.string);
+      expect(styleOf('12').color, JsonSyntaxColors.light.number);
+      expect(styleOf('true').color, JsonSyntaxColors.light.keyword);
+      expect(styleOf('{').color, JsonSyntaxColors.light.punctuation);
+    });
+
+    testWidgets('检索命中叠在 JSON 语法色上：前景不变，只加底色', (tester) async {
+      final exchanges = [
+        RawExchange(
+          requestBody: '{"name": "青云宗 青云宗"}',
+          thinking: '无',
+          toolCalls: '',
+          content: '',
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: RawDialog(exchanges: exchanges)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _searchRaw(tester, '青云宗');
+
+      final hits = _rawBlockSpans(
+        tester,
+        0,
+      ).where((s) => s.toPlainText() == '青云宗').map((s) => s.style!).toList();
+      expect(hits, hasLength(2));
+      expect(
+        hits.every((s) => s.color == JsonSyntaxColors.light.string),
+        isTrue,
+        reason: '命中处仍保持 JSON 字符串的绿色前景',
+      );
+      expect(
+        hits.first.backgroundColor,
+        const Color(0xFFFFB74D).withValues(alpha: 0.6),
+        reason: '当前定位为橙底',
+      );
+      expect(
+        hits.last.backgroundColor,
+        const Color(0xFFFFF176).withValues(alpha: 0.5),
+        reason: '其余命中为黄底',
+      );
     });
 
     testWidgets('定位下一处：滚动位置真的跟着移动（取块内已排好的版面）', (tester) async {

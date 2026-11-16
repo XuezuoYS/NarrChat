@@ -5,14 +5,16 @@ import 'package:flutter/material.dart';
 import '../services/debug_file_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/island_bar.dart';
+import '../widgets/json_view.dart';
 import '../widgets/load_error_hint.dart';
 import '../widgets/markdown_preview.dart';
 import '../widgets/narr_chat_app_bar.dart';
 
 /// 「JSON / 文本」阅读器：只读显示一个文件的内容。
 ///
-/// [formatJson] 为 true 时尝试按 2 空格缩进格式化；解析失败不阻止查看，
-/// 直接显示原文并在顶部说明失败原因。
+/// [formatJson] 为 true 时，先尝试按 2 空格缩进格式化（解析失败不阻止查看，
+/// 直接显示原文并在顶部说明失败原因），正文交给 [JsonView] 做 JSON 语法着色；
+/// 其它文本文件保持纯文本展示（不做任何语法着色）。
 class DebugTextViewScreen extends StatefulWidget {
   const DebugTextViewScreen({
     super.key,
@@ -54,6 +56,8 @@ class _DebugTextViewScreenState extends State<DebugTextViewScreen> {
       var content = raw;
       String? jsonError;
       if (widget.formatJson) {
+        // 这里刻意自己格式化（而不是用 `tryPrettyPrintJson`）：要把解析失败的
+        // **具体原因**展示给用户，而 JsonView 的格式化是静默回退的。
         try {
           content = const JsonEncoder.withIndent('  ').convert(jsonDecode(raw));
         } catch (error) {
@@ -103,7 +107,6 @@ class _DebugTextViewScreenState extends State<DebugTextViewScreen> {
       return LoadErrorHint(message: '文件读取失败：$_error', onRetry: _load);
     }
 
-    final colors = context.narrColors;
     final content = _content ?? '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -114,22 +117,35 @@ class _DebugTextViewScreenState extends State<DebugTextViewScreen> {
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(16),
-            child: SelectableTextArea(
-              child: Text(
-                content.isEmpty ? '（空文件）' : content,
-                style: TextStyle(
-                  fontSize: 12,
-                  height: 1.5,
-                  fontFamily: 'monospace',
-                  color: colors.textPrimary,
-                ),
-              ),
-            ),
+            child: _buildContent(context, content),
           ),
         ),
       ],
     );
   }
+
+  /// 正文渲染：空文件给提示；JSON 文件走 [JsonView]（语法着色，文本已在本页
+  /// 格式化好，故关掉它自己的再格式化）；其它文件保持纯文本。
+  Widget _buildContent(BuildContext context, String content) {
+    final colors = context.narrColors;
+    if (content.isEmpty) {
+      return SelectableTextArea(
+        child: Text('（空文件）', style: _monoStyle(colors)),
+      );
+    }
+    if (widget.formatJson) {
+      return JsonView(data: content, prettyPrint: false);
+    }
+    return SelectableTextArea(child: Text(content, style: _monoStyle(colors)));
+  }
+
+  /// 纯文本展示的等宽样式（与 [JsonView] 默认样式一致，切换时字号不跳）。
+  TextStyle _monoStyle(NarrChatColors colors) => TextStyle(
+        fontSize: 12,
+        height: 1.5,
+        fontFamily: 'monospace',
+        color: colors.textPrimary,
+      );
 }
 
 class _PathLine extends StatelessWidget {

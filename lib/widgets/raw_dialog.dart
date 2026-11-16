@@ -5,8 +5,11 @@ import 'package:flutter/services.dart';
 import '../models/raw_exchange.dart';
 import '../services/request_frame_outline.dart';
 import '../utils/focus_utils.dart';
+import '../utils/json_syntax_highlighter.dart';
 import 'app_notice_overlay.dart';
+import 'json_syntax_colors.dart';
 import 'markdown_preview.dart';
+import 'syntax_highlight.dart';
 
 /// 从文本中提取一个 base64 图片 data URL（用于 RAW 请求体中折叠长图）。
 class RawImageData {
@@ -218,6 +221,96 @@ List<TextSpan> highlightSpans(
   return spans;
 }
 
+/// 在**已经着色的** [spans] 上叠加检索命中底色（前景色不动，只换背景）。
+///
+/// 与 [highlightSpans] 的分工：后者负责「纯文本 + 检索高亮」；这个负责「文本
+/// 已有语法色（如 JSON 键名 / 字符串 / 数字）」时只叠底色——命中处补黄底、当前
+/// 定位补橙底，语法前景色原样保留。仍遵守「只换底色不换字形」的口径
+/// （见 `_HighlightText` 类注释）：字形不变，重排开销不随命中数暴涨。
+///
+/// [spans] 须是**平铺的文本叶子**且拼接后恰好等于 [text]（即
+/// `buildSyntaxHighlightSpans` 的输出）；不满足时原样返回，宁可不叠也不出错位底色。
+/// 纯函数，便于测试。
+List<TextSpan> overlayMatchBackground(
+  List<TextSpan> spans,
+  String text,
+  String query, {
+  required Color highlightColor,
+  required Color currentColor,
+  int currentIndex = -1,
+}) {
+  if (query.isEmpty || text.isEmpty || spans.isEmpty) return spans;
+
+  // 先确认区间铺满全文。
+  var total = 0;
+  for (final span in spans) {
+    final piece = span.text;
+    if (piece == null) return spans; // 非平铺叶子：不猜
+    total += piece.length;
+  }
+  if (total != text.length) return spans;
+
+  // 命中区间（大小写不敏感、不重叠），与 [highlightSpans] 同口径。
+  final lower = text.toLowerCase();
+  final needle = query.toLowerCase();
+  final matchStarts = <int>[];
+  final matchEnds = <int>[];
+  var searchStart = 0;
+  while (true) {
+    final idx = lower.indexOf(needle, searchStart);
+    if (idx < 0) break;
+    matchStarts.add(idx);
+    matchEnds.add(idx + needle.length);
+    searchStart = idx + needle.length;
+  }
+  if (matchStarts.isEmpty) return spans;
+
+  // 切点 = 语法区间边界 ∪ 命中边界；每个格子取「所属语法区间」的样式，
+  // 落在命中里的格子再补底色。
+  final boundaries = <int>{0, text.length};
+  var offset = 0;
+  for (final span in spans) {
+    offset += span.text!.length;
+    boundaries.add(offset);
+  }
+  boundaries.addAll(matchStarts);
+  boundaries.addAll(matchEnds);
+  final points = boundaries.toList()..sort();
+
+  final result = <TextSpan>[];
+  var spanIndex = 0;
+  var spanStart = 0;
+  var spanEnd = spans.first.text!.length;
+  var matchIndex = 0;
+  for (var i = 0; i < points.length - 1; i++) {
+    final start = points[i];
+    final end = points[i + 1];
+    if (start >= end) continue;
+    // 定位覆盖本格起点的语法区间。
+    while (spanIndex < spans.length - 1 && start >= spanEnd) {
+      spanStart = spanEnd;
+      spanIndex++;
+      spanEnd = spanStart + spans[spanIndex].text!.length;
+    }
+    // 定位覆盖本格起点的命中（命中间不会重叠，指针单调前进即可）。
+    while (matchIndex < matchStarts.length && matchEnds[matchIndex] <= start) {
+      matchIndex++;
+    }
+    var style = spans[spanIndex].style ?? const TextStyle();
+    if (matchIndex < matchStarts.length &&
+        matchStarts[matchIndex] <= start &&
+        matchEnds[matchIndex] > start) {
+      style = style.copyWith(
+        backgroundColor: matchIndex == currentIndex
+            ? currentColor
+            : highlightColor,
+      );
+    }
+    result.add(TextSpan(text: text.substring(start, end), style: style));
+  }
+  return result;
+}
+
 /// 把 [text] 按硬换行切成若干段，每段至多 [budget] 字符（末段与超长单行除外）。
 ///
 /// 切点一律落在 `\n` **之后**，各段拼回原样逐字相同 —— 跨段选中复制才不出错。
@@ -373,6 +466,8 @@ const double _kScrollTopPadding = 40;
 ///   展开为真实换行，便于阅读）。检索**手动触发**（点「搜索」或按回车）：
 ///   每块标题给出本块命中数「· N 处」，全部命中都可按「上一处 / 下一处」循环
 ///   定位，但一次只展开当前定位的那一块（命中很密时同时展开全部命中块会冻屏）；
+/// - 请求体与「后续可用帧」的增量 JSON 按 **JSON 语法着色**（键名 / 字符串 /
+///   数字 / 字面量 / 标点）；检索命中只在其上叠底色，语法前景色保持不变；
 /// - [previewRequestOnly] 为真时进入「预览请求体」模式：只展示请求体块，
 ///   不渲染【AI返回】区（标题相应改为「预览请求体」）；
 /// - [subsequentFrames] 非空时，在请求体之后追加「后续可用帧」区（仅预览模式）：
@@ -1089,6 +1184,7 @@ class _RawDialogState extends State<RawDialog> {
                 query: _query,
                 count: _countOf(index),
                 mono: true,
+                json: true,
                 expanded: _isBlockExpanded(index),
                 onToggle: (v) => _setBlockExpanded(index, v),
                 currentMatchIndex: _localCurrentIndex(index),
@@ -1139,6 +1235,7 @@ class _RawDialogState extends State<RawDialog> {
         query: _query,
         count: _countOf(requestBlockIndex),
         mono: true,
+        json: true,
         expanded: requestExpanded,
         onToggle: (v) => _setBlockExpanded(requestBlockIndex, v),
         currentMatchIndex: _localCurrentIndex(requestBlockIndex),
@@ -1251,6 +1348,9 @@ class _CollapsibleBlock extends StatelessWidget {
   /// 等宽字体（用于 JSON 展示）。
   final bool mono;
 
+  /// 是否按 JSON 语法着色（请求体与后续可用帧）。
+  final bool json;
+
   /// 是否展开（由父级控制）。
   final bool expanded;
 
@@ -1269,6 +1369,7 @@ class _CollapsibleBlock extends StatelessWidget {
     required this.query,
     required this.count,
     this.mono = false,
+    this.json = false,
     required this.expanded,
     required this.onToggle,
     required this.currentMatchIndex,
@@ -1348,6 +1449,7 @@ class _CollapsibleBlock extends StatelessWidget {
                 text: text,
                 query: query,
                 mono: mono,
+                json: json,
                 currentIndex: currentMatchIndex,
               ),
             ),
@@ -1480,7 +1582,8 @@ class _ImageListBlockState extends State<_ImageListBlock> {
   }
 }
 
-/// 可选中文本：按关键词高亮（命中黄底，「当前定位」橙底），等宽字体用于 JSON 展示。
+/// 可选中文本：按关键词高亮（命中黄底，「当前定位」橙底），等宽字体用于 JSON
+/// 展示；[json] 为真时再叠加 JSON 语法色（键名 / 字符串 / 数字 / 字面量 / 标点）。
 ///
 /// **高亮刻意只换底色、不动字重**（debug / Ahem 实测）：
 /// 一块 20 万字符 / 12500 处命中的文本里普通段与高亮段交替出现，加粗要另走一套字形，
@@ -1502,6 +1605,11 @@ class _HighlightText extends StatelessWidget {
   final String query;
   final bool mono;
 
+  /// 是否按 JSON 语法着色（RAW 请求体 / 后续可用帧的增量 JSON）。
+  ///
+  /// 着色只改**前景色**，命中仍是「只加底色」：检索时 JSON 色与黄/橙底共存。
+  final bool json;
+
   /// 本段内「当前定位」命中的局部序号（-1 = 无）。
   final int currentIndex;
 
@@ -1510,6 +1618,7 @@ class _HighlightText extends StatelessWidget {
     required this.text,
     required this.query,
     this.mono = false,
+    this.json = false,
     this.currentIndex = -1,
   });
 
@@ -1528,12 +1637,13 @@ class _HighlightText extends StatelessWidget {
       fontFamily: mono ? 'monospace' : null,
       color: scheme.onSurfaceVariant,
     );
-    final highlight = base.copyWith(
-      backgroundColor: const Color(0xFFFFF176).withValues(alpha: 0.5),
-    );
-    final current = base.copyWith(
-      backgroundColor: const Color(0xFFFFB74D).withValues(alpha: 0.6),
-    );
+    // 命中黄底 / 当前定位橙底（JSON 块与纯文本块同一口径）。
+    final highlightColor = const Color(0xFFFFF176).withValues(alpha: 0.5);
+    final currentColor = const Color(0xFFFFB74D).withValues(alpha: 0.6);
+    final highlight = base.copyWith(backgroundColor: highlightColor);
+    final current = base.copyWith(backgroundColor: currentColor);
+    // JSON 块：语法配色随主题现取一次，逐段复用。
+    final jsonColors = json ? JsonSyntaxColors.of(context) : null;
     final pieces = splitAtNewlines(text, _segmentBudget);
     final rowHeight = _rowHeightOf(base, textScaler);
     final selectionColor = scheme.primary.withValues(alpha: 0.4);
@@ -1564,14 +1674,33 @@ class _HighlightText extends StatelessWidget {
                   selectionRegistrar: registrar,
                   selectionColor: selectionColor,
                   text: TextSpan(
-                    children: highlightSpans(
-                      pieces[i],
-                      query,
-                      base,
-                      highlight,
-                      currentIndex: localIndex,
-                      currentStyle: current,
-                    ),
+                    children: json
+                        ? overlayMatchBackground(
+                            // 段落各自独立着色：段按硬换行切，跨段误判最多影响
+                            // 段尾一个键名的颜色，不会破坏文字与偏移。
+                            buildSyntaxHighlightSpans<JsonSyntaxToken>(
+                              text: pieces[i],
+                              spans: const JsonSyntaxHighlighter().highlight(
+                                pieces[i],
+                              ),
+                              base: base,
+                              styleOf: (token) =>
+                                  jsonColors!.styleFor(token, base),
+                            ),
+                            pieces[i],
+                            query,
+                            highlightColor: highlightColor,
+                            currentColor: currentColor,
+                            currentIndex: localIndex,
+                          )
+                        : highlightSpans(
+                            pieces[i],
+                            query,
+                            base,
+                            highlight,
+                            currentIndex: localIndex,
+                            currentStyle: current,
+                          ),
                   ),
                 ),
               ),
