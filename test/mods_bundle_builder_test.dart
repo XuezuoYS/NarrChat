@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/mod.dart';
+import 'package:narrchat/models/preset_mods.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/mods_bundle_builder.dart';
 
@@ -155,5 +156,52 @@ void main() {
       userInput: '宗门',
     );
     expect(bundle.worldBooks, isEmpty);
+  });
+
+  group('示例 Mod（七个通道各用一遍）', () {
+    test('七个字段非空，且每一列的标记只出现在自己那一段（不串位）', () {
+      final example = PresetMods.example;
+      // 示例本身就是用例：七个通道都得填，漏一个这条就红。
+      expect(example.prePrompt.trim(), isNotEmpty);
+      expect(example.postPrompt.trim(), isNotEmpty);
+      expect(example.systemMust.trim(), isNotEmpty);
+      expect(example.systemPrompt.trim(), isNotEmpty);
+      expect(example.systemSetting.trim(), isNotEmpty);
+      expect(example.systemWritingStyle.trim(), isNotEmpty);
+      expect(example.worldBookEntries, isNotEmpty);
+
+      final bundle = builder.build(
+        mods: [example],
+        userInput: '我走进宗门',
+      );
+      expect(bundle.prePrompts, contains('光线、声音、气味'));
+      expect(bundle.postPrompts, contains('场景描写要落地'));
+      expect(bundle.mustPrompts, contains('环境细节必须与本书设定'));
+      expect(bundle.mustSegments, [example.systemMust.trim()]);
+      expect(bundle.systemPrompts, contains('世界细节要求'));
+      expect(bundle.settingPrompts, contains('世界细节基准'));
+      expect(bundle.writingStylePrompts, contains('文笔要求：景物描写'));
+      // 世界书：关键词命中 + 恒定生效两种形态都在示例里。
+      expect(bundle.worldBooks, contains('宗门类场景需补充'));
+      expect(bundle.worldBooks, contains('场景描写基准'));
+
+      // 不串位：强指令不跑到杂项去，文笔不跑到设定去。
+      expect(bundle.systemPrompts, isNot(contains('世界细节基准')));
+      expect(bundle.settingPrompts, isNot(contains('文笔要求')));
+      expect(bundle.writingStylePrompts, isNot(contains('世界细节基准')));
+    });
+
+    test('示例不在预置集里：不出现在任何列表、byKey 也解析不到', () {
+      expect(
+        PresetMods.all.any((mod) => mod.presetKey == PresetMods.example.presetKey),
+        isFalse,
+        reason: '示例 Mod 不能混进预置列表',
+      );
+      expect(PresetMods.byKey(PresetMods.example.presetKey), isNull);
+      // key 保留着（将来要正式放出时直接移回 all，老引用不用改）。
+      expect(PresetMods.example.presetKey, 'world_detail');
+      expect(PresetMods.example.isPreset, isTrue);
+      expect(PresetMods.example.name, startsWith('示例 · '));
+    });
   });
 }

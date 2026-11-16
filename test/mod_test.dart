@@ -5,6 +5,7 @@ import 'package:narrchat/models/mod.dart';
 import 'package:narrchat/models/preset_mods.dart';
 import 'package:narrchat/models/round.dart';
 import 'package:narrchat/providers/mod_provider.dart';
+import 'package:narrchat/services/mods_bundle_builder.dart';
 import 'package:narrchat/services/prompt_interface.dart';
 
 import 'helpers/fakes.dart';
@@ -454,7 +455,7 @@ void main() {
     });
   });
 
-  group('提示词接口 Mod 注入（v2）', () {
+  group('提示词接口 Mod 注入（v3）', () {
     const book = Book(
       uuid: 'b1',
       title: '测试书',
@@ -522,6 +523,41 @@ void main() {
         expect(user, isNot(contains('MOD_PRE')));
         expect(user, isNot(contains('MOD_POST')));
       }
+    });
+
+    test('示例 Mod（七通道全用）端到端落到七处：system 五处 + user 两处', () {
+      final example = PresetMods.example;
+      final bundle = const ModsBundleBuilder().build(
+        mods: [example],
+        userInput: '我走进宗门',
+      );
+      final request = PromptRequest(
+        book: book,
+        mode: PromptMode.chat,
+        lastRound: lastRound,
+        userInput: '我走向山门',
+        mods: bundle,
+      );
+      final system = promptInterface.system(request);
+      final user = promptInterface.user(request);
+
+      // ① 强指令：进 must，并在末尾逆序复述一次（system 里出现两次）。
+      expect(system, contains(example.systemMust.trim()));
+      expect(example.systemMust.trim().allMatches(system).length, 2);
+      // ② 杂项要求：extra 的 `# 杂项要求：` 下。
+      expect(system, contains(example.systemPrompt));
+      // ③ 设定：紧随书籍设定。
+      expect(system, contains('世界细节基准'));
+      // ④ 文笔：进「文笔要求与参考段落」（本请求没有书范文，故只查出现）。
+      expect(system, contains('文笔要求：景物描写'));
+      // ⑤ 世界书：关键词命中 + 恒定生效两种形态都注入。
+      expect(system, contains('宗门类场景需补充'));
+      expect(system, contains('场景描写基准'));
+      // ⑥⑦ 前置 / 后置词：只进 user 消息。
+      expect(user, contains('光线、声音、气味'));
+      expect(user, contains('场景描写要落地'));
+      expect(system, isNot(contains('光线、声音、气味')));
+      expect(system, isNot(contains('场景描写要落地')));
     });
   });
 
