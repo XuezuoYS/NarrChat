@@ -7,6 +7,7 @@ import '../config/ai_platforms.dart';
 import '../config/app_config.dart';
 import '../models/agent_event.dart';
 import '../models/agent_mode_level.dart';
+import '../models/ai_platform.dart';
 import '../models/book.dart';
 import '../models/branch.dart';
 import '../models/branch_copy.dart';
@@ -22,6 +23,7 @@ import '../services/agent/agent_default_tools.dart';
 import '../services/agent/agent_mode_profile.dart';
 import '../services/agent/agent_round_runner.dart';
 import '../services/agent/agent_runner.dart';
+import '../services/agent/agent_sub_model.dart';
 import '../services/agent/fetch_page_tool.dart';
 import '../services/agent/narr_agent_tool.dart';
 import '../services/agent/state/agent_state_working_copy.dart';
@@ -149,23 +151,29 @@ class RoundProvider extends ChangeNotifier {
     AiService? aiService,
     WorldBookScanner? worldBookScanner,
     AiSettingsProvider? aiSettingsProvider,
+
     /// 实验性功能设置（Agent 模式开关；null = 视为关闭，仅测试/降级路径）。
     ExperimentalSettingsProvider? experimentalSettings,
     WorldBookProvider? worldBookProvider,
     ModProvider? modProvider,
     CloudSyncProvider? cloudSyncProvider,
+
     /// 生成成功回调（书籍 uuid, 书名）：由 main 接入系统通知服务；
     /// 仅生成成功时触发，取消 / 失败不触发。
     this.onGenerationCompleted,
+
     /// 生成任务活动状态回调（active=true 首个任务开始 / false 全部结束）：
     /// 由 main 接入通知服务，用于启动 / 停止 Android 后台保活前台服务。
     this.onGenerationActiveChanged,
     WebSearchTool? webSearchTool,
     FetchPageTool? fetchPageTool,
+
     /// 默认搜索工具共用的搜索服务（测试可注入 mock）。
     HtmlSearchService? searchService,
+
     /// 非流式响应的展示回放器（测试可注入零间隔 / 大粒度以加速）。
     NonStreamReplayer? nonStreamReplayer,
+
     /// 网络类失败重试间隔（测试可注入零时长）。
     Duration retryDelay = const Duration(milliseconds: 800),
   })  : _roundsRepo = rounds ?? AppRepositories.instance.rounds,
@@ -201,6 +209,7 @@ class RoundProvider extends ChangeNotifier {
   final WorldBookProvider? _worldBookProvider;
   final ModProvider? _modProvider;
   final CloudSyncProvider? _cloudSyncProvider;
+
   /// 共享搜索服务（默认 Agent 工具按书复用同一实例，避免重复创建 http client）。
   late final HtmlSearchService _searchService;
 
@@ -313,8 +322,7 @@ class RoundProvider extends ChangeNotifier {
   bool get agentMaintenanceActive => _curGen?.agentMaintenanceActive ?? false;
 
   /// 维护回合的流式文本（只用于维护框，不进正文）。
-  String get agentMaintenanceContent =>
-      _curGen?.agentMaintenanceContent ?? '';
+  String get agentMaintenanceContent => _curGen?.agentMaintenanceContent ?? '';
 
   /// 指定代是否刚完成维护（内存态灰字提示；不参与云同步）。
   bool maintenanceCompletedFor(String generationUuid) =>
@@ -349,7 +357,6 @@ class RoundProvider extends ChangeNotifier {
     return null;
   }
 
-
   /// 提示的变更计数（对话列表据此重算条目高度）。
   int get roundWarningsVersion => _curGen?.messagesVersion ?? 0;
 
@@ -369,7 +376,6 @@ class RoundProvider extends ChangeNotifier {
     return (data == null || data.isEmpty) ? null : data;
   }
 
-
   /// 当前正在生成中、尚未落库的用户输入（用于生成期间不回藏用户消息）。
   String get pendingUserInput => _curGen?.pendingUserInput ?? '';
 
@@ -381,8 +387,10 @@ class RoundProvider extends ChangeNotifier {
   int? get pendingRoundIndex => _curGen?.pendingRoundIndex;
 
   /// 当前正在生成中的书籍 uuid（供跨书进程提示栏展示，点击可跳转对应书籍）。
-  List<String> get activeGenerationBookUuids =>
-      [for (final g in _gens.values) if (g.isSending) g.bookUuid];
+  List<String> get activeGenerationBookUuids => [
+    for (final g in _gens.values)
+      if (g.isSending) g.bookUuid,
+  ];
 
   /// 当前**可见**的对话页所属书籍（用户正停留在该书的对话页上；否则为 null）。
   ///
@@ -953,8 +961,10 @@ class RoundProvider extends ChangeNotifier {
     required Book book,
   }) async {
     final prefix = await _upstreamPrefixOf(book.historyRounds);
-    List<Round> withPrefix(List<Round> branchRounds) =>
-        [...prefix, ...branchRounds];
+    List<Round> withPrefix(List<Round> branchRounds) => [
+      ...prefix,
+      ...branchRounds,
+    ];
 
     switch (intent.kind) {
       case RoundSendKind.newRound:
@@ -1061,8 +1071,7 @@ class RoundProvider extends ChangeNotifier {
     void Function(AiStreamChunk chunk)? onChunk,
     void Function(String requestBody)? onRequestBody,
     bool Function()? isCancelled,
-  ) =>
-      throw StateError('预览请求体不发起任何 AI 调用');
+  ) => throw StateError('预览请求体不发起任何 AI 调用');
 
   /// 组装本轮「将要发出」的请求要素（纯组装，无副作用）：
   /// worldBook / Mod / 提示词 / 历史消息与图片 / 发送参数与请求体。
@@ -1091,9 +1100,9 @@ class RoundProvider extends ChangeNotifier {
   }) async {
     final settings = _aiSettingsProvider;
     // 生成基座轮：新建轮 = 投影末轮（含父上文）；修改轮 = 被重写轮的上一轮。
-    final lastRound =
-        rewrite == null ? projection.lastOrNull : rewrite.base;
-    final targetRoundIndex = rewrite?.target.roundIndex ??
+    final lastRound = rewrite == null ? projection.lastOrNull : rewrite.base;
+    final targetRoundIndex =
+        rewrite?.target.roundIndex ??
         targetRoundIndexOverride ??
         (lastRound?.roundIndex ?? 0) + 1;
     // 档位驱动的记忆合并：本轮生成**之前**算定（输入 = 基座轮落库的记忆总结 +
@@ -1109,8 +1118,10 @@ class RoundProvider extends ChangeNotifier {
     final recentRounds = rewrite == null
         ? _takeRecent(projection, book.historyRounds)
         : [
-            ..._takeRecent(projection, book.historyRounds)
-                .where((r) => r.roundIndex < rewrite.target.roundIndex),
+            ..._takeRecent(
+              projection,
+              book.historyRounds,
+            ).where((r) => r.roundIndex < rewrite.target.roundIndex),
             rewrite.target,
           ];
     // 世界书 / Mod 世界书的关键词扫描输入：修改轮 = 被重写轮的原输入（原文需要的
@@ -1137,8 +1148,7 @@ class RoundProvider extends ChangeNotifier {
     //   （[AgentModeProfile]）决定提示词模式、工具栏目与历史拼合形态；
     //   无设置注入（仅测试/降级路径）保持 Chat 语义；
     // - responsesWire：平台接入协议决定的线路格式（只决定请求体形态）。
-    final agentLevel =
-        settings == null ? AgentModeLevel.off : _agentLevel;
+    final agentLevel = settings == null ? AgentModeLevel.off : _agentLevel;
     final profile = AgentModeProfile.of(agentLevel);
     final agentMode = profile.isOn;
     final responsesWire =
@@ -1185,11 +1195,7 @@ class RoundProvider extends ChangeNotifier {
     );
     final userText = promptInterface.user(promptRequest);
     final userContent = supportsVision
-        ? _userContentWithImages(
-            userText,
-            currentImages,
-            imageDataUrls,
-          )
+        ? _userContentWithImages(userText, currentImages, imageDataUrls)
         : userText;
 
     // 搜索能力：默认关闭，用户可在 Chat 页选项下拉中手动开启（lastSearch）；
@@ -1215,6 +1221,18 @@ class RoundProvider extends ChangeNotifier {
         settings?.reasoningEffort ?? AppConfig.defaultReasoningEffort;
     final temperature = settings?.temperature ?? 1.0;
     final maxTokens = settings?.maxTokens;
+    // 非创作步（第二步状态维护）子模型：设置页只存平台 / 模型 id，这里按当前
+    // 平台列表还原；未配置、失效或与主模型完全相同 → null（按未启用处理）。
+    final subagent = agentMode && settings != null
+        ? resolveAgentSubModel(
+            platforms: settings.platforms,
+            configuredPlatformId:
+                _experimentalSettings?.subagentPlatformId ?? '',
+            configuredModelId: _experimentalSettings?.subagentModelId ?? '',
+            mainPlatformId: settings.selectedPlatformId,
+            mainModelId: model,
+          )
+        : null;
 
     // AGENT 模式：两步执行器（Lv.1 = 第一步调研 → 正文；第二步单独维护记忆总结）
     // + 自定义状态/搜索工具。完整 Agent（Lv.2）已移除。
@@ -1267,18 +1285,12 @@ class RoundProvider extends ChangeNotifier {
           ? _agentBody(
               settings: settings,
               base: agentValues,
-              t: AgentTurnRequest(
-                stage: AgentStage.story,
-                items: inputItems,
-              ),
+              t: AgentTurnRequest(stage: AgentStage.story, items: inputItems),
             )
           : _agentChatBody(
               settings: settings,
               base: agentValues,
-              t: AgentTurnRequest(
-                stage: AgentStage.story,
-                items: inputItems,
-              ),
+              t: AgentTurnRequest(stage: AgentStage.story, items: inputItems),
             );
       return _RoundRequest(
         systemPrompt: systemPrompt,
@@ -1292,6 +1304,7 @@ class RoundProvider extends ChangeNotifier {
         agentLevel: agentLevel,
         responsesWire: responsesWire,
         agentValues: agentValues,
+        subagent: subagent,
         agentChaining:
             responsesWire && settings.selectedPlatform.supportsResponseChaining,
         memoryMergePlan: memoryMergePlan,
@@ -1383,8 +1396,7 @@ class RoundProvider extends ChangeNotifier {
     required String userInput,
     Book? book,
     List<String>? userImages,
-  }) =>
-      sendIntent(
+  }) => sendIntent(
         intent: RoundSendIntent.newRound(
           userInput: userInput,
           images: userImages ?? const [],
@@ -1405,10 +1417,7 @@ class RoundProvider extends ChangeNotifier {
   ///    [RoundSendKind.rewriteByOpinion]），再按计划调用大模型；
   /// 3. 容错解析 6 个区块；
   /// 4. 写入数据库。
-  Future<bool> sendIntent({
-    required RoundSendIntent intent,
-    Book? book,
-  }) async {
+  Future<bool> sendIntent({required RoundSendIntent intent, Book? book}) async {
     final b = book;
     if (b == null || b.uuid.isEmpty) {
       _error = '尚未选择书籍';
@@ -1422,8 +1431,7 @@ class RoundProvider extends ChangeNotifier {
     }
     // 错误代不能衍生下一轮：链尾是失败/中断时必须先重新生成或删除该轮，
     // 否则新轮会挂到一条没有内容的父代下面，整条链的上下文都是空的。
-    if (_chain.tail?.isError == true &&
-        intent.kind == RoundSendKind.newRound) {
+    if (_chain.tail?.isError == true && intent.kind == RoundSendKind.newRound) {
       _error = '上一轮生成失败，请先「重新生成」或删除该轮';
       notifyListeners();
       return false;
@@ -1503,11 +1511,7 @@ class RoundProvider extends ChangeNotifier {
       // 使上一轮残留流自行中止，绝不继续向本轮注入内容。
       bool isCancelled() => gen.cancelRequested || genToken != gen.token;
       // 真实执行器：网络调用 + RAW 捕获（与预览共用同一分派，差别只在它）。
-      final call = _makeRealCall(
-        gen: gen,
-        req: req,
-        settings: settings,
-      );
+      final call = _makeRealCall(gen: gen, req: req, settings: settings);
       // 模式与协议正交分派：
       // - Agent 模式（开关开）→ 两步执行器（线路由 req.responsesWire 决定）；
       // - 联网搜索 → Agent 工具循环（线路同样由 protocol 决定）；
@@ -1589,10 +1593,8 @@ class RoundProvider extends ChangeNotifier {
         userInput: retained.input,
         aiNarrative: parsed.aiNarrative,
         worldState: agentSnapshot?.worldState ?? parsed.worldState,
-        characterState:
-            agentSnapshot?.characterState ?? parsed.characterState,
-        memorySummary:
-            agentSnapshot?.memorySummary ?? parsed.memorySummary,
+        characterState: agentSnapshot?.characterState ?? parsed.characterState,
+        memorySummary: agentSnapshot?.memorySummary ?? parsed.memorySummary,
         currentTime: agentSnapshot?.currentTime ?? parsed.currentTime,
         recommendedAction: parsed.recommendedAction,
         tokensIn: result.promptTokens,
@@ -1600,7 +1602,17 @@ class RoundProvider extends ChangeNotifier {
         // 缓存命中输入 token（服务商未返回该字段 → null → 界面「（无）」）。
         cachedTokensIn: result.cachedTokensIn,
         // 本轮实际使用的模型名（{{model}} 解析值），随轮次持久化。
+        // 启用子模型时它只代表主模型（第一步）；第二步实际模型见
+        // `subagentModelName`。
         modelName: req.model,
+        // 非创作步子模型统计：只有真正用过子模型才写名称 / token；否则保持
+        // 空名称 + null（落库时四列全 NULL，统计卡据此只显示主模型）。
+        subagentModelName: agent?.subagentUsed == true
+            ? agent!.subagentModelName
+            : '',
+        subagentTokensIn: agent?.subagentPromptTokens,
+        subagentTokensOut: agent?.subagentCompletionTokens,
+        subagentCachedTokensIn: agent?.subagentCachedTokensIn,
         // 用户消息附带的图片（相对路径），随轮次落库，供气泡展示与历史回放。
         userImages: retained.images,
         createdAt: DateTime.now(),
@@ -1636,8 +1648,9 @@ class RoundProvider extends ChangeNotifier {
       );
       // 灰字「状态维护已完成」只存在内存里：按代 uuid 归属，下一轮 / 关闭 APP
       // 即消失；维护失败 / 取消不设置。
-      gen.maintenanceCompletedUuid =
-          agent?.maintenanceCompleted == true ? generationUuid : null;
+      gen.maintenanceCompletedUuid = agent?.maintenanceCompleted == true
+          ? generationUuid
+          : null;
       gen.agentMaintenanceActive = false;
       gen.agentMaintenanceContent = '';
       _bumpVersions();
@@ -1676,7 +1689,8 @@ class RoundProvider extends ChangeNotifier {
         bookUuid: b.uuid,
         // 组装阶段就中断时 failureRoundIndex 仍为空：用待定落点兜底，
         // 保证错误代落在被刷新 / 修改的那一轮，而不是链尾 +1。
-        roundIndex: failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
+        roundIndex:
+            failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
         userInput: retained.input,
         userImages: retained.images,
         message: '已中断',
@@ -1697,7 +1711,8 @@ class RoundProvider extends ChangeNotifier {
       final saved = await _appendFailureRound(
         bookUuid: b.uuid,
         // 同中断路径：组装阶段失败也要落在目标轮（见上）。
-        roundIndex: failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
+        roundIndex:
+            failureRoundIndex ?? gen.pendingRoundIndex ?? nextRoundIndex,
         userInput: retained.input,
         userImages: retained.images,
         message: failureMessage,
@@ -1915,7 +1930,8 @@ class RoundProvider extends ChangeNotifier {
   Map<String, dynamic> Function(
     List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
-  ) _makeBodyBuilder(
+  )
+  _makeBodyBuilder(
     AiSettingsProvider? settings,
     bool useStream, {
     required bool responsesWire,
@@ -1958,8 +1974,8 @@ class RoundProvider extends ChangeNotifier {
     AgentStateWorkingCopy? workingCopy,
     bool useSearch = false,
     _BookGenState? gen,
-  }) =>
-      promptInterface.tools(AgentToolsRequest(
+  }) => promptInterface.tools(
+    AgentToolsRequest(
         level: level,
         workingCopy: workingCopy,
         useSearch: useSearch,
@@ -1976,7 +1992,8 @@ class RoundProvider extends ChangeNotifier {
                 onFetchRefused: () => _handleFetchFail(gen, refused: true),
                 onFetchHop: (h) => _handleFetchHop(h, gen),
               ),
-      ));
+    ),
+  );
 
   /// 联网工具循环执行（本轮开启联网搜索时）。
   ///
@@ -2003,7 +2020,8 @@ class RoundProvider extends ChangeNotifier {
   }
 
   /// 联网工具循环的初始 messages（system + 历史 + 当前输入）。
-  static List<Map<String, dynamic>> _searchInitialMessages(_RoundRequest req) => [
+  static List<Map<String, dynamic>> _searchInitialMessages(_RoundRequest req) =>
+      [
         {'role': 'system', 'content': req.systemPrompt},
         ...req.historyMessages,
         {'role': 'user', 'content': req.userContent},
@@ -2043,11 +2061,9 @@ class RoundProvider extends ChangeNotifier {
   /// 返回聚合结果（正文 = 最后一个标题帧）、工作副本合并快照与执行器结果。
   /// 状态**只**来自工作副本：模型不再以文本区块输出状态，故无文本兜底。
   Future<
-      ({
-        AiCallResult result,
-        RoundSnapshot snapshot,
-        AgentRoundResult agent,
-      })> _runAgentRound({
+    ({AiCallResult result, RoundSnapshot snapshot, AgentRoundResult agent})
+  >
+  _runAgentRound({
     required _RoundRequest req,
     required Book book,
     required _AiCall call,
@@ -2097,9 +2113,11 @@ class RoundProvider extends ChangeNotifier {
       result: AiCallResult(
         content: roundResult.content,
         reasoningContent: roundResult.reasoningContent,
-        promptTokens: roundResult.promptTokens,
-        completionTokens: roundResult.completionTokens,
-        cachedTokensIn: roundResult.cachedTokensIn,
+        // 轮次的主模型列只记创作步（第一步）；第二步子模型用量在
+        // `AgentRoundResult.subagent*` 里单独落库。
+        promptTokens: roundResult.mainPromptTokens,
+        completionTokens: roundResult.mainCompletionTokens,
+        cachedTokensIn: roundResult.mainCachedTokensIn,
         responseId: roundResult.responseId,
       ),
       snapshot: _mergedSnapshot(
@@ -2127,8 +2145,8 @@ class RoundProvider extends ChangeNotifier {
       lastRound: req.baseRound,
       categoryNames: [for (final c in book.roleCategories) c.name],
     );
-    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各步共用同一份**
-    // schema，保证 instructions / tools 前缀在调研 / 正文 / 维护之间完全一致。
+    // 工具超集：档位对应的状态工具 + （可选）搜索工具，**各步共用同一批工具**；
+    // 同一线路内 schema 逐字一致（缓存前缀），子模型跨协议时按子平台形状另行生成。
     final tools = _agentTools(
       level: req.agentLevel,
       workingCopy: workingCopy,
@@ -2136,12 +2154,77 @@ class RoundProvider extends ChangeNotifier {
       gen: gen,
     );
     final values = req.agentValues!;
+    final subagent = req.subagent;
+    // 子模型请求值：模型 / 温度 / 思考 / 最大输出 / 流式都取子模型自己的配置；
+    // 系统提示词不变，工具 schema 按**子平台协议**重新生成（Chat 嵌套 / Responses 顶层）。
+    final subValues = subagent == null
+        ? null
+        : AiRequestValues(
+            model: subagent.model.id,
+            messages: values.messages,
+            temperature: subagent.model.temperature,
+            thinking: subagent.model.supportsThinking,
+            reasoningEffort: subagent.model.effectiveReasoningEffort,
+            maxTokens: subagent.model.maxTokens,
+            stream: subagent.model.supportsStreaming,
+            tools: agentToolSchemas(
+              tools,
+              responses: subagent.platform.apiType.isResponses,
+            ),
+            instructions: values.instructions,
+          );
+    // 第二步改成子模型帧体：能力不支持的 reasoning / 图片先降级，再按子平台
+    // 协议（responses / chat）组装；其余阶段完全保持原路径。
+    Map<String, dynamic> buildBodyFor(AgentTurnRequest t) {
+      final target = t.stage == AgentStage.state ? subagent : null;
+      if (target == null || subValues == null) {
+        return req.responsesWire
+            ? _agentBody(settings: _aiSettingsProvider, base: values, t: t)
+            : _agentChatBody(settings: _aiSettingsProvider, base: values, t: t);
+      }
+      final turn = AgentTurnRequest(
+        stage: t.stage,
+        items: sanitizeAgentItemsForModel(
+          t.items,
+          dropReasoning: !target.model.supportsThinking,
+          dropImages: !target.model.supportsVision,
+        ),
+        previousResponseId: t.previousResponseId,
+      );
+      return target.platform.apiType.isResponses
+          ? _agentBody(
+              settings: _aiSettingsProvider,
+              base: subValues,
+              t: turn,
+              platform: target.platform,
+            )
+          : _agentChatBody(
+              settings: _aiSettingsProvider,
+              base: subValues,
+              t: turn,
+              platform: target.platform,
+            );
+    }
+
     return AgentRoundRunner(
       // 线路决定请求体形态（responses / chat），执行器结构与帧语义不变。
-      buildBody: (t) => req.responsesWire
-          ? _agentBody(settings: _aiSettingsProvider, base: values, t: t)
-          : _agentChatBody(settings: _aiSettingsProvider, base: values, t: t),
+      buildBody: buildBodyFor,
       call: call,
+      // 预览（gen == null）只构建帧骨架、不发起调用，故不注入子调用；
+      // buildBody 仍按子模型生成维护帧，预览因此能显示真实模型名与协议。
+      subagentCall: subagent == null || gen == null
+          ? null
+          : _makeSubagentCall(
+              gen: gen,
+              settings: _aiSettingsProvider,
+              platform: subagent.platform,
+            ),
+      subagentModelName: subagent?.model.id ?? '',
+      streamForStage: (stage) {
+        final target = subagent;
+        if (target == null || stage != AgentStage.state) return req.useStream;
+        return target.model.supportsStreaming;
+      },
       tools: tools,
       workingCopy: workingCopy,
       // 档位档案：提示词模式、工具栏目、正文契约的唯一映射。
@@ -2158,12 +2241,8 @@ class RoundProvider extends ChangeNotifier {
           : (stage) => _handleAgentStageStarted(stage, gen),
       onTurnStarted: gen == null
           ? null
-          : (stage, turn) => _handleAgentTurnStarted(
-                stage,
-                turn,
-                req.targetRoundIndex,
-                gen,
-              ),
+          : (stage, turn) =>
+                _handleAgentTurnStarted(stage, turn, req.targetRoundIndex, gen),
       onActivity: gen == null
           ? null
           : (a) {
@@ -2184,7 +2263,8 @@ class RoundProvider extends ChangeNotifier {
     required _RoundRequest req,
     required AiSettingsProvider? settings,
   }) {
-    final apiBaseUrl = settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective;
+    final apiBaseUrl =
+        settings?.baseUrl ?? AppConfig.defaultApiBaseUrlEffective;
     final apiKey = settings?.apiKey ?? AppConfig.defaultApiKeyEffective;
     return (body, stream, onChunk, onRequestBody, isCancelled) =>
         req.responsesWire
@@ -2206,6 +2286,41 @@ class RoundProvider extends ChangeNotifier {
                 onChunk: onChunk,
                 isCancelled: isCancelled ?? () => false,
               );
+  }
+
+  /// 子模型（第二步状态维护）的真实网络调用。
+  ///
+  /// 与 [_makeRealCall] 同签名，但 baseUrl / API Key / 线路协议全部取**子平台**
+  /// 自己的配置；主模型与子模型跨平台时也能正确路由。
+  _AiCall _makeSubagentCall({
+    required _BookGenState gen,
+    required AiSettingsProvider? settings,
+    required AiPlatform platform,
+  }) {
+    final apiBaseUrl =
+        settings?.baseUrlForPlatform(platform) ??
+        AppConfig.defaultApiBaseUrlEffective;
+    final apiKey = settings?.apiKeyForPlatform(platform) ?? '';
+    return (body, stream, onChunk, onRequestBody, isCancelled) =>
+        platform.apiType.isResponses
+        ? _responsesCapturing(
+            gen: gen,
+            requestBody: body,
+            apiBaseUrl: apiBaseUrl,
+            apiKey: apiKey,
+            stream: stream,
+            onChunk: onChunk,
+            isCancelled: isCancelled ?? () => false,
+          )
+        : _chatCapturing(
+            gen: gen,
+            requestBody: body,
+            apiBaseUrl: apiBaseUrl,
+            apiKey: apiKey,
+            stream: stream,
+            onChunk: onChunk,
+            isCancelled: isCancelled ?? () => false,
+          );
   }
 
   /// 投影里严格早于 [roundIndex] 的全部轮次（虚拟投影：与「先删该轮起投影行」
@@ -2252,14 +2367,17 @@ class RoundProvider extends ChangeNotifier {
   /// **思考强度 / 思考开关 / `max_output_tokens` 一律沿用用户设置**：
   /// 程序不为任何回合覆盖它们（触顶时由执行器下发「拆短调用」指令 +
   /// 黄框提示用户自行调高上限）。
+  ///
+  /// [platform] 非空 = 按该平台（子模型）的协议规则构建请求体；null = 当前
+  /// 选中平台（主模型）。子模型可能来自另一个平台，规则不能沿用主平台。
   static Map<String, dynamic> _agentBody({
     required AiSettingsProvider? settings,
     required AiRequestValues base,
     required AgentTurnRequest t,
+    AiPlatform? platform,
   }) {
     final previousResponseId = t.previousResponseId;
-    final chained =
-        previousResponseId != null && previousResponseId.isNotEmpty;
+    final chained = previousResponseId != null && previousResponseId.isNotEmpty;
     // 执行器累积的 items 已是「Responses 形状」→ 按条目类型还原 input
     //（**不能**再走 `responsesItemsFromChatMessages`：思考条目会被当成无 role
     // 的普通消息，产出坏条目）。首帧与后续帧因此共用同一条转换路径。
@@ -2274,7 +2392,10 @@ class RoundProvider extends ChangeNotifier {
             rules: AiPlatforms.defaultRules,
             values: values,
           )
-        : settings.buildRequestBody(values);
+        : settings.buildRequestBodyFor(
+            platform ?? settings.selectedPlatform,
+            values,
+          );
     if (chained) body['previous_response_id'] = previousResponseId;
     return body;
   }
@@ -2289,6 +2410,7 @@ class RoundProvider extends ChangeNotifier {
     required AiSettingsProvider? settings,
     required AiRequestValues base,
     required AgentTurnRequest t,
+    AiPlatform? platform,
   }) {
     final values = _chatFrameValues(base, t, chatItemsFromAgentItems(t.items));
     return settings == null
@@ -2296,7 +2418,10 @@ class RoundProvider extends ChangeNotifier {
             rules: AiPlatforms.defaultRules,
             values: values,
           )
-        : settings.buildRequestBody(values);
+        : settings.buildRequestBodyFor(
+            platform ?? settings.selectedPlatform,
+            values,
+          );
   }
 
   /// 各回合帧的公共取值（协议无关部分）：**思考开关与强度全回合沿用用户设置**
@@ -2467,8 +2592,7 @@ class RoundProvider extends ChangeNotifier {
     final subject = outcome.subject.trim().isEmpty
         ? outcome.argsSummary
         : outcome.subject;
-    final existing =
-        callId.isEmpty ? null : gen.toolEventIdxByCallId[callId];
+    final existing = callId.isEmpty ? null : gen.toolEventIdxByCallId[callId];
     if (existing != null) {
       gen.agentEvents[existing] = gen.agentEvents[existing].copyWith(
         toolName: outcome.name,
@@ -3102,6 +3226,12 @@ class _RoundRequest {
   /// `messages`（累积 input），见 [_agentBody]。
   final AiRequestValues? agentValues;
 
+  /// 非创作步（第二步状态维护）使用的子模型；null = 跟随主模型 / 未配置。
+  ///
+  /// 只有与主模型「平台 + 模型」都不完全相同时才会存在；执行器据此把
+  /// `AgentStage.state` 的帧交给子调用。
+  final AgentSubModel? subagent;
+
   /// 平台是否支持有状态链式续接（previous_response_id）。默认关：
   /// 许多 OpenAI 兼容实现无此字段，关闭时全量重发（前缀不变仍可命中缓存）；
   /// Chat 线路不支持续接，恒为 false。
@@ -3133,6 +3263,7 @@ class _RoundRequest {
     this.agentLevel = AgentModeLevel.off,
     this.responsesWire = false,
     this.agentValues,
+    this.subagent,
     this.agentChaining = false,
     this.memoryMergePlan,
     required this.targetRoundIndex,

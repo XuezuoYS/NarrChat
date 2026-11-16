@@ -34,6 +34,10 @@ class BookDb implements BookStore {
     'tokens_in',
     'tokens_cached_in',
     'tokens_out',
+    'subagent_model_name',
+    'subagent_tokens_in',
+    'subagent_tokens_out',
+    'subagent_cached_tokens_in',
     'raw_response',
     'user_input',
     'ai_narrative',
@@ -121,10 +125,13 @@ class BookDb implements BookStore {
     return BookDb._(meta.bookUuid, db);
   }
 
-  /// 书库升级：从 24 起 `book_meta` 多了 `book_cover_img`。
+  /// 书库升级：v24 补 `book_meta.book_cover_img`，v25 补 `round_stack` 的
+  /// 非创作步子模型（subagent）统计四列。
   ///
   /// 书库是「一本书一个文件」，老书在**各自首次打开时**补列；加列前先查
   /// `PRAGMA table_info`，进度领先于版本号的库重复执行也不会报 duplicate column。
+  /// 极老的测试库可能没有 `round_stack`：确认表存在才加列，避免把「缺表」再
+  /// 变成一次无法打开的迁移失败。
   static Future<void> _upgradeSchema(
     Database db,
     int oldVersion,
@@ -132,9 +139,19 @@ class BookDb implements BookStore {
   ) async {
     if (oldVersion < 24 &&
         !await columnExists(db, 'book_meta', 'book_cover_img')) {
-      await db.execute(
-        'ALTER TABLE book_meta ADD COLUMN book_cover_img TEXT',
-      );
+      await db.execute('ALTER TABLE book_meta ADD COLUMN book_cover_img TEXT');
+    }
+    if (oldVersion < 25 && await tableExists(db, 'round_stack')) {
+      const columns = <(String, String)>[
+        ('subagent_model_name', 'TEXT'),
+        ('subagent_tokens_in', 'INTEGER'),
+        ('subagent_tokens_out', 'INTEGER'),
+        ('subagent_cached_tokens_in', 'INTEGER'),
+      ];
+      for (final (name, type) in columns) {
+        if (await columnExists(db, 'round_stack', name)) continue;
+        await db.execute('ALTER TABLE round_stack ADD COLUMN $name $type');
+      }
     }
     await writeDatabaseVersion(db, 'book_meta', newVersion);
   }
@@ -230,8 +247,9 @@ class BookDb implements BookStore {
       final total = rows.length;
       onProgress?.call(0, total);
       for (var start = 0; start < total; start += _copyChunkSize) {
-        final end =
-            start + _copyChunkSize > total ? total : start + _copyChunkSize;
+        final end = start + _copyChunkSize > total
+            ? total
+            : start + _copyChunkSize;
         final batch = txn.batch();
         for (var i = start; i < end; i++) {
           // 不做逐条组内归一化：拷贝保留源数据自己的 is_using，

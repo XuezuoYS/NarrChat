@@ -363,11 +363,15 @@ class AgentModeSettings extends ExperimentalSettingsProvider {
     AgentModeLevel level = AgentModeLevel.lv1,
     bool compressNonBodyReasoning = true,
     bool compressAllReasoning = false,
+    String subagentPlatformId = '',
+    String subagentModelId = '',
   }) : super(
-          initialLevel: level,
-          initialCompressNonBodyReasoning: compressNonBodyReasoning,
-          initialCompressAllReasoning: compressAllReasoning,
-        );
+         initialLevel: level,
+         initialCompressNonBodyReasoning: compressNonBodyReasoning,
+         initialCompressAllReasoning: compressAllReasoning,
+         initialSubagentPlatformId: subagentPlatformId,
+         initialSubagentModelId: subagentModelId,
+       );
 }
 
 /// 可控流式 AI：测试驱动 [emit] / [emitReasoning] / [complete]，
@@ -1106,9 +1110,7 @@ class ScriptedAiService extends AiService {
     onRequestBody?.call('{}');
 
     if (_next >= scripted.length) {
-      throw StateError(
-        'ScriptedAiService 没有更多预设响应（第 ${_next + 1} 次调用）',
-      );
+      throw StateError('ScriptedAiService 没有更多预设响应（第 ${_next + 1} 次调用）');
     }
     final scriptedCall = scripted[_next++];
 

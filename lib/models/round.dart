@@ -56,7 +56,29 @@ class Round {
   final int? cachedTokensIn;
 
   /// 本轮实际发送的模型名（`{{model}}` 解析值，如 `deepseek-v4-pro`）。
+  ///
+  /// 启用子模型时它只代表**主模型**（第一步调研 + 正文）；第二步状态维护
+  /// 实际使用的模型在 [subagentModelName]。
   final String modelName;
+
+  /// 非创作步（第二步状态维护）实际使用的子模型名；空 = 未启用子模型。
+  final String subagentModelName;
+
+  /// 子模型输入 / 输出 / 缓存命中输入 Token；`null` = 无数据。
+  ///
+  /// 与 [subagentModelName] 合起来对应 `round_stack` 的四个子模型字段；
+  /// 四列全 NULL = 未启用子模型（统计卡只显示主模型）。
+  final int? subagentTokensIn;
+  final int? subagentTokensOut;
+  final int? subagentCachedTokensIn;
+
+  /// 是否启用过子模型（名称非空或任一 token 有值）。
+  bool get hasSubagent =>
+      subagentModelName.trim().isNotEmpty ||
+      subagentTokensIn != null ||
+      subagentTokensOut != null ||
+      subagentCachedTokensIn != null;
+
   final DateTime? createdAt;
 
   /// 用户消息附带的图片（相对路径数组，`img/<hash>.png`）。
@@ -93,6 +115,10 @@ class Round {
     this.tokensOut,
     this.cachedTokensIn,
     this.modelName = '',
+    this.subagentModelName = '',
+    this.subagentTokensIn,
+    this.subagentTokensOut,
+    this.subagentCachedTokensIn,
     this.createdAt,
     this.userImages = const [],
     this.aiImages = const [],
@@ -103,7 +129,8 @@ class Round {
   bool get isError => RoundMessageStatus.isError(messageStatus);
 
   /// 归一化后的提示级别（空串按 info）。
-  String get effectiveMessageStatus => RoundMessageStatus.normalize(messageStatus);
+  String get effectiveMessageStatus =>
+      RoundMessageStatus.normalize(messageStatus);
 
   /// 是否带提示框。
   bool get hasMessage => message.trim().isNotEmpty;
@@ -136,6 +163,10 @@ class Round {
       tokensOut: generation.tokensOut,
       cachedTokensIn: generation.tokensCachedIn,
       modelName: generation.modelName,
+      subagentModelName: generation.subagentModelName,
+      subagentTokensIn: generation.subagentTokensIn,
+      subagentTokensOut: generation.subagentTokensOut,
+      subagentCachedTokensIn: generation.subagentCachedTokensIn,
       createdAt: generation.operatedAt,
       userImages: generation.userImages,
       aiImages: generation.aiImages,
@@ -160,6 +191,10 @@ class Round {
       tokensIn: tokensIn,
       tokensCachedIn: cachedTokensIn,
       tokensOut: tokensOut,
+      subagentModelName: subagentModelName,
+      subagentTokensIn: subagentTokensIn,
+      subagentTokensOut: subagentTokensOut,
+      subagentCachedTokensIn: subagentCachedTokensIn,
       userInput: userInput,
       aiNarrative: aiNarrative,
       worldState: worldState,
@@ -188,6 +223,10 @@ class Round {
       tokensOut: map['tokens_out'] as int?,
       cachedTokensIn: map['cached_tokens_in'] as int?,
       modelName: (map['model_name'] as String?) ?? '',
+      subagentModelName: (map['subagent_model_name'] as String?) ?? '',
+      subagentTokensIn: map['subagent_tokens_in'] as int?,
+      subagentTokensOut: map['subagent_tokens_out'] as int?,
+      subagentCachedTokensIn: map['subagent_cached_tokens_in'] as int?,
       createdAt: map['created_at'] == null
           ? null
           : DateTime.tryParse(map['created_at'] as String),
@@ -228,6 +267,13 @@ class Round {
       'tokens_out': tokensOut,
       'cached_tokens_in': cachedTokensIn,
       'model_name': modelName,
+      // 四列可空：未启用子模型时写 NULL（空名称也收敛成 NULL）。
+      'subagent_model_name': subagentModelName.trim().isEmpty
+          ? null
+          : subagentModelName,
+      'subagent_tokens_in': subagentTokensIn,
+      'subagent_tokens_out': subagentTokensOut,
+      'subagent_cached_tokens_in': subagentCachedTokensIn,
       'user_images': jsonEncode(userImages),
       'ai_images': jsonEncode(aiImages),
     };
@@ -251,14 +297,14 @@ class Round {
   /// 供侧边栏「保存快照」与 `RoundProvider.updateRoundField` 共用，
   /// 避免列名 → 模型字段的映射在 UI / Provider 两处漂移。
   Round withField(String field, String value) => switch (field) {
-        RoundField.worldState => copyWith(worldState: value),
-        RoundField.characterState => copyWith(characterState: value),
-        RoundField.memorySummary => copyWith(memorySummary: value),
-        RoundField.currentTime => copyWith(currentTime: value),
-        RoundField.aiNarrative => copyWith(aiNarrative: value),
-        RoundField.userInput => copyWith(userInput: value),
-        _ => this,
-      };
+    RoundField.worldState => copyWith(worldState: value),
+    RoundField.characterState => copyWith(characterState: value),
+    RoundField.memorySummary => copyWith(memorySummary: value),
+    RoundField.currentTime => copyWith(currentTime: value),
+    RoundField.aiNarrative => copyWith(aiNarrative: value),
+    RoundField.userInput => copyWith(userInput: value),
+    _ => this,
+  };
 
   Round copyWith({
     int? id,
@@ -282,6 +328,10 @@ class Round {
     int? tokensOut,
     int? cachedTokensIn,
     String? modelName,
+    String? subagentModelName,
+    int? subagentTokensIn,
+    int? subagentTokensOut,
+    int? subagentCachedTokensIn,
     DateTime? createdAt,
     List<String>? userImages,
     List<String>? aiImages,
@@ -309,6 +359,11 @@ class Round {
       tokensOut: tokensOut ?? this.tokensOut,
       cachedTokensIn: cachedTokensIn ?? this.cachedTokensIn,
       modelName: modelName ?? this.modelName,
+      subagentModelName: subagentModelName ?? this.subagentModelName,
+      subagentTokensIn: subagentTokensIn ?? this.subagentTokensIn,
+      subagentTokensOut: subagentTokensOut ?? this.subagentTokensOut,
+      subagentCachedTokensIn:
+          subagentCachedTokensIn ?? this.subagentCachedTokensIn,
       createdAt: createdAt ?? this.createdAt,
       userImages: userImages ?? this.userImages,
       aiImages: aiImages ?? this.aiImages,

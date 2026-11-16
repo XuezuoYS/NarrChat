@@ -28,6 +28,18 @@ const int kAgentMaxStoryFrames = 8;
 /// 输出触顶的原因标识（Responses `incomplete_details.reason`）。
 const String kIncompleteMaxOutputTokens = 'max_output_tokens';
 
+/// 一次帧调用（主模型 / 子模型共用同一签名）。
+///
+/// 独立成 public typedef，便于 `AgentRoundRunner` 同时接收主调用与子模型调用，
+/// 也避免测试里用私有类型推导时出现 `library_private_types_in_public_api`。
+typedef AgentFrameCall = Future<AiCallResult> Function(
+  Map<String, dynamic> requestBody,
+  bool stream,
+  void Function(AiStreamChunk chunk)? onChunk,
+  void Function(String requestBody)? onRequestBody,
+  bool Function()? isCancelled,
+);
+
 /// 执行器运行阶段。
 ///
 /// 一轮 = 两步，步下面是**回合**（一次请求—响应，执行器内部旧称「帧」）：
@@ -118,12 +130,33 @@ class AgentRoundResult {
   /// 聚合思考内容。
   final String reasoningContent;
 
-  /// 聚合 Token 用量（各帧同桶累加；全帧都未带回该字段 → null = 无数据）。
-  final int? promptTokens;
-  final int? completionTokens;
+  /// **主模型**（第一步调研 + 正文）的聚合 Token 用量。
+  ///
+  /// 各帧同桶累加；全帧都未带回该字段 → null = 无数据。启用子模型时，第二步
+  /// 的用量在下面的 `subagent*` 桶里，不会混进这里。
+  final int? mainPromptTokens;
+  final int? mainCompletionTokens;
+  final int? mainCachedTokensIn;
 
-  /// 聚合缓存命中输入 token（服务商未返回该字段 → null）。
-  final int? cachedTokensIn;
+  /// **子模型**（第二步状态维护）的聚合 Token 用量；未启用 / 未真正调用过
+  /// 子模型时保持 null。
+  final int? subagentPromptTokens;
+  final int? subagentCompletionTokens;
+  final int? subagentCachedTokensIn;
+
+  /// 第二步实际使用的子模型名（空 = 未启用）。
+  final String subagentModelName;
+
+  /// 是否实际向子模型发起过请求（即使请求失败、没有 usage，也说明用过）。
+  final bool subagentUsed;
+
+  /// 主 + 子合计（供不想拆分调用方的兼容 getter；统计卡按 [Round] 自行拆分）。
+  int? get promptTokens =>
+      addTokenUsage(mainPromptTokens, subagentPromptTokens);
+  int? get completionTokens =>
+      addTokenUsage(mainCompletionTokens, subagentCompletionTokens);
+  int? get cachedTokensIn =>
+      addTokenUsage(mainCachedTokensIn, subagentCachedTokensIn);
 
   /// 全部工具调用结果（按执行顺序）。
   final List<AgentToolOutcome> outcomes;
@@ -153,15 +186,20 @@ class AgentRoundResult {
   const AgentRoundResult({
     required this.content,
     required this.reasoningContent,
-    required this.promptTokens,
-    required this.completionTokens,
-    required this.cachedTokensIn,
+    required this.mainPromptTokens,
+    required this.mainCompletionTokens,
+    required this.mainCachedTokensIn,
+    required this.subagentPromptTokens,
+    required this.subagentCompletionTokens,
+    required this.subagentCachedTokensIn,
     required this.outcomes,
     required this.warnings,
     required this.responseId,
     required this.maintenanceCompleted,
     required this.maintenanceCancelled,
     required this.frames,
+    this.subagentModelName = '',
+    this.subagentUsed = false,
     this.incomplete = false,
     this.incompleteReason = '',
   });
@@ -189,8 +227,17 @@ class AgentRoundResult {
 ///    只根据正文的 `## 当前时间` 用 `op=append` 落**恰好一条**本轮记忆条目；
 ///    维护失败 / 取消不丢正文，由调用方统一落库并挂黄框。
 ///
-/// 所有步都只累积在内存里；调用方在 [run] 返回后**统一入库一次**，token 取
-/// 所有回合的总和。历史上的完整 Agent（Lv.2：正文三小节 + 六个状态工具）已移除。
+/// 所有步都只累积在内存里；调用方在 [run] 返回后**统一入库一次**。
+/// Token 按「主模型 / 子模型」分桶：第一步（创作步）归主模型，第二步（非创作步）
+/// 在启用子模型时归子模型；[AgentRoundResult] 同时给出分桶与合计 getter。
+/// 历史上的完整 Agent（Lv.2：正文三小节 + 六个状态工具）已移除。
+///
+/// ## 子模型（可选）
+///
+/// [subagentCall] 非空时，第二步的全部回合（含修复回合）改走子调用，帧体由
+/// 调用方按子模型的模型名 / 协议 / 能力组装；本类只负责「何时换调用」。
+/// 进入第二步前会断开 `previous_response_id`：主模型的响应 id 对子平台没有意义。
+/// 子模型调用失败仍只转成维护警告，不丢正文。
 ///
 /// ## 为什么分两步
 ///
@@ -292,6 +339,9 @@ class AgentRoundRunner {
   AgentRoundRunner({
     required this.buildBody,
     required this.call,
+    this.subagentCall,
+    this.subagentModelName = '',
+    this.streamForStage,
     required this.tools,
     required this.workingCopy,
     required this.profile,
@@ -310,16 +360,29 @@ class AgentRoundRunner {
   });
 
   /// 组装一次帧请求体（各阶段共用同一 instructions / tools 超集）。
+  ///
+  /// 启用子模型时，调用方可在 `request.stage == AgentStage.state` 时换成子模型
+  /// 的请求值与协议；执行器只负责把帧交给 [_frameCallFor]。
   final Map<String, dynamic> Function(AgentTurnRequest request) buildBody;
 
-  /// 执行一次 LLM 调用（responses 通道）。
-  final Future<AiCallResult> Function(
-    Map<String, dynamic> requestBody,
-    bool stream,
-    void Function(AiStreamChunk chunk)? onChunk,
-    void Function(String requestBody)? onRequestBody,
-    bool Function()? isCancelled,
-  ) call;
+  /// 执行一次 LLM 调用（主模型）。
+  final AgentFrameCall call;
+
+  /// 第二步（非创作步）专用的子模型调用；null = 不启用子模型。
+  ///
+  /// 存在时 [AgentStage.state] 的全部回合（含修复回合）都走这里，token 也单独
+  /// 落进子模型桶；进入第二步前会断开 `previous_response_id`（子平台通常不认识
+  /// 主模型返回的响应 id）。
+  final AgentFrameCall? subagentCall;
+
+  /// 子模型实际模型名（写进 `Round.subagentModelName`；[subagentCall] 为 null
+  /// 时不会使用）。
+  final String subagentModelName;
+
+  /// 按步决定是否流式；null = 全部沿用 [run] 的 `stream`。
+  ///
+  /// 子模型可能不支持流式，因此维护步需要单独取它的能力值。
+  final bool Function(AgentStage stage)? streamForStage;
 
   final List<NarrAgentTool> tools;
   final AgentStateWorkingCopy workingCopy;
@@ -376,9 +439,13 @@ class AgentRoundRunner {
   final List<String> _warnings = [];
   final List<String> _modelProblems = [];
   final StringBuffer _reasoning = StringBuffer();
-  int? _promptTokens;
-  int? _completionTokens;
-  int? _cachedTokensIn;
+  int? _mainPromptTokens;
+  int? _mainCompletionTokens;
+  int? _mainCachedTokensIn;
+  int? _subagentPromptTokens;
+  int? _subagentCompletionTokens;
+  int? _subagentCachedTokensIn;
+  bool _subagentUsed = false;
   int _frames = 0;
   String _lastResponseId = '';
   String? _previousResponseId;
@@ -429,6 +496,14 @@ class AgentRoundRunner {
         }
       }
     }
+    _disconnectChaining();
+  }
+
+  /// 断开本轮的 `previous_response_id` 有状态续接，后续帧改为全量发送。
+  ///
+  /// 压缩思考链与切换子模型都需要断开：前者怕服务端继续用完整 reasoning，
+  /// 后者是主模型的响应 id 对子模型 / 子平台没有意义。
+  void _disconnectChaining() {
     _useChaining = false;
     _previousResponseId = null;
     _sentCursor = 0;
@@ -444,9 +519,13 @@ class AgentRoundRunner {
     _warnings.clear();
     _modelProblems.clear();
     _reasoning.clear();
-    _promptTokens = null;
-    _completionTokens = null;
-    _cachedTokensIn = null;
+    _mainPromptTokens = null;
+    _mainCompletionTokens = null;
+    _mainCachedTokensIn = null;
+    _subagentPromptTokens = null;
+    _subagentCompletionTokens = null;
+    _subagentCachedTokensIn = null;
+    _subagentUsed = false;
     _frames = 0;
     _lastResponseId = '';
     _previousResponseId = null;
@@ -497,6 +576,11 @@ class AgentRoundRunner {
       // reasoning 改成压缩版，并断掉有状态续接，确保服务端真正收到压缩结果。
       if (compressNonBodyReasoning) {
         _compressPriorReasoningForNonBodyStep();
+      }
+      // 子模型是另一个模型 / 平台：主模型返回的 previous_response_id 对它没有
+      // 意义，进入维护步前必须断开续接、改为全量发送。
+      if (subagentCall != null) {
+        _disconnectChaining();
       }
       final problems = [..._modelProblems, ..._truncationNotes];
       _truncationNotes.clear();
@@ -549,7 +633,8 @@ class AgentRoundRunner {
       _warnings.add('${s.label}最后一次编辑未成功，本轮该项未落地');
     }
 
-    final maintenanceCompleted = story.isNotEmpty &&
+    final maintenanceCompleted =
+        story.isNotEmpty &&
         !_maintenanceCancelled &&
         _maintenanceError == null &&
         _maintenanceSatisfied();
@@ -557,9 +642,14 @@ class AgentRoundRunner {
     return AgentRoundResult(
       content: story,
       reasoningContent: _reasoning.toString(),
-      promptTokens: _promptTokens,
-      completionTokens: _completionTokens,
-      cachedTokensIn: _cachedTokensIn,
+      mainPromptTokens: _mainPromptTokens,
+      mainCompletionTokens: _mainCompletionTokens,
+      mainCachedTokensIn: _mainCachedTokensIn,
+      subagentPromptTokens: _subagentPromptTokens,
+      subagentCompletionTokens: _subagentCompletionTokens,
+      subagentCachedTokensIn: _subagentCachedTokensIn,
+      subagentModelName: subagentCall == null ? '' : subagentModelName,
+      subagentUsed: _subagentUsed,
       outcomes: _outcomes,
       warnings: List.unmodifiable(_warnings),
       responseId: _lastResponseId,
@@ -588,15 +678,14 @@ class AgentRoundRunner {
   }
 
   List<StateGap> _gaps(String story) => inspectState(
-        copy: workingCopy,
-        story: story,
-        // 只判定本档位由工具维护的栏目（当前档位 = 仅历史）。
-        sections: profile.toolSections,
-        // 懒修改检查只对「角色状态由工具维护」的档位有意义；当前档位不注册
-        // 角色栏目，故恒为 false（角色工具与检查保留为框架）。
-        checkLazy:
-            profile.toolSections.contains(AgentStateSection.characterState),
-      );
+    copy: workingCopy,
+    story: story,
+    // 只判定本档位由工具维护的栏目（当前档位 = 仅历史）。
+    sections: profile.toolSections,
+    // 懒修改检查只对「角色状态由工具维护」的档位有意义；当前档位不注册
+    // 角色栏目，故恒为 false（角色工具与检查保留为框架）。
+    checkLazy: profile.toolSections.contains(AgentStateSection.characterState),
+  );
 
   // ---------------------------------------------------------------------------
   // 调研阶段（读史 + 按需联网）
@@ -728,7 +817,9 @@ class AgentRoundRunner {
         pending = [for (final g in gaps) g.modelText];
       }
       // 档位要求的记忆合并仍未落地 → 继续修复回合（与缺口同一循环、同一上限）。
-      if (pending.isEmpty && !_hasPendingMemoryMerge && _maintenanceSatisfied()) {
+      if (pending.isEmpty &&
+          !_hasPendingMemoryMerge &&
+          _maintenanceSatisfied()) {
         return;
       }
       // 只要清单还有缺项 / 记忆仍不完整就继续下一回合修复：模型「空手回合」
@@ -742,11 +833,13 @@ class AgentRoundRunner {
     const section = AgentStateSection.memorySummary;
     if (!workingCopy.touchedSections.contains(section) ||
         workingCopy.failedSections.contains(section) ||
-        memoryEntryCount(workingCopy.memorySummary, workingCopy.roundIndex) != 1) {
+        memoryEntryCount(workingCopy.memorySummary, workingCopy.roundIndex) !=
+            1) {
       return false;
     }
     final plan = memoryMergePlan;
-    return plan == null || isMemoryMergeApplied(workingCopy.memorySummary, plan);
+    return plan == null ||
+        isMemoryMergeApplied(workingCopy.memorySummary, plan);
   }
 
   /// 是否仍有未落地的「记忆合并」要求（仅用于维护步**循环控制**）。
@@ -756,8 +849,7 @@ class AgentRoundRunner {
     return !isMemoryMergeApplied(workingCopy.memorySummary, plan);
   }
 
-  String get _storyForChecks =>
-      _adopted.isNotEmpty ? _adopted : _lastFallback;
+  String get _storyForChecks => _adopted.isNotEmpty ? _adopted : _lastFallback;
 
   /// 本档位读取器名 → 栏目（维护回合重复读取护栏用）。
   late final Map<String, AgentStateSection> _readSectionByTool = {
@@ -786,16 +878,17 @@ class AgentRoundRunner {
   Map<String, dynamic> _stateDirective(
     List<String> problems, {
     required bool first,
-  }) =>
-      {
-        'role': 'user',
-        'content': _prompt.stageState(AgentStageRequest(
-          workingCopy: workingCopy,
-          memoryMergePlan: memoryMergePlan,
-          first: first,
-          problems: problems,
-        )),
-      };
+  }) => {
+    'role': 'user',
+    'content': _prompt.stageState(
+      AgentStageRequest(
+        workingCopy: workingCopy,
+        memoryMergePlan: memoryMergePlan,
+        first: first,
+        problems: problems,
+      ),
+    ),
+  };
 
   // ---------------------------------------------------------------------------
   // 帧调用（含协议兼容降级）
@@ -814,7 +907,13 @@ class AgentRoundRunner {
         ? ++_maintenanceTurns
         : ++_firstStepTurns;
     onTurnStarted?.call(stage, turnIndex);
-    for (var attempt = 0;; attempt++) {
+    // 当前唯一的非创作步 = 第二步状态维护；启用子模型时整步（含修复回合）
+    // 都走子调用。子模型请求无论成败都算「实际用过」，统计卡据此显示名称。
+    final useSubagent = subagentCall != null && stage == AgentStage.state;
+    if (useSubagent) _subagentUsed = true;
+    final frameCall = useSubagent ? subagentCall! : call;
+    final frameStream = streamForStage?.call(stage) ?? stream;
+    for (var attempt = 0; ; attempt++) {
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
       onActivity?.call(
         AgentActivity(
@@ -826,9 +925,9 @@ class AgentRoundRunner {
       final body = _frameBody(stage);
       final sentCursor = _items.length;
       try {
-        final result = await call(
+        final result = await frameCall(
           body,
-          stream,
+          frameStream,
           gate.process,
           onRequestBody,
           isCancelled,
@@ -841,7 +940,9 @@ class AgentRoundRunner {
       } catch (e) {
         // 协议类失败：就地降级重发同一帧（同一帧至多连降 3 项），
         // 不赔上整轮预算。当前唯一可降级项是「服务商不接受有状态续接」。
-        if (attempt >= 3 || e is! AiException || e.kind != AiExceptionKind.api) {
+        if (attempt >= 3 ||
+            e is! AiException ||
+            e.kind != AiExceptionKind.api) {
           rethrow;
         }
         final msg = e.message.toLowerCase();
@@ -859,20 +960,20 @@ class AgentRoundRunner {
   /// 本次要发送的 input：无状态平台全量重发；续接帧只发新增项。
   List<Map<String, dynamic>> _sendItems() =>
       (_useChaining && _previousResponseId != null)
-          ? _items.sublist(_sentCursor)
-          : _items;
+      ? _items.sublist(_sentCursor)
+      : _items;
 
   /// 本阶段当前帧的请求体：**实发 [_callFrame] 与「预览请求体」共用**，
   /// 保证预览给出的首帧就是真正会发出的那一帧。
   ///
   /// 思考强度不在帧上下文里——所有帧一律沿用用户设置（见 [AgentTurnRequest]）。
   Map<String, dynamic> _frameBody(AgentStage stage) => buildBody(
-        AgentTurnRequest(
-          stage: stage,
-          items: _sendItems(),
-          previousResponseId: _useChaining ? _previousResponseId : null,
-        ),
-      );
+    AgentTurnRequest(
+      stage: stage,
+      items: _sendItems(),
+      previousResponseId: _useChaining ? _previousResponseId : null,
+    ),
+  );
 
   /// 追加本阶段首帧的**帧指令**（若有）。
   ///
@@ -916,7 +1017,8 @@ class AgentRoundRunner {
     frames.add(
       RequestFrameOutline(
         label: '调研回合',
-        note: '第一步·调研：读历史、按需联网搜索 / 打开页'
+        note:
+            '第一步·调研：读历史、按需联网搜索 / 打开页'
             '（遇工具调用会继续续回合，直到调研结束；随后立刻生成正文）。',
         body: _frameBody(AgentStage.prepare),
       ),
@@ -925,7 +1027,8 @@ class AgentRoundRunner {
     frames.add(
       RequestFrameOutline(
         label: '正文回合',
-        note: '第一步·正文：调研结束后发出，写本轮 5 区块正文'
+        note:
+            '第一步·正文：调研结束后发出，写本轮 5 区块正文'
             '（不写记忆总结、不调用历史编辑器）。',
         body: _frameBody(AgentStage.story),
       ),
@@ -934,7 +1037,8 @@ class AgentRoundRunner {
     frames.add(
       RequestFrameOutline(
         label: '维护回合',
-        note: '第二步·状态维护：正文完成后作为单独的新请求发出，'
+        note:
+            '第二步·状态维护：正文完成后作为单独的新请求发出，'
             '只补本轮记忆总结 / 合并（思考强度沿用用户设置）。',
         body: _frameBody(AgentStage.state),
       ),
@@ -946,9 +1050,32 @@ class AgentRoundRunner {
   /// 追加进会话累积（工具条目在 [_executeTools] 中紧随其后追加）。
   void _absorbFrame(AiCallResult result, AgentStage stage) {
     // null = 该帧未带该用量字段（跳过）；全 null 时结果保持 null → 界面「（无）」。
-    _promptTokens = addTokenUsage(_promptTokens, result.promptTokens);
-    _completionTokens = addTokenUsage(_completionTokens, result.completionTokens);
-    _cachedTokensIn = addTokenUsage(_cachedTokensIn, result.cachedTokensIn);
+    // 第二步启用子模型时，这一步的用量单独进子模型桶；其余步归主模型。
+    final toSubagent = subagentCall != null && stage == AgentStage.state;
+    if (toSubagent) {
+      _subagentPromptTokens = addTokenUsage(
+        _subagentPromptTokens,
+        result.promptTokens,
+      );
+      _subagentCompletionTokens = addTokenUsage(
+        _subagentCompletionTokens,
+        result.completionTokens,
+      );
+      _subagentCachedTokensIn = addTokenUsage(
+        _subagentCachedTokensIn,
+        result.cachedTokensIn,
+      );
+    } else {
+      _mainPromptTokens = addTokenUsage(_mainPromptTokens, result.promptTokens);
+      _mainCompletionTokens = addTokenUsage(
+        _mainCompletionTokens,
+        result.completionTokens,
+      );
+      _mainCachedTokensIn = addTokenUsage(
+        _mainCachedTokensIn,
+        result.cachedTokensIn,
+      );
+    }
     if (result.reasoningContent.isNotEmpty) {
       _reasoning.write(result.reasoningContent);
     }
@@ -1000,16 +1127,15 @@ class AgentRoundRunner {
   /// 的文本，也不能让整轮生成失败。回落文本同样按当前步的压缩策略处理。
   String _reasoningTextFor(int index, {required String fallbackContent}) {
     if (_frameReasoning.isNotEmpty) {
-      final at = index < _frameReasoning.length ? index : _frameReasoning.length - 1;
+      final at = index < _frameReasoning.length
+          ? index
+          : _frameReasoning.length - 1;
       final text = _frameReasoning[at].text.trim();
       if (text.isNotEmpty) return text;
     }
     final content = fallbackContent.trim();
     if (content.isNotEmpty) {
-      return reasoningTextForReplay(
-        content,
-        reduce: _frameReduceReasoning,
-      );
+      return reasoningTextForReplay(content, reduce: _frameReduceReasoning);
     }
     return 'Continue by calling the requested tool.';
   }
@@ -1070,8 +1196,7 @@ class AgentRoundRunner {
     }
     // 当前时间属于正文：从采纳的正文解析 `## 当前时间` 写入工作副本
     // （缺失时沿用上一轮时间，不算缺口——时间不归工具管）。
-    final storyTime =
-        AiResponseParser.parse(_adopted).currentTime.trim();
+    final storyTime = AiResponseParser.parse(_adopted).currentTime.trim();
     if (storyTime.isNotEmpty) {
       workingCopy.currentTime = storyTime;
     }
@@ -1116,7 +1241,8 @@ class AgentRoundRunner {
       if (isCancelled?.call() ?? false) throw const AiCancelledException();
       final tool = _byName(tc.name);
       final summary = _argsSummary(tc.name, tc.arguments);
-      final isStateTool = !(tool?.isReadOnly ?? false) &&
+      final isStateTool =
+          !(tool?.isReadOnly ?? false) &&
           tool?.activityType == AgentActivityType.tooling;
       final subject = _subject(tc, summary);
       final refusedRead = _refusedRepeatRead(tc, stage);
@@ -1132,19 +1258,19 @@ class AgentRoundRunner {
               message: '工具参数被截断（JSON 不完整），未执行',
               modelOutput:
                   'Your tool-call arguments were TRUNCATED (invalid '
-                      'JSON), so nothing was applied. Call again with ONE '
-                      'call per section and FEWER edits per call. '
-                      '工具参数被截断（JSON 不完整），本次未执行：'
-                      '请一次只改一个栏目、单次 edits 条数更少。',
+                  'JSON), so nothing was applied. Call again with ONE '
+                  'call per section and FEWER edits per call. '
+                  '工具参数被截断（JSON 不完整），本次未执行：'
+                  '请一次只改一个栏目、单次 edits 条数更少。',
               isStateTool: isStateTool,
             )
           : refusedRead
-              ? _refusedReadOutcome(tc, summary, subject)
-              : refusedEarlyEdit
-                  ? _refusedEarlyEditOutcome(tc, summary, subject)
-                  : refusedMaintenanceSearch
-                      ? _refusedMaintenanceSearchOutcome(tc, summary, subject)
-                      : await _runTool(tc, tool, summary, subject, isStateTool);
+          ? _refusedReadOutcome(tc, summary, subject)
+          : refusedEarlyEdit
+          ? _refusedEarlyEditOutcome(tc, summary, subject)
+          : refusedMaintenanceSearch
+          ? _refusedMaintenanceSearchOutcome(tc, summary, subject)
+          : await _runTool(tc, tool, summary, subject, isStateTool);
       _outcomes.add(outcome);
       // 工具卡片收口：完成 / 失败状态与一行结果说明（缺少这一步，UI 的
       // 工具框会永远停在「正在执行…」）。
@@ -1157,7 +1283,8 @@ class AgentRoundRunner {
       _noteSectionsProvided(
         tc,
         outcome,
-        executed: !refusedRead &&
+        executed:
+            !refusedRead &&
             !refusedEarlyEdit &&
             !refusedMaintenanceSearch &&
             !tc.argumentsUnparsable,
@@ -1235,9 +1362,9 @@ class AgentRoundRunner {
       message: '本轮已提供该栏目全文，维护步不再重复读取',
       modelOutput:
           '该栏目的全文**已在对话中**（你本轮早先自己读取的结果；'
-              '写正文不会改变状态，只有编辑会），本次不再重复读取：'
-              '请直接从上面已有的 `<${section.tag}>` 块**逐字复制** `before` 锚点，'
-              '并在本回合直接按清单调用对应编辑器（本栏用 $editTool）。',
+          '写正文不会改变状态，只有编辑会），本次不再重复读取：'
+          '请直接从上面已有的 `<${section.tag}>` 块**逐字复制** `before` 锚点，'
+          '并在本回合直接按清单调用对应编辑器（本栏用 $editTool）。',
       // 非状态缺口：不写入缺项清单（它属于流程违规，不是待修栏目）。
       isStateTool: false,
     );
@@ -1259,8 +1386,8 @@ class AgentRoundRunner {
       message: '状态编辑只允许在第二步维护执行，本次未执行',
       modelOutput:
           '状态编辑只允许在第二步「状态维护」执行；第一步只做调研和正文。'
-              '本轮 ${section.label} 的维护指令会在正文写完后单独下发，'
-              '现在不要编辑状态，请继续完成正文。',
+          '本轮 ${section.label} 的维护指令会在正文写完后单独下发，'
+          '现在不要编辑状态，请继续完成正文。',
       isStateTool: false,
     );
   }
@@ -1280,7 +1407,7 @@ class AgentRoundRunner {
       message: '状态维护只维护记忆总结，维护步不联网',
       modelOutput:
           '这是第二步「状态维护」：只能维护记忆总结，不能联网搜索或打开页面。'
-              '请直接根据正文的 `## 当前时间` 用 narrchat_editHistory 追加本轮条目。',
+          '请直接根据正文的 `## 当前时间` 用 narrchat_editHistory 追加本轮条目。',
       isStateTool: false,
     );
   }
@@ -1328,7 +1455,9 @@ class AgentRoundRunner {
       argsSummary: summary,
       subject: subject,
       applied: result.success,
-      message: result.summary.isEmpty ? _oneLine(result.content) : result.summary,
+      message: result.summary.isEmpty
+          ? _oneLine(result.content)
+          : result.summary,
       modelOutput: result.content,
       isStateTool: isStateTool,
     );

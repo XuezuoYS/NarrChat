@@ -131,13 +131,13 @@ void main() {
       await old.close();
     }
 
-    test('建库：表齐全 / user_version 24 / meta 单行 / 目录读写与墓碑过滤', () async {
+    test('建库：表齐全 / user_version 25 / meta 单行 / 目录读写与墓碑过滤', () async {
       final path = newTempPath('v3_library_', 'narrchat_library.db');
       final store = LibraryDb(pathOverride: path);
 
       expect(await store.masterUuid(), isNotEmpty);
       expect(await store.databaseVersion(), userDataDbVersion);
-      expect(userDataDbVersion, 24);
+      expect(userDataDbVersion, 25);
 
       await store.putBook(const LibraryBookRow(bookUuid: 'b1', title: '甲'));
       await store.putBook(const LibraryBookRow(bookUuid: 'b2', title: '乙'));
@@ -399,7 +399,8 @@ void main() {
         'base_setting',
       ]);
       expect(metaColumns.last, 'book_cover_img', reason: 'v24 新加的封面列在表尾');
-      expect((await columnsOf(db, 'round_stack')).take(8), [
+      final stackColumns = await columnsOf(db, 'round_stack');
+      expect(stackColumns.take(8), [
         'uuid',
         'father_uuid',
         'branch_uuid',
@@ -409,6 +410,12 @@ void main() {
         'operated_at',
         'message_status',
       ]);
+      expect(stackColumns.sublist(stackColumns.length - 4), [
+        'subagent_model_name',
+        'subagent_tokens_in',
+        'subagent_tokens_out',
+        'subagent_cached_tokens_in',
+      ], reason: 'v25 子模型统计四列必须在表尾');
       expect((await columnsOf(db, 'branches')).take(6), [
         'branch_uuid',
         'father_row',
@@ -475,6 +482,161 @@ void main() {
       final book = await BookDb.open(bookUuid: 'b1', pathOverride: path);
       expect((await book.meta.read()).bookCoverImg, 'img/old.png');
       await book.close();
+    });
+
+    test('v24 书库升级：round_stack 补子模型四列，老行全 NULL 且重复升级幂等', () async {
+      final path = newTempPath('v3_book_upgrade_v25_', 'narrbook_b1.db');
+      final old = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 24,
+          onCreate: (db, version) async {
+            await db.execute('''
+              CREATE TABLE book_meta (
+                master_uuid            TEXT NOT NULL,
+                database_version       INTEGER NOT NULL,
+                book_uuid              TEXT PRIMARY KEY,
+                title                  TEXT NOT NULL,
+                category               TEXT DEFAULT '',
+                created_at             TEXT NOT NULL,
+                updated_at             TEXT NOT NULL,
+                base_setting           TEXT DEFAULT '',
+                writing_requirements   TEXT DEFAULT '',
+                writing_style          TEXT DEFAULT '',
+                global_pre_prompt      TEXT DEFAULT '',
+                global_post_prompt     TEXT DEFAULT '',
+                history_rounds         INTEGER NOT NULL DEFAULT 1,
+                memory_summary_rounds  INTEGER NOT NULL DEFAULT 0,
+                role_hierarchy         TEXT DEFAULT '',
+                role_hierarchy_detail  TEXT DEFAULT '',
+                book_cover_img         TEXT
+              )
+            ''');
+            await db.insert('book_meta', {
+              'master_uuid': 'master-1',
+              'database_version': 24,
+              'book_uuid': 'b1',
+              'title': '老书',
+              'created_at': '2026-01-01T00:00:00.000Z',
+              'updated_at': '2026-01-02T00:00:00.000Z',
+              'book_cover_img': 'img/old.png',
+            });
+            await db.execute('''
+              CREATE TABLE round_stack (
+                uuid               TEXT PRIMARY KEY,
+                father_uuid        TEXT,
+                branch_uuid        TEXT DEFAULT '',
+                round_index        INTEGER NOT NULL,
+                round_serial_num   INTEGER NOT NULL,
+                is_using           INTEGER NOT NULL,
+                operated_at        TEXT NOT NULL,
+                message_status     TEXT DEFAULT '',
+                message            TEXT DEFAULT '',
+                model_name         TEXT DEFAULT '',
+                tokens_in          INTEGER,
+                tokens_cached_in   INTEGER,
+                tokens_out         INTEGER,
+                raw_response       TEXT DEFAULT '',
+                user_input         TEXT DEFAULT '',
+                ai_narrative       TEXT DEFAULT '',
+                world_state        TEXT DEFAULT '',
+                character_state    TEXT DEFAULT '',
+                memory_summary     TEXT DEFAULT '',
+                current_time       TEXT DEFAULT '',
+                recommended_action TEXT DEFAULT '',
+                user_images        TEXT NOT NULL DEFAULT '[]',
+                ai_images          TEXT NOT NULL DEFAULT '[]'
+              )
+            ''');
+            await db.insert('round_stack', {
+              'uuid': 'g-old',
+              'branch_uuid': '',
+              'round_index': 1,
+              'round_serial_num': 1,
+              'is_using': 1,
+              'operated_at': '2026-01-02T03:04:05.006Z',
+              'user_input': '旧输入',
+              'ai_narrative': '旧正文',
+              'user_images': '[]',
+              'ai_images': '[]',
+            });
+          },
+        ),
+      );
+      await old.close();
+
+      final book = await BookDb.open(bookUuid: 'b1', pathOverride: path);
+      expect((await book.meta.read()).bookCoverImg, 'img/old.png');
+
+      // 迁移后旧行四列全 NULL（不是空串）。
+      final oldRow = (await book.rounds.generation('g-old'))!;
+      expect(oldRow.userInput, '旧输入');
+      expect(oldRow.subagentModelName, isEmpty);
+      expect(oldRow.subagentTokensIn, isNull);
+      expect(oldRow.subagentTokensOut, isNull);
+      expect(oldRow.subagentCachedTokensIn, isNull);
+
+      // 迁移后的库可以正常写入新字段并读回。
+      await book.rounds.insert(
+        RoundGeneration(
+          meta: RoundMeta(
+            uuid: 'g-new',
+            roundIndex: 2,
+            roundSerialNum: 1,
+            isUsing: true,
+            operatedAt: DateTime.utc(2026, 2, 1),
+          ),
+          userInput: '新输入',
+          aiNarrative: '新正文',
+          subagentModelName: 'deepseek-v4-pro',
+          subagentTokensIn: 11,
+          subagentTokensOut: 22,
+          subagentCachedTokensIn: 7,
+        ),
+      );
+      final newRow = (await book.rounds.generation('g-new'))!;
+      expect(newRow.subagentModelName, 'deepseek-v4-pro');
+      expect(newRow.subagentTokensIn, 11);
+      expect(newRow.subagentTokensOut, 22);
+      expect(newRow.subagentCachedTokensIn, 7);
+      await book.close();
+
+      var raw = await openAppDatabase(
+        path: path,
+        version: userDataDbVersion,
+        onCreate: createBookSchema,
+      );
+      final columns = await columnsOf(raw, 'round_stack');
+      expect(columns.sublist(columns.length - 4), [
+        'subagent_model_name',
+        'subagent_tokens_in',
+        'subagent_tokens_out',
+        'subagent_cached_tokens_in',
+      ]);
+      expect(await readUserVersion(raw), userDataDbVersion);
+      expect(
+        (await raw.query('book_meta')).single['database_version'],
+        userDataDbVersion,
+      );
+      final nulls = (await raw.query(
+        'round_stack',
+        where: 'uuid = ?',
+        whereArgs: ['g-old'],
+      )).single;
+      expect(nulls['subagent_model_name'], isNull);
+      expect(nulls['subagent_tokens_in'], isNull);
+      expect(nulls['subagent_tokens_out'], isNull);
+      expect(nulls['subagent_cached_tokens_in'], isNull);
+
+      // 模拟「列已加、user_version 回退到 24」：再升一次不得 duplicate column。
+      await raw.execute('PRAGMA user_version = 24');
+      await raw.close();
+      final reupgraded = await BookDb.open(bookUuid: 'b1', pathOverride: path);
+      expect(
+        (await reupgraded.rounds.generation('g-new'))!.subagentModelName,
+        'deepseek-v4-pro',
+      );
+      await reupgraded.close();
     });
 
     test('封面列：新书为 NULL，写入能读回，清空回到 NULL', () async {
@@ -821,9 +983,7 @@ void main() {
       expect((await cache.indexOf('b2'))!.bookCoverImg, isNull);
 
       // 清空封面：写 NULL、读回 null。
-      await cache.putIndex(
-        const BookIndexRow(bookUuid: 'b1', title: '甲'),
-      );
+      await cache.putIndex(const BookIndexRow(bookUuid: 'b1', title: '甲'));
       expect((await cache.indexOf('b1'))!.bookCoverImg, isNull);
       await cache.close();
 

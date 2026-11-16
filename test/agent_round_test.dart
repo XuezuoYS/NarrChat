@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:narrchat/config/ai_platforms.dart';
 import 'package:narrchat/models/agent_mode_level.dart';
 import 'package:narrchat/models/ai_platform.dart';
+import 'package:narrchat/models/api_type.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/models/raw_exchange.dart';
 import 'package:narrchat/models/role_category.dart';
@@ -43,29 +44,28 @@ void main() {
         headers: {'content-type': 'text/event-stream; charset=utf-8'},
       );
 
-  String textDelta(String text) => 'data: ${jsonEncode({
-        'type': 'response.output_text.delta',
-        'delta': text,
-      })}';
+  String textDelta(String text) =>
+      'data: ${jsonEncode({'type': 'response.output_text.delta', 'delta': text})}';
 
-  String callAdded(String id, String name) => 'data: ${jsonEncode({
+  String callAdded(String id, String name) =>
+      'data: ${jsonEncode({
         'type': 'response.output_item.added',
         'item': {'type': 'function_call', 'id': id, 'name': name},
       })}';
 
   String callArgs(String id, Map<String, dynamic> arguments) =>
-      'data: ${jsonEncode({
-        'type': 'response.function_call_arguments.delta',
-        'item_id': id,
-        'delta': jsonEncode(arguments),
-      })}';
+      'data: ${jsonEncode({'type': 'response.function_call_arguments.delta', 'item_id': id, 'delta': jsonEncode(arguments)})}';
 
-  String completed(String id, {int input = 1, int output = 1}) =>
+  String completed(String id, {int input = 1, int output = 1, int? cached}) =>
       'data: ${jsonEncode({
         'type': 'response.completed',
         'response': {
           'id': id,
-          'usage': {'input_tokens': input, 'output_tokens': output},
+          'usage': {
+            'input_tokens': input,
+            'output_tokens': output,
+            if (cached != null) 'input_tokens_details': {'cached_tokens': cached},
+          },
         },
       })}';
 
@@ -75,11 +75,7 @@ void main() {
               'type': 'response.output_item.added',
               'item': {'type': 'reasoning', 'id': id},
             })}',
-        'data: ${jsonEncode({
-              'type': 'response.reasoning_text.delta',
-              'item_id': id,
-              'delta': text,
-            })}',
+    'data: ${jsonEncode({'type': 'response.reasoning_text.delta', 'item_id': id, 'delta': text})}',
       ];
 
   /// 单条读取器调用的两行 SSE（item.added → args delta）。
@@ -93,8 +89,7 @@ void main() {
     String id,
     AgentStateSection section,
     List<Map<String, dynamic>> edits,
-  ) =>
-      [
+  ) => [
         callAdded(id, agentEditToolName(section)),
         callArgs(id, {'edits': edits}),
       ];
@@ -176,19 +171,15 @@ void main() {
 
     // 合规一轮 = 恰好 3 回合：调研（读史）→ 正文 → 维护（补记忆）。
     expect(capturedBodies, hasLength(3), reason: 'Lv.1 合规一轮 3 回合');
-    expect(
-      capturedBodies.every((b) => !b.containsKey('tool_choice')),
-      isTrue,
-    );
+    expect(capturedBodies.every((b) => !b.containsKey('tool_choice')), isTrue);
     // 思考强度全回合沿用用户设置：调研 / 正文 / 维护三回合完全一致。
     expect(
       capturedBodies.map((b) => jsonEncode(b['reasoning'])).toSet(),
       hasLength(1),
     );
-    expect(
-      jsonDecode(jsonEncode(capturedBodies[0]['reasoning'])),
-      {'effort': 'high'},
-    );
+    expect(jsonDecode(jsonEncode(capturedBodies[0]['reasoning'])), {
+      'effort': 'high',
+    });
 
     // 工具集 = 历史一读一写 + 联网（世界 / 角色不在其中）。
     final names = (capturedBodies.first['tools'] as List)
@@ -208,18 +199,18 @@ void main() {
     expect(names, isNot(contains('narrchat_readCharacterState')));
     // instructions = Lv.1 的 5 区块契约 + 历史工具契约；三回合共用同一前缀
     //（服务商上下文缓存依赖此）。
-    expect('${capturedBodies.first['instructions']}',
-        contains('只输出 5 个二级标题'));
-    expect('${capturedBodies.first['instructions']}',
-        contains('narrchat_readHistory'));
+    expect('${capturedBodies.first['instructions']}', contains('只输出 5 个二级标题'));
+    expect(
+      '${capturedBodies.first['instructions']}',
+      contains('narrchat_readHistory'),
+    );
     for (final b in capturedBodies.skip(1)) {
       expect(b['instructions'], capturedBodies.first['instructions']);
       expect(b['tools'], capturedBodies.first['tools']);
     }
 
     // 落库：世界 / 角色 / 时间来自正文文本，历史来自工具落地。
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.aiNarrative, isNot(contains('本轮大纲')));
@@ -232,14 +223,16 @@ void main() {
     // RAW 轨迹元数据：轮 → 步 → 回合。
     final raw = provider.rawExchangesFor(round.uuid)!;
     expect(raw.map((e) => e.roundIndex).toSet(), {1});
-    expect(
-      raw.map((e) => e.step).toList(),
-      [RawAgentStep.first, RawAgentStep.first, RawAgentStep.maintenance],
-    );
-    expect(
-      raw.map((e) => e.turnKind).toList(),
-      [RawTurnKind.research, RawTurnKind.story, RawTurnKind.maintenance],
-    );
+    expect(raw.map((e) => e.step).toList(), [
+      RawAgentStep.first,
+      RawAgentStep.first,
+      RawAgentStep.maintenance,
+    ]);
+    expect(raw.map((e) => e.turnKind).toList(), [
+      RawTurnKind.research,
+      RawTurnKind.story,
+      RawTurnKind.maintenance,
+    ]);
     expect(raw.map((e) => e.turnIndex).toList(), [1, 2, 1]);
   });
 
@@ -363,9 +356,11 @@ void main() {
     // 调研 1 回合 + 正文 1 回合 + 维护 1 回合 = **恰好 3 回合**。
     expect(capturedBodies, hasLength(3));
     // 调研回合指令：本步只做调研（不写记忆 / 正文、文本通道零输出）。
-    final prepareDirective = (capturedBodies.first['input'] as List)
+    final prepareDirective =
+        (capturedBodies.first['input'] as List)
         .cast<Map<String, dynamic>>()
-        .lastWhere((i) => i['role'] == 'user')['content'] as String;
+                .lastWhere((i) => i['role'] == 'user')['content']
+            as String;
     expect(prepareDirective, startsWith('【调研回合】'));
     expect(prepareDirective, contains('不要'));
     expect(prepareDirective, contains('立刻发正文回合'));
@@ -375,15 +370,14 @@ void main() {
       reason: 'Agent 回合一律不发 tool_choice',
     );
     // 维护回合是独立请求，带 [State-maintenance turn] 指令。
-    final maintenanceInput =
-        (capturedBodies[2]['input'] as List).cast<Map<String, dynamic>>();
+    final maintenanceInput = (capturedBodies[2]['input'] as List)
+        .cast<Map<String, dynamic>>();
     expect(
       '${maintenanceInput.last['content']}',
       startsWith('[State-maintenance turn]'),
     );
 
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.memorySummary, '- 第1轮｜日期：第二天 辰时｜殿前递帖');
@@ -431,22 +425,21 @@ void main() {
     );
     // 工具集 = 历史一读一写 + 联网；世界 / 角色工具不再注册。
     final tools = (body['tools'] as List).cast<Map<String, dynamic>>();
-    expect(
-      tools.map((t) => t['name']).toList(),
-      [
+    expect(tools.map((t) => t['name']).toList(), [
         'narrchat_readHistory',
         'narrchat_editHistory',
         'narrchat_webSearch',
         'narrchat_webFetchPage',
-      ],
-      reason: '顺序即请求体 tools 数组顺序（前缀缓存依赖此）',
-    );
-    expect(tools.map((t) => t['name']), isNot(contains('narrchat_advanceTime')));
-    // 后续候选回合：正文 → 维护（首回合之后才可能有正文回合）。
+    ], reason: '顺序即请求体 tools 数组顺序（前缀缓存依赖此）');
     expect(
-      preview.subsequentFrames.map((f) => f.label).toList(),
-      ['正文回合', '维护回合'],
+      tools.map((t) => t['name']),
+      isNot(contains('narrchat_advanceTime')),
     );
+    // 后续候选回合：正文 → 维护（首回合之后才可能有正文回合）。
+    expect(preview.subsequentFrames.map((f) => f.label).toList(), [
+      '正文回合',
+      '维护回合',
+    ]);
     // Responses API 工具形态：name 在工具顶层（非 Chat 的 function 嵌套）。
     expect(tools.first['type'], 'function');
     expect(tools.first.containsKey('function'), isFalse);
@@ -482,17 +475,16 @@ void main() {
       return (await provider.previewRequestBody(
         intent: RoundSendIntent.newRound(userInput: '第一章'),
         book: book,
-      ))
-          .firstFrame;
+      )).firstFrame;
     }
 
     // Agent 开：思考照旧发送（不再被用户选项关掉），联网工具同批注入。
     final agentBody = await previewWith(AgentModeSettings());
     expect(agentBody.containsKey('tools'), isTrue);
     expect(
-      (agentBody['tools'] as List)
-          .cast<Map<String, dynamic>>()
-          .map((t) => t['name']),
+      (agentBody['tools'] as List).cast<Map<String, dynamic>>().map(
+        (t) => t['name'],
+      ),
       contains('narrchat_webSearch'),
     );
     // DeepSeek 思考模式默认开启（默认 high）；`none` = 关闭。
@@ -528,7 +520,10 @@ void main() {
           // 逐块校验，只回传一块即整次被拒）。编辑器在第一步被拒绝，但调用条目
           // 与思考块照常回传，正好验证逐块配对。
           return sse([
-            ...reasoningLines('rs_r1', 'Need the history and a memory entry first.'),
+            ...reasoningLines(
+              'rs_r1',
+              'Need the history and a memory entry first.',
+            ),
             ...readLines('fc_1', 'narrchat_readHistory'),
             ...editLines('fc_2', AgentStateSection.memorySummary, [
               {'op': 'append', 'newLine': memoryEntry},
@@ -568,15 +563,18 @@ void main() {
     expect(await provider.sendRound(userInput: '继续', book: book), isTrue);
     expect(capturedBodies, hasLength(4));
 
-    final input1 =
-        (capturedBodies[0]['input'] as List).cast<Map<String, dynamic>>();
-    expect(input1.any((i) => i['type'] == 'reasoning'), isFalse,
-        reason: '首回合还没有思考块');
+    final input1 = (capturedBodies[0]['input'] as List)
+        .cast<Map<String, dynamic>>();
+    expect(
+      input1.any((i) => i['type'] == 'reasoning'),
+      isFalse,
+      reason: '首回合还没有思考块',
+    );
 
     // 下一回合：每个 function_call 紧邻其前各有一块非空 reasoning
     //（缺失 → HTTP 400「reasoning_text in the thinking mode must be passed back」）。
-    final input2 =
-        (capturedBodies[1]['input'] as List).cast<Map<String, dynamic>>();
+    final input2 = (capturedBodies[1]['input'] as List)
+        .cast<Map<String, dynamic>>();
     final callIndexes = <int>[
       for (var i = 0; i < input2.length; i++)
         if (input2[i]['type'] == 'function_call') i,
@@ -603,17 +601,20 @@ void main() {
         bodies.add(body);
         final input = (body['input'] as List).cast<Map<String, dynamic>>();
         final lastUser = input.lastWhere((i) => i['role'] == 'user')['content'];
-        final isMaintenance =
-            '$lastUser'.startsWith('[State-maintenance turn]');
+        final isMaintenance = '$lastUser'.startsWith(
+          '[State-maintenance turn]',
+        );
         // 该兼容实现不支持有状态续接：带 `previous_response_id` 的维护回合被拒
         //（HTTP 400）；执行器就地丢弃续接基点、同一回合全量重发。
         if (body.containsKey('previous_response_id') && isMaintenance) {
           return http.Response.bytes(
-            utf8.encode(jsonEncode({
+            utf8.encode(
+              jsonEncode({
               'error': {
                 'message': 'Unsupported parameter: previous_response_id',
               },
-            })),
+              }),
+            ),
             400,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
@@ -649,9 +650,7 @@ void main() {
       books: stack.repos.books,
       aiService: ai,
       aiSettingsProvider: _ChainingSettings(),
-      experimentalSettings: AgentModeSettings(
-        compressNonBodyReasoning: false,
-      ),
+      experimentalSettings: AgentModeSettings(compressNonBodyReasoning: false),
       retryDelay: Duration.zero,
     );
     await provider.loadRounds('b1');
@@ -666,8 +665,7 @@ void main() {
     expect(bodies[1].containsKey('tools'), isFalse, reason: '续接回合不重发前缀');
     expect(bodies[2]['previous_response_id'], 'resp_s');
     expect(bodies[3].containsKey('previous_response_id'), isFalse);
-    expect(bodies[3]['tools'], bodies[0]['tools'],
-        reason: '重发回落到全量前缀');
+    expect(bodies[3]['tools'], bodies[0]['tools'], reason: '重发回落到全量前缀');
     // 重发的是**同一回合**的内容：续接回合只带的新增项原样落在「全量重发」的末尾
     //（不重跑调研回合、不追加额外指令）。
     final chainedInput = (bodies[2]['input'] as List).cast<Object>();
@@ -678,18 +676,11 @@ void main() {
       chainedInput,
     );
     // 思考强度全帧沿用用户设置：降级不改写强度。
-    expect(
-      bodies.map((b) => jsonEncode(b['reasoning'])).toSet(),
-      hasLength(1),
-    );
-    expect(
-      jsonDecode(jsonEncode(bodies[0]['reasoning'])),
-      {'effort': 'high'},
-    );
+    expect(bodies.map((b) => jsonEncode(b['reasoning'])).toSet(), hasLength(1));
+    expect(jsonDecode(jsonEncode(bodies[0]['reasoning'])), {'effort': 'high'});
 
     // 本轮照常成功落库（正文 + 记忆齐备），且**没有被记为失败**：
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     expect(round.aiNarrative, contains('殿前风冷'));
     expect(round.memorySummary, memoryEntry);
@@ -719,10 +710,7 @@ void main() {
     expect(failed.single.toolCalls, isEmpty);
     expect(failed.single.content, isEmpty);
     // 成功回合不受影响：正文回合的交换记录有返回内容。
-    expect(
-      exchanges.any((e) => e.content.contains('殿前风冷')),
-      isTrue,
-    );
+    expect(exchanges.any((e) => e.content.contains('殿前风冷')), isTrue);
   });
 
   // ---------------------------------------------------------------------------
@@ -773,9 +761,11 @@ void main() {
     expect(bodies, hasLength(3));
 
     // 维护回合：只维护记忆总结；读过的历史在上下文里，重复读取会被拒。
-    final maintenance = (bodies.last['input'] as List)
-        .cast<Map<String, dynamic>>()
-        .lastWhere((i) => i['role'] == 'user')['content'] as String;
+    final maintenance =
+        (bodies.last['input'] as List).cast<Map<String, dynamic>>().lastWhere(
+              (i) => i['role'] == 'user',
+            )['content']
+            as String;
     expect(maintenance, startsWith('[State-maintenance turn]'));
     expect(maintenance, contains('只维护记忆总结'));
     expect(maintenance, contains('narrchat_editHistory'));
@@ -784,24 +774,15 @@ void main() {
 
     // 任何回合都不发送 tool_choice；思考强度 / 输出上限全回合完全一致
     //（程序不因步骤改写用户设置）。
-    expect(
-      bodies.every((b) => !b.containsKey('tool_choice')),
-      isTrue,
-    );
-    expect(
-      bodies.map((b) => jsonEncode(b['reasoning'])).toSet(),
-      hasLength(1),
-    );
-    expect(
-      jsonDecode(jsonEncode(bodies.first['reasoning'])),
-      {'effort': 'high'},
-    );
+    expect(bodies.every((b) => !b.containsKey('tool_choice')), isTrue);
+    expect(bodies.map((b) => jsonEncode(b['reasoning'])).toSet(), hasLength(1));
+    expect(jsonDecode(jsonEncode(bodies.first['reasoning'])), {
+      'effort': 'high',
+    });
     expect(bodies.first['max_output_tokens'], 4096);
-    expect(
-      bodies.map((b) => b['max_output_tokens']).toSet(),
-      {4096},
-      reason: '维护回合不得改写用户设置的输出上限',
-    );
+    expect(bodies.map((b) => b['max_output_tokens']).toSet(), {
+      4096,
+    }, reason: '维护回合不得改写用户设置的输出上限');
     // 各步共用同一 instructions / tools（前缀缓存依赖此）。
     for (final b in bodies.skip(1)) {
       expect(b['instructions'], bodies.first['instructions']);
@@ -809,8 +790,7 @@ void main() {
     }
 
     // 维护补齐后本轮记忆落地、正文照常落库，且没有常驻警告。
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     expect(round.memorySummary, memoryEntry);
     expect(round.aiNarrative, contains('殿前风冷'));
@@ -862,8 +842,11 @@ void main() {
     expect(await provider.sendRound(userInput: '第一章', book: book), isTrue);
     expect(bodies, hasLength(6)); // 1 调研 + 1 正文 + 4 维护
     // 截断不再让整轮失败：正文照常落库 + 黄框给出可操作提示。
-    expect(bodies[1].containsKey('tool_choice'), isFalse,
-        reason: '维护回合同样不发 tool_choice');
+    expect(
+      bodies[1].containsKey('tool_choice'),
+      isFalse,
+      reason: '维护回合同样不发 tool_choice',
+    );
     expect(
       provider.roundWarningsFor(1).any((w) => w.contains('最大 token')),
       isTrue,
@@ -875,8 +858,7 @@ void main() {
     for (final b in bodies.skip(1)) {
       expect(b['max_output_tokens'], 4096);
     }
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     expect(round.isError, isFalse);
     expect(round.aiNarrative, contains('殿前风冷'));
@@ -908,8 +890,7 @@ void main() {
     expect(await provider.sendRound(userInput: '开始', book: book), isTrue);
     expect(calls, 6);
 
-    final round = (await stack.repos.rounds.loadChain('b1'))
-        .rounds
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds
         .firstWhere((r) => r.roundIndex == 1);
     // Lv.1 只有历史栏目经工具维护：世界 / 角色 / 时间都属正文，不参与缺项。
     expect(provider.roundWarningsFor(1), contains('记忆总结本轮未更新'));
@@ -980,6 +961,213 @@ void main() {
     await provider.clearFailedAttempt();
     expect((await stack.repos.rounds.loadChain('b1')).rounds, isEmpty);
   });
+
+  test('子模型：维护步请求改模型，主 / 子统计分桶落库', () async {
+    final captured = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        captured.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final idx = captured.length;
+        if (idx == 1) {
+          return sse([
+            ...readLines('r1', 'narrchat_readHistory'),
+            completed('resp_r'),
+            '',
+          ]);
+        }
+        if (idx == 2) {
+          return sse([textDelta(story5), completed('resp_s'), '']);
+        }
+        return sse([
+          ...editLines('h1', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+          ]),
+          completed('resp_h', input: 2, output: 3, cached: 1),
+          '',
+        ]);
+      }),
+    );
+    final provider = RoundProvider(
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
+      experimentalSettings: AgentModeSettings(
+        subagentPlatformId: AiPlatforms.deepseekPlatformId,
+        subagentModelId: 'deepseek-v4-pro',
+      ),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
+
+    expect(captured, hasLength(3));
+    expect(captured[0]['model'], 'deepseek-flash', reason: '调研用主模型');
+    expect(captured[1]['model'], 'deepseek-flash', reason: '正文用主模型');
+    expect(captured[2]['model'], 'deepseek-v4-pro', reason: '维护用子模型');
+
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.single;
+    expect(round.modelName, 'deepseek-flash');
+    expect(round.hasSubagent, isTrue);
+    expect(round.subagentModelName, 'deepseek-v4-pro');
+    // 主：调研 1/1 + 正文 1/1；子：维护 2/3（缓存 1）。主模型两帧都没带回缓存字段。
+    expect(round.tokensIn, 2);
+    expect(round.tokensOut, 2);
+    expect(round.cachedTokensIn, isNull);
+    expect(round.subagentTokensIn, 2);
+    expect(round.subagentTokensOut, 3);
+    expect(round.subagentCachedTokensIn, 1);
+    expect(provider.roundWarningsFor(1), isEmpty);
+  });
+
+  test('子模型跨平台 / 跨协议：维护步改走子平台 Chat 线路与子平台 Key', () async {
+    final captured = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        captured.add(body);
+        if (request.url.path.endsWith('/responses')) {
+          final idx = captured.length;
+          if (idx == 1) {
+            return sse([
+              ...readLines('r1', 'narrchat_readHistory'),
+              completed('resp_r'),
+              '',
+            ]);
+          }
+          return sse([textDelta(story5), completed('resp_s'), '']);
+        }
+        // 子平台：Chat 非流式（模型能力里 supportsStreaming=false）。
+        expect(request.url.host, 'sub.example.com');
+        return http.Response(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {
+                  'role': 'assistant',
+                  'content': '',
+                  'tool_calls': [
+                    {
+                      'id': 'h1',
+                      'type': 'function',
+                      'function': {
+                        'name': agentEditToolName(
+                          AgentStateSection.memorySummary,
+                        ),
+                        'arguments': jsonEncode({
+                          'edits': [
+                            {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+                          ],
+                        }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            'usage': {
+              'prompt_tokens': 2,
+              'completion_tokens': 3,
+              'prompt_tokens_details': {'cached_tokens': 1},
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    final provider = RoundProvider(
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
+      aiService: ai,
+      aiSettingsProvider: _CrossPlatformSettings(),
+      experimentalSettings: AgentModeSettings(
+        subagentPlatformId: _CrossPlatformSettings.subPlatformId,
+        subagentModelId: 'cheap-model',
+      ),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
+
+    expect(captured, hasLength(3));
+    expect(captured[0]['model'], 'main-model');
+    expect(captured[1]['model'], 'main-model');
+    expect(captured[2]['model'], 'cheap-model');
+    // 主平台 Responses 用 input；子平台 Chat 用 messages，且明确 stream=false。
+    expect(captured[0].containsKey('input'), isTrue);
+    expect(captured[2].containsKey('messages'), isTrue);
+    expect(captured[2].containsKey('input'), isFalse);
+    expect(captured[2]['stream'], isFalse);
+
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.single;
+    expect(round.modelName, 'main-model');
+    expect(round.subagentModelName, 'cheap-model');
+    expect(round.tokensIn, 2);
+    expect(round.tokensOut, 2);
+    expect(round.subagentTokensIn, 2);
+    expect(round.subagentTokensOut, 3);
+    expect(round.subagentCachedTokensIn, 1);
+    expect(provider.roundWarningsFor(1), isEmpty);
+  });
+
+  test('子模型与主模型相同：折叠为未启用，不发子请求且统计全归主模型', () async {
+    final captured = <Map<String, dynamic>>[];
+    final ai = AiService(
+      client: MockClient((request) async {
+        captured.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final idx = captured.length;
+        if (idx == 1) {
+          return sse([
+            ...readLines('r1', 'narrchat_readHistory'),
+            completed('resp_r'),
+            '',
+          ]);
+        }
+        if (idx == 2) {
+          return sse([textDelta(story5), completed('resp_s'), '']);
+        }
+        return sse([
+          ...editLines('h1', AgentStateSection.memorySummary, [
+            {'op': 'append', 'newLine': '- 第1轮｜日期：第二天 辰时｜殿前递帖'},
+          ]),
+          completed('resp_h', input: 2, output: 3, cached: 1),
+          '',
+        ]);
+      }),
+    );
+    final provider = RoundProvider(
+      rounds: stack.repos.rounds,
+      books: stack.repos.books,
+      aiService: ai,
+      aiSettingsProvider: AiSettingsProvider(),
+      experimentalSettings: AgentModeSettings(
+        subagentPlatformId: AiPlatforms.deepseekPlatformId,
+        subagentModelId: AiPlatforms.defaultModelId,
+      ),
+      retryDelay: Duration.zero,
+    );
+    await provider.loadRounds('b1');
+
+    expect(await provider.sendRound(userInput: '走向主殿', book: book), isTrue);
+
+    expect(captured, hasLength(3));
+    expect(captured.map((body) => body['model']).toSet(), {
+      'deepseek-flash',
+    }, reason: '与主模型相同 → 不切子模型');
+    final round = (await stack.repos.rounds.loadChain('b1')).rounds.single;
+    expect(round.hasSubagent, isFalse);
+    expect(round.subagentModelName, isEmpty);
+    expect(round.subagentTokensIn, isNull);
+    expect(round.subagentTokensOut, isNull);
+    expect(round.subagentCachedTokensIn, isNull);
+    // 全部步归主模型：调研 1/1 + 正文 1/1 + 维护 2/3。
+    expect(round.tokensIn, 4);
+    expect(round.tokensOut, 5);
+    expect(round.cachedTokensIn, 1);
+  });
 }
 
 /// Response 线路 + **开启有状态续接**（`previous_response_id`）的设置替身。
@@ -999,4 +1187,71 @@ class _ChainingSettings extends AiSettingsProvider {
 class _MaxTokensSettings extends AiSettingsProvider {
   @override
   AiModel get selectedModel => super.selectedModel.copyWith(maxTokens: 4096);
+}
+
+/// 主平台 Responses + 子平台 Chat 的双平台设置替身。
+///
+/// 用来验证子模型「跨平台 / 跨协议」时：baseUrl / API Key / 请求体形态
+/// （input vs messages）与流式能力都取子平台自己的配置。
+class _CrossPlatformSettings extends AiSettingsProvider {
+  static const String mainPlatformId = 'main-platform';
+  static const String subPlatformId = 'sub-platform';
+
+  static const AiPlatform _mainPlatform = AiPlatform(
+    id: mainPlatformId,
+    displayName: '主平台',
+    apiType: ApiType.openAiResponses,
+    baseUrl: 'https://main.example.com/v1',
+    models: [
+      AiModel(
+        id: 'main-model',
+        supportsStreaming: true,
+        supportsThinking: true,
+        supportsSearch: true,
+      ),
+    ],
+  );
+
+  static const AiPlatform _subPlatform = AiPlatform(
+    id: subPlatformId,
+    displayName: '子平台',
+    apiType: ApiType.openAiCompatible,
+    baseUrl: 'https://sub.example.com/v1',
+    models: [
+      AiModel(
+        id: 'cheap-model',
+        supportsStreaming: false,
+        supportsThinking: false,
+        supportsSearch: false,
+      ),
+    ],
+  );
+
+  @override
+  List<AiPlatform> get platforms => const [_mainPlatform, _subPlatform];
+
+  @override
+  AiPlatform get selectedPlatform => _mainPlatform;
+
+  @override
+  String get selectedPlatformId => mainPlatformId;
+
+  @override
+  String get selectedModelId => 'main-model';
+
+  @override
+  AiModel get selectedModel => _mainPlatform.models.first;
+
+  @override
+  String get model => 'main-model';
+
+  @override
+  String get baseUrl => 'https://main.example.com/v1';
+
+  @override
+  String get apiKey => 'main-key';
+
+  @override
+  String apiKeyFor(String platformId) =>
+      platformId == subPlatformId ? 'sub-key' : 'main-key';
 }

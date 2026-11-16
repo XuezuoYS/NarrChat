@@ -19,7 +19,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// 3.0 是软件大版本号，数据库版本继续沿用旧编号，从 22 起算。
 /// 23：library 增加删除时的轮号（回收站展示用）。
 /// 24：书库 `book_meta` 增加 `book_cover_img`（书籍自定义封面）。
-const int userDataDbVersion = 24;
+/// 25：`round_stack` 增加非创作步子模型（subagent）统计四列。
+const int userDataDbVersion = 25;
 
 /// 本地缓存库 `library_cache.db` 的 schema 版本（本地库单独管理）。
 ///
@@ -145,7 +146,9 @@ Future<void> createBookSchema(Database db) async {
 ///   多个版本才属于同一组，因此「切上一轮 → 下一轮跟着切」天然成立。
 /// - `is_using`：组内当前选中的代。同组至多一个 1（不建唯一索引，读时归一化自愈）。
 /// - **不建 `father_uuid` 自引用外键**：删除是物理删除，自引用外键会阻止删父行；
-///   不可达行靠「父查不到 → 不可达 → 清理」规则处理。
+///   不可达行靠「父查不到 → 不可达 → 清理」规则处理；
+/// - `subagent_*`（v25）：非创作步（第二步状态维护）子模型的名称 / 输入 / 输出 /
+///   缓存命中输入统计；四列全 NULL = 未启用子模型。
 Future<void> _createRoundStackTable(Database db) async {
   await db.execute('''
     CREATE TABLE IF NOT EXISTS round_stack (
@@ -171,7 +174,11 @@ Future<void> _createRoundStackTable(Database db) async {
       current_time       TEXT DEFAULT '',
       recommended_action TEXT DEFAULT '',
       user_images        TEXT NOT NULL DEFAULT '[]',
-      ai_images          TEXT NOT NULL DEFAULT '[]'
+      ai_images          TEXT NOT NULL DEFAULT '[]',
+      subagent_model_name       TEXT,
+      subagent_tokens_in        INTEGER,
+      subagent_tokens_out       INTEGER,
+      subagent_cached_tokens_in INTEGER
     )
   ''');
   await db.execute(

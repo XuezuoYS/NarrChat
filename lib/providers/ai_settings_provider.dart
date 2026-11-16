@@ -71,6 +71,7 @@ class AiSettingsProvider extends ChangeNotifier {
   late List<AiPlatform> _platforms;
   String _selectedPlatformId = '';
   String _selectedModelId = '';
+
   /// Chat 页记住的思考强度：平台 id → 模型 id → 强度。
   Map<String, Map<String, String>> _selectedReasoningEfforts = {};
   final Map<String, String> _apiKeys = {};
@@ -113,10 +114,15 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 实际发送给 API 的模型名。
   String get model => selectedModel.id;
 
-  /// 当前平台接口地址（空则回退默认）。
-  String get baseUrl => selectedPlatform.baseUrl.isEmpty
+  /// 指定平台的接口地址（空则回退默认）。
+  ///
+  /// 与 [baseUrl] 同口径；子模型可能来自别的平台，不能再读当前选中平台。
+  String baseUrlForPlatform(AiPlatform platform) => platform.baseUrl.isEmpty
       ? AppConfig.defaultApiBaseUrlEffective
-      : selectedPlatform.baseUrl;
+      : platform.baseUrl;
+
+  /// 当前平台接口地址（空则回退默认）。
+  String get baseUrl => baseUrlForPlatform(selectedPlatform);
 
   /// 当前平台接入协议 id。
   String get apiTypeId => selectedPlatform.apiTypeId;
@@ -149,15 +155,20 @@ class AiSettingsProvider extends ChangeNotifier {
   /// 当前模型有效最大输出 Tokens。
   int? get maxTokens => selectedModel.maxTokens;
 
-  /// 当前平台 API Key（默认平台空时回退默认值）。
-  String get apiKey {
-    final key = _apiKeys[selectedPlatform.id];
+  /// 指定平台的 API Key（默认平台空时回退内置默认值）。
+  ///
+  /// 子模型可能来自别的平台，读取 Key 时不能再用当前选中平台。
+  String apiKeyForPlatform(AiPlatform platform) {
+    final key = _apiKeys[platform.id];
     if (key != null && key.isNotEmpty) return key;
-    if (selectedPlatform.id == AiPlatforms.defaultPlatformId) {
+    if (platform.id == AiPlatforms.defaultPlatformId) {
       return AppConfig.defaultApiKeyEffective;
     }
     return '';
   }
+
+  /// 当前平台 API Key（默认平台空时回退默认值）。
+  String get apiKey => apiKeyForPlatform(selectedPlatform);
 
   /// 是否已配置有效的 API Key。
   bool get hasApiKey => apiKey.trim().isNotEmpty;
@@ -175,8 +186,7 @@ class AiSettingsProvider extends ChangeNotifier {
   bool thinkingFor(AiModel model) => _lastThinking && model.supportsThinking;
 
   /// 指定模型本轮是否会流式输出（用户记忆偏好 ∩ 模型能力）。
-  bool streamingFor(AiModel model) =>
-      _lastStreaming && model.supportsStreaming;
+  bool streamingFor(AiModel model) => _lastStreaming && model.supportsStreaming;
 
   /// 指定平台的 API Key（供设置编辑器读取）。
   String apiKeyFor(String platformId) => _apiKeys[platformId] ?? '';
@@ -370,17 +380,15 @@ class AiSettingsProvider extends ChangeNotifier {
 
       // 归一化选中项：平台与模型必须存在于列表中，否则回退到平台默认。
       final normalizedPlatforms = List<AiPlatform>.from(platforms);
-      final normPlatformId = normalizedPlatforms.any(
-        (p) => p.id == selectedPlatformId,
-      )
+      final normPlatformId =
+          normalizedPlatforms.any((p) => p.id == selectedPlatformId)
           ? selectedPlatformId
           : normalizedPlatforms.first.id;
       final normPlatform = normalizedPlatforms.firstWhere(
         (p) => p.id == normPlatformId,
       );
-      final normModelId = normPlatform.models.any(
-        (m) => m.id == selectedModelId,
-      )
+      final normModelId =
+          normPlatform.models.any((m) => m.id == selectedModelId)
           ? selectedModelId
           : normPlatform.defaultModel.id;
 
@@ -498,8 +506,10 @@ class AiSettingsProvider extends ChangeNotifier {
     _selectedModelId = modelId;
     final effort = reasoningEffort?.trim() ?? '';
     if (effort.isNotEmpty) {
-      _selectedReasoningEfforts
-          .putIfAbsent(platformId, () => <String, String>{})[modelId] = effort;
+      _selectedReasoningEfforts.putIfAbsent(
+        platformId,
+        () => <String, String>{},
+      )[modelId] = effort;
     }
     notifyListeners();
     try {
@@ -529,11 +539,21 @@ class AiSettingsProvider extends ChangeNotifier {
   // 请求体构建
   // ---------------------------------------------------------------------------
 
-  /// 按当前模型构建请求体（由所属平台接入协议规则组合）。
-  Map<String, dynamic> buildRequestBody(AiRequestValues values) {
+  /// 按指定平台的接入协议构建请求体。
+  ///
+  /// 子模型可能使用别的协议（Responses / Chat），请求体规则必须取**目标平台**
+  /// 的 [AiPlatform.apiType]，不能沿用当前选中平台。
+  Map<String, dynamic> buildRequestBodyFor(
+    AiPlatform platform,
+    AiRequestValues values,
+  ) {
     return AiRequestBodyBuilder.buildPresetBody(
-      rules: selectedPlatform.apiType.requestRules,
+      rules: platform.apiType.requestRules,
       values: values,
     );
   }
+
+  /// 按当前模型构建请求体（由所属平台接入协议规则组合）。
+  Map<String, dynamic> buildRequestBody(AiRequestValues values) =>
+      buildRequestBodyFor(selectedPlatform, values);
 }

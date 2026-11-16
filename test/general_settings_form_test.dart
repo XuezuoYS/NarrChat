@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:narrchat/models/agent_mode_level.dart';
+import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/providers/experimental_settings_provider.dart';
 import 'package:narrchat/providers/ui_settings_provider.dart';
 import 'package:narrchat/services/system_fonts_service.dart';
@@ -29,9 +30,16 @@ Color? experimentalTagColor(WidgetTester tester, String title) {
 }
 
 void main() {
-  Widget buildApp(double width, {ExperimentalSettingsProvider? experimental}) {
+  Widget buildApp(
+    double width, {
+    ExperimentalSettingsProvider? experimental,
+    AiSettingsProvider? ai,
+  }) {
     return ChangeNotifierProvider.value(
       value: UiSettingsProvider(),
+      child: ChangeNotifierProvider(
+        // 子模型行需要读取平台 / 模型列表与当前主模型；构造注入不触碰真实配置。
+        create: (_) => ai ?? AiSettingsProvider(),
       child: ChangeNotifierProvider(
         // Agent 档位由实验性设置 Provider 驱动（构造注入初值，
         // 不触碰真实配置文件）。
@@ -50,6 +58,7 @@ void main() {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -77,10 +86,7 @@ void main() {
     expect(find.text('通用设置'), findsOneWidget);
     expect(find.text('UI 设置'), findsOneWidget);
     expect(find.text('其它设置'), findsOneWidget);
-    expect(
-      find.text('会话工作模式（实验性）', findRichText: true),
-      findsOneWidget,
-    );
+    expect(find.text('会话工作模式（实验性）', findRichText: true), findsOneWidget);
     expect(find.text('实验性设置'), findsNothing);
     expect(
       experimentalTagColor(tester, '会话工作模式（实验性）'),
@@ -109,10 +115,7 @@ void main() {
       findsOneWidget,
     );
     // 选项标题也带黄色「（实验性）」标注。
-    expect(
-      find.text('Agent 模式（实验性）', findRichText: true),
-      findsOneWidget,
-    );
+    expect(find.text('Agent 模式（实验性）', findRichText: true), findsOneWidget);
     expect(
       experimentalTagColor(tester, 'Agent 模式（实验性）'),
       NarrChatColors.light.warning,
@@ -220,20 +223,14 @@ void main() {
       experimentalTagColor(tester, '压缩非正文步模型所获取到的思考链（实验性）'),
       NarrChatColors.light.warning,
     );
-    expect(
-      find.text('压缩所有回合的思考链（实验性）', findRichText: true),
-      findsOneWidget,
-    );
+    expect(find.text('压缩所有回合的思考链（实验性）', findRichText: true), findsOneWidget);
     expect(
       experimentalTagColor(tester, '压缩所有回合的思考链（实验性）'),
       NarrChatColors.light.warning,
     );
     expect(find.textContaining('第一步（调研 + 正文）视为正文步'), findsOneWidget);
     expect(find.textContaining('默认关'), findsWidgets);
-    expect(
-      find.textContaining('⚠ 会改写回传给模型的思考原文'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('⚠ 会改写回传给模型的思考原文'), findsOneWidget);
     expect(provider.compressNonBodyReasoning, isTrue);
     expect(provider.compressAllReasoning, isFalse);
     expect(tester.widget<Switch>(parentToggle).value, isTrue);
@@ -291,6 +288,74 @@ void main() {
     await tester.tap(find.textContaining('开启后第一步的调研 / 正文回合也压缩'));
     await tester.pumpAndSettle();
     expect(provider.compressAllReasoning, isTrue);
+  });
+
+  testWidgets('非创作步子模型：跟随主模型 / 选具体模型 / 灰字缓存提示', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final experimental = ExperimentalSettingsProvider();
+    final ai = AiSettingsProvider();
+    await tester.pumpWidget(buildApp(1000, experimental: experimental, ai: ai));
+    await tester.pump();
+
+    final row = find.byKey(const ValueKey('experimental_subagent_model_card'));
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+
+    // 默认跟随主模型；提示原句必须在灰字里。
+    expect(
+      find.text('非创作步所使用的模型（子模型）（实验性）', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.textContaining('跨模型无法使用缓存命中'), findsOneWidget);
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('experimental_subagent_model_label')),
+          )
+          .data,
+      '与当前激活主模型一致',
+    );
+    expect(experimental.hasSubagentModel, isFalse);
+
+    // 打开选择器 → 选第二个模型（DeepSeek V4 Pro）。
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('subagent_model_dialog')), findsOneWidget);
+    final option = find.byKey(
+      const ValueKey('subagent_model_option___default___deepseek-v4-pro'),
+    );
+    expect(option, findsOneWidget);
+    await tester.tap(option);
+    await tester.pumpAndSettle();
+
+    expect(experimental.hasSubagentModel, isTrue);
+    expect(experimental.subagentPlatformId, '__default__');
+    expect(experimental.subagentModelId, 'deepseek-v4-pro');
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('experimental_subagent_model_label')),
+          )
+          .data,
+      'deepseek-v4-pro',
+    );
+
+    // 再打开 → 选回「与当前激活主模型一致」。
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent_model_follow_main')));
+    await tester.pumpAndSettle();
+    expect(experimental.hasSubagentModel, isFalse);
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('experimental_subagent_model_label')),
+          )
+          .data,
+      '与当前激活主模型一致',
+    );
   });
 
   testWidgets('Agent 模式简介简要概括：托管范围、指示器限制与破坏性变更声明', (tester) async {

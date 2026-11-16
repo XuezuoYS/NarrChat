@@ -24,11 +24,7 @@ void main() {
           'name': 'narrchat_editWorldState',
           'arguments': '{"edits":[{"op":"append"}]}',
         },
-        {
-          'type': 'function_call_output',
-          'call_id': 'call_1',
-          'output': '已更新',
-        },
+        {'type': 'function_call_output', 'call_id': 'call_1', 'output': '已更新'},
       ]);
       expect(out, [
         {
@@ -67,8 +63,18 @@ void main() {
     test('多次调用追加到同一 assistant 消息（同帧多工具）', () {
       final out = chatItemsFromAgentItems(const [
         {'role': 'assistant', 'content': ''},
-        {'type': 'function_call', 'call_id': 'a', 'name': 't1', 'arguments': '{}'},
-        {'type': 'function_call', 'call_id': 'b', 'name': 't2', 'arguments': '{}'},
+        {
+          'type': 'function_call',
+          'call_id': 'a',
+          'name': 't1',
+          'arguments': '{}',
+        },
+        {
+          'type': 'function_call',
+          'call_id': 'b',
+          'name': 't2',
+          'arguments': '{}',
+        },
       ]);
       expect((out.single['tool_calls'] as List).length, 2);
     });
@@ -79,7 +85,12 @@ void main() {
         {'role': 'user', 'content': '继续'},
         {'type': 'reasoning', 'id': 'r1', 'text': '先读状态再写', 'summary': false},
         {'role': 'assistant', 'content': '## 剧情演绎\n正文'},
-        {'type': 'function_call', 'call_id': 'c1', 'name': 't1', 'arguments': '{}'},
+        {
+          'type': 'function_call',
+          'call_id': 'c1',
+          'name': 't1',
+          'arguments': '{}',
+        },
         {'type': 'function_call_output', 'call_id': 'c1', 'output': 'ok'},
       ]);
       expect(out, [
@@ -104,7 +115,12 @@ void main() {
       final out = chatItemsFromAgentItems(const [
         {'role': 'user', 'content': '写正文'},
         {'type': 'reasoning', 'id': '', 'text': '需要搜索', 'summary': false},
-        {'type': 'function_call', 'call_id': 'c1', 'name': 'narrchat_webSearch', 'arguments': '{}'},
+        {
+          'type': 'function_call',
+          'call_id': 'c1',
+          'name': 'narrchat_webSearch',
+          'arguments': '{}',
+        },
       ]);
       expect(out, hasLength(2));
       final assistant = out.last;
@@ -157,16 +173,15 @@ void main() {
           'role': 'user',
           'content': [
             {'type': 'input_text', 'text': '看图'},
-            {
-              'type': 'input_image',
-              'image_url': 'data:image/png;base64,AAA',
-            },
+            {'type': 'input_image', 'image_url': 'data:image/png;base64,AAA'},
           ],
         },
       ]);
     });
 
-    test('assistant tool_calls 展开为 message + function_call items；tool 消息转 output', () {
+    test(
+      'assistant tool_calls 展开为 message + function_call items；tool 消息转 output',
+      () {
       final out = responsesItemsFromChatMessages(const [
         {
           'role': 'assistant',
@@ -198,7 +213,8 @@ void main() {
           'output': '结果…',
         },
       ]);
-    });
+      },
+    );
 
     test('assistant reasoning_content 展开为先行的 reasoning item（思考回传硬要求）', () {
       final out = responsesItemsFromChatMessages(const [
@@ -235,11 +251,7 @@ void main() {
           'name': 'narrchat_editWorldState',
           'arguments': '{"edits":[]}',
         },
-        {
-          'type': 'function_call_output',
-          'call_id': 'call_1',
-          'output': '已更新',
-        },
+        {'type': 'function_call_output', 'call_id': 'call_1', 'output': '已更新'},
       ]);
     });
   });
@@ -309,13 +321,14 @@ void main() {
     });
   });
 
-  group('reasoningItemFrom / reasoningResponseItem（思考条目 ↔ 线路形态）', () {    test('会话条目还原为 content 形态 input item（带 id）', () {
-      expect(
-        reasoningItemFrom(
-          const AiReasoningItem(id: 'r1', text: '先读状态'),
-        ),
-        {'type': 'reasoning', 'id': 'r1', 'text': '先读状态', 'summary': false},
-      );
+  group('reasoningItemFrom / reasoningResponseItem（思考条目 ↔ 线路形态）', () {
+    test('会话条目还原为 content 形态 input item（带 id）', () {
+      expect(reasoningItemFrom(const AiReasoningItem(id: 'r1', text: '先读状态')), {
+        'type': 'reasoning',
+        'id': 'r1',
+        'text': '先读状态',
+        'summary': false,
+      });
       expect(
         reasoningResponseItem(
           reasoningItemFrom(const AiReasoningItem(id: 'r1', text: '先读状态')),
@@ -361,6 +374,86 @@ void main() {
         {'role': 'user', 'content': '你好'},
       ]);
       expect(parts.instructions, isNull);
+    });
+  });
+
+  group('sanitizeAgentItemsForModel（子模型能力降级）', () {
+    test('两个开关都关：原样返回（同一个列表，零开销）', () {
+      final items = [
+        {'role': 'user', 'content': '你好'},
+      ];
+      expect(sanitizeAgentItemsForModel(items), same(items));
+    });
+
+    test('dropReasoning：删 reasoning 条目与 assistant.reasoning_content', () {
+      final items = [
+        {'type': 'reasoning', 'id': 'r1', 'text': '思考', 'summary': false},
+        {'role': 'assistant', 'content': '正文', 'reasoning_content': '旧思考'},
+        {'role': 'user', 'content': '继续'},
+      ];
+      final out = sanitizeAgentItemsForModel(items, dropReasoning: true);
+      expect(out, [
+        {'role': 'assistant', 'content': '正文'},
+        {'role': 'user', 'content': '继续'},
+      ]);
+      // 原列表不被修改。
+      expect(items[0]['type'], 'reasoning');
+      expect(items[1]['reasoning_content'], '旧思考');
+    });
+
+    test('dropImages：多段内容压成纯文本，保留 text / input_text', () {
+      final items = [
+        {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': '看这张图'},
+            {
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/png;base64,AAA'},
+            },
+            {'type': 'input_text', 'text': '第二段'},
+          ],
+        },
+        {
+          'role': 'user',
+          'content': [
+            {
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/png;base64,BBB'},
+            },
+          ],
+        },
+        {'role': 'assistant', 'content': '纯文本原样'},
+      ];
+      final out = sanitizeAgentItemsForModel(items, dropImages: true);
+      expect(out[0]['content'], '看这张图\n第二段');
+      expect(out[1]['content'], '', reason: '没有文本段时压成空串');
+      expect(out[2]['content'], '纯文本原样');
+      // 原列表不被修改。
+      expect(items[0]['content'], isA<List<dynamic>>());
+    });
+
+    test('两个开关同时生效', () {
+      final out = sanitizeAgentItemsForModel(
+        const [
+          {'type': 'reasoning', 'text': '思考'},
+          {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': '文字'},
+              {
+                'type': 'image_url',
+                'image_url': {'url': 'x'},
+              },
+            ],
+          },
+        ],
+        dropReasoning: true,
+        dropImages: true,
+      );
+      expect(out, [
+        {'role': 'user', 'content': '文字'},
+      ]);
     });
   });
 }

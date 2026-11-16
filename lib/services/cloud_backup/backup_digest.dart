@@ -108,6 +108,9 @@ class BackupDigest {
           ],
           orderBy: ['branch_uuid'],
         ),
+        // 注意：`subagent_*`（非创作步子模型统计）刻意**不参与**摘要。
+        // 它们是展示用统计元数据，加列不升 `backupDigestVersion`，避免升级后
+        // 首次同步对每个单元弹摘要版本冲突；统计随书库快照照常上传。
         _DigestTable(
           table: 'round_stack',
           columns: [

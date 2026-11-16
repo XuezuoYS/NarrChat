@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/agent_mode_level.dart';
+import '../models/ai_platform.dart';
+import '../providers/ai_settings_provider.dart';
 import '../providers/experimental_settings_provider.dart';
+import '../services/agent/agent_sub_model.dart';
 import 'other_settings_section.dart';
 import 'settings/settings_kit.dart';
 import 'ui_settings_form.dart';
@@ -13,8 +16,8 @@ import 'ui_settings_form.dart';
 /// - UI 设置：全局字体、主题等界面偏好（即时生效）；
 /// - 其它设置：应用行为类杂项（「检查更新」开关 + 预发布版本开关 +
 ///   「立即检查更新」入口）；
-/// - 会话工作模式（实验性）：实验性功能档位（如「Agent 模式」两档：
-///   无 / Agent Lv.1）；分区标题与两个选项标题都带黄色「（实验性）」标注。
+/// - 会话工作模式（实验性）：Agent 模式档位（无 / Lv.1）、非创作步子模型、
+///   思考链压缩两级开关；分区标题与卡片内各行标题都带黄色「（实验性）」标注。
 ///
 /// 设置保存到本地 JSON 配置文件（local_config/app_settings.json），不参与云同步。
 class GeneralSettingsForm extends StatelessWidget {
@@ -45,7 +48,7 @@ class GeneralSettingsForm extends StatelessWidget {
         ),
         SettingsSection(
           icon: Icons.science_outlined,
-          // 实验性功能独立分区：分区标题与卡片内两个选项标题都带黄色标注。
+          // 实验性功能独立分区：分区标题与卡片内各行标题都带黄色标注。
           title: '会话工作模式',
           experimental: true,
           child: _ExperimentalSettingsSection(),
@@ -56,14 +59,15 @@ class GeneralSettingsForm extends StatelessWidget {
 }
 
 /// 「会话工作模式（实验性）」子模块内容：Agent 模式档位（默认「无 / 使用传统
-/// Chat 方式」）+ Agent 模式专用的思考链压缩开关（主开关默认开；子开关默认关，
-/// 仅主开关开启时显示）。
+/// Chat 方式」）+ 非创作步子模型（默认跟随主模型）+ Agent 模式专用的思考链
+/// 压缩开关（主开关默认开；子开关默认关，仅主开关开启时显示）。
 ///
 /// 档位与平台接入协议**正交**（见 RoundProvider 矩阵化分派）：
 /// - 协议（OpenAI Chat / Response 兼容）只决定请求体与线路格式；
 /// - **Lv.1**：仅历史（记忆总结）工具 + 联网；正文输出 5 个区块（排除记忆总结），
 ///   每轮两步：第一步调研（读史 + 按需联网）后直接写正文；第二步在正文完成后
-///   单独发新请求维护记忆总结；所有步结束后统一入库，token 记录总用量。
+///   单独发新请求维护记忆总结；所有步结束后统一入库。token 按主 / 子模型分桶
+///   （第一步归主模型，第二步启用子模型时归子模型）。
 ///
 /// 历史上的完整 Agent（Lv.2，六工具 + 正文三小节）**已移除**：世界 / 角色工具
 /// 与多栏目缺口框架仍留在代码里作为后续档位的基础设施，当前不注册；旧配置值
@@ -98,9 +102,9 @@ class _ExperimentalSettingsSectionState
   }
 
   void _toggleCompressNonBodyReasoning(bool value) {
-    context
-        .read<ExperimentalSettingsProvider>()
-        .setCompressNonBodyReasoning(value);
+    context.read<ExperimentalSettingsProvider>().setCompressNonBodyReasoning(
+      value,
+    );
   }
 
   void _toggleCompressAllReasoning(bool value) {
@@ -110,11 +114,14 @@ class _ExperimentalSettingsSectionState
   @override
   Widget build(BuildContext context) {
     final experimental = context.watch<ExperimentalSettingsProvider>();
+    final aiSettings = context.watch<AiSettingsProvider>();
     return SettingsCard(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           _buildLevelMenu(experimental),
+          const Divider(height: 1, indent: 14, endIndent: 14),
+          _buildSubagentModelRow(experimental, aiSettings),
           const Divider(height: 1, indent: 14, endIndent: 14),
           _buildCompressNonBodySwitch(experimental),
           // 子开关只在主开关开启时存在；关闭主开关时连同状态一起复位。
@@ -152,6 +159,100 @@ class _ExperimentalSettingsSectionState
     );
   }
 
+  /// 子模型行的灰字说明（包含用户要求的缓存 / 成本提示原句）。
+  static const String _subagentModelDescription =
+      'Agent 模式专用（仅第二步状态维护）。跨模型无法使用缓存命中，'
+      '请确保子模型成本足够低；否则请选择「与当前激活主模型一致」。';
+
+  /// 非创作步（第二步状态维护）模型选择行：跟随主模型 / 具体模型。
+  Widget _buildSubagentModelRow(
+    ExperimentalSettingsProvider experimental,
+    AiSettingsProvider aiSettings,
+  ) {
+    // 行尾按「原始选择」显示：具体模型（即使恰好等于主模型）显示模型名；
+    // 未配置 / 失效显示跟随主模型。生成侧是否真的拆分由 resolver 决定。
+    final target = findAgentSubModel(
+      platforms: aiSettings.platforms,
+      platformId: experimental.subagentPlatformId,
+      modelId: experimental.subagentModelId,
+    );
+    final label = target == null ? '与当前激活主模型一致' : target.model.displayLabel;
+    final scheme = Theme.of(context).colorScheme;
+    return SettingsRow(
+      icon: Icons.alt_route,
+      title: '非创作步所使用的模型（子模型）',
+      experimental: true,
+      rowKey: const ValueKey('experimental_subagent_model_card'),
+      onTap: () => _pickSubagentModel(experimental, aiSettings),
+      // 灰字提示 + 当前选择放在副标题里：窄列（设置页内容 229）也放得下，
+      // 不必把模型名硬塞进行尾造成 RenderFlex overflow。
+      subtitleWidget: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _subagentModelDescription,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              height: 1.4,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Text(
+                '当前：',
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+              ),
+              Flexible(
+                child: Text(
+                  label,
+                  key: const ValueKey('experimental_subagent_model_label'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      trailing: Icon(
+        Icons.expand_more,
+        size: 18,
+        color: scheme.onSurfaceVariant,
+      ),
+    );
+  }
+
+  /// 打开子模型选择器；选择结果立即写入本地配置（与 Agent 档位同一个交互口径）。
+  Future<void> _pickSubagentModel(
+    ExperimentalSettingsProvider experimental,
+    AiSettingsProvider aiSettings,
+  ) async {
+    final choice = await showDialog<({String platformId, String modelId})>(
+      context: context,
+      builder: (context) => _SubagentModelDialog(
+        platforms: aiSettings.platforms,
+        mainPlatformId: aiSettings.selectedPlatformId,
+        mainModelId: aiSettings.model,
+        selectedPlatformId: experimental.subagentPlatformId,
+        selectedModelId: experimental.subagentModelId,
+      ),
+    );
+    if (choice == null || !mounted) return;
+    // Provider 内先乐观生效并异步持久化（与 Agent 档位 / 压缩开关同一口径），
+    // 不在这里 await 磁盘写入。
+    experimental.setSubagentModel(choice.platformId, choice.modelId);
+  }
+
   /// 主开关：「压缩非正文步模型所获取到的思考链」（默认开）。
   Widget _buildCompressNonBodySwitch(
     ExperimentalSettingsProvider experimental,
@@ -160,7 +261,8 @@ class _ExperimentalSettingsSectionState
       icon: Icons.compress_outlined,
       title: '压缩非正文步模型所获取到的思考链',
       experimental: true,
-      subtitle: 'Agent 模式专用（默认开）：第一步（调研 + 正文）视为正文步，'
+      subtitle:
+          'Agent 模式专用（默认开）：第一步（调研 + 正文）视为正文步，'
           '思考链完整保留；只压缩第二步维护收到的前面思考链。'
           '压缩规则：多段只保留首段与末段（单段原样）。'
           '⚠ 会改写回传给模型的思考原文——自定义网关要求完整思考时请关闭。',
@@ -178,13 +280,200 @@ class _ExperimentalSettingsSectionState
       icon: Icons.compress,
       title: '压缩所有回合的思考链',
       experimental: true,
-      subtitle: '默认关：开启后第一步的调研 / 正文回合也压缩思考链；'
+      subtitle:
+          '默认关：开启后第一步的调研 / 正文回合也压缩思考链；'
           '仅在上一项开启时显示并生效。⚠ 同样会改写思考原文。',
       value: experimental.compressAllReasoning,
-      switchKey: const ValueKey(
-        'experimental_compress_all_reasoning_switch',
-      ),
+      switchKey: const ValueKey('experimental_compress_all_reasoning_switch'),
       onChanged: _toggleCompressAllReasoning,
     );
+  }
+}
+
+/// 子模型选择对话框：顶部「与当前激活主模型一致」+ 按平台分组的模型列表。
+///
+/// 只返回「平台 id + 模型 id」；空串组合 = 跟随主模型。真正是否拆分请求由
+/// `resolveAgentSubModel` 在生成前判断（同平台同模型会自动折叠成未启用）。
+class _SubagentModelDialog extends StatelessWidget {
+  const _SubagentModelDialog({
+    required this.platforms,
+    required this.mainPlatformId,
+    required this.mainModelId,
+    required this.selectedPlatformId,
+    required this.selectedModelId,
+  });
+
+  final List<AiPlatform> platforms;
+  final String mainPlatformId;
+  final String mainModelId;
+  final String selectedPlatformId;
+  final String selectedModelId;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final selected = findAgentSubModel(
+      platforms: platforms,
+      platformId: selectedPlatformId,
+      modelId: selectedModelId,
+    );
+    final mainPlatform = _platformById(mainPlatformId);
+    final mainModel =
+        mainPlatform?.modelById(mainModelId) ?? mainPlatform?.defaultModel;
+    final size = MediaQuery.sizeOf(context);
+    // 窄屏（手机 / 分屏）按可用宽度收窄；高度也留出标题与按钮空间。
+    final width = (size.width - 96).clamp(260.0, 440.0).toDouble();
+    final height = (size.height - 220).clamp(240.0, 420.0).toDouble();
+    return AlertDialog(
+      key: const ValueKey('subagent_model_dialog'),
+      title: const Text(
+        '非创作步所使用的模型（子模型）',
+        key: ValueKey('subagent_model_dialog_title'),
+      ),
+      content: SizedBox(
+        width: width,
+        height: height,
+        child: ListView(
+          children: [
+            ListTile(
+              key: const ValueKey('subagent_model_follow_main'),
+              selected: selected == null,
+              selectedTileColor: scheme.primary.withValues(alpha: 0.07),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              leading: Icon(
+                selected == null ? Icons.check_circle : Icons.circle_outlined,
+                size: 20,
+                color: selected == null
+                    ? scheme.primary
+                    : scheme.onSurfaceVariant,
+              ),
+              title: const Text(
+                '与当前激活主模型一致',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              subtitle: Text(
+                mainPlatform == null || mainModel == null
+                    ? '跟随对话页当前选中的模型'
+                    : '当前主模型：${mainPlatform.displayName} / '
+                          '${mainModel.displayLabel}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+              ),
+              onTap: () =>
+                  Navigator.of(context).pop((platformId: '', modelId: '')),
+            ),
+            const Divider(height: 16),
+            if (platforms.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 18,
+                ),
+                child: Text(
+                  '尚无可选模型，请先在 API 设置中添加平台与模型。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            for (final platform in platforms) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 2),
+                child: Text(
+                  platform.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              for (final model in platform.models)
+                _modelTile(context, platform, model, selected),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+  }
+
+  Widget _modelTile(
+    BuildContext context,
+    AiPlatform platform,
+    AiModel model,
+    AgentSubModel? selected,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final picked =
+        selected != null &&
+        selected.platform.id == platform.id &&
+        selected.model.id == model.id;
+    final isMain = platform.id == mainPlatformId && model.id == mainModelId;
+    return ListTile(
+      key: ValueKey('subagent_model_option_${platform.id}_${model.id}'),
+      selected: picked,
+      selectedTileColor: scheme.primary.withValues(alpha: 0.07),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      leading: Icon(
+        picked ? Icons.check_circle : Icons.circle_outlined,
+        size: 20,
+        color: picked ? scheme.primary : scheme.onSurfaceVariant,
+      ),
+      title: Text(
+        model.displayLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: picked ? FontWeight.w600 : FontWeight.w400,
+          color: picked ? scheme.primary : scheme.onSurface,
+        ),
+      ),
+      subtitle: Text(
+        model.id,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+      ),
+      trailing: isMain
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '主模型',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.primary,
+                ),
+              ),
+            )
+          : null,
+      onTap: () =>
+          Navigator.of(context)
+              .pop((platformId: platform.id, modelId: model.id)),
+    );
+  }
+
+  AiPlatform? _platformById(String id) {
+    for (final platform in platforms) {
+      if (platform.id == id) return platform;
+    }
+    return null;
   }
 }

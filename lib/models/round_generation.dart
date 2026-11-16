@@ -75,7 +75,8 @@ class RoundMeta {
 
   bool get isError => RoundMessageStatus.isError(messageStatus);
 
-  String get effectiveMessageStatus => RoundMessageStatus.normalize(messageStatus);
+  String get effectiveMessageStatus =>
+      RoundMessageStatus.normalize(messageStatus);
 
   bool get hasMessage => message.trim().isNotEmpty;
 
@@ -85,7 +86,7 @@ class RoundMeta {
     final hasImages = hasImagesRaw is int
         ? hasImagesRaw != 0
         : _nonEmptyJsonArray(row['user_images']) ||
-            _nonEmptyJsonArray(row['ai_images']);
+              _nonEmptyJsonArray(row['ai_images']);
     final father = row['father_uuid'] as String?;
     return RoundMeta(
       uuid: (row['uuid'] as String?) ?? '',
@@ -163,6 +164,10 @@ class RoundGeneration {
     this.tokensIn,
     this.tokensCachedIn,
     this.tokensOut,
+    this.subagentModelName = '',
+    this.subagentTokensIn,
+    this.subagentTokensOut,
+    this.subagentCachedTokensIn,
     this.rawResponse = '',
     this.userInput = '',
     this.aiNarrative = '',
@@ -188,9 +193,23 @@ class RoundGeneration {
   final String modelName;
 
   /// Token 用量：`null` = 无数据，`0` = 真实 0。
+  ///
+  /// 启用子模型时这三列只记**主模型**（第一步调研 + 正文）；子模型（第二步
+  /// 状态维护）的用量在下面的 `subagent*` 四列里。
   final int? tokensIn;
   final int? tokensCachedIn;
   final int? tokensOut;
+
+  /// 非创作步（第二步状态维护）实际使用的子模型名；空 = 未启用子模型。
+  final String subagentModelName;
+
+  /// 子模型输入 / 输出 / 缓存命中输入 Token；`null` = 无数据。
+  ///
+  /// 与 [subagentModelName] 一起构成 `round_stack` 的四个子模型字段：
+  /// 四列全 NULL = 未启用子模型（统计卡只显示主模型）。
+  final int? subagentTokensIn;
+  final int? subagentTokensOut;
+  final int? subagentCachedTokensIn;
 
   /// AI 返回原文（当前解析后恒为空，为将来失败保留原文预留）。
   final String rawResponse;
@@ -214,6 +233,14 @@ class RoundGeneration {
       'tokens_in': tokensIn,
       'tokens_cached_in': tokensCachedIn,
       'tokens_out': tokensOut,
+      // 四列可空：未启用子模型时写 NULL（空名称也收敛成 NULL），
+      // 与「全 NULL = 未启用」的读侧判定保持一致。
+      'subagent_model_name': subagentModelName.trim().isEmpty
+          ? null
+          : subagentModelName,
+      'subagent_tokens_in': subagentTokensIn,
+      'subagent_tokens_out': subagentTokensOut,
+      'subagent_cached_tokens_in': subagentCachedTokensIn,
       'raw_response': rawResponse,
       'user_input': userInput,
       'ai_narrative': aiNarrative,
@@ -237,6 +264,10 @@ class RoundGeneration {
       tokensIn: row['tokens_in'] as int?,
       tokensCachedIn: row['tokens_cached_in'] as int?,
       tokensOut: row['tokens_out'] as int?,
+      subagentModelName: (row['subagent_model_name'] as String?) ?? '',
+      subagentTokensIn: row['subagent_tokens_in'] as int?,
+      subagentTokensOut: row['subagent_tokens_out'] as int?,
+      subagentCachedTokensIn: row['subagent_cached_tokens_in'] as int?,
       rawResponse: (row['raw_response'] as String?) ?? '',
       userInput: (row['user_input'] as String?) ?? '',
       aiNarrative: (row['ai_narrative'] as String?) ?? '',
@@ -259,6 +290,13 @@ class RoundGeneration {
     bool clearTokensCachedIn = false,
     int? tokensOut,
     bool clearTokensOut = false,
+    String? subagentModelName,
+    int? subagentTokensIn,
+    bool clearSubagentTokensIn = false,
+    int? subagentTokensOut,
+    bool clearSubagentTokensOut = false,
+    int? subagentCachedTokensIn,
+    bool clearSubagentCachedTokensIn = false,
     String? rawResponse,
     String? userInput,
     String? aiNarrative,
@@ -274,9 +312,20 @@ class RoundGeneration {
       meta: meta ?? this.meta,
       modelName: modelName ?? this.modelName,
       tokensIn: clearTokensIn ? null : (tokensIn ?? this.tokensIn),
-      tokensCachedIn:
-          clearTokensCachedIn ? null : (tokensCachedIn ?? this.tokensCachedIn),
+      tokensCachedIn: clearTokensCachedIn
+          ? null
+          : (tokensCachedIn ?? this.tokensCachedIn),
       tokensOut: clearTokensOut ? null : (tokensOut ?? this.tokensOut),
+      subagentModelName: subagentModelName ?? this.subagentModelName,
+      subagentTokensIn: clearSubagentTokensIn
+          ? null
+          : (subagentTokensIn ?? this.subagentTokensIn),
+      subagentTokensOut: clearSubagentTokensOut
+          ? null
+          : (subagentTokensOut ?? this.subagentTokensOut),
+      subagentCachedTokensIn: clearSubagentCachedTokensIn
+          ? null
+          : (subagentCachedTokensIn ?? this.subagentCachedTokensIn),
       rawResponse: rawResponse ?? this.rawResponse,
       userInput: userInput ?? this.userInput,
       aiNarrative: aiNarrative ?? this.aiNarrative,

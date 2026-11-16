@@ -5,12 +5,12 @@ import '../services/local_config_service.dart';
 
 /// 实验性功能设置（本地数据，不参与云同步）。
 ///
-/// 目前仅含「Agent 模式」档位（默认关闭 [AgentModeLevel.off]）：它是独立于
+/// 目前含「Agent 模式」档位（默认关闭 [AgentModeLevel.off]）：它是独立于
 /// 平台接入协议的生成功能档位——
 /// - **Lv.1**：仅历史（记忆总结）工具 + 联网；每轮两步——第一步先读一次
 ///   `narrchat_readHistory`、需要时联网，调研结束后直接写 5 个正文区块；
 ///   第二步在正文完成后作为**单独的新请求**只维护记忆总结；所有步结束后统一入库，
-///   token 记录所有步的总和；
+///   主模型 / 子模型 token 分桶记录（第一步归主模型，第二步归子模型）；
 ///
 /// 历史上的**完整 Agent（Lv.2）已移除**：它的世界 / 角色工具类与多栏目缺口框架
 /// 仍留在代码里作为后续档位的基础设施，但当前不注册；旧配置值 `2` 与旧布尔键
@@ -26,17 +26,31 @@ import '../services/local_config_service.dart';
 ///   思考链也压缩。
 ///
 /// 压缩规则见 `services/agent/reasoning_replay.dart`。
+///
+/// 另含**非创作步子模型**（[subagentPlatformId] / [subagentModelId]，默认空 =
+/// 与当前激活主模型一致）：只作用于第二步状态维护（非创作步）；配置与主模型
+/// 完全相同时按「未启用」处理。跨模型无法命中主模型的上下文缓存，设置页会
+/// 提示确保子模型成本足够低。
 class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 允许测试直接注入初值（不触碰真实配置文件）。
   ExperimentalSettingsProvider({
     AgentModeLevel initialLevel = AgentModeLevel.off,
     bool initialCompressNonBodyReasoning = true,
     bool initialCompressAllReasoning = false,
-  })  : _level = initialLevel,
-        _compressNonBodyReasoning = initialCompressNonBodyReasoning,
-        _compressAllReasoning = initialCompressAllReasoning {
+    String initialSubagentPlatformId = '',
+    String initialSubagentModelId = '',
+  }) : _level = initialLevel,
+       _compressNonBodyReasoning = initialCompressNonBodyReasoning,
+       _compressAllReasoning = initialCompressAllReasoning,
+       _subagentPlatformId = initialSubagentPlatformId.trim(),
+       _subagentModelId = initialSubagentModelId.trim() {
     // 主开关关闭时子开关永远无效（构造注入也遵守同一不变量）。
     if (!_compressNonBodyReasoning) _compressAllReasoning = false;
+    // 子模型必须平台 + 模型成对出现；只给一半等于没配置。
+    if (_subagentPlatformId.isEmpty || _subagentModelId.isEmpty) {
+      _subagentPlatformId = '';
+      _subagentModelId = '';
+    }
   }
 
   /// 本地配置文件键名（camelCase）：现行档位键。
@@ -53,9 +67,17 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   static const String legacyKeyReduceReasoningReplay =
       'agentReasoningReplayReduced';
 
+  /// 非创作步（第二步状态维护）所用子模型的平台 id；空 = 跟随主模型。
+  static const String keySubagentPlatformId = 'agentSubagentPlatformId';
+
+  /// 非创作步（第二步状态维护）所用子模型的模型 id；空 = 跟随主模型。
+  static const String keySubagentModelId = 'agentSubagentModelId';
+
   AgentModeLevel _level;
   bool _compressNonBodyReasoning;
   bool _compressAllReasoning;
+  String _subagentPlatformId;
+  String _subagentModelId;
 
   /// 当前 Agent 档位（默认关闭）。
   AgentModeLevel get agentModeLevel => _level;
@@ -69,6 +91,16 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
   /// 子开关的**生效值**：主开关关闭时恒为 false。
   bool get compressAllReasoning =>
       _compressNonBodyReasoning && _compressAllReasoning;
+
+  /// 子模型配置的平台 id（空 = 跟随当前激活主模型）。
+  String get subagentPlatformId => _subagentPlatformId;
+
+  /// 子模型配置的模型 id（空 = 跟随当前激活主模型）。
+  String get subagentModelId => _subagentModelId;
+
+  /// 是否配置了具体子模型（平台 + 模型成对出现）。
+  bool get hasSubagentModel =>
+      _subagentPlatformId.isNotEmpty && _subagentModelId.isNotEmpty;
 
   /// 从本地配置读取。
   ///
@@ -99,13 +131,25 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
       final child = childRaw is bool ? childRaw : false;
       _compressNonBodyReasoning = parent;
       _compressAllReasoning = parent && child;
+      _subagentPlatformId = _readId(config[keySubagentPlatformId]);
+      _subagentModelId = _readId(config[keySubagentModelId]);
+      // 平台 + 模型必须成对；只有一半（旧缓存 / 手改配置）按未配置处理。
+      if (_subagentPlatformId.isEmpty || _subagentModelId.isEmpty) {
+        _subagentPlatformId = '';
+        _subagentModelId = '';
+      }
     } catch (_) {
       _level = AgentModeLevel.off;
       _compressNonBodyReasoning = true;
       _compressAllReasoning = false;
+      _subagentPlatformId = '';
+      _subagentModelId = '';
     }
     notifyListeners();
   }
+
+  /// 读取一个 id 类配置：只认非空字符串，其它类型 / 空白一律视为未配置。
+  static String _readId(Object? raw) => raw is String ? raw.trim() : '';
 
   /// 切换 Agent 档位：先乐观生效再异步持久化，保存失败仅记录。
   ///
@@ -153,6 +197,30 @@ class ExperimentalSettingsProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       debugPrint('所有回合思考链压缩设置保存失败：$e');
+      return false;
+    }
+  }
+
+  /// 设置非创作步使用的子模型。
+  ///
+  /// [platformId] / [modelId] 任一为空表示「与当前激活主模型一致」（会同时清空
+  /// 两个键，避免留下半套失效配置）。先乐观生效再异步持久化，保存失败仅记录；
+  /// 下一次组装会瞬时读到新值，不打断进行中的请求。
+  Future<bool> setSubagentModel(String platformId, String modelId) async {
+    final platform = platformId.trim();
+    final model = modelId.trim();
+    final valid = platform.isNotEmpty && model.isNotEmpty;
+    _subagentPlatformId = valid ? platform : '';
+    _subagentModelId = valid ? model : '';
+    notifyListeners();
+    try {
+      await LocalConfigService.update({
+        keySubagentPlatformId: _subagentPlatformId,
+        keySubagentModelId: _subagentModelId,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('子模型设置保存失败：$e');
       return false;
     }
   }

@@ -34,8 +34,7 @@ void main() {
     String id,
     AgentStateSection section,
     List<Map<String, dynamic>> edits,
-  ) =>
-      AiToolCall(
+  ) => AiToolCall(
         id: id,
         name: agentEditToolName(section),
         arguments: {'edits': edits},
@@ -58,15 +57,12 @@ void main() {
         promptTokens: 0,
         completionTokens: 0,
         responseId: 'resp_read',
-      ).copyWithToolCalls([
-        readCall(id, AgentStateSection.memorySummary),
-      ]);
+  ).copyWithToolCalls([readCall(id, AgentStateSection.memorySummary)]);
 
   AiCallResult historyAppend(
     String id, {
     String entry = '- 2 | 第二天 申时 | 主角前往主峰',
-  }) =>
-      AiCallResult(
+  }) => AiCallResult(
         content: '',
         toolCalls: [
           editCall(id, AgentStateSection.memorySummary, [
@@ -78,8 +74,10 @@ void main() {
         responseId: 'resp_edit',
       );
 
-  AiCallResult storyTurn({String extra = '', List<AiToolCall> toolCalls = const []}) =>
-      AiCallResult(
+  AiCallResult storyTurn({
+    String extra = '',
+    List<AiToolCall> toolCalls = const [],
+  }) => AiCallResult(
         content: '$story5$extra',
         toolCalls: toolCalls,
         promptTokens: 1,
@@ -123,10 +121,18 @@ void main() {
         incompleteReason: kIncompleteMaxOutputTokens,
       );
 
-  ({AgentRoundRunner runner, List<_Request> requests, List<AiStreamChunk> sunk})
+  ({
+    AgentRoundRunner runner,
+    List<_Request> requests,
+    List<AiStreamChunk> sunk,
+    List<Map<String, dynamic>> subBodies,
+    List<bool> mainStreams,
+    List<bool> subStreams,
+  })
       harness({
     required AgentStateWorkingCopy copy,
     required List<Object> script,
+    List<Object>? subScript,
     List<NarrAgentTool> extraTools = const [],
     MemoryMergePlan? memoryMergePlan,
     bool chaining = false,
@@ -135,11 +141,33 @@ void main() {
     int maxPrepFrames = kAgentMaxPrepFrames,
     int maxStateFrames = kAgentMaxStateFrames,
     void Function(AgentStage stage)? onStageStarted,
+    bool Function(AgentStage stage)? streamForStage,
+    String subagentModelName = '',
   }) {
     final requests = <_Request>[];
     final sunk = <AiStreamChunk>[];
+    final subBodies = <Map<String, dynamic>>[];
+    final mainStreams = <bool>[];
+    final subStreams = <bool>[];
     var callIndex = 0;
+    var subCallIndex = 0;
     final profile = AgentModeProfile.lv1;
+
+    Future<AiCallResult> invoke(
+      Object entry,
+      void Function(AiStreamChunk chunk)? onChunk,
+    ) async {
+      if (entry is AiException) throw entry;
+      if (entry is AiCancelledException) throw entry;
+      final result = entry as AiCallResult;
+      onChunk?.call(AiStreamChunk(contentDelta: result.content));
+      for (final tc in result.toolCalls) {
+        onChunk?.call(AiStreamChunk(toolCallId: tc.id, toolName: tc.name));
+      }
+      onChunk?.call(const AiStreamChunk(done: true));
+      return result;
+    }
+
     final runner = AgentRoundRunner(
       buildBody: (t) {
         requests.add(
@@ -154,18 +182,19 @@ void main() {
           'previous_response_id': ?t.previousResponseId,
         };
       },
-      call: (requestBody, stream, onChunk, onRequestBody, isCancelled) async {
-        final entry = script[callIndex++];
-        if (entry is AiException) throw entry;
-        if (entry is AiCancelledException) throw entry;
-        final result = entry as AiCallResult;
-        onChunk?.call(AiStreamChunk(contentDelta: result.content));
-        for (final tc in result.toolCalls) {
-          onChunk?.call(AiStreamChunk(toolCallId: tc.id, toolName: tc.name));
-        }
-        onChunk?.call(const AiStreamChunk(done: true));
-        return result;
+      call: (requestBody, stream, onChunk, onRequestBody, isCancelled) {
+        mainStreams.add(stream);
+        return invoke(script[callIndex++], onChunk);
       },
+      subagentCall: subScript == null
+          ? null
+          : (requestBody, stream, onChunk, onRequestBody, isCancelled) {
+              subBodies.add(requestBody);
+              subStreams.add(stream);
+              return invoke(subScript[subCallIndex++], onChunk);
+      },
+      subagentModelName: subagentModelName,
+      streamForStage: streamForStage,
       tools: [
         ...buildStateTools(copy, sections: profile.toolSections),
         ...extraTools,
@@ -180,7 +209,14 @@ void main() {
       maxStateFrames: maxStateFrames,
       onStageStarted: onStageStarted,
     );
-    return (runner: runner, requests: requests, sunk: sunk);
+    return (
+      runner: runner,
+      requests: requests,
+      sunk: sunk,
+      subBodies: subBodies,
+      mainStreams: mainStreams,
+      subStreams: subStreams,
+    );
   }
 
   Future<AgentRoundResult> run(AgentRoundRunner runner) => runner.run(
@@ -194,8 +230,7 @@ void main() {
   Future<AgentRoundResult> runCollecting(
     AgentRoundRunner runner,
     List<AiStreamChunk> sunk,
-  ) =>
-      runner.run(
+  ) => runner.run(
         initialInputItems: const [
           {'role': 'user', 'content': 'hi'},
         ],
@@ -213,19 +248,16 @@ void main() {
     final h = harness(
       copy: copy,
       onStageStarted: stages.add,
-      script: [
-        prepareRead('p1'),
-        storyTurn(),
-        historyAppend('m1'),
-      ],
+      script: [prepareRead('p1'), storyTurn(), historyAppend('m1')],
     );
 
     final result = await run(h.runner);
 
-    expect(
-      h.requests.map((r) => r.stage).toList(),
-      [AgentStage.prepare, AgentStage.story, AgentStage.state],
-    );
+    expect(h.requests.map((r) => r.stage).toList(), [
+      AgentStage.prepare,
+      AgentStage.story,
+      AgentStage.state,
+    ]);
     expect(stages, [AgentStage.prepare, AgentStage.story, AgentStage.state]);
     expect(result.content, contains('殿前风冷'));
     expect(result.frames, 3);
@@ -236,18 +268,20 @@ void main() {
     // 维护回合是独立的 user 指令，且明确只维护记忆。
     final maintenanceInput = h.requests[2].items.last;
     expect(maintenanceInput['role'], 'user');
-    expect('${maintenanceInput['content']}', startsWith('[State-maintenance turn]'));
+    expect(
+      '${maintenanceInput['content']}',
+      startsWith('[State-maintenance turn]'),
+    );
     expect('${maintenanceInput['content']}', contains('只维护记忆总结'));
     expect('${maintenanceInput['content']}', isNot(contains('【记忆回合】')));
   });
 
   test('正文先于记忆：正文请求发出时记忆栏仍为空，维护请求才带编辑结果', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      prepareRead('p1'),
-      storyTurn(),
-      historyAppend('m1'),
-    ]);
+    final h = harness(
+      copy: copy,
+      script: [prepareRead('p1'), storyTurn(), historyAppend('m1')],
+    );
 
     await run(h.runner);
 
@@ -255,7 +289,8 @@ void main() {
     final storyItems = h.requests[1].items;
     expect(
       storyItems.any(
-        (i) => i['type'] == 'function_call' && i['name'] == kEditHistoryToolName,
+        (i) =>
+            i['type'] == 'function_call' && i['name'] == kEditHistoryToolName,
       ),
       isFalse,
     );
@@ -264,7 +299,9 @@ void main() {
 
   test('第一步调用历史编辑器被拒绝：记忆只允许在第二步维护', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
+    final h = harness(
+      copy: copy,
+      script: [
       // 调研回合：模型跳步直接写记忆 → 拒绝；本回合没有正文，进入正文步。
       AiCallResult(
         content: '',
@@ -279,7 +316,8 @@ void main() {
       ),
       storyTurn(),
       historyAppend('m1'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -292,7 +330,10 @@ void main() {
 
   test('第二步拒绝联网：维护只维护记忆总结', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, extraTools: [_StubWebSearchTool()], script: [
+    final h = harness(
+      copy: copy,
+      extraTools: [_StubWebSearchTool()],
+      script: [
       prepareRead('p1'),
       storyTurn(),
       AiCallResult(
@@ -309,7 +350,8 @@ void main() {
         completionTokens: 1,
         responseId: 'resp_state',
       ),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -326,7 +368,9 @@ void main() {
 
   test('维护步重复读取已提供的历史被拒绝（调研结果不被顶替）', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
+    final h = harness(
+      copy: copy,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       AiCallResult(
@@ -337,7 +381,8 @@ void main() {
         responseId: 'resp_read2',
       ),
       historyAppend('m1'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -360,7 +405,9 @@ void main() {
 
   test('调研漏读历史时，维护步允许补读一次', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
+    final h = harness(
+      copy: copy,
+      script: [
       emptyTurn('（调研回合没有工具）'),
       storyTurn(),
       AiCallResult(
@@ -373,7 +420,8 @@ void main() {
         completionTokens: 1,
         responseId: 'resp_fix',
       ),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -389,7 +437,9 @@ void main() {
 
   test('正文最后一个标题帧胜出；维护文本只进流式框、不覆盖正文', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
+    final h = harness(
+      copy: copy,
+      script: [
       prepareRead('p1'),
       AiCallResult(
         content: '## 剧情演绎\n写了一半',
@@ -412,7 +462,8 @@ void main() {
         completionTokens: 1,
         responseId: 'resp_state',
       ),
-    ]);
+      ],
+    );
 
     final sunk = <AiStreamChunk>[];
     final result = await runCollecting(h.runner, sunk);
@@ -433,11 +484,10 @@ void main() {
 
   test('无标题 + 无工具的正文回合按兜底正文采纳', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      emptyTurn(''),
-      emptyTurn('没有标题的兜底正文'),
-      historyAppend('m1'),
-    ]);
+    final h = harness(
+      copy: copy,
+      script: [emptyTurn(''), emptyTurn('没有标题的兜底正文'), historyAppend('m1')],
+    );
 
     final result = await run(h.runner);
     expect(result.content, contains('没有标题的兜底正文'));
@@ -449,12 +499,16 @@ void main() {
 
   test('维护空手回合不提前结束：保留修复机会，帧数上限兜底', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
+    final h = harness(
+      copy: copy,
+      maxStateFrames: 2,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       emptyTurn('（维护 0：空手）'),
       historyAppend('m1'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -467,12 +521,16 @@ void main() {
 
   test('维护用尽仍缺项：正文照常返回，maintenanceCompleted=false + 黄框警告', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
+    final h = harness(
+      copy: copy,
+      maxStateFrames: 2,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       badHistory('bad1'),
       badHistory('bad2'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -486,11 +544,10 @@ void main() {
 
   test('维护请求异常：正文保留，转 warning，不抛整轮失败', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      prepareRead('p1'),
-      storyTurn(),
-      const AiException('维护网络断开'),
-    ]);
+    final h = harness(
+      copy: copy,
+      script: [prepareRead('p1'), storyTurn(), const AiException('维护网络断开')],
+    );
 
     final result = await run(h.runner);
 
@@ -503,11 +560,10 @@ void main() {
 
   test('维护被取消：正文保留，maintenanceCancelled=true + 中断警告', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
-      prepareRead('p1'),
-      storyTurn(),
-      const AiCancelledException(),
-    ]);
+    final h = harness(
+      copy: copy,
+      script: [prepareRead('p1'), storyTurn(), const AiCancelledException()],
+    );
 
     final result = await run(h.runner);
 
@@ -523,7 +579,9 @@ void main() {
 
   test('token 是所有回合的总和（含调研 / 正文 / 维护）', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, script: [
+    final h = harness(
+      copy: copy,
+      script: [
       AiCallResult(
         content: '',
         toolCalls: [readCall('p1', AgentStateSection.memorySummary)],
@@ -534,7 +592,8 @@ void main() {
       ),
       storyTurn().copyWithUsage(prompt: 4, completion: 5, cached: 2),
       historyAppend('m1').copyWithUsage(prompt: 6, completion: 7, cached: 3),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -543,17 +602,86 @@ void main() {
     expect(result.cachedTokensIn, 6);
   });
 
+  test('启用子模型：第二步走子调用，主 / 子 token 分桶', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      subagentModelName: 'cheap-model',
+      script: [
+        prepareRead('p1'),
+        storyTurn().copyWithUsage(prompt: 4, completion: 5, cached: 2),
+      ],
+      subScript: [
+        historyAppend('m1').copyWithUsage(prompt: 6, completion: 7, cached: 3),
+      ],
+    );
+
+    final result = await run(h.runner);
+
+    expect(h.requests.map((r) => r.stage).toList(), [
+      AgentStage.prepare,
+      AgentStage.story,
+      AgentStage.state,
+    ]);
+    expect(h.subBodies, hasLength(1), reason: '只有维护步走子调用');
+    expect(result.subagentUsed, isTrue);
+    expect(result.subagentModelName, 'cheap-model');
+    expect(result.mainPromptTokens, 4);
+    expect(result.mainCompletionTokens, 5);
+    expect(result.mainCachedTokensIn, 2);
+    expect(result.subagentPromptTokens, 6);
+    expect(result.subagentCompletionTokens, 7);
+    expect(result.subagentCachedTokensIn, 3);
+    expect(result.promptTokens, 10);
+    expect(result.completionTokens, 12);
+    expect(result.cachedTokensIn, 5);
+    expect(result.maintenanceCompleted, isTrue);
+  });
+
+  test('启用子模型：进入维护步前断开 previous_response_id', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      chaining: true,
+      compressNonBodyReasoning: false,
+      subagentModelName: 'cheap-model',
+      script: [prepareRead('p1'), storyTurn()],
+      subScript: [historyAppend('m1')],
+    );
+
+    await run(h.runner);
+
+    expect(h.requests[0].previousResponseId, isNull);
+    expect(h.requests[1].previousResponseId, 'resp_read');
+    expect(
+      h.requests[2].previousResponseId,
+      isNull,
+      reason: '主模型的响应 id 不能发给子模型 / 子平台',
+    );
+  });
+
+  test('streamForStage 按步生效：维护步用子模型自己的流式能力', () async {
+    final copy = workingCopy();
+    final h = harness(
+      copy: copy,
+      streamForStage: (stage) => stage != AgentStage.state,
+      script: [prepareRead('p1'), storyTurn()],
+      subScript: [historyAppend('m1')],
+    );
+
+    await run(h.runner);
+
+    expect(h.mainStreams, everyElement(isTrue));
+    expect(h.subStreams, [isFalse]);
+  });
+
   test('有状态链式：续接回合只发新增 item + previous_response_id', () async {
     final copy = workingCopy();
     final h = harness(
       copy: copy,
       chaining: true,
       compressNonBodyReasoning: false,
-      script: [
-        prepareRead('p1'),
-        storyTurn(),
-        historyAppend('m1'),
-      ],
+      script: [prepareRead('p1'), storyTurn(), historyAppend('m1')],
     );
 
     await run(h.runner);
@@ -562,24 +690,33 @@ void main() {
     expect(h.requests[1].previousResponseId, 'resp_read');
     expect('${h.requests[1].items.last['content']}', startsWith('【正文回合】'));
     expect(h.requests[2].previousResponseId, 'resp_story');
-    expect('${h.requests[2].items.last['content']}', startsWith('[State-maintenance turn]'));
+    expect(
+      '${h.requests[2].items.last['content']}',
+      startsWith('[State-maintenance turn]'),
+    );
   });
 
   test('维护回合被截断：下一回合带「拆短调用」提示重发', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
+    final h = harness(
+      copy: copy,
+      maxStateFrames: 2,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       truncatedState('a'),
       historyAppend('b'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
-    expect(
-      h.requests.map((r) => r.stage).toList(),
-      [AgentStage.prepare, AgentStage.story, AgentStage.state, AgentStage.state],
-    );
+    expect(h.requests.map((r) => r.stage).toList(), [
+      AgentStage.prepare,
+      AgentStage.story,
+      AgentStage.state,
+      AgentStage.state,
+    ]);
     final capDirective = '${h.requests[3].items.last['content']}';
     expect(capDirective, contains('TRUNCATED'));
     expect(capDirective, contains('上一帧在输出上限处被截断'));
@@ -591,12 +728,16 @@ void main() {
 
   test('维护末回合仍截断：提示调高最大 token，正文照常返回', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
+    final h = harness(
+      copy: copy,
+      maxStateFrames: 2,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       truncatedState('a'),
       truncatedState('b'),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -626,10 +767,7 @@ void main() {
 
     expect(h.requests[2].previousResponseId, 'resp_story');
     expect(h.requests[3].previousResponseId, isNull);
-    expect(
-      h.requests[3].items.length,
-      greaterThan(h.requests[2].items.length),
-    );
+    expect(h.requests[3].items.length, greaterThan(h.requests[2].items.length));
     expect(copy.memorySummary, contains('主角前往主峰'));
   });
 
@@ -659,7 +797,10 @@ void main() {
       newRoundIndex: 11,
     );
     expect(plan.hasAction, isTrue);
-    final h = harness(copy: copy, memoryMergePlan: plan, script: [
+    final h = harness(
+      copy: copy,
+      memoryMergePlan: plan,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       AiCallResult(
@@ -668,7 +809,8 @@ void main() {
           editCall('m1', AgentStateSection.memorySummary, [
             {
               'op': 'set',
-              'before': '- 1 | 第一天 | 一\n- 2 | 第二天 | 二\n'
+                'before':
+                    '- 1 | 第一天 | 一\n- 2 | 第二天 | 二\n'
                   '- 3 | 第三天 | 三\n- 4 | 第四天 | 四\n- 5 | 第五天 | 五',
               'newLine': '- 1 - 5 | 第一天 ~ 第五天 | 前五轮摘要',
             },
@@ -679,7 +821,8 @@ void main() {
         completionTokens: 1,
         responseId: 'resp_merge',
       ),
-    ]);
+      ],
+    );
 
     final result = await run(h.runner);
 
@@ -745,7 +888,10 @@ void main() {
 
   test('思考块按每个工具调用各回传一块（服务端逐块校验）', () async {
     final copy = workingCopy();
-    final h = harness(copy: copy, maxStateFrames: 2, script: [
+    final h = harness(
+      copy: copy,
+      maxStateFrames: 2,
+      script: [
       prepareRead('p1'),
       storyTurn(),
       AiCallResult(
@@ -763,7 +909,8 @@ void main() {
         responseId: 'resp_state1',
       ),
       emptyTurn('（维护回合 2：空手）'),
-    ]);
+      ],
+    );
 
     await run(h.runner);
 
@@ -828,14 +975,8 @@ void main() {
     expect(storyReasonings, contains(prepareLong));
     // 维护回合收到的调研 + 正文思考链都压缩。
     final maintenanceReasonings = reasoningTexts(h.requests[2].items);
-    expect(
-      maintenanceReasonings,
-      contains('调研第一段。\n\n调研第三段。'),
-    );
-    expect(
-      maintenanceReasonings,
-      contains('正文第一段。\n\n正文第三段。'),
-    );
+    expect(maintenanceReasonings, contains('调研第一段。\n\n调研第三段。'));
+    expect(maintenanceReasonings, contains('正文第一段。\n\n正文第三段。'));
     expect(maintenanceReasonings, isNot(contains(prepareLong)));
     expect(maintenanceReasonings, isNot(contains(storyLong)));
     // UI / 结果聚合仍是完整原文。
@@ -882,14 +1023,8 @@ void main() {
 
     // 子开关打开时整轮不续接，正文回合直接收到压缩后的调研 reasoning。
     expect(h.requests[1].previousResponseId, isNull);
-    expect(
-      reasoningTexts(h.requests[1].items),
-      contains('调研第一段。\n\n调研第三段。'),
-    );
-    expect(
-      reasoningTexts(h.requests[2].items),
-      contains('正文第一段。\n\n正文第三段。'),
-    );
+    expect(reasoningTexts(h.requests[1].items), contains('调研第一段。\n\n调研第三段。'));
+    expect(reasoningTexts(h.requests[2].items), contains('正文第一段。\n\n正文第三段。'));
     // UI / 结果聚合仍完整。
     expect(result.reasoningContent, contains(prepareLong));
     expect(result.reasoningContent, contains(storyLong));
@@ -966,10 +1101,7 @@ void main() {
 
     expect(h.requests[1].previousResponseId, 'resp_prep');
     expect(h.requests[2].previousResponseId, isNull);
-    expect(
-      reasoningTexts(h.requests[2].items),
-      contains('调研第一段。\n\n调研第三段。'),
-    );
+    expect(reasoningTexts(h.requests[2].items), contains('调研第一段。\n\n调研第三段。'));
   });
 
   test('维护修复回合收到压缩后的维护 reasoning', () async {
@@ -1065,8 +1197,7 @@ extension on AiCallResult {
     required int prompt,
     required int completion,
     required int cached,
-  }) =>
-      AiCallResult(
+  }) => AiCallResult(
         content: content,
         reasoningContent: reasoningContent,
         reasoningItems: reasoningItems,

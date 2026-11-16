@@ -38,6 +38,15 @@ class RoundStackRow {
   final int? tokensOut;
   final int? cachedTokensIn;
   final String modelName;
+
+  /// 非创作步（第二步状态维护）子模型名；空 = 未启用。
+  final String subagentModelName;
+
+  /// 子模型输入 / 输出 / 缓存命中输入 Token；`null` = 无数据。
+  final int? subagentTokensIn;
+  final int? subagentTokensOut;
+  final int? subagentCachedTokensIn;
+
   final List<String> userImages;
   final List<String> aiImages;
 
@@ -66,6 +75,10 @@ class RoundStackRow {
     this.tokensOut,
     this.cachedTokensIn,
     this.modelName = '',
+    this.subagentModelName = '',
+    this.subagentTokensIn,
+    this.subagentTokensOut,
+    this.subagentCachedTokensIn,
     this.userImages = const [],
     this.aiImages = const [],
     this.message = '',
@@ -102,6 +115,10 @@ class RoundStackRow {
       tokensOut: map['tokens_out'] as int?,
       cachedTokensIn: map['cached_tokens_in'] as int?,
       modelName: (map['model_name'] as String?) ?? '',
+      subagentModelName: (map['subagent_model_name'] as String?) ?? '',
+      subagentTokensIn: map['subagent_tokens_in'] as int?,
+      subagentTokensOut: map['subagent_tokens_out'] as int?,
+      subagentCachedTokensIn: map['subagent_cached_tokens_in'] as int?,
       userImages: _decodeImages(map['user_images']),
       aiImages: _decodeImages(map['ai_images']),
       message: message,
@@ -149,6 +166,12 @@ class RoundStackRow {
       'tokens_out': tokensOut,
       'cached_tokens_in': cachedTokensIn,
       'model_name': modelName,
+      'subagent_model_name': subagentModelName.trim().isEmpty
+          ? null
+          : subagentModelName,
+      'subagent_tokens_in': subagentTokensIn,
+      'subagent_tokens_out': subagentTokensOut,
+      'subagent_cached_tokens_in': subagentCachedTokensIn,
       'user_images': jsonEncode(userImages),
       'ai_images': jsonEncode(aiImages),
     };
@@ -185,6 +208,10 @@ class RoundStackRow {
       tokensOut: round.tokensOut,
       cachedTokensIn: round.cachedTokensIn,
       modelName: round.modelName,
+      subagentModelName: round.subagentModelName,
+      subagentTokensIn: round.subagentTokensIn,
+      subagentTokensOut: round.subagentTokensOut,
+      subagentCachedTokensIn: round.subagentCachedTokensIn,
       userImages: round.userImages,
       aiImages: round.aiImages,
       message: message,
@@ -211,6 +238,10 @@ class RoundStackRow {
       tokensOut: tokensOut,
       cachedTokensIn: cachedTokensIn,
       modelName: modelName,
+      subagentModelName: subagentModelName,
+      subagentTokensIn: subagentTokensIn,
+      subagentTokensOut: subagentTokensOut,
+      subagentCachedTokensIn: subagentCachedTokensIn,
       createdAt: roundCreatedAt,
       userImages: userImages,
       aiImages: aiImages,
@@ -239,6 +270,10 @@ class RoundStackRow {
     int? tokensOut,
     int? cachedTokensIn,
     String? modelName,
+    String? subagentModelName,
+    int? subagentTokensIn,
+    int? subagentTokensOut,
+    int? subagentCachedTokensIn,
     List<String>? userImages,
     List<String>? aiImages,
     String? message,
@@ -252,7 +287,9 @@ class RoundStackRow {
       fatherUuid: clearFather ? null : (fatherUuid ?? this.fatherUuid),
       roundIndex: roundIndex ?? this.roundIndex,
       roundSerialNum: roundSerialNum ?? this.roundSerialNum,
-      roundState: clearState ? null : normalizeState(roundState ?? this.roundState),
+      roundState: clearState
+          ? null
+          : normalizeState(roundState ?? this.roundState),
       roundCreatedAt: roundCreatedAt ?? this.roundCreatedAt,
       userInput: userInput ?? this.userInput,
       aiNarrative: aiNarrative ?? this.aiNarrative,
@@ -265,6 +302,11 @@ class RoundStackRow {
       tokensOut: tokensOut ?? this.tokensOut,
       cachedTokensIn: cachedTokensIn ?? this.cachedTokensIn,
       modelName: modelName ?? this.modelName,
+      subagentModelName: subagentModelName ?? this.subagentModelName,
+      subagentTokensIn: subagentTokensIn ?? this.subagentTokensIn,
+      subagentTokensOut: subagentTokensOut ?? this.subagentTokensOut,
+      subagentCachedTokensIn:
+          subagentCachedTokensIn ?? this.subagentCachedTokensIn,
       userImages: userImages ?? this.userImages,
       aiImages: aiImages ?? this.aiImages,
       message: nextMessage,
@@ -290,7 +332,8 @@ class RoundStackRow {
   }
 
   /// 提示文本是否非空（`null` / 纯空白 = 无提示）。
-  static bool hasMessageText(String? raw) => raw != null && raw.trim().isNotEmpty;
+  static bool hasMessageText(String? raw) =>
+      raw != null && raw.trim().isNotEmpty;
 
   /// 提示文本的写入上限：超长提示会拖慢 B-tree 与云端快照，写入侧统一截断。
   static const int maxMessageLength = 4000;
@@ -311,9 +354,9 @@ class RoundStackRow {
 
   /// 提示文本的展示行（按 `\n` 拆分，丢弃空白行）。
   static List<String> messageLines(String raw) => [
-        for (final line in raw.split('\n'))
-          if (line.trim().isNotEmpty) line.trim(),
-      ];
+    for (final line in raw.split('\n'))
+      if (line.trim().isNotEmpty) line.trim(),
+  ];
 
   /// epoch 毫秒 → [DateTime]；`0` / 非正整数视为无时间戳。
   static DateTime? decodeTime(Object? raw) {
@@ -412,7 +455,8 @@ class RoundStackMessage {
     return RoundStackMessage(
       uuid: (map['uuid'] as String?) ?? '',
       roundIndex: (map['round_index'] as int?) ?? 0,
-      isFailure: RoundStackRow.normalizeState(map['round_state'] as String?) ==
+      isFailure:
+          RoundStackRow.normalizeState(map['round_state'] as String?) ==
           'failed',
       text: text,
       status: RoundStackRow.hasMessageText(text)

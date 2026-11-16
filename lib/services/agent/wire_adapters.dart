@@ -87,10 +87,7 @@ List<Map<String, dynamic>> chatItemsFromAgentItems(
 /// 取末条 assistant 消息；末条不是 assistant 时新建一条 `content: null` 的占位。
 Map<String, dynamic> _ensureTrailingAssistant(List<Map<String, dynamic>> out) {
   if (out.isNotEmpty && out.last['role'] == 'assistant') return out.last;
-  final assistant = <String, dynamic>{
-    'role': 'assistant',
-    'content': null,
-  };
+  final assistant = <String, dynamic>{'role': 'assistant', 'content': null};
   out.add(assistant);
   return assistant;
 }
@@ -173,15 +170,13 @@ List<Map<String, dynamic>> responsesItemsFromChatMessages(
         items.add(reasoningResponseItem({'text': reasoning}));
       }
     }
-    items.add({
-      'role': m['role'],
-      'content': _responsesContent(m['content']),
-    });
+    items.add({'role': m['role'], 'content': _responsesContent(m['content'])});
     if (toolCalls is List) {
       for (final raw in toolCalls) {
         if (raw is! Map) continue;
-        final function =
-            raw['function'] is Map ? (raw['function'] as Map).cast<String, dynamic>() : null;
+        final function = raw['function'] is Map
+            ? (raw['function'] as Map).cast<String, dynamic>()
+            : null;
         final args = function?['arguments'];
         items.add({
           'type': 'function_call',
@@ -236,7 +231,9 @@ List<Map<String, dynamic>> responsesItemsFromAgentItems(
       });
       continue;
     }
-    out.addAll(responsesItemsFromChatMessages([Map<String, dynamic>.from(item)]));
+    out.addAll(
+      responsesItemsFromChatMessages([Map<String, dynamic>.from(item)]),
+    );
   }
   return out;
 }
@@ -287,6 +284,49 @@ List<Map<String, dynamic>> agentToolSchemas(
               },
             },
   ];
+}
+
+/// 把 AGENT 会话条目降级成「目标模型能力允许」的形态。
+///
+/// 只用于**非创作步子模型**：第二步维护是纯文本状态编辑，子模型可能不支持
+/// 思考 / 识图，而会话里仍带着主模型第一步产生的 reasoning 与图片内容块。
+/// - [dropReasoning]：删除 `reasoning` 条目与 assistant 消息上的
+///   `reasoning_content`（子模型不思考时，回传这些没有意义，部分服务商还会拒绝）；
+/// - [dropImages]：把多段 `content` 压成纯文本（只保留 `text` / `input_text`
+///   的文本，图片块丢弃）。
+///
+/// **不修改入参**：复制一份再改，执行器内部的 `_items` 与 UI 聚合思考仍保持
+/// 原文。两个开关都关时直接返回原列表（零开销）。
+List<Map<String, dynamic>> sanitizeAgentItemsForModel(
+  List<Map<String, dynamic>> items, {
+  bool dropReasoning = false,
+  bool dropImages = false,
+}) {
+  if (!dropReasoning && !dropImages) return items;
+  final out = <Map<String, dynamic>>[];
+  for (final item in items) {
+    if (dropReasoning && item['type'] == 'reasoning') continue;
+    final copy = Map<String, dynamic>.from(item);
+    if (dropReasoning) copy.remove('reasoning_content');
+    if (dropImages && copy['content'] is List) {
+      copy['content'] = _textOnlyContent(copy['content'] as List);
+    }
+    out.add(copy);
+  }
+  return out;
+}
+
+/// 多段内容块 → 纯文本：只保留文本段，用换行连接；没有文本段时返回空串。
+String _textOnlyContent(List<dynamic> parts) {
+  final texts = <String>[];
+  for (final part in parts) {
+    if (part is! Map) continue;
+    final type = part['type'];
+    if (type != 'text' && type != 'input_text') continue;
+    final text = part['text'];
+    if (text is String && text.isNotEmpty) texts.add(text);
+  }
+  return texts.join('\n');
 }
 
 /// Chat 内容块 → Responses 内容块（`image_url` → `input_image`、

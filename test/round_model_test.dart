@@ -35,7 +35,8 @@ void main() {
       expect(updated.copyWith().modelName, 'deepseek-v4-flash');
     });
 
-    test('userImages / aiImages：json 数组往返，空数组兼容历史数据', () {      final round = Round.fromMap(const {
+    test('userImages / aiImages：json 数组往返，空数组兼容历史数据', () {
+      final round = Round.fromMap(const {
         'book_uuid': 'b1',
         'round_index': 1,
         'user_images': '["img/a.png","img/b.jpg"]',
@@ -99,6 +100,52 @@ void main() {
       expect(updated.cachedTokensIn, 8);
       expect(updated.tokensIn, 10);
       expect(updated.copyWith().cachedTokensIn, 8);
+    });
+  });
+
+  group('Round 子模型统计（可空 = 无数据）', () {
+    test('fromMap 读取四字段；toMap 回写', () {
+      final round = Round.fromMap(const {
+        'book_uuid': 'b1',
+        'round_index': 1,
+        'subagent_model_name': 'deepseek-v4-pro',
+        'subagent_tokens_in': 11,
+        'subagent_tokens_out': 22,
+        'subagent_cached_tokens_in': 7,
+      });
+      expect(round.hasSubagent, isTrue);
+      expect(round.subagentModelName, 'deepseek-v4-pro');
+      expect(round.subagentTokensIn, 11);
+      expect(round.subagentTokensOut, 22);
+      expect(round.subagentCachedTokensIn, 7);
+      final map = round.toMap();
+      expect(map['subagent_model_name'], 'deepseek-v4-pro');
+      expect(map['subagent_tokens_in'], 11);
+      expect(map['subagent_tokens_out'], 22);
+      expect(map['subagent_cached_tokens_in'], 7);
+    });
+
+    test('缺列 / NULL：名称空、token 全 null、hasSubagent=false', () {
+      final legacy = Round.fromMap(const {'book_uuid': 'b1', 'round_index': 1});
+      expect(legacy.hasSubagent, isFalse);
+      expect(legacy.subagentModelName, isEmpty);
+      expect(legacy.subagentTokensIn, isNull);
+      expect(legacy.subagentTokensOut, isNull);
+      expect(legacy.subagentCachedTokensIn, isNull);
+      final map = legacy.toMap();
+      expect(map['subagent_model_name'], isNull, reason: '未启用写 NULL 而不是空串');
+      expect(map['subagent_tokens_in'], isNull);
+      expect(map['subagent_tokens_out'], isNull);
+      expect(map['subagent_cached_tokens_in'], isNull);
+    });
+
+    test('名称空但 token 有值也算启用；copyWith 保留原值', () {
+      const round = Round(bookUuid: 'b1', roundIndex: 1, subagentTokensIn: 3);
+      expect(round.hasSubagent, isTrue);
+      final updated = round.copyWith(subagentModelName: 'cheap');
+      expect(updated.subagentModelName, 'cheap');
+      expect(updated.subagentTokensIn, 3);
+      expect(updated.copyWith().subagentTokensIn, 3);
     });
   });
 }

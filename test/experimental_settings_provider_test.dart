@@ -224,6 +224,97 @@ void main() {
     expect(weird.compressAllReasoning, isFalse);
   });
 
+  test('子模型：默认跟随主模型；两键成对加载；半套 / 非法值视为未配置', () async {
+    final provider = ExperimentalSettingsProvider();
+    expect(provider.hasSubagentModel, isFalse);
+    expect(provider.subagentPlatformId, isEmpty);
+    expect(provider.subagentModelId, isEmpty);
+
+    await LocalConfigService.update({
+      ExperimentalSettingsProvider.keySubagentPlatformId: '__default__',
+      ExperimentalSettingsProvider.keySubagentModelId: 'deepseek-v4-pro',
+    });
+    final configured = ExperimentalSettingsProvider();
+    await configured.load();
+    expect(configured.hasSubagentModel, isTrue);
+    expect(configured.subagentPlatformId, '__default__');
+    expect(configured.subagentModelId, 'deepseek-v4-pro');
+
+    // 只给一半 / 非字符串：都按未配置处理（等价于跟随主模型）。
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.keySubagentPlatformId: '__default__',
+    });
+    final half = ExperimentalSettingsProvider();
+    await half.load();
+    expect(half.hasSubagentModel, isFalse);
+    expect(half.subagentPlatformId, isEmpty);
+    expect(half.subagentModelId, isEmpty);
+
+    await LocalConfigService.write({
+      ExperimentalSettingsProvider.keySubagentPlatformId: 42,
+      ExperimentalSettingsProvider.keySubagentModelId: ['bad'],
+    });
+    final dirty = ExperimentalSettingsProvider();
+    await dirty.load();
+    expect(dirty.hasSubagentModel, isFalse);
+  });
+
+  test('setSubagentModel 乐观生效并持久化；清空恢复跟随主模型', () async {
+    final provider = ExperimentalSettingsProvider();
+    var notified = 0;
+    provider.addListener(() => notified++);
+
+    expect(
+      await provider.setSubagentModel('__default__', 'deepseek-v4-pro'),
+      isTrue,
+    );
+    expect(provider.hasSubagentModel, isTrue);
+    expect(provider.subagentPlatformId, '__default__');
+    expect(provider.subagentModelId, 'deepseek-v4-pro');
+    expect(notified, 1);
+
+    final reloaded = ExperimentalSettingsProvider();
+    await reloaded.load();
+    expect(reloaded.hasSubagentModel, isTrue);
+    expect(reloaded.subagentModelId, 'deepseek-v4-pro');
+    final config = await LocalConfigService.read();
+    expect(
+      config[ExperimentalSettingsProvider.keySubagentPlatformId],
+      '__default__',
+    );
+    expect(
+      config[ExperimentalSettingsProvider.keySubagentModelId],
+      'deepseek-v4-pro',
+    );
+
+    // 任一为空 → 两项都清空，落盘为空串而不是留下半套配置。
+    expect(await provider.setSubagentModel('__default__', ''), isTrue);
+    expect(provider.hasSubagentModel, isFalse);
+    expect(provider.subagentPlatformId, isEmpty);
+    expect(provider.subagentModelId, isEmpty);
+    final cleared = await LocalConfigService.read();
+    expect(
+      cleared[ExperimentalSettingsProvider.keySubagentPlatformId],
+      isEmpty,
+    );
+    expect(cleared[ExperimentalSettingsProvider.keySubagentModelId], isEmpty);
+  });
+
+  test('子模型构造注入：空白 / 半套配置归一为跟随主模型', () {
+    final half = ExperimentalSettingsProvider(
+      initialSubagentPlatformId: '__default__',
+    );
+    expect(half.hasSubagentModel, isFalse);
+
+    final ok = ExperimentalSettingsProvider(
+      initialSubagentPlatformId: ' p1 ',
+      initialSubagentModelId: ' m1 ',
+    );
+    expect(ok.hasSubagentModel, isTrue);
+    expect(ok.subagentPlatformId, 'p1');
+    expect(ok.subagentModelId, 'm1');
+  });
+
   test('setAgentModeLevel 乐观生效并持久化（只在 off / lv1 往返）', () async {
     final provider = ExperimentalSettingsProvider();
     var notified = 0;
