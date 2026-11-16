@@ -1,3 +1,5 @@
+import 'syntax_highlight_span.dart';
+
 /// Markdown 语法词法单元（用于编辑器高亮，不含具体颜色 / 字形）。
 ///
 /// 语义化标记由 `MarkdownSyntaxHighlighter` 产出，具体配色 / 字重等样式
@@ -50,9 +52,16 @@ enum MarkdownSyntaxToken {
 }
 
 /// 一段带语法类型标记的文本区间（`[start, end)`，含头不含尾）。
-class MarkdownHighlightSpan {
+///
+/// 实现 [SyntaxHighlightSpan]，以便与 JSON 高亮共用「区间 → TextSpan」的组装逻辑。
+class MarkdownHighlightSpan implements SyntaxHighlightSpan<MarkdownSyntaxToken> {
+  @override
   final int start;
+
+  @override
   final int end;
+
+  @override
   final MarkdownSyntaxToken token;
 
   const MarkdownHighlightSpan(this.start, this.end, this.token);

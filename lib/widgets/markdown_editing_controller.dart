@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../utils/markdown_syntax_highlighter.dart';
+import '../utils/syntax_highlight_span.dart';
+import 'syntax_highlight.dart';
 
 /// Markdown 编辑框语法高亮配色（仿 VS Code / GitHub，随亮暗主题自适应）。
 class MarkdownSyntaxColors {
@@ -75,81 +77,27 @@ class MarkdownSyntaxColors {
 /// 其余行为（多行、光标、选择、IME、键盘类型等）与普通控制器完全一致。
 ///
 /// - 高亮逻辑由 [MarkdownSyntaxHighlighter] 提供，配色随亮暗主题自动切换；
-/// - 输入法组合区（composition）文本会附加下划线，与系统输入法候选窗
-///   的视觉反馈保持一致，且不影响 `ImeCaretSync` 的光标定位。
-class MarkdownEditingController extends TextEditingController {
+/// - 输入法组合区（composition）文本由 [SyntaxHighlightingController] 统一
+///   附加下划线，与系统输入法候选窗的视觉反馈保持一致，且不影响
+///   `ImeCaretSync` 的光标定位。
+class MarkdownEditingController
+    extends SyntaxHighlightingController<MarkdownSyntaxToken> {
   MarkdownEditingController({super.text});
 
+  static const MarkdownSyntaxHighlighter _highlighter =
+      MarkdownSyntaxHighlighter();
+
   @override
-  TextSpan buildTextSpan({
-    required BuildContext context,
-    TextStyle? style,
-    required bool withComposing,
-  }) {
-    assert(!value.composing.isValid || !withComposing || value.isComposingRangeValid);
+  List<SyntaxHighlightSpan<MarkdownSyntaxToken>> highlightSpans(String text) =>
+      _highlighter.highlight(text);
 
-    final base = style ?? const TextStyle();
-    final colors = MarkdownSyntaxColors.of(context);
-    final spans = const MarkdownSyntaxHighlighter().highlight(text);
-
-    final composing = withComposing && value.isComposingRangeValid
-        ? value.composing
-        : null;
-    final children = _buildChildren(spans, base, colors, composing);
-    return TextSpan(style: base, children: children);
-  }
-
-  /// 将语法区间组装为 TextSpan 列表；[composing] 非空时对组合区附加下划线。
-  List<TextSpan> _buildChildren(
-    List<MarkdownHighlightSpan> spans,
+  @override
+  SyntaxStyleResolver<MarkdownSyntaxToken> stylesFor(
+    BuildContext context,
     TextStyle base,
-    MarkdownSyntaxColors colors,
-    TextRange? composing,
   ) {
-    final children = <TextSpan>[];
-
-    void push(int absStart, int absEnd, TextStyle st) {
-      if (absEnd <= absStart) return;
-      final piece = text.substring(absStart, absEnd);
-      if (composing == null ||
-          composing.isCollapsed ||
-          absEnd <= composing.start ||
-          absStart >= composing.end) {
-        children.add(TextSpan(text: piece, style: st));
-        return;
-      }
-      // 与组合区相交：切分为 前 / 组合区（加下划线）/ 后 三段。
-      final beforeEnd = composing.start > absStart ? composing.start : absStart;
-      final afterStart = composing.end < absEnd ? composing.end : absEnd;
-      if (beforeEnd > absStart) {
-        children.add(TextSpan(text: text.substring(absStart, beforeEnd), style: st));
-      }
-      children.add(
-        TextSpan(
-          text: text.substring(beforeEnd, afterStart),
-          style: st.copyWith(
-            decoration: TextDecoration.underline,
-            decorationColor: base.color,
-          ),
-        ),
-      );
-      if (afterStart < absEnd) {
-        children.add(TextSpan(text: text.substring(afterStart, absEnd), style: st));
-      }
-    }
-
-    var pos = 0;
-    for (final s in spans) {
-      if (s.start > pos) {
-        push(pos, s.start, base);
-      }
-      push(s.start, s.end, _styleFor(s.token, base, colors));
-      pos = s.end;
-    }
-    if (pos < text.length) {
-      push(pos, text.length, base);
-    }
-    return children;
+    final colors = MarkdownSyntaxColors.of(context);
+    return (token) => _styleFor(token, base, colors);
   }
 
   /// 词法单元 → 字形样式（仅颜色 / 斜体 / 删除线 / 等宽字体，**不使用加粗字重**，
@@ -180,14 +128,23 @@ class MarkdownEditingController extends TextEditingController {
       case MarkdownSyntaxToken.code:
         return base.copyWith(color: colors.code, fontFamily: 'monospace');
       case MarkdownSyntaxToken.blockquote:
-        return base.copyWith(color: colors.blockquote, fontStyle: FontStyle.italic);
+        return base.copyWith(
+          color: colors.blockquote,
+          fontStyle: FontStyle.italic,
+        );
       case MarkdownSyntaxToken.bold:
         return base.copyWith(color: colors.bold);
       case MarkdownSyntaxToken.italic:
         // One Dark Pro：斜体为紫色。
-        return base.copyWith(color: colors.linkUrl, fontStyle: FontStyle.italic);
+        return base.copyWith(
+          color: colors.linkUrl,
+          fontStyle: FontStyle.italic,
+        );
       case MarkdownSyntaxToken.boldItalic:
-        return base.copyWith(color: colors.bold, fontStyle: FontStyle.italic);
+        return base.copyWith(
+          color: colors.bold,
+          fontStyle: FontStyle.italic,
+        );
       case MarkdownSyntaxToken.strike:
         return base.copyWith(
           color: colors.dim,
