@@ -26,19 +26,24 @@ void main() {
   const longTitle =
       '测试页面标题很长用于验证驻场岛的挤压行为所以这里再补上足够多的字符让标题宽度超过顶栏的一半以上还要再多一些';
 
-  Widget barPage({List<Widget> actions = const []}) => IslandAwareScaffold(
-    appBarBuilder: (context, extraRow) => NarrChatAppBar(
-      extraRowHeight: extraRow,
-      title: longTitle,
-      actions: actions,
-    ),
-    body: const SizedBox.expand(),
-  );
+  Widget barPage({List<Widget> actions = const [], Widget? trailing}) =>
+      IslandAwareScaffold(
+        appBarBuilder: (context, extraRow) => NarrChatAppBar(
+          extraRowHeight: extraRow,
+          title: longTitle,
+          // 对话页分支入口这类「贴标题行右缘」的部件：岛出现时只让正文让位。
+          titleTrailing: trailing,
+          titleTrailingMaxWidthRatio: trailing == null ? null : 2 / 5,
+          actions: actions,
+        ),
+        body: const SizedBox.expand(),
+      );
 
   Future<CloudSyncProvider> pumpBarApp(
     WidgetTester tester, {
     Size size = const Size(1400, 900),
     List<Widget> actions = const [],
+    Widget? trailing,
     bool withBar = true,
   }) async {
     tester.view.physicalSize = size;
@@ -71,7 +76,7 @@ void main() {
             child: child ?? const SizedBox.shrink(),
           ),
           home: withBar
-              ? barPage(actions: actions)
+              ? barPage(actions: actions, trailing: trailing)
               : const Scaffold(body: SizedBox.expand()),
         ),
       ),
@@ -283,6 +288,46 @@ void main() {
         reason: '标题保底字数空间');
     expect(title.width, lessThan(tester.getSize(find.byType(NarrChatAppBar)).width / 2),
         reason: '宽屏下标题确实被岛挤压到左半区');
+  });
+
+  testWidgets('宽屏带标题右缘部件：岛出现时书名左缘不动、右缘部件保持原位', (tester) async {
+    const trailingKey = ValueKey('test-title-trailing');
+    final sync = await pumpBarApp(
+      tester,
+      trailing: const SizedBox(key: trailingKey, width: 80, height: 28),
+    );
+    final titleFinder = find.text(longTitle);
+    final trailingFinder = find.byKey(trailingKey);
+    final titleBefore = tester.getRect(titleFinder);
+    final trailingBefore = tester.getRect(trailingFinder);
+    expect(titleBefore.left, closeTo(16, 0.5), reason: '无左侧按键时标题从 16 开始');
+    expect(trailingBefore.width, 80);
+
+    await startSync(tester, sync);
+
+    final titleAfter = tester.getRect(titleFinder);
+    final trailingAfter = tester.getRect(trailingFinder);
+    final island = islandCard(tester);
+
+    // 书名只在自己的位置收窄（左缘不动、右缘止于岛左缘），不会整块左移。
+    expect(titleAfter.left, closeTo(titleBefore.left, 0.5), reason: '书名左缘不能动');
+    expect(titleAfter.right, lessThan(titleBefore.right), reason: '长书名应被省略收窄');
+    expect(
+      titleAfter.right,
+      lessThanOrEqualTo(island.left - kIslandTitleGap + 0.5),
+      reason: '书名不压到岛',
+    );
+
+    // 贴右部件完全不动：岛出现 / 消失都不该让它向左跳。
+    expect(trailingAfter, trailingBefore, reason: '右缘部件的位置与宽度都不变');
+    expect(
+      trailingAfter.left,
+      greaterThanOrEqualTo(island.right + kIslandTitleGap - 0.5),
+      reason: '右缘部件留在岛右侧，不重叠',
+    );
+
+    // 顶栏仍是单行形态（没有为岛多拉一行）。
+    expect(tester.getSize(find.byType(NarrChatAppBar)).height, kToolbarHeight);
   });
 
   testWidgets('窄屏（<760）：顶栏向下拉出一行放岛，标题不再被挤压', (tester) async {

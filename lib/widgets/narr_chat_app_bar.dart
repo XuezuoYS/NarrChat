@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
@@ -33,6 +35,8 @@ class NarrChatAppBar extends StatefulWidget implements PreferredSizeWidget {
     this.backgroundColor,
     this.foregroundColor,
     this.onTitleTap,
+    this.titleTrailing,
+    this.titleTrailingMaxWidthRatio,
     this.islandEnabled = true,
     this.extraRowHeight = 0,
     this.leadingBackgroundColor,
@@ -40,6 +44,12 @@ class NarrChatAppBar extends StatefulWidget implements PreferredSizeWidget {
   }) : assert(
          title != null || titleWidget != null,
          '标题与自定义标题至少提供一个',
+       ),
+       assert(
+         titleTrailingMaxWidthRatio == null ||
+             (titleTrailingMaxWidthRatio >= 0 &&
+                 titleTrailingMaxWidthRatio <= 1),
+         'titleTrailingMaxWidthRatio 必须在 0~1 之间',
        );
 
   /// 文本标题（单行、自动省略号）。
@@ -71,6 +81,18 @@ class NarrChatAppBar extends StatefulWidget implements PreferredSizeWidget {
 
   /// 点击标题回调（对话页点击书名进入书籍设置）。
   final VoidCallback? onTitleTap;
+
+  /// 标题行右缘的常驻部件（如对话页的分支入口）。
+  ///
+  /// 与标题正文排在同一行：宽屏单行嵌入驻场岛时，**只有标题正文让到岛
+  /// 左侧**，本部件仍贴标题行右缘，不会随岛出现 / 消失跳来跳去。
+  /// 岛与两侧内容之间都会留 [kIslandTitleGap] 的间距，不重叠。
+  final Widget? titleTrailing;
+
+  /// [titleTrailing] 最多占标题行的比例（0~1）；null 表示不额外封顶。
+  ///
+  /// 对话页传 2/5，保证书名至少还有 3/5。
+  final double? titleTrailingMaxWidthRatio;
 
   /// 本页是否承接驻场岛槽位（沉浸式页面可关闭）。
   final bool islandEnabled;
@@ -221,6 +243,52 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
                     titleSpacing)
                 .clamp(titleMinWidth, barWidth);
 
+        // 标题行的**完整**可用宽度：与 `NavigationToolbar` 的 middle 约束一致
+        // （左右各扣一个 titleSpacing）。
+        //
+        // 有 [titleTrailing] 时整行都用这个宽度：岛只让标题正文让位，贴右
+        // 部件保持原位，不会出现「岛一出现，书名和分支名一起跳到左边」。
+        //
+        // 没有右侧按键时 `actionsWidth` 会一直停留在首帧保守估计值（没有
+        // `_actionsKey` 可测），这里按 0 算，避免白白少留一段标题空间。
+        final layoutActionsWidth = widget.actions.isEmpty ? 0.0 : actionsWidth;
+        final fullTitleWidth = (barWidth -
+                leadingWidth -
+                layoutActionsWidth -
+                2 * titleSpacing)
+            .clamp(0.0, barWidth);
+        final islandEmbedded = !twoRow && islandBarWidth > 0.5;
+        // 标题正文最多到岛左缘（无岛 / 附加行形态时可用满整行）。
+        final titleBodyMaxWidth =
+            islandEmbedded ? titleMaxWidth : fullTitleWidth;
+        // 岛右缘到标题行右缘之间的可用宽度（再留一个间距）。
+        final islandRightSafeWidth = islandEmbedded
+            ? (barWidth -
+                      layoutActionsWidth -
+                      titleSpacing -
+                      (barWidth / 2 + islandBarWidth / 2) -
+                      kIslandTitleGap)
+                  .clamp(0.0, double.infinity)
+            : double.infinity;
+        final titleTrailingCap = widget.titleTrailingMaxWidthRatio == null
+            ? double.infinity
+            : fullTitleWidth * widget.titleTrailingMaxWidthRatio!;
+        final titleTrailingMaxWidth = math.min(
+          math.min(titleTrailingCap, islandRightSafeWidth),
+          fullTitleWidth,
+        );
+        final titleContent = widget.titleTrailing == null
+            // 没有贴右部件：保持旧行为，整个标题让到岛左侧。
+            ? ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: titleMaxWidth),
+                child: _buildTitleContent(context),
+              )
+            : _buildTitleWithTrailing(
+                context,
+                titleBodyMaxWidth: titleBodyMaxWidth,
+                trailingMaxWidth: titleTrailingMaxWidth,
+              );
+
         final slot = slotVisible
             ? IslandSlot(width: slotWidth, height: kIslandPillHeight)
             : null;
@@ -311,10 +379,7 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
                   // 该判断挂在 `ModalRoute` 上，路由栈变化时会自动重建；自己判
                   // `canPop()` 会在「返回动画途中恰好重建」时留下一个永不消失的返回键。
                   leading: widget.leading,
-                  title: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: titleMaxWidth),
-                    child: _buildTitleContent(context),
-                  ),
+                  title: titleContent,
                   actions: [
                     if (widget.actions.isNotEmpty)
                       Row(
@@ -333,6 +398,39 @@ class _NarrChatAppBarState extends State<NarrChatAppBar> {
           ),
         );
       },
+    );
+  }
+
+  /// 标题行：左侧标题正文 + 右缘常驻部件（[NarrChatAppBar.titleTrailing]）。
+  ///
+  /// - 标题正文用 [Expanded] 占剩余宽度，但内部封顶到 [titleBodyMaxWidth]
+  ///   （岛左缘）：岛出现时正文只会原地省略 / 收窄，不会整块跳到左边；
+  /// - 右缘部件贴住行末，最多 [trailingMaxWidth]：岛出现时只在自己的位置
+  ///   收窄，右边缘不动；
+  /// - 两端之间空出来的区域正好留给居中的驻场岛（由应用级 overlay 绘制）。
+  Widget _buildTitleWithTrailing(
+    BuildContext context, {
+    required double titleBodyMaxWidth,
+    required double trailingMaxWidth,
+  }) {
+    return Row(
+      key: const ValueKey('app-bar-title-row'),
+      children: [
+        Expanded(
+          child: Align(
+            key: const ValueKey('app-bar-title-area'),
+            alignment: Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: titleBodyMaxWidth),
+              child: _buildTitleContent(context),
+            ),
+          ),
+        ),
+        ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: trailingMaxWidth),
+          child: widget.titleTrailing!,
+        ),
+      ],
     );
   }
 

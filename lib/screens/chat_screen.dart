@@ -84,6 +84,12 @@ const double _kWideBreakpoint = 900;
 /// 窗口很窄时（比例上限低于默认宽度）以默认宽度为下限兜底。
 const double _kSidebarMaxWidthRatio = 0.4;
 
+/// 顶栏分支入口在「书名行」里最多占的比例：书名至少保留 3/5。
+///
+/// 分支入口原先挂在顶栏 `actions` 里、宽度不设限，窄屏下长分支名会把书名
+/// 挤成 0；现在与书名同处一行，并按此比例封顶。
+const double _kBranchEntryMaxWidthRatio = 2 / 5;
+
 /// 消息与输入框的最大内容宽度。
 const double _kContentMaxWidth = 760;
 
@@ -2728,26 +2734,15 @@ class _ChatScreenState extends State<ChatScreen>
         tooltip: '返回书籍列表',
         onPressed: () => Navigator.of(context).maybePop(),
       ),
-      // 书名可点击：点击直接进入书籍设置页（无视觉提示，仅友好性交互）。
+      // 书名与分支入口同处标题行：分支入口贴右且最多占 2/5；宽屏岛出现时
+      // 只有书名让到岛左侧，分支入口保持原位、不会跟着跳到左边。
       title: book?.title ?? '对话',
       onTitleTap: book == null
           ? null
           : () => BookSettingsScreen.open(context, book: book),
+      titleTrailing: _buildBranchEntry(book),
+      titleTrailingMaxWidthRatio: _kBranchEntryMaxWidthRatio,
       actions: [
-        // 分支入口：显示当前分支名（默认分支显示「主线」），点开分支列表小窗。
-        // Builder 只为拿按钮自身的 context：小窗按它的矩形定位在右上角。
-        Builder(
-          builder: (entryContext) => TextButton.icon(
-            key: const ValueKey('chat-branch-entry'),
-            onPressed: book == null
-                ? null
-                : () => _openBranchPanel(entryContext),
-            icon: const GitBranchIcon(size: 18),
-            label: Consumer<RoundProvider>(
-              builder: (context, provider, _) => Text(_branchLabelOf(provider)),
-            ),
-          ),
-        ),
         if (book != null)
           IconButton(
             icon: const Icon(Icons.book_outlined),
@@ -2760,6 +2755,30 @@ class _ChatScreenState extends State<ChatScreen>
           onPressed: () => SettingsScreen.open(context),
         ),
       ],
+    );
+  }
+
+  /// 顶栏分支入口：显示当前分支名（默认分支显示「主线」），点开分支列表小窗。
+  ///
+  /// 作为 `titleTrailing` 贴在标题行右缘；宽度上限由统一顶栏按
+  /// [_kBranchEntryMaxWidthRatio] 与「不压到驻场岛」共同计算，标签单行省略。
+  /// Builder 只为拿按钮自身的 context：小窗按它的矩形定位在右上角。
+  Widget _buildBranchEntry(Book? book) {
+    return Builder(
+      builder: (entryContext) => TextButton.icon(
+        key: const ValueKey('chat-branch-entry'),
+        onPressed: book == null
+            ? null
+            : () => _openBranchPanel(entryContext),
+        icon: const GitBranchIcon(size: 18),
+        label: Consumer<RoundProvider>(
+          builder: (context, provider, _) => Text(
+            _branchLabelOf(provider),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ),
     );
   }
 

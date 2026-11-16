@@ -181,6 +181,57 @@ void main() {
     await settle(tester);
   });
 
+  testWidgets('窄屏长分支名：分支入口最多占标题行 2/5，书名至少保留 3/5', (tester) async {
+    // 360dp 竖屏：分支入口原先挂在 actions 里、宽度不设限，长名字会把书名挤成 0。
+    final thread = await _pumpThread(tester, size: const Size(360, 800));
+    final provider = thread.provider;
+    await settle(tester);
+
+    const longName = '一个特别特别长的分支名字用来验证它不会把书名挤没';
+    await tester.runAsync(
+      () => provider.forkBranch(round: provider.rounds.first, title: longName),
+    );
+    await tester.runAsync(() => provider.loadRounds(kHarnessBookUuid));
+    await settle(tester);
+    expect(provider.currentBranch?.branchName, longName);
+
+    final row = find.byKey(const ValueKey('app-bar-title-row'));
+    final entry = _branchEntry();
+    final title = find.byKey(const ValueKey('app-bar-title-area'));
+    expect(row, findsOneWidget);
+    expect(entry, findsOneWidget);
+    expect(title, findsOneWidget);
+    expect(
+      find.descendant(of: title, matching: find.text('测试书')),
+      findsOneWidget,
+      reason: '长分支名不能把书名挤没',
+    );
+
+    final rowWidth = tester.getSize(row).width;
+    final entryWidth = tester.getSize(entry).width;
+    final titleWidth = tester.getSize(title).width;
+    expect(
+      entryWidth,
+      closeTo(rowWidth * 2 / 5, 0.5),
+      reason: '分支入口按 2/5 封顶（实际 ${entryWidth}px / 行宽 ${rowWidth}px）',
+    );
+    expect(
+      titleWidth,
+      closeTo(rowWidth * 3 / 5, 0.5),
+      reason: '书名保留 3/5（实际 ${titleWidth}px / 行宽 ${rowWidth}px）',
+    );
+
+    // 截断后入口仍可点开分支面板，完整分支名在面板里能查。
+    await _openBranchPanel(tester);
+    expect(
+      find.descendant(
+        of: find.byType(BranchPanel),
+        matching: find.text(longName),
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('小窗无关闭按钮：点窗外关闭；点入口按钮本身也只关闭', (tester) async {
     await _pumpThread(tester);
     await settle(tester);
