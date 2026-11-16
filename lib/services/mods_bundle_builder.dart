@@ -3,19 +3,21 @@ import '../models/round.dart';
 import '../models/world_book_entry.dart';
 import 'world_book_scanner.dart';
 
-/// 把一组 Mod（已按置入顺序）拼成发送给 AI 的四段内容。
+/// 把一组 Mod（已按置入顺序）拼成发送给 AI 的**七段**内容。
 ///
 /// 这是 `ModProvider.resolveModsBundle` 与创建流程校验器共用的**单一实现**：
-/// - 前置 / 后置 / 系统提示词：逐块归一化后以空行分隔；
+/// - 前置 / 后置 / 强指令 / 杂项 / 设定 / 文笔：逐块归一化后以空行分隔；
 /// - 世界书：关键词为空的条目恒定注入，关键词非空的条目按 [userInput] 与
 ///   历史轮次扫描命中后注入（与书籍世界书一致）。
+///
+/// 每列只进自己那一段，不串位（映射见 `docs/mods.md` §二）。
 class ModsBundleBuilder {
   const ModsBundleBuilder({this.scanner = const WorldBookScanner()});
 
   /// 世界书关键词扫描器（测试可注入替身）。
   final WorldBookScanner scanner;
 
-  /// 按置入顺序拼出四段内容。
+  /// 按置入顺序拼出七段内容。
   ModsBundle build({
     required List<Mod> mods,
     required String userInput,
@@ -25,13 +27,21 @@ class ModsBundleBuilder {
 
     final pre = <String>[];
     final post = <String>[];
+    final must = <String>[];
     final system = <String>[];
+    final setting = <String>[];
+    final writing = <String>[];
     final worldEntries = <ModWorldBookEntry>[];
 
     for (final mod in mods) {
       if (mod.prePrompt.trim().isNotEmpty) pre.add(mod.prePrompt);
       if (mod.postPrompt.trim().isNotEmpty) post.add(mod.postPrompt);
+      if (mod.systemMust.trim().isNotEmpty) must.add(mod.systemMust);
       if (mod.systemPrompt.trim().isNotEmpty) system.add(mod.systemPrompt);
+      if (mod.systemSetting.trim().isNotEmpty) setting.add(mod.systemSetting);
+      if (mod.systemWritingStyle.trim().isNotEmpty) {
+        writing.add(mod.systemWritingStyle);
+      }
       worldEntries.addAll(
         mod.worldBookEntries.where((entry) => entry.content.trim().isNotEmpty),
       );
@@ -40,14 +50,24 @@ class ModsBundleBuilder {
     return ModsBundle(
       prePrompts: joinBlocks(pre),
       postPrompts: joinBlocks(post),
+      mustPrompts: joinBlocks(must),
+      mustSegments: _normalizedBlocks(must),
       systemPrompts: joinBlocks(system),
+      settingPrompts: joinBlocks(setting),
       worldBooks: _scanWorldBook(
         entries: worldEntries,
         userInput: userInput,
         historyRounds: historyRounds,
       ),
+      writingStylePrompts: joinBlocks(writing),
     );
   }
+
+  /// 逐块归一化后的列表（供 `mustSegments`：拼合结果与它永远来自同一次归一化）。
+  static List<String> _normalizedBlocks(List<String> blocks) => blocks
+      .map(normalizeBlock)
+      .where((block) => block.isNotEmpty)
+      .toList();
 
   /// 拼接多个 Mod 的同类文案：逐块归一化后**以空行分隔**。
   ///

@@ -3,7 +3,47 @@
 > 本文件只记**数据结构**的变更。功能层面的更新见 `update_log.md`。
 > R2 及更早的账号在 [`docs/old/database_update_log_r2.md`](old/database_update_log_r2.md)。
 
-## schema 25 —— 非创作步子模型统计（当前）
+## schema 26 —— Mod 提示词七通道（当前）
+
+`user_data` 下四个库的版本从 25 升到 26。
+
+### 新增字段
+
+Mod 库 `mods` 增加三列，全部非空、默认空串：
+
+- `system_must TEXT NOT NULL DEFAULT ''`：强指令，进 `{system_must}` 的段 2~n，
+  并在 system 末尾以逆序复述一次（token 翻倍）；
+- `system_setting TEXT NOT NULL DEFAULT ''`：设定，紧随书籍设定注入；
+- `system_writing_style TEXT NOT NULL DEFAULT ''`：文笔要求与参考段落，
+  排在书范文之前。
+
+`system_prompt` 的语义收窄为「杂项要求」（列名不变，老内容原样保留、只是注入位置
+改到 `{system_extra}`）。三列的物理位置在 `deleted_at` 之后：老库只能 `ALTER TABLE`
+追加到表尾，新装库照同一位置写。
+
+### 迁移
+
+- `ModsDb` 打开老库时先确认 `mods` 表存在，再按 `PRAGMA table_info` 逐列
+  `ALTER TABLE mods ADD COLUMN ... TEXT NOT NULL DEFAULT ''`；重复执行 / 版本回退后再升
+  都不会报重复列。
+- 目录库 / 书库没有 `mods` 表，只把 `database_version` 镜像写成 26。
+- **降级守卫**：`openAppDatabase` 新增 `onDowngrade`，库版本高于当前应用支持版本时
+  抛 `DbIntegrityException` 拒绝打开（四个库共用），不再让 sqflite 把版本静默写低。
+- **降级预检**：Mod 库打开前做一次只读预检（`user_version` + `table_info`）；
+  「版本 25 但三列已存在」说明库被旧版本（3.0）写过，Mod 管理页提示一次
+  「检测到旧版本访问，新列内容可能已被清空，请检查 Mod 内容」。预检必须在
+  首次打开**之前**做，否则升级完版本就查不出来。
+
+### 行为变化
+
+- 三个新列**空值不参与整库摘要**（缺列同样按空处理）：升级后首次同步的摘要与
+  升级前逐字节一致，不会把每个单元误判成「本地改过」。
+- 逐 Mod 指纹与行读取对 v25 快照的缺列用空串占位，两侧空值仍判「一致」。
+- 单 Mod 导出升到 `version: 2`（多带三个键）；v1 包仍可导入，缺键按空处理。
+- **3.0 与 3.1 的 Mod 库不互通**：3.0 打开 v26 库时仍会降级，且保存 Mod 时整行覆盖
+  会把三个新列清空。发布说明要写清楚，升级前建议先导出重要 Mod。
+
+## schema 25 —— 非创作步子模型统计（上一版）
 
 `user_data` 下四个库的版本从 24 升到 25。
 

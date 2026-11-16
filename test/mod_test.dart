@@ -11,13 +11,16 @@ import 'helpers/fakes.dart';
 
 void main() {
   group('Mod 模型', () {
-    test('toJson / fromJson 往返一致', () {
+    test('toJson / fromJson 往返一致（v2 带齐七个通道）', () {
       const mod = Mod(
         name: '测试 Mod',
         description: '用于测试',
         prePrompt: '前置内容',
         postPrompt: '后置内容',
-        systemPrompt: '系统内容',
+        systemMust: '强指令内容',
+        systemPrompt: '杂项内容',
+        systemSetting: '设定内容',
+        systemWritingStyle: '文笔内容',
         worldBookEntries: [
           ModWorldBookEntry(keyword: '青云宗, 山门', content: '宗门设定'),
           ModWorldBookEntry(content: '恒定生效内容'),
@@ -25,8 +28,12 @@ void main() {
       );
       final json = mod.toJson();
       expect(json['type'], 'narrchat_mod');
-      expect(json['version'], 1);
+      expect(json['version'], 2);
       expect(json['name'], '测试 Mod');
+      expect(json['systemMust'], '强指令内容');
+      expect(json['systemPrompt'], '杂项内容');
+      expect(json['systemSetting'], '设定内容');
+      expect(json['systemWritingStyle'], '文笔内容');
 
       final restored = Mod.fromJson(json);
       expect(restored, isNotNull);
@@ -34,7 +41,10 @@ void main() {
       expect(restored.description, '用于测试');
       expect(restored.prePrompt, '前置内容');
       expect(restored.postPrompt, '后置内容');
-      expect(restored.systemPrompt, '系统内容');
+      expect(restored.systemMust, '强指令内容');
+      expect(restored.systemPrompt, '杂项内容');
+      expect(restored.systemSetting, '设定内容');
+      expect(restored.systemWritingStyle, '文笔内容');
       expect(restored.worldBookEntries, hasLength(2));
       expect(restored.worldBookEntries.first.keyword, '青云宗, 山门');
       expect(restored.worldBookEntries.first.content, '宗门设定');
@@ -43,6 +53,20 @@ void main() {
       // 导出 / 导入只携带内容，不携带身份：导入结果即未落库草稿（uuid 为空串）。
       expect(restored.uuid, isEmpty);
       expect(restored.isPreset, isFalse);
+    });
+
+    test('fromJson 兼容 v1 包：缺三个新键按空处理', () {
+      final restored = Mod.fromJson(const {
+        'type': 'narrchat_mod',
+        'version': 1,
+        'name': '老包',
+        'systemPrompt': '旧系统提示词',
+      });
+      expect(restored, isNotNull);
+      expect(restored!.systemPrompt, '旧系统提示词');
+      expect(restored.systemMust, '');
+      expect(restored.systemSetting, '');
+      expect(restored.systemWritingStyle, '');
     });
 
     test('fromJson 兼容旧版 worldBook 字符串（整体作为恒定条目）', () {
@@ -62,14 +86,17 @@ void main() {
       expect(Mod.fromJson(const {'name': '   '}), isNull);
     });
 
-    test('fromMap / toMap 数据库列映射（世界书存 JSON 数组）', () {
+    test('fromMap / toMap 数据库列映射（七列 + 世界书存 JSON 数组）', () {
       const mod = Mod(
         uuid: 'm7',
         name: '映射',
         prePrompt: 'P',
         postPrompt: 'Q',
+        systemMust: 'M',
         systemPrompt: 'S',
-        worldBookEntries: [ModWorldBookEntry(keyword: 'K', content: 'W')],
+        systemSetting: 'T',
+        systemWritingStyle: 'W',
+        worldBookEntries: [ModWorldBookEntry(keyword: 'K', content: 'WB')],
       );
       final map = mod.toMap();
       // uuid 即主键：映射里没有第二个 int id 列。
@@ -78,7 +105,10 @@ void main() {
       expect(map['name'], '映射');
       expect(map['pre_prompt'], 'P');
       expect(map['post_prompt'], 'Q');
+      expect(map['system_must'], 'M');
       expect(map['system_prompt'], 'S');
+      expect(map['system_setting'], 'T');
+      expect(map['system_writing_style'], 'W');
       expect(map['world_book'], contains('"keyword"'));
       expect(map['world_book'], contains('"content"'));
 
@@ -86,9 +116,13 @@ void main() {
       expect(restored.uuid, 'm7');
       expect(restored.name, '映射');
       expect(restored.prePrompt, 'P');
+      expect(restored.systemMust, 'M');
+      expect(restored.systemPrompt, 'S');
+      expect(restored.systemSetting, 'T');
+      expect(restored.systemWritingStyle, 'W');
       expect(restored.worldBookEntries, hasLength(1));
       expect(restored.worldBookEntries.first.keyword, 'K');
-      expect(restored.worldBookEntries.first.content, 'W');
+      expect(restored.worldBookEntries.first.content, 'WB');
     });
 
     test('ref：预置与自定义的唯一标识', () {
@@ -439,28 +473,41 @@ void main() {
       mods: mods,
     );
 
-    test('启用 Mod 时注入前置词/后置词/系统提示词/世界书', () {
+    test('启用 Mod 时七个通道各自落到对应注入位', () {
       const mods = ModsBundle(
         prePrompts: 'MOD_PRE',
         postPrompts: 'MOD_POST',
+        mustPrompts: 'MOD_MUST',
+        mustSegments: ['MOD_MUST'],
         systemPrompts: 'MOD_SYS',
+        settingPrompts: 'MOD_SETTING',
         worldBooks: 'MOD_WB',
+        writingStylePrompts: 'MOD_WRITING',
       );
       final system = promptInterface.system(requestOf(mods: mods));
       final user = promptInterface.user(requestOf(mods: mods));
 
-      // System：Mod 系统提示词内联在 `# 总协议：` **之前**（位置抬升）；
-      // Mod 世界书并入「# 世界书：」章节。
+      // System：强指令在最前、杂项在协议之后、设定紧随书籍设定、
+      // 文笔排在书范文之前（本请求没有书文笔要求，故只比出现位置）。
+      expect(system, contains('MOD_MUST'));
       expect(system, contains('MOD_SYS'));
+      expect(system, contains('MOD_SETTING'));
+      expect(system, contains('MOD_WRITING'));
       expect(system, contains('MOD_WB'));
-      expect(system.indexOf('MOD_SYS'), lessThan(system.indexOf('# 总协议：')));
+      expect(system.indexOf('MOD_MUST'), lessThan(system.indexOf('# 当前请求协议：')));
+      expect(system.indexOf('MOD_SYS'), greaterThan(system.indexOf('# 当前请求协议：')));
+      expect(
+        system.indexOf('MOD_SETTING'),
+        greaterThan(system.indexOf('修仙世界')),
+        reason: 'Mod 设定紧随书籍设定',
+      );
       expect(system.indexOf('MOD_WB'), greaterThan(system.indexOf('# 世界书：')));
 
-      // User：Mod 前置 / 后置词直接内联（v2 不给前后置词加标签）。
+      // User：Mod 前置 / 后置词直接内联（v3 不给前后置词加标签）。
       expect(user, contains('MOD_PRE'));
       expect(user, contains('MOD_POST'));
 
-      // 顺序（v2）：前置词区 = 用户前置 → Mod 前置（Mod 更靠近主人的输入）；
+      // 顺序：前置词区 = 用户前置 → Mod 前置（Mod 更贴近用户的输入）；
       // 后置词区 = Mod 后置 → 用户后置。
       expect(user.indexOf('用户前置'), lessThan(user.indexOf('MOD_PRE')));
       expect(user.indexOf('MOD_POST'), lessThan(user.indexOf('用户后置')));

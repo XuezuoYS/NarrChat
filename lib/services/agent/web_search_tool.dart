@@ -1,6 +1,7 @@
 import '../html_search_service.dart';
 import 'agent_activity.dart';
 import 'narr_agent_tool.dart';
+import 'web_tool_names.dart';
 
 /// 联网搜索工具：通过 [HtmlSearchService] 自研抓取搜索引擎结果。
 class WebSearchTool implements NarrAgentTool {
@@ -30,9 +31,9 @@ class WebSearchTool implements NarrAgentTool {
   bool get isReadOnly => false;
 
   @override
-  String get name => 'narrchat_webSearch';
+  String get name => kWebSearchToolName;
 
-  /// 工具说明（v2 口径）：**简明中文**；英文只保留工具名与必要的标识。
+  /// 工具说明（v3 口径）：**简明中文**；英文只保留工具名与必要的标识。
   ///
   /// 联网工具的全部调用指导（何时调用、搜索后必须打开页面）只在这里声明，
   /// 不再向 system 注入任何联网指令——见 `RoundProvider` 的组装路径。

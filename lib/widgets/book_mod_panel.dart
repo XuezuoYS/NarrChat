@@ -207,7 +207,7 @@ class _BookModPanelState extends State<BookModPanel> {
       children: [
         const SettingsPageHeader(
           title: 'Mod 管理',
-          description: '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词、系统提示词与世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。改动在点击顶栏「保存」后生效。',
+          description: '启用 Mod 后，发送请求时将按「已启用」列表顺序（自上而下）自动置入前置词、后置词与五段 system 内容（强指令、杂项要求、设定、文笔）以及世界书，与手动填写效果一致；仅「已启用」支持拖动排序，「未启用」按名称拼音 a~z 排列。改动在点击顶栏「保存」后生效。',
         ),
         SettingsCard(
           padding: const EdgeInsets.all(12),
@@ -398,10 +398,14 @@ class _BookModTile extends StatelessWidget {
     if (mod != null && mod!.description.trim().isNotEmpty) {
       return mod!.description.trim();
     }
+    // 顺序 = 面板顺序（`docs/mods.md` §七）。
     final fields = <String>[
       if (mod?.prePrompt.trim().isNotEmpty ?? false) '前置词',
       if (mod?.postPrompt.trim().isNotEmpty ?? false) '后置词',
-      if (mod?.systemPrompt.trim().isNotEmpty ?? false) '系统提示词',
+      if (mod?.systemPrompt.trim().isNotEmpty ?? false) '杂项',
+      if (mod?.systemSetting.trim().isNotEmpty ?? false) '设定',
+      if (mod?.systemWritingStyle.trim().isNotEmpty ?? false) '文笔',
+      if (mod?.systemMust.trim().isNotEmpty ?? false) '强指令',
       if (mod?.worldBookEntries.isNotEmpty ?? false) '世界书',
     ];
     return fields.isEmpty ? '（无内容）' : '含：${fields.join('、')}';

@@ -107,7 +107,9 @@ const PromptInterface promptInterface = PromptV3();
 | `prompt_v3_sections.dart` | **system 文案**：固定行、8 个模块与各块的文本、must 的段、模式契约、记忆格式与合并、工具指南条目 |
 | `prompt_v3_build.dart` | **system 拼合**：按序取模块 → 空模块丢弃 → must 的块序列反转出 `mustReverse` → 空行 join；实现 `system()` / `systemSections()`（纯 Dart 依赖） |
 | `prompt_v3_context.dart` | **上下文**：本轮 user 消息与 Agent 回合指令的文案 + 拼装，实现 `user()` / `stage*()`（纯 Dart 依赖） |
-| `prompt_v3_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表（沿用 v2 路由） |
+| `prompt_v3_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表（沿用 v2 路由）；并重新导出 `promptToolNames` |
+| `prompt_tool_names.dart` | **名字投影**：`promptToolNames(...)`，纯 Dart；`toolNames` 与工具实例同源的一致性由测试兜底 |
+| `prompt_text_format.dart` | 三个拼装纯函数（多行保留 / 单行折叠 / 段间空行），sections 与 context 共用 |
 
 两条实现规矩（与 `docs/prompt_v3_system.md` 一致）：
 
@@ -167,7 +169,10 @@ const PromptInterface promptInterface = PromptV3();
 - **空段不接**：`writingStylePrompts` 为空时连标题一起删、`systemPrompts` 为空时整个 `extra`
   模块消失；其余段为空就是少一段内容；
 - **`mustPrompts` 参与逆序**：`mustReverse` 是 `[段1, mustPrompts…]` 整体反转，所以 Mod 段在
-  末尾以倒序复现（有意为之）。
+  末尾以倒序复现（有意为之）。`mustPrompts` 是拼好的整段，反转要**按块**做，所以
+  `ModsBundle` 另带一个 `mustSegments`（每个 Mod 一块、顺序与设定一致，由
+  `ModsBundleBuilder` 与 `mustPrompts` 一次填出）；手工构造 bundle 时它为空，
+  拼合层就把整段当一块，行为与旧写法一致。
 
 ## 六、工具清单
 
@@ -242,10 +247,13 @@ const PromptInterface promptInterface = PromptV3();
 | `lib/services/prompt_v3_sections.dart` | system 文案真源 |
 | `lib/services/prompt_v3_build.dart` | system 实现（模块拼合 / 空块删除 / `mustReverse`；纯 Dart 依赖） |
 | `lib/services/prompt_v3_context.dart` | 上下文实现（user 消息成分 / 回合指令；纯 Dart 依赖） |
-| `lib/services/prompt_v3_tools.dart` | 工具清单 |
+| `lib/services/prompt_v3_tools.dart` | 工具清单（`listPromptTools`，带 Flutter 依赖） |
+| `lib/services/prompt_tool_names.dart` | 工具**名字投影**（`promptToolNames`，纯 Dart；供组装 system 之前填 `toolNames`） |
+| `lib/services/prompt_text_format.dart` | 拼装用的三个纯函数（多行保留 / 单行折叠 / 段间空行） |
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |
 | `lib/services/agent/state/state_tools.dart` | 六个状态工具（Lv.1 只注册历史一读一写，其余是保留框架） |
+| `lib/services/agent/web_tool_names.dart` | 两个联网工具名（纯 Dart，文案层引用它） |
 | `docs/prompt_v3_system.md` | system 设计（8 模块模板，system 文案的评审真源） |
 | `docs/mods.md` | Mod 设计（七列 / 七个注入位 / 导出格式 / 3.0 兼容口径） |
 | `docs/prompt_v3_context.md` | 上下文设计（user 消息成分 / 历史形态 / 回合指令） |

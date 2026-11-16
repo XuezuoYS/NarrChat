@@ -29,7 +29,7 @@ export 'state_tool_names.dart';
 /// 保留；`append` 追加到栏目末尾；`noChange` 必须附 `reason`。时间不属于任何
 /// 工具：它是正文的 `## 当前时间` 小节，由应用从正文解析写入工作副本。
 ///
-/// 工具 `description` 一律**简明中文**（v2 口径：撤销中英双语，英文只保留工具名
+/// 工具 `description` 一律**简明中文**（v3 口径：撤销中英双语，英文只保留工具名
 /// `narrchat_*` 与状态块标签 `<worldState>` / `<characterState>` / `<memorySummary>`）。
 
 /// 栏目 → 读取工具名（单一真源：[state_tool_names.dart] 的常量）。

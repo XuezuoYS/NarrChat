@@ -1,6 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/database/mods_store.dart';
+import 'package:narrchat/models/mod.dart';
+import 'package:narrchat/providers/mod_provider.dart';
+import 'package:narrchat/repositories/mod_repository.dart';
 import 'package:narrchat/utils/timestamp_format.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'helpers/fakes.dart';
 import 'helpers/sync_conflict_fixtures.dart';
@@ -19,7 +26,7 @@ void main() {
     await stack.dispose();
   });
 
-  test('覆盖已有 Mod 的内容、时间与墓碑', () async {
+  test('覆盖已有 Mod 的内容、时间与墓碑（含 v26 的三个新列）', () async {
     final uuid = await stack.seedMod(name: '旧名字', prePrompt: '旧前置词');
     final updatedAt = DateTime.utc(2026, 5, 1);
     final deletedAt = DateTime.utc(2026, 6, 1);
@@ -35,7 +42,10 @@ void main() {
         ),
         'description': '新简介',
         'post_prompt': '新后置词',
-        'system_prompt': '新系统词',
+        'system_prompt': '新杂项',
+        'system_setting': '新设定',
+        'system_writing_style': '新文笔',
+        'system_must': '新强指令',
         'world_book': '[{"keyword":"关键词","content":"内容"}]',
       },
     ]);
@@ -46,7 +56,10 @@ void main() {
     expect(saved.description, '新简介');
     expect(saved.prePrompt, '新前置词');
     expect(saved.postPrompt, '新后置词');
-    expect(saved.systemPrompt, '新系统词');
+    expect(saved.systemPrompt, '新杂项');
+    expect(saved.systemSetting, '新设定');
+    expect(saved.systemWritingStyle, '新文笔');
+    expect(saved.systemMust, '新强指令');
     expect(saved.worldBookEntries.single.keyword, '关键词');
     expect(saved.worldBookEntries.single.content, '内容');
     expect(saved.createdAt, updatedAt);
@@ -152,7 +165,7 @@ void main() {
     });
   }
 
-  test('缺省文本列写成空串而不是 NULL', () async {
+  test('缺省文本列写成空串而不是 NULL（含 v26 三列）', () async {
     await mods.mergeRows([
       {
         'mod_uuid': 'm-min',
@@ -168,8 +181,44 @@ void main() {
     expect(saved.prePrompt, '');
     expect(saved.postPrompt, '');
     expect(saved.systemPrompt, '');
+    // v25 快照缺这三列 → 按空串落地（与建表默认值一致，避免摘要漂移）。
+    expect(saved.systemMust, '');
+    expect(saved.systemSetting, '');
+    expect(saved.systemWritingStyle, '');
     expect(saved.worldBookEntries, isEmpty);
     expect(saved.createdAt, DateTime.utc(2026, 1, 1));
     expect(saved.updatedAt, DateTime.utc(2026, 1, 1));
+  });
+
+  test('ModProvider 读到「被旧版本访问过」预检结果，且提示可关闭一次', () async {
+    final dir = Directory.systemTemp.createTempSync('mods_downgraded_');
+    addTearDown(() => dir.delete(recursive: true));
+    final path = p.join(dir.path, 'narrchat_mods.db');
+
+    // 先造一个正常的 v26 库，再把版本写回 25 —— 这就是「3.0 打开过 v26 库」的
+    // 遗留状态（列在、版本低）。
+    final seed = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+    await seed.upsert(const Mod(uuid: 'm1', name: '甲'));
+    await seed.close();
+    final raw = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    await raw.execute('PRAGMA user_version = 25');
+    await raw.close();
+
+    final store = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+    addTearDown(store.close);
+    final provider = ModProvider(
+      repository: ModRepository(mods: store, books: stack.repos.mod.books),
+    );
+    addTearDown(provider.dispose);
+
+    await provider.loadUserMods();
+    expect(provider.modsDowngraded, isTrue);
+    expect(provider.userMods.single.name, '甲');
+
+    provider.dismissModsDowngraded();
+    expect(provider.modsDowngraded, isFalse);
   });
 }

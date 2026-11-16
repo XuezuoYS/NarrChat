@@ -18,7 +18,7 @@ import 'helpers/sync_conflict_fixtures.dart';
 
 /// 冲突页预览读取器：本地走 store、云端临时下载快照只读打开。
 void main() {
-  /// 逐 Mod 读取结果的列清单（与 `modRowsSql` 一致）。
+  /// 逐 Mod 读取结果的列清单（与 `modRowColumns` 一致）。
   const List<String> modColumns = [
     'mod_uuid',
     'name',
@@ -26,6 +26,9 @@ void main() {
     'pre_prompt',
     'post_prompt',
     'system_prompt',
+    'system_setting',
+    'system_writing_style',
+    'system_must',
     'world_book',
     'created_at',
     'updated_at',

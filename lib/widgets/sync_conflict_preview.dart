@@ -448,9 +448,27 @@ class _SyncConflictPreviewDialogState
               remoteText: remote?.postPrompt ?? '',
             ),
             _LongCompareField(
-              label: '系统提示',
+              label: '强指令',
+              localText: local?.systemMust ?? '',
+              remoteText: remote?.systemMust ?? '',
+              markdown: true,
+            ),
+            _LongCompareField(
+              label: '杂项要求',
               localText: local?.systemPrompt ?? '',
               remoteText: remote?.systemPrompt ?? '',
+              markdown: true,
+            ),
+            _LongCompareField(
+              label: '设定',
+              localText: local?.systemSetting ?? '',
+              remoteText: remote?.systemSetting ?? '',
+              markdown: true,
+            ),
+            _LongCompareField(
+              label: '文笔',
+              localText: local?.systemWritingStyle ?? '',
+              remoteText: remote?.systemWritingStyle ?? '',
               markdown: true,
             ),
           ],
@@ -475,7 +493,10 @@ class _SyncConflictPreviewDialogState
               local.description == remote.description &&
               local.prePrompt == remote.prePrompt &&
               local.postPrompt == remote.postPrompt &&
+              local.systemMust == remote.systemMust &&
               local.systemPrompt == remote.systemPrompt &&
+              local.systemSetting == remote.systemSetting &&
+              local.systemWritingStyle == remote.systemWritingStyle &&
               local.worldBookCount == remote.worldBookCount &&
               local.deleted == remote.deleted;
     return same ? ('一致', colors.success) : ('内容不同', colors.warning);

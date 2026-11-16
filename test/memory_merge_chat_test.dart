@@ -60,7 +60,7 @@ void main() {
     ))
         .firstFrameJson;
 
-    expect(preview, contains('【本轮记忆合并】'));
+    expect(preview, contains('【记忆合并要求】'));
     expect(preview, contains('- 1 - 5 | t1 ~ t5 | {记忆内容}'));
     expect(preview, contains('2 × 5'));
   });
@@ -76,8 +76,8 @@ void main() {
     ))
         .firstFrameJson;
 
-    expect(preview, contains('不要主动合并'));
-    expect(preview, isNot(contains('【本轮记忆合并】')));
+    expect(preview, contains('不主动合并'));
+    expect(preview, isNot(contains('【记忆合并要求】')));
   });
 
   test('模型没合并 → 本轮常驻警告（带应合并区间）', () async {
@@ -90,7 +90,7 @@ void main() {
       book: book,
     ))
         .firstFrameJson;
-    expect(preview, contains('【本轮记忆合并】'), reason: '前置：本轮确实要求合并');
+    expect(preview, contains('【记忆合并要求】'), reason: '前置：本轮确实要求合并');
 
     final ok = await provider.sendRound(userInput: '继续', book: book);
 

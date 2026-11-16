@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/services/ai_response_parser.dart';
-import 'package:narrchat/services/prompt_v2_sections.dart';
+import 'package:narrchat/services/prompt_v3_sections.dart';
 
 /// 完整 6 字段的解析结果（供 serialize 多组用例复用）。
 const _fullParsed = ParsedAiResponse(
@@ -305,13 +305,13 @@ void main() {
       );
     });
 
-    test('反解析区块顺序与 PromptV2Sections.sectionOrder 一致', () {
+    test('反解析区块顺序与 PromptV3Sections.sectionOrder 一致', () {
       final raw = AiResponseParser.serialize(_fullParsed);
       final headings = RegExp(r'^## (.+)$', multiLine: true)
           .allMatches(raw)
           .map((m) => m.group(1)!)
           .toList();
-      expect(headings, PromptV2Sections.sectionOrder);
+      expect(headings, PromptV3Sections.sectionOrder);
     });
 
     test('空字段输出对应的空 `## 标题` 区块，6 区块齐全', () {

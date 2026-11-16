@@ -55,7 +55,7 @@ class AgentModeProfile {
   /// 实现与多栏目缺口框架保留在 `state/` 下，当前没有档位注册它们。
   final AgentModeLevel level;
 
-  /// 本轮提示词的生成模式（[PromptMode]，分派到 v2 文本契约）。
+  /// 本轮提示词的生成模式（[PromptMode]，分派到 v3 文本契约）。
   final PromptMode promptMode;
 
   /// 本档位启用的状态工具栏目（读取器在前、编辑器在后的注册顺序由此决定）。

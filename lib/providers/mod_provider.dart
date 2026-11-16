@@ -24,6 +24,9 @@ class ModProvider extends ChangeNotifier {
   List<Mod> _userMods = [];
   String? _error;
 
+  /// 库是否被旧版本（3.0）访问过（新列内容可能被清空）：界面提示一次。
+  bool _modsDowngraded = false;
+
   /// 用户自定义 Mod（按创建顺序）。
   List<Mod> get userMods => List.unmodifiable(_userMods);
 
@@ -35,9 +38,21 @@ class ModProvider extends ChangeNotifier {
 
   String? get error => _error;
 
+  /// 是否需要在 Mod 管理界面提示「检测到旧版本访问，新列内容可能已被清空」。
+  bool get modsDowngraded => _modsDowngraded;
+
+  /// 用户关掉提示后本次运行不再弹（重新打开应用时会再检测一次）。
+  void dismissModsDowngraded() {
+    if (!_modsDowngraded) return;
+    _modsDowngraded = false;
+    notifyListeners();
+  }
+
   Future<void> loadUserMods() async {
     try {
       _userMods = await _repo.listMods();
+      // 预检只读、结果由 store memoize；读不出来按「未降级」处理，不阻断使用。
+      _modsDowngraded = await _repo.modsDowngraded();
     } catch (e) {
       _error = e.toString();
     }
@@ -49,7 +64,10 @@ class ModProvider extends ChangeNotifier {
     String description = '',
     String prePrompt = '',
     String postPrompt = '',
+    String systemMust = '',
     String systemPrompt = '',
+    String systemSetting = '',
+    String systemWritingStyle = '',
     List<ModWorldBookEntry> worldBookEntries = const [],
   }) async {
     try {
@@ -59,7 +77,10 @@ class ModProvider extends ChangeNotifier {
           description: description,
           prePrompt: prePrompt,
           postPrompt: postPrompt,
+          systemMust: systemMust,
           systemPrompt: systemPrompt,
+          systemSetting: systemSetting,
+          systemWritingStyle: systemWritingStyle,
           worldBookEntries: worldBookEntries,
         ),
       );

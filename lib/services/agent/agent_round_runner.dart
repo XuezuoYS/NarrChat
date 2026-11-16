@@ -427,7 +427,7 @@ class AgentRoundRunner {
   final void Function(AgentToolOutcome outcome)? onToolStarted;
   final void Function(AgentToolOutcome outcome)? onToolFinished;
 
-  /// 阶段回合指令 / 工具集的**唯一取用入口**（`prompt_interface.dart`，当前绑定 v2）：
+  /// 阶段回合指令 / 工具集的**唯一取用入口**（`prompt_interface.dart`，当前绑定 v3）：
   /// 执行器只决定「何时发哪一帧」，帧指令文案与工具清单都由接口层给出。
   static const PromptInterface _prompt = promptInterface;
 
@@ -874,7 +874,7 @@ class AgentRoundRunner {
   ///
   /// 当前档位只有历史这件事（世界 / 角色由正文携带、正文已产出，本阶段不得
   /// 改写正文），且它是「记忆条目没落地」的兜底。世界 / 角色栏目与编辑器仍保留
-  /// 为框架，后续档位启用时会自动进入这里（文案由 [PromptV2Sections] 按栏目生成）。
+  /// 为框架，后续档位启用时会自动进入这里（文案由 `PromptV3Context` 按栏目生成）。
   Map<String, dynamic> _stateDirective(
     List<String> problems, {
     required bool first,

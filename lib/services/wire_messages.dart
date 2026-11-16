@@ -3,9 +3,9 @@
 /// 解耦边界（重要）：**历史跟随报文**——历史消息与请求体组装同属「请求组装侧」，
 /// 一起与提示词接口产出的 `system` / 本轮 user 输入 / 工具清单解耦：
 /// - 本文件只依赖 `Round` 模型与反解析器，**不引用任何提示词模块**
-///   （`prompt_text` / `prompt_v2_build` / `prompt_v2_sections` 都不引用）；
+///   （`prompt_text` / `prompt_v3_build` / `prompt_v3_sections` 都不引用）；
 /// - 请求体由 `RoundProvider` + `wire_adapters` 拼装，历史消息在这一侧进入消息序列；
-/// - 因此提示词换版（v1 ↔ v2）不需要改动本文件与报文层。
+/// - 因此提示词换版（v2 ↔ v3）不需要改动本文件与报文层。
 ///
 /// assistant 侧形态是模型的**模仿对象**：历史里一旦出现某个区块，模型就会照抄，
 /// 所以形态必须与该模式的输出契约一致（见 [AssistantHistoryShape]）。

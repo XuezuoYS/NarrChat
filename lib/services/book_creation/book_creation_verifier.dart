@@ -306,7 +306,17 @@ class BookCreationVerifier {
       );
     }
 
-    _expectContains(problems, system, '所选 Mod 的系统提示词', bundle.systemPrompts);
+    // 七段逐一确认落点：强指令进 must（system 里会出现两次：正序 + 逆序复述）、
+    // 杂项进 extra、设定紧随书籍设定、文笔进「文笔要求与参考段落」。
+    _expectContains(problems, system, '所选 Mod 的强指令', bundle.mustPrompts);
+    _expectContains(problems, system, '所选 Mod 的杂项要求', bundle.systemPrompts);
+    _expectContains(problems, system, '所选 Mod 的设定', bundle.settingPrompts);
+    _expectContains(
+      problems,
+      system,
+      '所选 Mod 的文笔要求',
+      bundle.writingStylePrompts,
+    );
     _expectContains(problems, system, '所选 Mod 的世界书', bundle.worldBooks);
     _expectContains(problems, user, '所选 Mod 的前置词', bundle.prePrompts);
     _expectContains(problems, user, '所选 Mod 的后置词', bundle.postPrompts);

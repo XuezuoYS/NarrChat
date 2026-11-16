@@ -145,7 +145,7 @@ void main() {
       expect(joined, isNot(contains('第 1 轮输入')), reason: 'n = 2，更早的第 1 轮不进上下文');
       // 顺序：越晚的轮次越靠后，末条 = 修改轮注入。
       final last = texts.last;
-      expect(last, contains('重写第 4 轮：'));
+      expect(last, contains('重新撰写第 4 轮：'));
       expect(last, contains('- 此轮时间：第一天 午时'));
       expect(last, contains('把第 4 轮写紧凑些'));
       expect(last, isNot(contains('创作第')));
@@ -384,7 +384,7 @@ void main() {
       expect(first, contains('ROUND-TWO-INPUT'));
       expect(first, contains('ROUND-THREE-INPUT'));
       expect(first, isNot(contains('ROUND-ONE-INPUT')));
-      expect(first, contains('重写第 3 轮：'));
+      expect(first, contains('重新撰写第 3 轮：'));
       expect(first, contains('加大冲突'));
 
       // 调研帧拿到的 <memorySummary> = 上一轮（第 2 轮）的内容。

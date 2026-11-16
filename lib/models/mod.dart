@@ -61,13 +61,17 @@ class ModWorldBookEntry {
   }
 }
 
-/// Mod（扩展）模型：对前置词、后置词、系统提示词与世界书的自定义内容包。
+/// Mod（扩展）模型：2 段对话词（前置 / 后置）+ 5 段 system 块 + 1 本世界书。
 ///
 /// 当书籍启用了某个 Mod 后，向 AI 发送请求时会自动将其内容置入对应的提示词
 /// 位置（与用户手动填写效果一致）。名称与简介仅用于辨识，不会发送给 AI。
 ///
 /// - 预置 Mod：仅可查看、不可修改（[presetKey] 非空）；
 /// - 用户自定义 Mod：可查看、编辑、导出与导入（[uuid] 即数据库主键、[presetKey] 为 null）。
+///
+/// 七列的语义与落点见 `docs/mods.md` §二；其中 [systemPrompt] 自 v3 起语义收窄为
+/// 「杂项要求」，[systemMust] / [systemSetting] / [systemWritingStyle] 是 v26 新增的
+/// 三列（v25 及更早的 Mod 一律为空）。
 class Mod {
   /// 数据库主键（UUID v4，用户 Mod 才有）。本地新建时由 [ModDao.insertMod] 生成；
   /// 空串仅表示「未落库的草稿」，已落库实例必非空。
@@ -88,8 +92,17 @@ class Mod {
   /// 后置词内容（发送请求时自动置入用户提示词的后置词区）。
   final String postPrompt;
 
-  /// 系统提示词内容（自动追加到 System Prompt）。
+  /// 强指令内容：进 `{system_must}` 的段 2~n，并在 system 末尾逆序复现一次。
+  final String systemMust;
+
+  /// 杂项要求内容：进 `{system_extra}` 的「杂项要求」块（原「系统提示词」）。
   final String systemPrompt;
+
+  /// 设定内容：紧随书籍设定之后注入（`{system_setting}` 的设定块）。
+  final String systemSetting;
+
+  /// 文笔要求与参考段落：进 `{system_writing_style}` 的「文笔要求与参考段落」。
+  final String systemWritingStyle;
 
   /// 世界书条目（关键词 + 内容，与书籍世界书一致）：
   /// 关键词非空时命中才注入，关键词为空时恒定生效。
@@ -105,7 +118,10 @@ class Mod {
     this.description = '',
     this.prePrompt = '',
     this.postPrompt = '',
+    this.systemMust = '',
     this.systemPrompt = '',
+    this.systemSetting = '',
+    this.systemWritingStyle = '',
     this.worldBookEntries = const [],
     this.createdAt,
     this.updatedAt,
@@ -166,7 +182,11 @@ class Mod {
       description: (map['description'] as String?) ?? '',
       prePrompt: (map['pre_prompt'] as String?) ?? '',
       postPrompt: (map['post_prompt'] as String?) ?? '',
+      // v25 及更早的行没有后三列：缺列 / NULL 一律按空串（与建表默认值一致）。
+      systemMust: (map['system_must'] as String?) ?? '',
       systemPrompt: (map['system_prompt'] as String?) ?? '',
+      systemSetting: (map['system_setting'] as String?) ?? '',
+      systemWritingStyle: (map['system_writing_style'] as String?) ?? '',
       worldBookEntries: ModWorldBookEntry.decodeList(map['world_book'] as String?),
       createdAt: map['created_at'] == null
           ? null
@@ -184,7 +204,10 @@ class Mod {
       'description': description,
       'pre_prompt': prePrompt,
       'post_prompt': postPrompt,
+      'system_must': systemMust,
       'system_prompt': systemPrompt,
+      'system_setting': systemSetting,
+      'system_writing_style': systemWritingStyle,
       'world_book': ModWorldBookEntry.encodeList(worldBookEntries),
       'created_at': createdAt?.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
@@ -198,7 +221,10 @@ class Mod {
     String? description,
     String? prePrompt,
     String? postPrompt,
+    String? systemMust,
     String? systemPrompt,
+    String? systemSetting,
+    String? systemWritingStyle,
     List<ModWorldBookEntry>? worldBookEntries,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -210,7 +236,10 @@ class Mod {
       description: description ?? this.description,
       prePrompt: prePrompt ?? this.prePrompt,
       postPrompt: postPrompt ?? this.postPrompt,
+      systemMust: systemMust ?? this.systemMust,
       systemPrompt: systemPrompt ?? this.systemPrompt,
+      systemSetting: systemSetting ?? this.systemSetting,
+      systemWritingStyle: systemWritingStyle ?? this.systemWritingStyle,
       worldBookEntries: worldBookEntries ?? this.worldBookEntries,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -218,15 +247,21 @@ class Mod {
   }
 
   /// 导出 / 分享用的 JSON 结构（仅包含内容与辨识字段，不包含数据库 id）。
+  ///
+  /// `version: 2` 起带上强指令 / 设定 / 文笔三个键；v1（缺这三个键）仍可导入，
+  /// 缺失的键按空串落地。
   Map<String, dynamic> toJson() {
     return {
       'type': 'narrchat_mod',
-      'version': 1,
+      'version': 2,
       'name': name,
       'description': description,
       'prePrompt': prePrompt,
       'postPrompt': postPrompt,
+      'systemMust': systemMust,
       'systemPrompt': systemPrompt,
+      'systemSetting': systemSetting,
+      'systemWritingStyle': systemWritingStyle,
       'worldBookEntries': worldBookEntries.map((e) => e.toJson()).toList(),
     };
   }
@@ -234,7 +269,7 @@ class Mod {
   /// 从导入的 JSON 还原 Mod；name 缺失或为空返回 null（导入时跳过）。
   ///
   /// 兼容旧版导出：`worldBook` 字符串（整体作为恒定生效条目）与
-  /// `worldBookEntries`（关键词 + 内容数组）均支持。
+  /// `worldBookEntries`（关键词 + 内容数组）均支持；v1 包缺三个新键 → 空串。
   static Mod? fromJson(Map<String, dynamic> json) {
     final name = (json['name'] as String?)?.trim() ?? '';
     if (name.isEmpty) return null;
@@ -257,26 +292,58 @@ class Mod {
       description: (json['description'] as String?) ?? '',
       prePrompt: (json['prePrompt'] as String?) ?? '',
       postPrompt: (json['postPrompt'] as String?) ?? '',
+      systemMust: (json['systemMust'] as String?) ?? '',
       systemPrompt: (json['systemPrompt'] as String?) ?? '',
+      systemSetting: (json['systemSetting'] as String?) ?? '',
+      systemWritingStyle: (json['systemWritingStyle'] as String?) ?? '',
       worldBookEntries: entries,
     );
   }
 }
 
-/// 某本书启用 Mod 后，按置入顺序（自上而下）拼接好的四段内容。
+/// 某本书启用 Mod 后，按置入顺序（自上而下）拼接好的**七段**内容。
 ///
-/// 由提示词接口（`prompt_interface.dart`）分别注入 System Prompt 与 User Prompt。
+/// 由提示词接口（`prompt_interface.dart`）分别注入 system 的 5 个模块与 user 的
+/// 2 个词位；字段与注入位的对应关系见 `docs/mods.md` §二与 `docs/prompt_v3_interface.md` §五。
 class ModsBundle {
+  /// user 消息前置词区（用户前置词之后）。
   final String prePrompts;
+
+  /// user 消息后置词区（用户后置词之前）。
   final String postPrompts;
+
+  /// `{system_must}` 的段 2~n（不标标题）。
+  final String mustPrompts;
+
+  /// [mustPrompts] 的**逐块形态**：每个 Mod 一块，顺序 = 用户设定顺序。
+  ///
+  /// 只为 `{system_must-}` 服务——它要求「块序列整体反转」，按拼好的整段反转
+  /// 只会把「段1 ↔ 全部 Mod 段」调个头，Mod 之间不会倒序。由
+  /// `ModsBundleBuilder` 与 [mustPrompts] 一并填出；手工构造（测试）时留空，
+  /// 拼合层就退化成「整段视作一块」。
+  final List<String> mustSegments;
+
+  /// `{system_extra}` 的「杂项要求」块（原「系统提示词」）。
   final String systemPrompts;
+
+  /// `{system_setting}` 的设定块（紧随书籍设定）。
+  final String settingPrompts;
+
+  /// `{system_setting}` 的世界书块（紧随书籍世界书）。
   final String worldBooks;
+
+  /// `{system_writing_style}` 的「文笔要求与参考段落」（书范文之前）。
+  final String writingStylePrompts;
 
   const ModsBundle({
     this.prePrompts = '',
     this.postPrompts = '',
+    this.mustPrompts = '',
+    this.mustSegments = const [],
     this.systemPrompts = '',
+    this.settingPrompts = '',
     this.worldBooks = '',
+    this.writingStylePrompts = '',
   });
 
   static const ModsBundle empty = ModsBundle();
@@ -284,8 +351,11 @@ class ModsBundle {
   bool get isEmpty =>
       prePrompts.isEmpty &&
       postPrompts.isEmpty &&
+      mustPrompts.isEmpty &&
       systemPrompts.isEmpty &&
-      worldBooks.isEmpty;
+      settingPrompts.isEmpty &&
+      worldBooks.isEmpty &&
+      writingStylePrompts.isEmpty;
 }
 
 /// 书籍与 Mod 的关联配置（启用状态 + 置入顺序）。

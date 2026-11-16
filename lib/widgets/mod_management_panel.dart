@@ -82,7 +82,10 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
               description: result.description,
               prePrompt: result.prePrompt,
               postPrompt: result.postPrompt,
+              systemMust: result.systemMust,
               systemPrompt: result.systemPrompt,
+              systemSetting: result.systemSetting,
+              systemWritingStyle: result.systemWritingStyle,
               worldBookEntries: result.worldBookEntries,
             ),
           )
@@ -91,7 +94,10 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
             description: result.description,
             prePrompt: result.prePrompt,
             postPrompt: result.postPrompt,
+            systemMust: result.systemMust,
             systemPrompt: result.systemPrompt,
+            systemSetting: result.systemSetting,
+            systemWritingStyle: result.systemWritingStyle,
             worldBookEntries: result.worldBookEntries,
           );
     if (!mounted) return;
@@ -296,8 +302,12 @@ class _ModManagementPanelState extends State<ModManagementPanel> {
         const SettingsPageHeader(
           title: 'Mod 管理',
           description:
-              'Mod 是对前置词、后置词、系统提示词与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
+              'Mod 是两段对话词（前置 / 后置）加五段 system 内容（强指令、杂项要求、设定、文笔）与世界书的自定义内容包。书籍启用后，发送请求时会自动置入对应位置，与手动填写效果一致；名称与简介仅用于辨识，不会发送给 AI。',
         ),
+        if (provider.modsDowngraded) ...[
+          _DowngradedHint(onDismiss: provider.dismissModsDowngraded),
+          const SizedBox(height: 12),
+        ],
         SettingsCard(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -444,11 +454,17 @@ class _ModTile extends StatelessWidget {
   });
 
   /// 非空内容段摘要（辅助辨识）。
+  ///
+  /// 顺序 = 面板顺序（`docs/mods.md` §七）：前置词 → 后置词 → 杂项 → 设定 →
+  /// 文笔 → 强指令 → 世界书。
   String get _fieldsSummary {
     final parts = <String>[
       if (mod.prePrompt.trim().isNotEmpty) '前置词',
       if (mod.postPrompt.trim().isNotEmpty) '后置词',
-      if (mod.systemPrompt.trim().isNotEmpty) '系统提示词',
+      if (mod.systemPrompt.trim().isNotEmpty) '杂项',
+      if (mod.systemSetting.trim().isNotEmpty) '设定',
+      if (mod.systemWritingStyle.trim().isNotEmpty) '文笔',
+      if (mod.systemMust.trim().isNotEmpty) '强指令',
       if (mod.worldBookEntries.isNotEmpty) '世界书',
     ];
     return parts.isEmpty ? '（无内容）' : '含：${parts.join('、')}';
@@ -610,6 +626,48 @@ class _ModTile extends StatelessWidget {
             onPressed: onDelete,
           ),
       ],
+    );
+  }
+}
+
+/// 「库被旧版本访问过」的一次性提示条。
+///
+/// 触发条件见 `ModsStore.downgraded`：旧版本（3.0）打开过 v26 Mod 库，保存任意
+/// Mod 时整行覆盖，三个新列可能已被清空。这里只提示用户去检查内容，不做任何
+/// 自动修复（数据已经没了，自动填回去只会更糟）。
+class _DowngradedHint extends StatelessWidget {
+  final VoidCallback onDismiss;
+
+  const _DowngradedHint({required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(NarrChatTheme.controlRadius),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.warning_amber_rounded, size: 18, color: scheme.onErrorContainer),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '检测到旧版本访问，新列内容可能已被清空，请检查 Mod 内容',
+              style: TextStyle(fontSize: 12, color: scheme.onErrorContainer),
+            ),
+          ),
+          IconButton(
+            icon: Icon(Icons.close, size: 16, color: scheme.onErrorContainer),
+            tooltip: '关闭提示',
+            visualDensity: VisualDensity.compact,
+            onPressed: onDismiss,
+          ),
+        ],
+      ),
     );
   }
 }

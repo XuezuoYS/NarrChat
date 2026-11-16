@@ -133,7 +133,7 @@ void main() {
     expect(updated.userInput, '第 1 轮的用户输入');
     // 实发报文 = 修改轮注入：重写第 1 轮 + 意见。
     final raw = rp.rawExchangesFor(updated.uuid)!.single.requestBody;
-    expect(raw, contains('重写第 1 轮：'));
+    expect(raw, contains('重新撰写第 1 轮：'));
     expect(raw, contains('把这段写紧凑些'));
     // 用途已消费：灰条收起、输入框清空。
     expect(modeBar(), findsNothing);

@@ -137,7 +137,7 @@ void main() {
 
       expect(await store.masterUuid(), isNotEmpty);
       expect(await store.databaseVersion(), userDataDbVersion);
-      expect(userDataDbVersion, 25);
+      expect(userDataDbVersion, 26);
 
       await store.putBook(const LibraryBookRow(bookUuid: 'b1', title: '甲'));
       await store.putBook(const LibraryBookRow(bookUuid: 'b2', title: '乙'));
@@ -296,6 +296,153 @@ void main() {
       expect((await store.list()).single.uuid, 'm1');
       await store.hardDelete('m1');
       expect(await store.list(includeDeleted: true), isEmpty);
+      await store.close();
+    });
+
+    /// 造一个 v25 的 Mod 库（没有 v26 的三个提示词列）。
+    ///
+    /// [withPromptColumns] = true 时造出「列已加、版本还是 25」的遗留状态
+    /// （3.0 打开过 v26 库后把版本写回头）。
+    Future<void> createV25ModsDb(
+      String path, {
+      bool withPromptColumns = false,
+      int userVersion = 25,
+    }) async {
+      final db = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      await db.execute(
+        'CREATE TABLE meta (master_uuid TEXT PRIMARY KEY, '
+        'database_version INTEGER NOT NULL)',
+      );
+      await db.execute('''
+        CREATE TABLE mods (
+          mod_uuid      TEXT PRIMARY KEY,
+          name          TEXT NOT NULL,
+          description   TEXT DEFAULT '',
+          pre_prompt    TEXT DEFAULT '',
+          post_prompt   TEXT DEFAULT '',
+          system_prompt TEXT DEFAULT '',
+          world_book    TEXT DEFAULT '',
+          created_at    TEXT NOT NULL,
+          updated_at    TEXT NOT NULL,
+          deleted_at    TEXT
+          ${withPromptColumns ? ", system_must TEXT NOT NULL DEFAULT '', system_setting TEXT NOT NULL DEFAULT '', system_writing_style TEXT NOT NULL DEFAULT ''" : ''}
+        )
+      ''');
+      await db.insert('meta', {
+        'master_uuid': 'master-old',
+        'database_version': 25,
+      });
+      await db.insert('mods', {
+        'mod_uuid': 'm-old',
+        'name': '老 Mod',
+        'description': '老简介',
+        'pre_prompt': '老前置',
+        'post_prompt': '老后置',
+        'system_prompt': '老杂项',
+        'world_book': '[]',
+        'created_at': '2026-01-01T00:00:00.000Z',
+        'updated_at': '2026-01-02T00:00:00.000Z',
+      });
+      await db.execute('PRAGMA user_version = $userVersion');
+      await db.close();
+    }
+
+    test('v26 建库：七列齐全、版本 26、三列默认空', () async {
+      final path = newTempPath('v3_mods26_', 'narrchat_mods.db');
+      final store = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      await store.upsert(const Mod(uuid: 'm1', name: '甲'));
+
+      final raw = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+      );
+      expect(await columnsOf(raw, 'mods'), containsAll(<String>[
+        'system_prompt',
+        'system_setting',
+        'system_writing_style',
+        'system_must',
+        'world_book',
+      ]));
+      expect(await readUserVersion(raw), userDataDbVersion);
+      final row = (await raw.query('mods')).single;
+      expect(row['system_must'], '');
+      expect(row['system_setting'], '');
+      expect(row['system_writing_style'], '');
+      await raw.close();
+      await store.close();
+    });
+
+    test('v25 → v26：补三列、旧数据不动、重复打开幂等', () async {
+      final path = newTempPath('v3_mods_up_', 'narrchat_mods.db');
+      await createV25ModsDb(path);
+
+      final store = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      final old = await store.get('m-old');
+      expect(old, isNotNull);
+      expect(old!.name, '老 Mod');
+      expect(old.prePrompt, '老前置');
+      expect(old.systemPrompt, '老杂项');
+      expect(old.systemMust, '');
+      expect(old.systemSetting, '');
+      expect(old.systemWritingStyle, '');
+      await store.close();
+
+      final raw = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+      );
+      expect(await readUserVersion(raw), userDataDbVersion);
+      expect(await columnsOf(raw, 'mods'), contains('system_must'));
+      final row = (await raw.query('mods')).single;
+      expect(row['name'], '老 Mod');
+      expect(row['system_must'], '');
+      await raw.close();
+
+      // 再开一次：幂等，不会 duplicate column。
+      final again = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      expect((await again.get('m-old'))!.name, '老 Mod');
+      await again.close();
+    });
+
+    test('降级预检：版本 25 但新列已存在 → downgraded，其余情况为假', () async {
+      final plain = newTempPath('v3_mods_pre_', 'narrchat_mods.db');
+      await createV25ModsDb(plain);
+      final plainStore = ModsDb(pathOverride: plain, masterUuidOverride: 'm');
+      expect(await plainStore.downgraded(), isFalse);
+      await plainStore.close();
+
+      final damaged = newTempPath('v3_mods_dmg_', 'narrchat_mods.db');
+      await createV25ModsDb(damaged, withPromptColumns: true);
+      final damagedStore = ModsDb(
+        pathOverride: damaged,
+        masterUuidOverride: 'm',
+      );
+      expect(await damagedStore.downgraded(), isTrue);
+      // 预检不改库：版本仍是 25（真正打开后才升级）。
+      await damagedStore.close();
+      final raw = await databaseFactory.openDatabase(
+        damaged,
+        options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+      );
+      expect(await readUserVersion(raw), 25);
+      await raw.close();
+
+      final fresh = newTempPath('v3_mods_new_', 'narrchat_mods.db');
+      final freshStore = ModsDb(pathOverride: fresh, masterUuidOverride: 'm');
+      await freshStore.masterUuid();
+      expect(await freshStore.downgraded(), isFalse);
+      await freshStore.close();
+    });
+
+    test('库版本高于应用 → 拒绝打开（明确报错，不静默降级）', () async {
+      final path = newTempPath('v3_mods_newer_', 'narrchat_mods.db');
+      await createV25ModsDb(path, userVersion: 99);
+
+      final store = ModsDb(pathOverride: path, masterUuidOverride: 'm');
+      await expectLater(store.masterUuid(), throwsA(isA<DbIntegrityException>()));
       await store.close();
     });
   });

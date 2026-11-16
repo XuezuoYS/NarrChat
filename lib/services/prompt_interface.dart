@@ -7,10 +7,13 @@
 /// - `prompt_text.dart`：**纯文本**契约与请求对象（不依赖 Flutter）；
 /// - 本文件：聚合门面 [PromptInterface]、**工具集**契约 [AgentToolSource]
 ///   （工具类型依赖抓取服务，故带 Flutter 依赖）、以及唯一实现绑定；
-/// - 实现：[PromptV2]（文本 = `prompt_v2_build.dart`，工具 = `prompt_v2_tools.dart`）。
+/// - 实现：`PromptV3`（system = `prompt_v3_build.dart`、上下文 =
+///   `prompt_v3_context.dart`、工具 = `prompt_v3_tools.dart`，文案真源 =
+///   `prompt_v3_sections.dart`）。
 ///
 /// 【覆盖范围】只包含文本与其等价物：
 /// - [SystemPromptSource.system]：**拼合后**的 system（instructions）；
+/// - [SystemSectionSource.systemSections]：**按模块切分**的 system（调试 / 预览）；
 /// - [UserPromptSource.user]：**拼合后**的本轮 user 消息；
 /// - [StageDirectiveSource]：Agent 阶段回合指令（调研 / 正文 / 维护）；
 /// - [AgentToolSource.tools]：工具集（工具定义即文本，故由接口构造）。
@@ -18,10 +21,6 @@
 /// 【不覆盖】（仍由各自实现器负责，接口不参与）：
 /// 历史 `messages` 数组（`wire_messages.dart`）、请求体 / 线路 / 采样参数、
 /// vision 图片 content、世界书关键词扫描与 Mod 解析、工具的执行与 UI 回调。
-///
-/// 【现状】[promptInterface] 绑定 [PromptV2]（文本 = `prompt_v2_build.dart`，
-/// 工具 = `prompt_v2_tools.dart`）：v1 提示词代码与回退实现已删除，本文件是
-/// 发送给 AI 的全部文本与工具的唯一来源。
 ///
 /// 【接入约定】调用方**只调用** [PromptInterface] 上的方法，不得绕过接口直接调用
 /// 被覆盖的实现器，否则换版时必然漏改。
@@ -35,10 +34,12 @@ import 'agent/state/agent_state_working_copy.dart';
 import 'agent/web_search_tool.dart';
 import 'html_search_service.dart';
 import 'prompt_text.dart';
-import 'prompt_v2_build.dart';
-import 'prompt_v2_tools.dart';
+import 'prompt_v3_build.dart';
+import 'prompt_v3_context.dart';
+import 'prompt_v3_tools.dart';
 
 export 'prompt_text.dart';
+export 'prompt_v3_tools.dart' show promptToolNames;
 
 /// 取用工具集所需的上下文。
 ///
@@ -89,18 +90,45 @@ abstract interface class AgentToolSource {
 
 /// 聚合门面：本轮发送给 AI 的文本与工具的唯一入口。
 ///
-/// 调用方只依赖本接口；实现可整体替换（v1 ↔ v2），无需改动调用方。
+/// 调用方只依赖本接口；实现可整体替换（v2 ↔ v3），无需改动调用方。
 abstract interface class PromptInterface
     implements
         SystemPromptSource,
+        SystemSectionSource,
         UserPromptSource,
         StageDirectiveSource,
         AgentToolSource {}
 
-/// **v2 聚合实现**：文本 = [PromptV2Build]（总模板 / 新建轮模板 / 阶段回合指令），
-/// 工具 = `prompt_v2_tools.listPromptTools`（与 v1 共用同一份清单路由）。
-class PromptV2 extends PromptV2Build implements PromptInterface {
-  const PromptV2();
+/// **v3 聚合实现**：system = [PromptV3Build]，上下文 = [PromptV3Context]，
+/// 工具 = `prompt_v3_tools.listPromptTools`。
+///
+/// 三个实现类各自只做一件事（拼 system / 拼上下文 / 列工具），这里按接口把它们
+/// 串起来；不写任何文案，也不做额外过滤。
+class PromptV3 implements PromptInterface {
+  const PromptV3();
+
+  static const PromptV3Build _build = PromptV3Build();
+  static const PromptV3Context _context = PromptV3Context();
+
+  @override
+  String system(PromptRequest request) => _build.system(request);
+
+  @override
+  List<PromptSection> systemSections(PromptRequest request) =>
+      _build.systemSections(request);
+
+  @override
+  String user(PromptRequest request) => _context.user(request);
+
+  @override
+  String stagePrepare(AgentStageRequest request) =>
+      _context.stagePrepare(request);
+
+  @override
+  String stageStory(AgentStageRequest request) => _context.stageStory(request);
+
+  @override
+  String stageState(AgentStageRequest request) => _context.stageState(request);
 
   @override
   List<NarrAgentTool> tools(AgentToolsRequest request) => listPromptTools(
@@ -118,8 +146,8 @@ class PromptV2 extends PromptV2Build implements PromptInterface {
 // 当前生效的实现
 // -----------------------------------------------------------------------------
 
-/// 全局唯一的取用入口（**当前绑定 v2**）。
+/// 全局唯一的取用入口（**当前绑定 v3**）。
 ///
 /// 换实现只改这一行；调用方代码与依赖都停留在本文件定义的接口上，
 /// 不做任何选择 / 注册。
-const PromptInterface promptInterface = PromptV2();
+const PromptInterface promptInterface = PromptV3();

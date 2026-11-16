@@ -242,6 +242,9 @@ class ModEntryPreview {
     this.prePrompt = '',
     this.postPrompt = '',
     this.systemPrompt = '',
+    this.systemSetting = '',
+    this.systemWritingStyle = '',
+    this.systemMust = '',
     this.worldBookCount = 0,
     this.updatedAt,
     this.deleted = false,
@@ -253,7 +256,19 @@ class ModEntryPreview {
   final String description;
   final String prePrompt;
   final String postPrompt;
+
+  /// 杂项要求（`system_prompt`，原「系统提示词」）。
   final String systemPrompt;
+
+  /// 设定（`system_setting`，v26 新增）。
+  final String systemSetting;
+
+  /// 文笔要求与参考段落（`system_writing_style`，v26 新增）。
+  final String systemWritingStyle;
+
+  /// 强指令（`system_must`，v26 新增）。
+  final String systemMust;
+
   final int worldBookCount;
   final DateTime? updatedAt;
   final bool deleted;

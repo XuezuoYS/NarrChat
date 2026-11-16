@@ -1,8 +1,8 @@
 /// Mod 库的**逐 Mod 冲突**：内容指纹、逐项比较与合并计划。
 ///
 /// 一个 Mod 的同步身份是 `mod_uuid`，比较两件事：
-/// - 内容指纹（[ModContentDigest]）：包含名称、简介、四段内容、世界书与
-///   墓碑布尔，**排除所有时间戳**，所以「只是重新保存一次」不会被当成内容变化；
+/// - 内容指纹（[ModContentDigest]）：包含名称、简介、五段 system 内容、前后置词、
+///   世界书与墓碑布尔，**排除所有时间戳**，所以「只是重新保存一次」不会被当成内容变化；
 /// - 修改时间 `updated_at`：内容不同时，新者居上（与书籍的时间口径一致）。
 ///
 /// 比较结果按 Mod 逐条给出，最终聚合成一个结论（本地 / 云端 / 持平 / 判不了）：
@@ -22,25 +22,54 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../utils/timestamp_format.dart';
 import 'backup_runner.dart';
 
-/// 读取 `mods` 行：预览、逐 Mod PK、合并三处共用同一份列清单与排序。
+/// `mods` 行参与比较 / 合并的**列清单**（顺序固定，缺列位置补空串）。
 ///
-/// 列名一律加引号（`current_time` 之类的保留字曾被 SQLite 当关键字解析过）。
-const String modRowsSql =
-    'SELECT "mod_uuid", "name", "description", "pre_prompt", "post_prompt", '
-    '"system_prompt", "world_book", "created_at", "updated_at", "deleted_at" '
-    'FROM "mods" ORDER BY "mod_uuid" ASC';
+/// 顺序：主键 → 辨识 → 内容（前置 / 后置 / 杂项 / 设定 / 文笔 / 强指令）→
+/// 世界书 → 时间戳与墓碑。列名一律加引号（`current_time` 之类的保留字曾被
+/// SQLite 当关键字解析过）。
+const List<String> modRowColumns = [
+  'mod_uuid',
+  'name',
+  'description',
+  'pre_prompt',
+  'post_prompt',
+  'system_prompt',
+  'system_setting',
+  'system_writing_style',
+  'system_must',
+  'world_book',
+  'created_at',
+  'updated_at',
+  'deleted_at',
+];
 
 /// 从已打开的库连接读出全部 Mod 行（含墓碑）。
 ///
 /// 本地库与云端快照都走这一份 SQL：两侧的行结构一致，比较和合并才有意义。
+/// **v25 及更早的快照没有三个新列**，固定 SQL 会报 `no such column`，所以先按
+/// `PRAGMA table_info` 探列，缺的列在该位置用 `'' AS "列名"` 占位——列序与
+/// [modRowColumns] 完全一致，逐 Mod 指纹与合并写入都按列名取值。
 Future<List<Map<String, Object?>>> readModRowsFromDatabase(
   DatabaseExecutor db,
-) => db.rawQuery(modRowsSql);
+) async {
+  final existing = <String>{
+    for (final row in await db.rawQuery('PRAGMA table_info("mods")'))
+      row['name'] as String? ?? '',
+  };
+  final select = [
+    for (final column in modRowColumns)
+      existing.contains(column) ? '"$column"' : "'' AS \"$column\"",
+  ];
+  return db.rawQuery(
+    'SELECT ${select.join(', ')} FROM "mods" ORDER BY "mod_uuid" ASC',
+  );
+}
 
 /// 单个 Mod 的内容指纹。
 ///
 /// 只用于**运行时**的两侧比较，不写入清单、不参与整库摘要，所以改算法没有
-/// 历史兼容问题；但仍然只取内容列，排除时间戳与纯本机状态。
+/// 历史兼容问题；但仍然只取内容列，排除时间戳与纯本机状态。缺列（v25 快照）
+/// 按空串参与，与升级后「新列为空」的本地行指纹一致。
 class ModContentDigest {
   ModContentDigest._();
 
@@ -52,6 +81,9 @@ class ModContentDigest {
       _textOf(row, 'pre_prompt'),
       _textOf(row, 'post_prompt'),
       _textOf(row, 'system_prompt'),
+      _textOf(row, 'system_setting'),
+      _textOf(row, 'system_writing_style'),
+      _textOf(row, 'system_must'),
       _textOf(row, 'world_book'),
       row['deleted_at'] != null,
     ];
