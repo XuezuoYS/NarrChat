@@ -1,9 +1,12 @@
 # 第二版 AI 提示词
 
+> **已归档**：v2 提示词自 **v3.1.0** 起由 `docs/prompt_v3.md` 取代，取用接口见
+> `docs/prompt_v3_interface.md`。本文只作历史参照，不再维护；归档于 2026-11-17。
+
 为保证 AI 的可靠性，设计此版提示词，适用于更新于 v2.4.0 
 
 实现：`lib/services/prompt_v2_sections.dart`（文案真源）、`prompt_v2_build.dart`（拼装与
-空块删除）、`prompt_v2_tools.dart`（工具清单）；取用接口与版本切换见 `docs/prompt_interface.md`。
+空块删除）、`prompt_v2_tools.dart`（工具清单）；取用接口与版本切换见 `docs/old/prompt_interface_v2.md`。
 本文档是 v2 文案的**评审真源**：改文案先改这里，再同步到 `prompt_v2_sections.dart`。
 
 规范：使用围栏 markdown 标记输入目标文本，使用 {} 标记可替换变量
@@ -178,7 +181,7 @@
 与新建轮**逐字同构**，只有头部两处不同（标题、`- 上轮时间` → `- 此轮时间`）；
 `lastRound` 语义 = 被重写轮的**上一轮**（生成基座），故记忆合并与前置 / 后置词照旧。
 历史侧：**被重写轮生成时收到的 n 轮 + 该轮自身**（n+1），工具读取到的世界 / 角色 /
-记忆一概停在上一轮。接口侧说明见 `docs/prompt_interface.md`。
+记忆一概停在上一轮。接口侧说明见 `docs/old/prompt_interface_v2.md`。
 
 ## 格式模板
 

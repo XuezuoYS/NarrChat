@@ -5,7 +5,7 @@ import 'package:narrchat/models/round.dart';
 import 'package:narrchat/services/prompt_interface.dart';
 import 'package:narrchat/services/prompt_v2_sections.dart';
 
-/// v2「修改轮」user 注入模板测试（文案真源：`docs/ai_prompt_v2.md` 的
+/// v2「修改轮」user 注入模板测试（文案真源：`docs/old/ai_prompt_v2.md` 的
 /// 「*修改轮*注入提示词」）。
 ///
 /// 修改轮 = 按意见重写某一轮：模板与新建轮**同构**，只有两处不同——

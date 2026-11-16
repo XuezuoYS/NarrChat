@@ -1,11 +1,11 @@
-/// **v2 提示词实现**：按 `docs/ai_prompt_v2.md` 的「总模板」与「格式模板」拼装。
+/// **v2 提示词实现**：按 `docs/old/ai_prompt_v2.md` 的「总模板」与「格式模板」拼装。
 ///
 /// 职责边界：
 /// - 本文件只负责**拼接顺序与空块删除**（无内容即删块、`#` 区域 + `---` 分隔）；
 /// - 文案一律来自 `prompt_v2_sections.dart`；
 /// - 工具清单一律来自 `prompt_v2_tools.dart`；
 /// - **不涉及**历史 messages 数组、报文 / 线路 / 采样参数、vision 图片
-///   （这些由 `RoundProvider` + `wire_adapters` 负责，见 `docs/prompt_interface.md`）。
+///   （这些由 `RoundProvider` + `wire_adapters` 负责，见 `docs/old/prompt_interface_v2.md`）。
 ///
 /// 与 v1 的差异（v2 设计）：`#` 一级标题 + `---` 切分区域、口语化简明中文、
 /// 空块整块删除、不举例、不约束思考链格式（但保留「定大纲」等功能性要求）。

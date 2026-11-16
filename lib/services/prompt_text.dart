@@ -29,7 +29,7 @@ enum PromptMode {
   agentLv1,
 }
 
-/// 修改轮（按意见重写某一轮）的目标描述（见 `docs/ai_prompt_v2.md` 修改轮模板）。
+/// 修改轮（按意见重写某一轮）的目标描述（见 `docs/old/ai_prompt_v2.md` 修改轮模板）。
 ///
 /// 与 [PromptRequest.lastRound] 的分工：
 /// - [PromptRequest.lastRound] = **生成基座**，即被重写轮的**上一轮**——上轮时间、

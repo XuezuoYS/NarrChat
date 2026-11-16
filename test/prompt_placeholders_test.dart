@@ -15,7 +15,7 @@ import 'package:narrchat/utils/memory_entry_format.dart';
 
 /// 内置提示词（Mod 除外）的**占位符约定**守护（v2）。
 ///
-/// 约定（真源：`docs/ai_prompt_v2.md` 顶部「不举例」+ `prompt_v2_sections.dart`）：
+/// 约定（真源：`docs/old/ai_prompt_v2.md` 顶部「不举例」+ `prompt_v2_sections.dart`）：
 /// - 涉及具体取值的位置一律写成 `{中文名}`——`{轮次}` / `{时间}` / `{记忆内容}` /
 ///   `{开头轮}` / `{开头轮时间}` / `{类别名}` / `{角色名}` / `{属性名}` / `{属性值}`；
 /// - **不得出现具体案例示例**（写死的角色名 / 类别名 / 日期取值），也不得回退到

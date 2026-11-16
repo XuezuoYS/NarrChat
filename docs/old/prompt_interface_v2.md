@@ -1,7 +1,10 @@
 # Prompt 取用接口（`prompt_interface`）
 
+> **已归档**：v2 取用接口自 **v3.1.0** 起由 `docs/prompt_v3_interface.md` 取代，
+> 文案真源见 `docs/prompt_v3.md`。本文只作历史参照，不再维护；归档于 2026-11-17。
+
 本文档说明「发送给 AI 的文本与工具」的**唯一取用入口**——分源接口套件
-`lib/services/prompt_interface.dart`，以及唯一实现（v2，按 `docs/ai_prompt_v2.md`
+`lib/services/prompt_interface.dart`，以及唯一实现（v2，按 `docs/old/ai_prompt_v2.md`
 的总模板与格式模板组装）：
 
 | 实现 | 文件 |
@@ -79,7 +82,7 @@ const PromptInterface promptInterface = PromptV2();
 | `prompt_v2_build.dart` | **拼接顺序与空块删除**：按总模板拼 system、按新建轮 / 修改轮模板拼 user、按步骤给回合指令；实现 `prompt_text.dart` 的三个文本源（纯 Dart 依赖） |
 | `prompt_v2_tools.dart` | **工具清单**：`listPromptTools(...)`，档位栏目 + 联网开关 → 工具列表 |
 
-设计口径（与 `docs/ai_prompt_v2.md` 一致）：
+设计口径（与 `docs/old/ai_prompt_v2.md` 一致）：
 
 - 外层用 `#` 一级标题分区、区域之间 `---` 分隔；块内分条只用 `- `（不用数字序号）；
 - **无内容即删块**：可选项为空就连标题一起删（书籍设定 / 世界书 / 角色状态栏协议 /
@@ -112,7 +115,7 @@ const PromptInterface promptInterface = PromptV2();
 | user：轮次 / 上轮时间 / 前置词 / 主人输入 / 后置词 / `# 总协议2` | `lastRound`、`book.globalPre/PostPrompt`、`mods.pre/postPrompts`、`userInput`、两种模式 user 契约 |
 | user（Chat）：本轮记忆合并指令 | `planMemoryMerge(...)`（Agent 走维护回合） |
 
-> 「修改轮」（按意见重写某一轮，见 `docs/ai_prompt_v2.md` 的修改轮注入提示词）由
+> 「修改轮」（按意见重写某一轮，见 `docs/old/ai_prompt_v2.md` 的修改轮注入提示词）由
 > `PromptRequest.rewrite`（`RewriteTarget`）触发：**复用同一套 user 组装**，只有头部
 > 两处不同——标题 `创作第 {轮次} 轮` → `重写第 {轮次} 轮`、时间行 `上轮时间` →
 > `此轮时间`（取被重写轮当前代的时间）；`lastRound` 语义相应变为被重写轮的**上一轮**
@@ -159,7 +162,7 @@ system / user 文本；工具清单与回合请在应用内用「预览请求体
 
 ## 六、改版约定
 
-1. 文案改动：先改 `docs/ai_prompt_v2.md`（评审真源），再同步 `prompt_v2_sections.dart`；
+1. 文案改动：先改 `docs/old/ai_prompt_v2.md`（评审真源），再同步 `prompt_v2_sections.dart`；
 2. 结构改动：改 `prompt_v2_build.dart` 的拼接与空块规则；
 3. 契约扩展（新增槽位 / 新增源）：改 `prompt_text.dart` / `prompt_interface.dart`，
    调用方与报文 / 历史层**不动**。
@@ -189,4 +192,4 @@ system / user 文本；工具清单与回合请在应用内用「预览请求体
 | `lib/services/wire_messages.dart` | 报文侧消息组装：历史 messages + 图片 content（历史跟随报文） |
 | `lib/services/agent/agent_default_tools.dart` | 联网工具公共工厂 |
 | `lib/services/agent/state/state_tools.dart` | 六个状态工具（v2 中文文案；世界 / 角色两对为保留框架，当前只注册历史一读一写） |
-| `docs/ai_prompt_v2.md` | 提示词设计（总模板 / 格式模板，文案的评审真源） |
+| `docs/old/ai_prompt_v2.md` | 提示词设计（总模板 / 格式模板，文案的评审真源） |
