@@ -89,6 +89,40 @@ void main() {
     );
   });
 
+  test('exportLegacyBackup：原样复制到目标目录，保留原文件名', () async {
+    final legacy = File(p.join(stack.paths.userDataDir, 'narrchat.db.r2.bak'))
+      ..writeAsBytesSync([1, 2, 3]);
+    // 目标目录故意不存在：导出时自建，和 exportArchive 行为一致。
+    final outDir = Directory(p.join(stack.rootDir.path, 'legacy_out'));
+
+    final target = await service.exportLegacyBackup(targetDirPath: outDir.path);
+
+    expect(target, p.join(outDir.path, 'narrchat.db.r2.bak'));
+    expect(File(target!).readAsBytesSync(), [1, 2, 3]);
+    expect(legacy.existsSync(), isTrue, reason: '导出是复制，原备份留在原处');
+  });
+
+  test('exportLegacyBackup：备份不存在时返回 null，不建空目录', () async {
+    final outDir = Directory(p.join(stack.rootDir.path, 'legacy_out_missing'));
+
+    final target = await service.exportLegacyBackup(targetDirPath: outDir.path);
+
+    expect(target, isNull);
+    expect(outDir.existsSync(), isFalse);
+  });
+
+  test('exportLegacyBackup：目标目录就是备份所在目录时拒绝，原文件不动', () async {
+    final legacy = File(p.join(stack.paths.userDataDir, 'narrchat.db.r2.bak'))
+      ..writeAsBytesSync([4, 5, 6]);
+
+    await expectLater(
+      service.exportLegacyBackup(targetDirPath: stack.paths.userDataDir),
+      throwsA(isA<LegacyBackupExportException>()),
+    );
+
+    expect(legacy.readAsBytesSync(), [4, 5, 6], reason: '复制到自身不得截断备份');
+  });
+
   test('exportArchive：整组打包，含清单与各库文件', () async {
     final bookUuid = await stack.seedBook(title: '书A');
     // mods 库懒建：先读一次，保证导出包里确实有这个文件。

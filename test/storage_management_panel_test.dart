@@ -12,7 +12,7 @@ import 'package:provider/provider.dart';
 import 'helpers/fakes.dart';
 import 'helpers/notice_harness.dart';
 
-/// 存储管理面板（R3）：多库占用总览 + 整组导出/导入 + 旧版备份清理 + 图片库入口。
+/// 存储管理面板（R3）：多库占用总览 + 整组导出/导入 + 旧版备份导出/清理 + 图片库入口。
 void main() {
   const sampleOverview = StorageOverview(
     databases: [
@@ -98,7 +98,7 @@ void main() {
     expect(tester.takeException(), isNull, reason: '不得出现 RenderFlex overflow');
   });
 
-  testWidgets('渲染：多库占用总览 + 图片入口 + 三个操作按钮', (tester) async {
+  testWidgets('渲染：多库占用总览 + 图片入口 + 四个操作按钮', (tester) async {
     final service = FakeStorageService(
       overviewValue: sampleOverview,
       images: sampleImages,
@@ -116,6 +116,7 @@ void main() {
 
     expect(find.text('导出整组数据'), findsOneWidget);
     expect(find.text('导入整组数据'), findsOneWidget);
+    expect(find.text('导出旧版备份'), findsOneWidget);
     expect(find.text('删除旧版备份'), findsOneWidget);
     expect(find.text('图片库'), findsOneWidget);
     expect(find.textContaining('2 张'), findsWidgets, reason: '总览与入口各显示一次');
@@ -220,6 +221,101 @@ void main() {
     expect(service.importedArchive, isNull);
     expect(find.text('请选择 .zip 导出包。'), findsOneWidget);
     await flushNotices(tester);
+  });
+
+  testWidgets('旧版备份操作：导出按钮排在删除左侧（同一行）', (tester) async {
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      wrap(FakeStorageService(overviewValue: sampleOverview)),
+    );
+    await tester.pumpAndSettle();
+
+    final exportCenter = tester.getCenter(find.text('导出旧版备份'));
+    final deleteCenter = tester.getCenter(find.text('删除旧版备份'));
+    expect(exportCenter.dx, lessThan(deleteCenter.dx));
+    expect(exportCenter.dy, closeTo(deleteCenter.dy, 1.0), reason: '同一行内的前一个位置');
+  });
+
+  testWidgets('导出旧版备份：选目录后调用 exportLegacyBackup 并提示落地路径', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
+    final outDir = Directory.systemTemp.createTempSync('legacy_export_');
+    addTearDown(() {
+      if (outDir.existsSync()) outDir.deleteSync(recursive: true);
+    });
+
+    await tester.pumpWidget(wrap(service, pick: () async => outDir.path));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('导出旧版备份'));
+    await tester.pumpAndSettle();
+
+    expect(service.exportLegacyCalls, 1);
+    expect(service.exportedLegacyTo, outDir.path);
+    expect(find.textContaining('旧版备份已导出到'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  testWidgets('导出旧版备份：取消选择目录时不调用导出', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview);
+    await tester.pumpWidget(wrap(service, pick: () async => null));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('导出旧版备份'));
+    await tester.pumpAndSettle();
+
+    expect(service.exportLegacyCalls, 0);
+  });
+
+  testWidgets('导出旧版备份：备份已不存在时提示且不报错', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview)
+      ..legacyBackupMissing = true;
+    final outDir = Directory.systemTemp.createTempSync('legacy_export_gone_');
+    addTearDown(() {
+      if (outDir.existsSync()) outDir.deleteSync(recursive: true);
+    });
+
+    await tester.pumpWidget(wrap(service, pick: () async => outDir.path));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('导出旧版备份'));
+    await tester.pumpAndSettle();
+
+    expect(service.exportLegacyCalls, 1);
+    expect(find.textContaining('旧版备份已不存在'), findsOneWidget);
+    await flushNotices(tester);
+  });
+
+  testWidgets('导出旧版备份：选到备份所在目录时提示换文件夹', (tester) async {
+    final service = FakeStorageService(overviewValue: sampleOverview)
+      ..legacyExportError = const LegacyBackupExportException(
+        '不能导出到旧版备份所在目录，请换一个文件夹。',
+      );
+    final outDir = Directory.systemTemp.createTempSync('legacy_export_self_');
+    addTearDown(() {
+      if (outDir.existsSync()) outDir.deleteSync(recursive: true);
+    });
+
+    await tester.pumpWidget(wrap(service, pick: () async => outDir.path));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('导出旧版备份'));
+    await tester.pumpAndSettle();
+
+    expect(service.exportLegacyCalls, 1);
+    expect(find.text('不能导出到旧版备份所在目录，请换一个文件夹。'), findsOneWidget);
+    expect(find.textContaining('导出失败'), findsNothing);
+    await flushNotices(tester);
+  });
+
+  testWidgets('无旧版备份：不显示导出/删除旧版备份按钮', (tester) async {
+    await tester.pumpWidget(wrap(FakeStorageService()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('导出旧版备份'), findsNothing);
+    expect(find.text('删除旧版备份'), findsNothing);
   });
 
   testWidgets('删除旧版备份：确认后调用 deleteLegacyBackup', (tester) async {

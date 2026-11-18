@@ -17,6 +17,7 @@ import 'settings/settings_kit.dart';
 ///   本地备份状态库 / 旧版 R2 备份）+ 各自大小，外加图片目录占用与合计；
 /// - **导出**：把整组用户数据打包成 `narrchat.zip`（library + mods + 全部书库 + img）；
 /// - **导入**：校验版本后整组落地，落地前自动备份现有 `user_data`；
+/// - **旧版备份**：R2 遗留库可原样导出（复制成 `narrchat.db.r2.bak`）或删除；
 /// - **图片库**：与云备份联动——删除即全局删除，其它设备同步后也会消失。
 class StorageManagementPanel extends StatefulWidget {
   /// 目录选择回调（测试注入替身；缺省用 [FilePicker.platform.getDirectoryPath]）。
@@ -43,6 +44,10 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
   bool _imagesLoading = true;
   bool _exporting = false;
   bool _importing = false;
+  bool _exportingLegacy = false;
+
+  /// 任一导入 / 导出进行中：这时整组操作与旧版备份操作都不能再点。
+  bool get _busy => _exporting || _importing || _exportingLegacy;
 
   StorageService get _service => context.read<StorageService>();
 
@@ -260,6 +265,38 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
     );
   }
 
+  Future<void> _exportLegacyBackup() async {
+    final String? dirPath;
+    try {
+      dirPath = await _pickDirectory();
+    } catch (error) {
+      if (!mounted) return;
+      _snack('选择导出位置失败：$error', kind: NoticeKind.error);
+      return;
+    }
+    if (dirPath == null || !mounted) return;
+
+    setState(() => _exportingLegacy = true);
+    try {
+      final target = await _service.exportLegacyBackup(targetDirPath: dirPath);
+      if (!mounted) return;
+      if (target == null) {
+        _snack('旧版备份已不存在，没有可导出的文件。', kind: NoticeKind.warning);
+        _loadOverview();
+        return;
+      }
+      _snack('旧版备份已导出到 $target', kind: NoticeKind.success);
+    } on LegacyBackupExportException catch (error) {
+      if (!mounted) return;
+      _snack(error.message, kind: NoticeKind.warning);
+    } catch (error) {
+      if (!mounted) return;
+      _snack('导出失败：$error', kind: NoticeKind.error);
+    } finally {
+      if (mounted) setState(() => _exportingLegacy = false);
+    }
+  }
+
   Future<void> _deleteLegacyBackup() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -379,21 +416,27 @@ class _StorageManagementPanelState extends State<StorageManagementPanel> {
           runSpacing: 8,
           children: [
             FilledButton.icon(
-              onPressed: _exporting || _importing ? null : _exportArchive,
+              onPressed: _busy ? null : _exportArchive,
               icon: const Icon(Icons.archive_outlined, size: 18),
               label: Text(_exporting ? '导出中…' : '导出整组数据'),
             ),
             OutlinedButton.icon(
-              onPressed: _exporting || _importing ? null : _importArchive,
+              onPressed: _busy ? null : _importArchive,
               icon: const Icon(Icons.unarchive_outlined, size: 18),
               label: Text(_importing ? '导入中…' : '导入整组数据'),
             ),
-            if (rows.any((file) => file.id == 'legacy-backup'))
+            if (rows.any((file) => file.id == 'legacy-backup')) ...[
               TextButton.icon(
-                onPressed: _exporting || _importing ? null : _deleteLegacyBackup,
+                onPressed: _busy ? null : _exportLegacyBackup,
+                icon: const Icon(Icons.save_alt, size: 18),
+                label: Text(_exportingLegacy ? '导出中…' : '导出旧版备份'),
+              ),
+              TextButton.icon(
+                onPressed: _busy ? null : _deleteLegacyBackup,
                 icon: const Icon(Icons.delete_outline, size: 18),
                 label: const Text('删除旧版备份'),
               ),
+            ],
           ],
         ),
       ],

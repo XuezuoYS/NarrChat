@@ -101,6 +101,19 @@ class StorageImportResult {
   final bool suggestRestart;
 }
 
+/// 旧版备份导出被拒绝（目前只有「目标目录就是备份所在目录」这一种）。
+///
+/// 单独建模而不是抛 [FileSystemException]：界面要原样展示这句话，
+/// 不该带上一串平台路径。
+class LegacyBackupExportException implements Exception {
+  const LegacyBackupExportException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// 存储管理服务（可注入替身）。
 ///
 /// R3 起"本地数据"不再是一个库，而是：
@@ -143,6 +156,14 @@ abstract class StorageService {
   /// 流程固定：解到临时目录 → 校验清单与库版本 → **先备份现有 user_data**
   /// → 关闭书库连接 → 整组替换。任一步失败都返回带原因的失败结果。
   Future<StorageImportResult> importArchive({required String archivePath});
+
+  /// 把旧版（R2）备份文件原样复制到 [targetDirPath]，返回落地文件路径。
+  ///
+  /// 保留原文件名 `narrchat.db.r2.bak`：想回到 2.x 时把它放回
+  /// `user_data/` 并改名为 `narrchat.db` 即可。备份已不存在时返回 null，
+  /// 由界面提示「没有可导出的备份」；[targetDirPath] 就是备份所在目录时
+  /// 抛 [LegacyBackupExportException]（复制到自身可能毁掉备份）。
+  Future<String?> exportLegacyBackup({required String targetDirPath});
 
   /// 删除旧版（R2）备份文件 `narrchat.db.r2.bak`。
   Future<void> deleteLegacyBackup();
@@ -577,6 +598,22 @@ class LocalStorageService implements StorageService {
       }
     }
     return count;
+  }
+
+  @override
+  Future<String?> exportLegacyBackup({required String targetDirPath}) async {
+    final source = File(_paths.backupPath);
+    if (!await source.exists()) return null;
+    final target = p.join(targetDirPath, p.basename(source.path));
+    if (p.equals(target, source.path)) {
+      // 复制到自身在部分平台会把 .bak 截成 0 字节，宁可拒绝也不赌平台行为。
+      throw const LegacyBackupExportException(
+        '不能导出到旧版备份所在目录，请换一个文件夹。',
+      );
+    }
+    await Directory(targetDirPath).create(recursive: true);
+    await source.copy(target);
+    return target;
   }
 
   @override

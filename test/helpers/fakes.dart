@@ -711,7 +711,7 @@ class FakeClipboardPasteService implements ClipboardPasteService {
   }
 }
 
-/// 可控存储管理替身（R3：多库概览 + 整包导出导入 + 旧备份删除）。
+/// 可控存储管理替身（R3：多库概览 + 整包导出导入 + 旧版备份导出/删除）。
 class FakeStorageService implements StorageService {
   FakeStorageService({
     this.overviewValue = const StorageOverview(
@@ -727,6 +727,15 @@ class FakeStorageService implements StorageService {
   List<StorageImageInfo> images;
   int deleteCalls = 0;
   int deleteLegacyCalls = 0;
+  int exportLegacyCalls = 0;
+  String? exportedLegacyTo;
+
+  /// 为 true 时 [exportLegacyBackup] 返回 null（模拟备份已被删除）。
+  bool legacyBackupMissing = false;
+
+  /// 非 null 时 [exportLegacyBackup] 抛出它（模拟「导出到备份所在目录」被拒）。
+  Object? legacyExportError;
+
   String? exportedTo;
   String? exportedName;
   List<String>? exportedImages;
@@ -772,6 +781,15 @@ class FakeStorageService implements StorageService {
   }) async {
     importedArchive = archivePath;
     return importResult;
+  }
+
+  @override
+  Future<String?> exportLegacyBackup({required String targetDirPath}) async {
+    exportLegacyCalls++;
+    exportedLegacyTo = targetDirPath;
+    if (legacyExportError != null) throw legacyExportError!;
+    if (legacyBackupMissing) return null;
+    return p.join(targetDirPath, 'narrchat.db.r2.bak');
   }
 
   @override
