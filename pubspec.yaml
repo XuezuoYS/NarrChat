@@ -107,6 +107,7 @@ flutter:
     - assets/github_mark.png
     # 首页书籍封面默认图（2:3；书籍没设自定义封面时用它兜底）。
     - assets/girl1.png
+    - assets/girl2.png
     # 手动补充的开放源代码许可证清单（开发者维护，「开放源代码许可」页读取）。
     - assets/manual_licenses.json
     # 更新日志（「更新日志」页读取；开发者维护）。
