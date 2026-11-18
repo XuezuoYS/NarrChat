@@ -245,6 +245,7 @@ class _BookListScreenState extends State<BookListScreen> {
         width: 36,
         radius: 8,
         title: book.title,
+        category: book.category,
         style: coverStyle,
         coverImg: book.bookCoverImg,
       ),

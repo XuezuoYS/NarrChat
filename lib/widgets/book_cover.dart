@@ -1,13 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../models/cover_illustration.dart';
 import '../models/default_cover_style.dart';
 import 'book_cover_image.dart';
-
-/// 默认书籍封面资源（2:3 比例）。
-///
-/// 书籍没有自定义封面（`book_meta.book_cover_img` 为 NULL）时用它兜底；
-/// 有自定义封面时显示用户裁好的那张图（见 [BookCover.coverImg]）。
-const String kDefaultBookCoverAsset = 'assets/girl1.png';
 
 /// 生成封面的纸感底色（上浅下深）。
 const Color _kPaperTop = Color(0xFFECEAE5);
@@ -19,12 +14,16 @@ const Color _kInk = Color(0xFF34373B);
 /// 书籍封面：固定 2:3、圆角。
 ///
 /// 显示优先级：
-/// - 有 [coverImg]（自定义封面的图片相对路径）→ 显示用户裁好的图；图丢了或
-///   解码失败时**回落默认封面**（首页不出现灰块）；
+/// - 有 [coverImg]（自定义封面的图片相对路径）→ 显示用户裁好的图，[style]
+///   一律不参与（选「插画适配」也不会盖掉它）；图丢了或解码失败时
+///   **回落默认封面**（首页不出现灰块）；
 /// - 没有自定义封面 → 按 [style] 展示默认封面：
-///   - [DefaultCoverStyle.illustration1]：默认插画（按显示宽度限制解码尺寸）；
-///   - [DefaultCoverStyle.noIllustration]：程序生成的纸感封面（细内框、小字品牌、
-///     书名与装饰线），内容为书名。
+///   - [DefaultCoverStyle.illustration1] / [DefaultCoverStyle.illustration2] /
+///     [DefaultCoverStyle.illustration3]：固定插画（按显示宽度限制解码尺寸）；
+///   - [DefaultCoverStyle.adaptive]：按 [category] 的关键词挑插画，规则见
+///     [CoverIllustration.forCategory]；
+///   - [DefaultCoverStyle.noIllustration]：程序生成的纸感封面（细内框、小字
+///     品牌、书名与装饰线），内容为书名。
 class BookCover extends StatelessWidget {
   /// 显示宽度（高度固定为宽度的 1.5 倍）。
   final double width;
@@ -32,11 +31,11 @@ class BookCover extends StatelessWidget {
   /// 圆角半径。
   final double radius;
 
-  /// 插画封面资源路径。
-  final String asset;
-
   /// 书名（生成封面时显示；插画封面不使用）。
   final String title;
+
+  /// 书籍分类（「插画适配」按它挑插画；其它样式不使用）。
+  final String category;
 
   /// 默认封面样式（仅在没有自定义封面时生效）。
   final DefaultCoverStyle style;
@@ -48,9 +47,9 @@ class BookCover extends StatelessWidget {
     super.key,
     required this.width,
     this.radius = 12,
-    this.asset = kDefaultBookCoverAsset,
     this.title = '',
-    this.style = DefaultCoverStyle.illustration1,
+    this.category = '',
+    this.style = DefaultCoverStyle.defaultStyle,
     this.coverImg,
   });
 
@@ -82,20 +81,24 @@ class BookCover extends StatelessWidget {
 
   /// 默认封面（没有自定义封面 / 自定义封面读不出来时使用）。
   Widget _buildDefaultCover(BuildContext context) {
-    return style == DefaultCoverStyle.noIllustration
+    final illustration = style.illustrationFor(category);
+    return illustration == null
         ? _buildGeneratedCover()
-        : _buildIllustration(context);
+        : _buildIllustration(context, illustration);
   }
 
   /// 默认插画；资源缺失时退化为生成封面，不露破图。
-  Widget _buildIllustration(BuildContext context) {
+  Widget _buildIllustration(
+    BuildContext context,
+    CoverIllustration illustration,
+  ) {
     final rawCacheWidth = (width * MediaQuery.devicePixelRatioOf(context))
         .ceil();
     final cacheWidth = rawCacheWidth < 96
         ? 96
         : (rawCacheWidth > 800 ? 800 : rawCacheWidth);
     return Image.asset(
-      asset,
+      illustration.asset,
       fit: BoxFit.cover,
       cacheWidth: cacheWidth,
       errorBuilder: (context, error, stackTrace) => _buildGeneratedCover(),

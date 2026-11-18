@@ -235,22 +235,30 @@ void main() {
       expect(p.defaultCoverStyle, DefaultCoverStyle.illustration1);
     });
 
-    test('设置为无插画后写入本地并重新加载', () async {
-      final p = UiSettingsProvider();
-      await p.load();
-      await p.setDefaultCoverStyle(DefaultCoverStyle.noIllustration);
+    for (final style in DefaultCoverStyle.values) {
+      test('设置「${style.label}」后写入本地并重新加载', () async {
+        final p = UiSettingsProvider();
+        await p.load();
+        // 先切到另一个样式，保证本轮设置真的落盘（选当前值会被判同跳过写入）。
+        await p.setDefaultCoverStyle(
+          style == DefaultCoverStyle.illustration1
+              ? DefaultCoverStyle.noIllustration
+              : DefaultCoverStyle.illustration1,
+        );
+        await p.setDefaultCoverStyle(style);
 
-      expect(
-        await LocalConfigService.readValue<String>(
-          UiSettingsProvider.keyDefaultCoverStyle,
-        ),
-        'none',
-      );
+        expect(
+          await LocalConfigService.readValue<String>(
+            UiSettingsProvider.keyDefaultCoverStyle,
+          ),
+          style.storageValue,
+        );
 
-      final reloaded = UiSettingsProvider();
-      await reloaded.load();
-      expect(reloaded.defaultCoverStyle, DefaultCoverStyle.noIllustration);
-    });
+        final reloaded = UiSettingsProvider();
+        await reloaded.load();
+        expect(reloaded.defaultCoverStyle, style);
+      });
+    }
 
     test('配置中的非法值（未知字符串 / 类型不符）加载时回退插画1', () async {
       for (final invalid in <Object>['bad', 123, true]) {

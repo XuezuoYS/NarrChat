@@ -113,7 +113,8 @@ const double kChatSidebarDefaultWidth = 380;
 /// - 全局字体大小档位（[fontScaleIndex]：6 档，0 为默认 0%，可为负；全局文字缩放）；
 /// - 宽屏 Chat 页右侧栏宽度（[chatSidebarWidth]，默认 [kChatSidebarDefaultWidth]）；
 /// - 首页书籍排序模式（[homeSortMode]）/ 排列方式（[homeLayoutMode]）；
-/// - 首页默认封面样式（[defaultCoverStyle]）。
+/// - 首页默认封面样式（[defaultCoverStyle]：无插画 / 插画适配 / 插画1/2/3，
+///   默认插画 1）。
 class UiSettingsProvider extends ChangeNotifier {
   /// [persist] 注入本地配置写入实现；默认写 [LocalConfigService.update]。
   ///
@@ -153,7 +154,7 @@ class UiSettingsProvider extends ChangeNotifier {
   double _chatSidebarWidth = kChatSidebarDefaultWidth;
   BookSortMode _homeSortMode = BookSortMode.time;
   BookLayoutMode _homeLayoutMode = BookLayoutMode.grid;
-  DefaultCoverStyle _defaultCoverStyle = DefaultCoverStyle.illustration1;
+  DefaultCoverStyle _defaultCoverStyle = DefaultCoverStyle.defaultStyle;
   bool _isLoading = false;
   String? _error;
 
@@ -195,7 +196,7 @@ class UiSettingsProvider extends ChangeNotifier {
   /// 首页书籍排列方式（默认方格）。
   BookLayoutMode get homeLayoutMode => _homeLayoutMode;
 
-  /// 首页默认封面样式（默认插画 1）。
+  /// 首页默认封面样式（默认插画 1；「插画适配」按书籍分类分配插画）。
   DefaultCoverStyle get defaultCoverStyle => _defaultCoverStyle;
 
   bool get isLoading => _isLoading;

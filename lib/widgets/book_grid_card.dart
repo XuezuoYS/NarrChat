@@ -82,6 +82,7 @@ class BookGridCard extends StatelessWidget {
               width: width,
               radius: _kCoverRadius,
               title: book.title,
+              category: book.category,
               style: coverStyle,
               coverImg: book.bookCoverImg,
             ),

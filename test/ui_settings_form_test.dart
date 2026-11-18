@@ -81,6 +81,8 @@ void main() {
       find.byKey(const ValueKey('ui_settings_default_cover_menu')),
     );
     await tester.pumpAndSettle();
+    expect(find.text('插画适配'), findsOneWidget);
+    expect(find.text('插画2'), findsOneWidget);
     expect(find.text('无插画'), findsOneWidget);
     expect(
       find.byType(MenuItemButton),
@@ -126,5 +128,51 @@ void main() {
       DefaultCoverStyle.illustration1,
       reason: '仅展开菜单，不改变当前值',
     );
+  });
+
+  testWidgets('默认封面：菜单顺序为 无插画/插画适配/插画1/2/3，并说明分配方式', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(buildApp(1000));
+    await tester.pump();
+    await tester.tap(find.text('默认封面'));
+    await tester.pumpAndSettle();
+
+    const expectedOrder = ['无插画', '插画适配', '插画1', '插画2', '插画3'];
+    final tops = [
+      for (final label in expectedOrder)
+        tester.getTopLeft(find.widgetWithText(MenuItemButton, label)).dy,
+    ];
+    expect(tops, [...tops]..sort(), reason: '下拉顺序必须与需求一致');
+
+    // 「插画适配」一项用一句灰字说明分配方式。
+    expect(find.text('按规则根据书籍分类进行分配'), findsOneWidget);
+  });
+
+  testWidgets('默认封面：可选插画适配与插画2，选中后行尾显示当前值', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final ui = UiSettingsProvider(persist: (_) async {});
+    await tester.pumpWidget(buildApp(1000, ui: ui));
+    await tester.pump();
+
+    Future<void> select(String label) async {
+      await tester.tap(find.text('默认封面'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(MenuItemButton, label));
+      await tester.pumpAndSettle();
+    }
+
+    await select('插画适配');
+    expect(ui.defaultCoverStyle, DefaultCoverStyle.adaptive);
+    expect(find.text('插画适配'), findsOneWidget);
+    expect(find.text('插画1'), findsNothing);
+
+    await select('插画2');
+    expect(ui.defaultCoverStyle, DefaultCoverStyle.illustration2);
+    expect(find.text('插画2'), findsOneWidget);
+    expect(find.text('插画适配'), findsNothing);
   });
 }

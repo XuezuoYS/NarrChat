@@ -68,7 +68,11 @@ class UiSettingsForm extends StatelessWidget {
     );
   }
 
-  /// 默认封面设置：书籍未设置封面时，首页展示插画 1 / 程序生成的灰底书名封面。
+  /// 默认封面设置：书籍未设置封面时，首页展示的封面内容。
+  ///
+  /// 下拉顺序即 [DefaultCoverStyle] 的声明顺序：无插画 / 插画适配 / 插画1/2/3。
+  /// 选「插画适配」时按书籍分类自动挑插画（规则见 `CoverIllustration.forCategory`）；
+  /// 书籍自己有封面时一律显示自己的封面。
   ///
   /// 整行任意位置可点展开菜单（[SettingsSelectRow]）；行容器保留原有
   /// `ui_settings_default_cover` / `ui_settings_default_cover_menu` 两个 key。
@@ -81,7 +85,11 @@ class UiSettingsForm extends StatelessWidget {
       labelOf: (style) => style.label,
       options: [
         for (final style in DefaultCoverStyle.values)
-          SettingsSelectOption(value: style, label: style.label),
+          SettingsSelectOption(
+            value: style,
+            label: style.label,
+            detail: _coverOptionDetail(style),
+          ),
       ],
       onSelected: (style) => ui.setDefaultCoverStyle(style),
       rowKey: const ValueKey('ui_settings_default_cover'),
@@ -113,3 +121,12 @@ class UiSettingsForm extends StatelessWidget {
     );
   }
 }
+
+/// 默认封面下拉项的小字说明；不需要解释的选项返回 null。
+String? _coverOptionDetail(DefaultCoverStyle style) => switch (style) {
+  DefaultCoverStyle.noIllustration => '用书名生成灰底封面，不加载插画',
+  DefaultCoverStyle.adaptive => '按规则根据书籍分类进行分配',
+  DefaultCoverStyle.illustration1 ||
+  DefaultCoverStyle.illustration2 ||
+  DefaultCoverStyle.illustration3 => null,
+};

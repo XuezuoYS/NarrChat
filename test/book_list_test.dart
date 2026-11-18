@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
+import 'package:narrchat/models/cover_illustration.dart';
 import 'package:narrchat/models/default_cover_style.dart';
 import 'package:narrchat/providers/book_provider.dart';
 import 'package:narrchat/providers/notification_settings_provider.dart';
@@ -210,6 +211,38 @@ void main() {
       findsNothing,
       reason: '无插画模式不应再加载插画',
     );
+  });
+
+  testWidgets('默认封面设为插画适配：首页按分类分配插画（玄幻→插画2，都市→插画3）', (tester) async {
+    final ui = UiSettingsProvider(persist: (_) async {});
+    await ui.setDefaultCoverStyle(DefaultCoverStyle.adaptive);
+    await pumpHomeScreen(
+      tester,
+      books: const [
+        Book(uuid: 'b1', title: '古风书', category: '玄幻'),
+        Book(uuid: 'b2', title: '现代书', category: '都市'),
+      ],
+      uiSettings: ui,
+    );
+
+    /// 某本书卡片封面实际加载的插画资源路径。
+    String? assetOf(String uuid) {
+      final cover = find.descendant(
+        of: find.byKey(ValueKey('book_card_$uuid')),
+        matching: find.byType(BookCover),
+      );
+      final provider = tester
+          .widget<Image>(
+            find.descendant(of: cover, matching: find.byType(Image)),
+          )
+          .image;
+      if (provider is! ResizeImage) return null;
+      final inner = provider.imageProvider;
+      return inner is AssetImage ? inner.assetName : null;
+    }
+
+    expect(assetOf('b1'), CoverIllustration.illustration2.asset);
+    expect(assetOf('b2'), CoverIllustration.illustration3.asset);
   });
 
   testWidgets('自定义封面：首页方格显示文件图片（cover 居中）', (tester) async {

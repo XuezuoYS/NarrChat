@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:narrchat/models/cover_illustration.dart';
 import 'package:narrchat/models/default_cover_style.dart';
 import 'package:narrchat/services/image_store.dart';
 import 'package:narrchat/theme/app_theme.dart';
@@ -9,7 +10,7 @@ import 'package:narrchat/widgets/book_cover.dart';
 
 import 'helpers/image_fixtures.dart';
 
-/// 默认封面组件：插画1 / 无插画（生成灰底书名封面）/ 自定义封面。
+/// 默认封面组件：插画1/2/3、插画适配、无插画（生成灰底书名封面）、自定义封面。
 void main() {
   late Directory userData;
 
@@ -34,24 +35,67 @@ void main() {
     );
   }
 
-  testWidgets('插画1：使用默认插画资源，不在封面上重复书名', (tester) async {
-    await tester.pumpWidget(
-      build(const BookCover(width: 120, title: '测试书')),
-    );
+  /// 封面实际加载的默认插画资源路径。
+  ///
+  /// 封面会按显示宽度限制解码尺寸，`Image.asset(cacheWidth: …)` 内部包装成
+  /// ResizeImage，要拆两层才看得到 `AssetImage`。
+  String? renderedAsset(WidgetTester tester) {
+    final image = tester.widget<Image>(find.byType(Image));
+    final provider = image.image;
+    if (provider is! ResizeImage) return null;
+    final inner = provider.imageProvider;
+    return inner is AssetImage ? inner.assetName : null;
+  }
+
+  testWidgets('未设置样式：默认用插画1，不在封面上重复书名', (tester) async {
+    await tester.pumpWidget(build(const BookCover(width: 120, title: '测试书')));
 
     final image = tester.widget<Image>(find.byType(Image));
-    // 封面会按显示宽度限制解码尺寸，`Image.asset(cacheWidth: …)` 内部包装成
-    // ResizeImage；解包后再校验默认资源。
     final provider = image.image;
     expect(provider, isA<ResizeImage>());
     final resized = provider as ResizeImage;
     expect(resized.imageProvider, isA<AssetImage>());
     expect(
       (resized.imageProvider as AssetImage).assetName,
-      kDefaultBookCoverAsset,
+      CoverIllustration.illustration1.asset,
     );
     expect(find.text('测试书'), findsNothing);
   });
+
+  for (final (style, illustration) in const [
+    (DefaultCoverStyle.illustration2, CoverIllustration.illustration2),
+    (DefaultCoverStyle.illustration3, CoverIllustration.illustration3),
+  ]) {
+    testWidgets('固定插画 ${style.label}：加载对应资源', (tester) async {
+      await tester.pumpWidget(
+        build(BookCover(width: 120, title: '测试书', style: style)),
+      );
+
+      expect(renderedAsset(tester), illustration.asset);
+    });
+  }
+
+  for (final (category, illustration) in const [
+    ('玄幻', CoverIllustration.illustration2),
+    ('都市', CoverIllustration.illustration3),
+    ('玄幻·都市', CoverIllustration.illustration1),
+    ('', CoverIllustration.illustration1),
+  ]) {
+    testWidgets('插画适配：分类「$category」→ ${illustration.asset}', (tester) async {
+      await tester.pumpWidget(
+        build(
+          BookCover(
+            width: 120,
+            title: '测试书',
+            category: category,
+            style: DefaultCoverStyle.adaptive,
+          ),
+        ),
+      );
+
+      expect(renderedAsset(tester), illustration.asset);
+    });
+  }
 
   testWidgets('无插画：生成灰底封面并显示书名', (tester) async {
     await tester.pumpWidget(
@@ -104,17 +148,57 @@ void main() {
     expect(find.text('图片已损坏'), findsNothing);
   });
 
-  testWidgets('自定义封面文件丢失：回落默认插画（首页不出现灰块）', (tester) async {
+  testWidgets('插画适配：有自定义封面时仍显示用户封面，不被适配覆盖', (tester) async {
+    final bytes = await makePngBytes(tester, width: 4, height: 6);
+    final rel = (await tester.runAsync(
+      () => writeImageFixture(userData, bytes),
+    ))!;
+
     await tester.pumpWidget(
-      build(const BookCover(width: 120, title: '测试书', coverImg: 'img/gone.png')),
+      build(
+        BookCover(
+          width: 120,
+          title: '测试书',
+          category: '玄幻',
+          style: DefaultCoverStyle.adaptive,
+          coverImg: rel,
+        ),
+      ),
     );
     await tester.pump();
 
-    final image = tester.widget<Image>(find.byType(Image));
-    final provider = image.image;
+    final provider = tester.widget<Image>(find.byType(Image)).image;
     expect(provider, isA<ResizeImage>());
-    expect((provider as ResizeImage).imageProvider, isA<AssetImage>());
+    expect((provider as ResizeImage).imageProvider, isA<FileImage>());
+  });
+
+  testWidgets('自定义封面文件丢失：回落默认插画（首页不出现灰块）', (tester) async {
+    await tester.pumpWidget(
+      build(
+        const BookCover(width: 120, title: '测试书', coverImg: 'img/gone.png'),
+      ),
+    );
+    await tester.pump();
+
+    expect(renderedAsset(tester), CoverIllustration.illustration1.asset);
     expect(find.text('图片已损坏'), findsNothing);
     expect(find.text('未设置封面'), findsNothing);
+  });
+
+  testWidgets('插画适配 + 自定义封面文件丢失：回落适配后的插画', (tester) async {
+    await tester.pumpWidget(
+      build(
+        const BookCover(
+          width: 120,
+          title: '测试书',
+          category: '都市',
+          style: DefaultCoverStyle.adaptive,
+          coverImg: 'img/gone.png',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(renderedAsset(tester), CoverIllustration.illustration3.asset);
   });
 }
