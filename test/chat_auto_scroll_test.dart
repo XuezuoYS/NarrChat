@@ -348,6 +348,73 @@ void main() {
     );
   });
 
+  testWidgets('生成结束时仍在滚动：落库后仍跳到阅读处', (tester) async {
+    const marker = '滚动中交接锚点';
+    final narrative = List.generate(
+      36,
+      (i) => '第 $i 段正文，用于撑起足够长的阅读内容。',
+    ).join('\n\n');
+    final raw = '## 剧情演绎\n$marker\n\n$narrative\n\n'
+        '## 推荐行动\n\n继续。\n\n'
+        '## 当前时间\n第三天 清晨\n\n'
+        '## 世界状态\n${List.generate(120, (i) => '- 状态变化 $i').join('\n')}\n\n'
+        '## 角色状态\n\n## 记忆总结\n';
+    final ai = FakeStreamingAiService(finalContent: raw);
+    final provider = await pumpChatScreen(tester, ai: ai, seedRounds: 2);
+
+    final sendFuture = provider.sendRound(userInput: '继续剧情', book: book);
+    await tester.pump();
+    ai.emit(raw);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final streaming = find.byWidgetPredicate(
+      (widget) => widget is StreamingMarkdown && widget.data.contains(marker),
+    );
+    expect(streaming, findsOneWidget);
+    final streamingMarker = find.textContaining(marker, findRichText: true);
+    await Scrollable.ensureVisible(
+      tester.element(streamingMarker),
+      alignment: 0.4,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+
+    // 手指按住并持续滚动，生成在此过程中结束。
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(ListView)),
+    );
+    await gesture.moveBy(const Offset(0, 40));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(chatBottomGap(tester), greaterThan(100));
+    final beforeTop = tester.getTopLeft(streaming).dy;
+
+    ai.complete();
+    await waitSendDone(tester, provider);
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final finalNarrative = find.descendant(
+      of: find.byType(ChatBubble),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is MarkdownPreview && widget.data.contains(marker),
+      ),
+    );
+    expect(finalNarrative, findsOneWidget, reason: '滚动中结束生成也必须留下正文');
+    expect(await sendFuture, isTrue);
+    final afterTop = tester.getTopLeft(finalNarrative).dy;
+    expect(
+      (afterTop - beforeTop).abs(),
+      lessThan(450),
+      reason: '生成结束时正在滚动也不能取消交接，'
+          '实际差 ${(afterTop - beforeTop).abs().toStringAsFixed(1)}px',
+    );
+    expect(
+      chatBottomGap(tester),
+      greaterThan(100),
+      reason: '跳转目标应是阅读处，而不是被生成结束顺手拉回底部',
+    );
+  });
+
   testWidgets('长列表生成完成后仍贴在底部', (tester) async {
     final ai = FakeStreamingAiService();
     final roundProvider = await pumpUnevenRounds(tester, ai: ai);

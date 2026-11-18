@@ -346,6 +346,28 @@ class _ChatScreenState extends State<ChatScreen>
   /// 当前挂着 [_narrativeAnchorKey] 的落库轮次 uuid（null = 不在正式气泡上）。
   String? _narrativeAnchorTargetUuid;
 
+  /// 已进入落库阶段的交接请求。
+  ///
+  /// 与 [_pendingNarrativeAnchor] 分开：后者在等落库行出现，本字段在等正文
+  /// 锚点的滚动校准完成。滚动开始**不会**清掉它，只会在帧末 / 滚动结束后
+  /// 再次尝试，避免跳转被用户正在进行的滚动吞掉。
+  _NarrativeHandoffAnchor? _narrativeJumpAnchor;
+
+  /// 帧末校准是否已经排队（同帧多次滚动通知只排一次）。
+  bool _narrativeJumpStepScheduled = false;
+
+  /// 连续无位移的校准次数（到达滚动边界时用于止损）。
+  int _narrativeJumpStalledFrames = 0;
+
+  /// 连续稳定帧数（确认落点没有因懒加载 / 手势继续漂移）。
+  int _narrativeJumpStableFrames = 0;
+
+  /// 目标正文行连续没有挂上树的帧数。
+  int _narrativeJumpMissingFrames = 0;
+
+  /// 本轮是否已经请求过「先跳到目标轮，让正文行进入构建范围」的兜底。
+  bool _narrativeJumpFallbackRequested = false;
+
   /// 取消凭据：每次取消自增，让已经排队的帧末回调自行失效。
   int _narrativeHandoffToken = 0;
 
@@ -747,14 +769,21 @@ class _ChatScreenState extends State<ChatScreen>
         notification.dragDetails != null) {
       // 用户按下并开始拖动：立刻放弃进行中的定点跳转复核。
       _chatLocator.cancelPendingJump();
-      // 交接锚点只服务于「读者没有主动改变位置」的那一次布局变化；
-      // 读者一旦拖动，以读者的手势为准，不再替他把内容拽回去。
-      _cancelNarrativeHandoff();
+      // 交接锚点**不因滚动取消**：用户可能恰好在生成结束时滚动。
+      // 跳转会在帧末继续执行；jumpTo 会结束当前拖动活动，不会被它吞掉。
+      _scheduleNarrativeHandoffStep();
     }
     // 窗口预取：视口逼近窗口任一端时扩一页（列表只渲染窗口内轮次）。
     if (notification is ScrollUpdateNotification ||
         notification is ScrollEndNotification) {
       _maybeExpandWindow();
+    }
+    if (notification is ScrollEndNotification) {
+      // 一次滚动结束（松手 / 惯性停止）：若交接校准还没稳定，立刻补做。
+      // 同时清掉「目标行缺失」的计数，允许滚动后再次走目标轮兜底。
+      _narrativeJumpMissingFrames = 0;
+      _narrativeJumpFallbackRequested = false;
+      _scheduleNarrativeHandoffStep();
     }
     if (notification is UserScrollNotification) {
       if (notification.direction != ScrollDirection.idle) {
@@ -880,7 +909,9 @@ class _ChatScreenState extends State<ChatScreen>
     required String branchUuid,
     required String? previousLastUuid,
   }) {
-    if (!_userScrolledAway || bookUuid.isEmpty) return;
+    // 用真实位置判「读者在不在浏览正文」，不要只看 `_userScrolledAway`：
+    // 滚动通知错序 / 惯性结束都可能把这个标志清掉，但视口仍明显离底。
+    if (bookUuid.isEmpty || _isNearBottom()) return;
     final beforeTop = _globalTopOf(_narrativeAnchorKey);
     if (beforeTop == null) return;
     _pendingNarrativeAnchor = _NarrativeHandoffAnchor(
@@ -899,6 +930,11 @@ class _ChatScreenState extends State<ChatScreen>
   void _cancelNarrativeHandoff({bool clearTarget = false}) {
     _narrativeHandoffToken++;
     _pendingNarrativeAnchor = null;
+    _narrativeJumpAnchor = null;
+    _narrativeJumpStalledFrames = 0;
+    _narrativeJumpStableFrames = 0;
+    _narrativeJumpMissingFrames = 0;
+    _narrativeJumpFallbackRequested = false;
     if (clearTarget) _narrativeAnchorTargetUuid = null;
   }
 
@@ -931,47 +967,117 @@ class _ChatScreenState extends State<ChatScreen>
         anchor.branchUuid != _indexBranchUuid) {
       return;
     }
+    // 过渡期读一次**当前**流式正文位置：用户可能在生成收尾的异步落库期间
+    // 又滚了一段，沿用下降沿时的旧坐标会把他送回上一个阅读点。
+    final liveTop = _globalTopOf(_narrativeAnchorKey);
+    final jumpAnchor = liveTop == null
+        ? anchor
+        : _NarrativeHandoffAnchor(
+            // 用落库行的真实轮号：待定落点偶尔会与最终链尾差一轮。
+            roundIndex: round.roundIndex,
+            bookUuid: anchor.bookUuid,
+            branchUuid: anchor.branchUuid,
+            beforeTop: liveTop,
+            previousLastUuid: anchor.previousLastUuid,
+          );
     _narrativeAnchorTargetUuid = round.uuid;
-    _holdNarrativeHandoff(anchor);
+    _narrativeJumpAnchor = jumpAnchor;
+    _narrativeJumpStalledFrames = 0;
+    _narrativeJumpStableFrames = 0;
+    _narrativeJumpMissingFrames = 0;
+    _narrativeJumpFallbackRequested = false;
+    _scheduleNarrativeHandoffStep();
   }
 
-  /// 帧末按正文顶边的实际位移校准滚动偏移（最多 [_kAnchorRefineMax] 帧）。
+  /// 排一次帧末校准。
+  ///
+  /// 校准**不会**被 ScrollStart 取消：用户正在滚动时，`jumpTo` 会结束当前
+  /// 拖动活动；若落点仍被后续布局推动，下一帧或 ScrollEnd 会继续校正。
+  void _scheduleNarrativeHandoffStep() {
+    if (_narrativeJumpAnchor == null || _narrativeJumpStepScheduled) return;
+    _narrativeJumpStepScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _narrativeJumpStepScheduled = false;
+      _stepNarrativeHandoff();
+    });
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  /// 帧末按正文顶边的实际位移校准滚动偏移。
   ///
   /// reverse 列表的视觉坐标为 `y = viewportDimension + pixels - offset`：
   /// 滚动偏移增大内容**下移**，故目标为 `pixels - (afterTop - beforeTop)`。
-  /// 懒加载列表的实测高度随后几帧还在收敛，因此与代次切换同样逐帧复核。
-  void _holdNarrativeHandoff(_NarrativeHandoffAnchor anchor) {
-    final token = ++_narrativeHandoffToken;
-    var attempt = 0;
-    void step() {
-      if (!mounted ||
-          token != _narrativeHandoffToken ||
-          !_scrollController.hasClients) {
+  /// 懒加载列表的实测高度随后几帧还在收敛；如果读者仍在滚动，本次跳转也
+  /// 保持有效，等下一次布局 / 滚动结束继续复核，不会因为 ScrollStart 被丢掉。
+  void _stepNarrativeHandoff() {
+    final anchor = _narrativeJumpAnchor;
+    if (!mounted || anchor == null) return;
+    if (!_scrollController.hasClients) {
+      _scheduleNarrativeHandoffStep();
+      return;
+    }
+    final position = _scrollController.position;
+    final afterTop = _globalTopOf(_narrativeAnchorKey);
+    if (afterTop == null) {
+      _narrativeJumpMissingFrames++;
+      // 目标正文行还没构建（通常是被滚动/窗口甩出 cache）：先跳到目标轮，
+      // 让正文进入构建范围，再继续按正文顶边精修。
+      if (_narrativeJumpMissingFrames >= 3 &&
+          !_narrativeJumpFallbackRequested) {
+        _narrativeJumpFallbackRequested = true;
+        unawaited(_revealNarrativeHandoffTarget(anchor));
+      }
+      // 没有滚动通知时也可能因布局收敛补上行；保留一段有限重试。
+      if (_narrativeJumpMissingFrames <= _kAnchorRefineMax * 3) {
+        _scheduleNarrativeHandoffStep();
+      }
+      return;
+    }
+    _narrativeJumpMissingFrames = 0;
+    final delta = afterTop - anchor.beforeTop;
+    if (delta.abs() < _kAnchorShiftEpsilon) {
+      _narrativeJumpStableFrames++;
+      if (_narrativeJumpStableFrames >= 2) {
+        _narrativeJumpAnchor = null;
         return;
       }
-      final position = _scrollController.position;
-      final afterTop = _globalTopOf(_narrativeAnchorKey);
-      if (afterTop != null) {
-        final delta = afterTop - anchor.beforeTop;
-        if (delta.abs() >= _kAnchorShiftEpsilon) {
-          final target = (position.pixels - delta).clamp(
-            position.minScrollExtent,
-            position.maxScrollExtent,
-          );
-          if ((target - position.pixels).abs() >= _kAnchorShiftEpsilon) {
-            _scrollController.jumpTo(target);
-          }
-        }
-      }
-      attempt++;
-      if (attempt < _kAnchorRefineMax) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => step());
-        WidgetsBinding.instance.scheduleFrame();
-      }
+      _scheduleNarrativeHandoffStep();
+      return;
     }
+    _narrativeJumpStableFrames = 0;
+    final target = (position.pixels - delta).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if ((target - position.pixels).abs() >= _kAnchorShiftEpsilon) {
+      _narrativeJumpStalledFrames = 0;
+      // jumpTo 会 goIdle 并结束当前拖动/惯性；这正是「滚动中的跳转不掉」的关键。
+      _scrollController.jumpTo(target);
+      _scheduleNarrativeHandoffStep();
+      return;
+    }
+    // 已到滚动边界仍对不齐：再给一帧收敛，随后止损，避免无限跳。
+    _narrativeJumpStalledFrames++;
+    if (_narrativeJumpStalledFrames < 3) {
+      _scheduleNarrativeHandoffStep();
+    } else {
+      _narrativeJumpAnchor = null;
+    }
+  }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) => step());
-    WidgetsBinding.instance.scheduleFrame();
+  /// 兜底：目标正文行不在构建范围时，先跳到目标轮让正文行上树。
+  Future<void> _revealNarrativeHandoffTarget(
+    _NarrativeHandoffAnchor anchor,
+  ) async {
+    final token = _narrativeHandoffToken;
+    await _chatLocator.jumpToRound(anchor.roundIndex);
+    if (!mounted ||
+        token != _narrativeHandoffToken ||
+        _narrativeJumpAnchor == null) {
+      return;
+    }
+    _narrativeJumpMissingFrames = 0;
+    _scheduleNarrativeHandoffStep();
   }
 
   // ---------------------------------------------------------------------------
