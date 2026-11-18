@@ -34,8 +34,8 @@ import 'quick_scroll_rail.dart';
 ///   历史轮次的修改绝不自动影响后续轮次，仅作为快照存档。
 ///
 /// 父子约定：父级切换 [round] 时**不更换本组件 key**（State 复用），
-/// 轮次内容在 [State.didUpdateWidget] 中重置；滚动位置与折叠状态保留，
-/// 便于跳转轮次后在同一位置对比查看。
+/// 轮次内容在 [State.didUpdateWidget] 中重置；阅读位置按当前模块的相对位置
+/// 保留，折叠状态也保留，便于跳转轮次后在同一位置对比查看。
 class SidebarPanel extends StatefulWidget {
   final Round? round;
   final bool isHistoryView;
@@ -98,6 +98,29 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 侧栏内容滚动控制器（快速定位导轨共用）。
   final ScrollController _scrollController = ScrollController();
 
+  /// 侧栏滚动视口（编辑 / 轮次切换前后量视口坐标用）。
+  final GlobalKey _viewportKey =
+      GlobalKey(debugLabel: 'sidebar-reading-viewport');
+
+  /// 各子模块正文的稳定锚点（预览与编辑共用同一个外层 Key）。
+  ///
+  /// 切换编辑态 / 换轮次时正文高度会变，恢复「同一个像素偏移」保不住正在看的
+  /// 段落；这里按模块正文内的相对位置恢复（见 [_SidebarReadingAnchor]）。
+  final Map<String, GlobalKey> _bodyKeys = {
+    RoundField.currentTime: GlobalKey(debugLabel: 'sidebar-body-currentTime'),
+    RoundField.worldState: GlobalKey(debugLabel: 'sidebar-body-worldState'),
+    RoundField.characterState:
+        GlobalKey(debugLabel: 'sidebar-body-characterState'),
+    RoundField.memorySummary:
+        GlobalKey(debugLabel: 'sidebar-body-memorySummary'),
+  };
+
+  /// 正在轮次重置：期间编辑器退出的回调只清理状态，不抓阅读锚点。
+  bool _resettingRound = false;
+
+  /// 阅读锚点请求序号：用户拖动 / 新一轮请求会令排队中的旧校准失效。
+  int _readingAnchorSerial = 0;
+
   /// 各子模块的折叠状态（key = 字段名；默认展开）。
   final Map<String, bool> _collapsed = {};
 
@@ -114,9 +137,15 @@ class _SidebarPanelState extends State<SidebarPanel> {
   @override
   void didUpdateWidget(covariant SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 轮次切换（父级复用本 State）时重置内容；滚动位置/折叠状态保留。
+    // 轮次切换（父级复用本 State）时重置内容；折叠状态保留。
     // 身份用代 uuid：R3 起 `Round.id` 是遗留字段（恒为 null），拿它比较会永远相等。
-    if (oldWidget.round?.uuid != widget.round?.uuid) _resetToRound();
+    if (oldWidget.round?.uuid != widget.round?.uuid) {
+      // 生成结束落库 / 手动切轮都会走到这里：先记住当前正在读的模块位置，
+      // 新轮内容比旧轮长或短时把同一相对位置放回视口。
+      final anchor = _captureVisibleReadingAnchor();
+      _resetToRound();
+      if (anchor != null) _scheduleReadingAnchorRestore(anchor);
+    }
   }
 
   /// 顶部四个子模块编辑器的 GlobalKey（[EditableFieldState]，轮次切换时用于退出编辑）。
@@ -126,7 +155,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 切换到新轮次时重置面板内容。
   ///
   /// 与旧实现（父级用 `ValueKey(round.id)` 强制重建 State）的差异：
-  /// - **保留**滚动位置与各模块折叠状态，跳转轮次后仍停在同一位置便于对比；
+  /// - **保留**阅读位置（同模块内的相对位置）与各模块折叠状态；
   /// - 进行中的编辑先 [EditableFieldState.cancel] 退出（丢弃未保存修改），
   ///   避免旧轮次的编辑快照/编辑控制器把内容带回新轮次。
   ///
@@ -134,6 +163,9 @@ class _SidebarPanelState extends State<SidebarPanel> {
   /// 因此必须先退出编辑、再写入新轮次内容。
   void _resetToRound() {
     _editing.clear();
+    // cancel() 会回调 _onEditingChanged(false)：这是数据清理，不是用户退出编辑，
+    // 不能在旧内容向新内容过渡的中间帧抓锚点。
+    _resettingRound = true;
     for (final key in _editorKeys) {
       // 与标题栏按钮同一取 State 方式（见 _enterEditModule / _saveModule）。
       final editable = key.currentState as EditableFieldState?;
@@ -143,6 +175,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
     _characterState.text = widget.round?.characterState ?? '';
     _memorySummary.text = widget.round?.memorySummary ?? '';
     _currentTime.text = widget.round?.currentTime ?? '';
+    _resettingRound = false;
   }
 
   @override
@@ -156,9 +189,162 @@ class _SidebarPanelState extends State<SidebarPanel> {
   }
 
   /// 记录子模块编辑状态（供标题栏显示【保存】/【取消】）。
+  ///
+  /// 预览与原始文本编辑的排版高度不同：在旧布局仍有效的这一刻抓阅读锚点，
+  /// 新布局完成后按同一模块内的相对位置恢复，避免深长内容直接跳到别处。
   void _onEditingChanged(String field, bool editing) {
     if (_editing[field] == editing) return;
+    if (_resettingRound) {
+      // 父级正在 didUpdateWidget 中重置内容，本帧随后会整体重建；
+      // 只记状态，不再安排一次额外的滚动校准。
+      _editing[field] = editing;
+      return;
+    }
+    final anchor = _captureReadingAnchor(field);
+    if (anchor != null) _scheduleReadingAnchorRestore(anchor);
     setState(() => _editing[field] = editing);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 阅读位置锚定：预览 / 编辑 / 轮次内容的长度都不一样
+  // ---------------------------------------------------------------------------
+
+  /// 读取某个模块正文当前落在视口中的相对位置。
+  ///
+  /// 记「模块正文高度比例 + 该点相对视口顶部的位置」，而不是绝对滚动偏移：
+  /// 预览与编辑高度不同，只有比例能表达「我看的是这一段」。
+  _SidebarReadingAnchor? _captureReadingAnchor(String field) {
+    final bodyBox =
+        _bodyKeys[field]?.currentContext?.findRenderObject() as RenderBox?;
+    final viewportBox =
+        _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (bodyBox == null ||
+        !bodyBox.attached ||
+        !bodyBox.hasSize ||
+        bodyBox.size.height <= 0 ||
+        viewportBox == null ||
+        !viewportBox.attached ||
+        !viewportBox.hasSize) {
+      return null;
+    }
+    final bodyTop = bodyBox.localToGlobal(Offset.zero).dy;
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final viewportHeight = viewportBox.size.height;
+    if (viewportHeight <= 0) return null;
+    // 以视口中线为参照：尽量把「正在看的那段」放回屏幕同一高度。
+    final preferredY = viewportTop + viewportHeight / 2;
+    final localY =
+        (preferredY - bodyTop).clamp(0.0, bodyBox.size.height);
+    return _SidebarReadingAnchor(
+      field: field,
+      fraction: localY / bodyBox.size.height,
+      viewportY: bodyTop + localY - viewportTop,
+    );
+  }
+
+  /// 捕获当前与视口交集最大的模块（轮次替换前用）。
+  _SidebarReadingAnchor? _captureVisibleReadingAnchor() {
+    final viewportBox =
+        _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (viewportBox == null ||
+        !viewportBox.attached ||
+        !viewportBox.hasSize) {
+      return null;
+    }
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final viewportBottom = viewportTop + viewportBox.size.height;
+    var bestField = '';
+    var bestVisible = 0.0;
+    for (final field in _bodyKeys.keys) {
+      final box =
+          _bodyKeys[field]?.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final bottom = top + box.size.height;
+      final visible = bottom < viewportTop || top > viewportBottom
+          ? 0.0
+          : (bottom.clamp(viewportTop, viewportBottom) -
+                  top.clamp(viewportTop, viewportBottom))
+              .abs();
+      if (visible > bestVisible) {
+        bestVisible = visible;
+        bestField = field;
+      }
+    }
+    if (bestField.isEmpty) return null;
+    return _captureReadingAnchor(bestField);
+  }
+
+  /// 新布局完成后的帧末按新正文几何恢复锚点。
+  void _scheduleReadingAnchorRestore(_SidebarReadingAnchor anchor) {
+    final serial = ++_readingAnchorSerial;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _applyReadingAnchor(anchor, attempt: 0, serial: serial);
+    });
+  }
+
+  void _applyReadingAnchor(
+    _SidebarReadingAnchor anchor, {
+    required int attempt,
+    required int serial,
+  }) {
+    if (!mounted ||
+        serial != _readingAnchorSerial ||
+        !_scrollController.hasClients) {
+      return;
+    }
+    final position = _scrollController.position;
+    final bodyBox = _bodyKeys[anchor.field]
+        ?.currentContext
+        ?.findRenderObject() as RenderBox?;
+    final viewportBox =
+        _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (bodyBox == null ||
+        !bodyBox.attached ||
+        !bodyBox.hasSize ||
+        viewportBox == null ||
+        !viewportBox.attached ||
+        !viewportBox.hasSize ||
+        bodyBox.size.height <= 0) {
+      if (attempt < 2) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _applyReadingAnchor(
+            anchor,
+            attempt: attempt + 1,
+            serial: serial,
+          ),
+        );
+        WidgetsBinding.instance.scheduleFrame();
+      }
+      return;
+    }
+    final bodyTop = bodyBox.localToGlobal(Offset.zero).dy;
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    // 正向列表：bodyTop = viewportTop + contentOffset - pixels。
+    final contentOffset = position.pixels + bodyTop - viewportTop;
+    final target = contentOffset +
+        anchor.fraction * bodyBox.size.height -
+        anchor.viewportY;
+    final clamped = target.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if ((clamped - position.pixels).abs() >= 0.5) {
+      _scrollController.jumpTo(clamped);
+    }
+    // 懒构建 / 折叠动画可能在下一帧继续改变高度：再复核两帧即可，
+    // 不作长期抢占；用户一旦拖动会由滚动通知停止。
+    if (attempt < 2) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _applyReadingAnchor(
+          anchor,
+          attempt: attempt + 1,
+          serial: serial,
+        ),
+      );
+      WidgetsBinding.instance.scheduleFrame();
+    }
   }
 
   /// 保存并写回数据库；保存结果通过应用内悬浮通知渠道提示。
@@ -230,9 +416,18 @@ class _SidebarPanelState extends State<SidebarPanel> {
                         ? context.narrColors.historyBackground
                         : context.narrColors.surface,
                     entries: _buildTocEntries(),
-                    scrollable: CustomScrollView(
-                      controller: _scrollController,
-                      slivers: [
+                    scrollable: NotificationListener<ScrollStartNotification>(
+                      // 用户一旦主动拖动，放弃尚未走完的阅读位置校准。
+                      onNotification: (notification) {
+                        if (notification.dragDetails != null) {
+                          _readingAnchorSerial++;
+                        }
+                        return false;
+                      },
+                      child: CustomScrollView(
+                        key: _viewportKey,
+                        controller: _scrollController,
+                        slivers: [
                         _buildSection(
                           key: RoundField.currentTime,
                           label: '当前时间',
@@ -304,6 +499,7 @@ class _SidebarPanelState extends State<SidebarPanel> {
                       ],
                     ),
                   ),
+                ),
           ),
         ],
       ),
@@ -510,12 +706,34 @@ class _SidebarPanelState extends State<SidebarPanel> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: body,
+              // Key 放正文外层：预览 / 编辑切换时仍是同一个锚点。
+              child: KeyedSubtree(key: _bodyKeys[key], child: body),
             ),
           ),
       ],
     );
   }
+}
+
+/// 右侧栏一次阅读位置快照。
+///
+/// 不记绝对偏移：预览与原始文本编辑的排版高度不同，同一个像素偏移对应的是
+/// 完全不同的段落。记「模块正文内的相对位置」与「该点在视口中的高度」，
+/// 新布局后反算滚动偏移（见 `_applyReadingAnchor`）。
+class _SidebarReadingAnchor {
+  const _SidebarReadingAnchor({
+    required this.field,
+    required this.fraction,
+    required this.viewportY,
+  });
+
+  final String field;
+
+  /// 参照点在模块正文高度中的比例（0 = 顶部，1 = 底部）。
+  final double fraction;
+
+  /// 参照点距侧栏视口顶部的高度（px）。
+  final double viewportY;
 }
 
 /// 侧边栏子模块的吸顶标题栏（[SliverPersistentHeader] 的 delegate）。

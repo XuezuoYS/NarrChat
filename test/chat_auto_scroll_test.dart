@@ -3,6 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:narrchat/models/book.dart';
 import 'package:narrchat/providers/round_provider.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/widgets/chat_bubble.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
+import 'package:narrchat/widgets/streaming_markdown.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -277,6 +280,72 @@ void main() {
     ai.complete();
     await waitSendDone(tester, roundProvider);
     expect(await sendFuture, isTrue);
+  });
+
+  testWidgets('离底阅读流式正文：完成落库后正文不跑出半屏', (tester) async {
+    const marker = '正文交接锚点';
+    final narrative = List.generate(
+      36,
+      (i) => '第 $i 段正文，用于撑起足够长的阅读内容。',
+    ).join('\n\n');
+    final statusTail = List.generate(
+      180,
+      (i) => '- 状态变化 $i：落库后不会出现在正文气泡里。',
+    ).join('\n');
+    final raw = '## 剧情演绎\n$marker\n\n$narrative\n\n'
+        '## 推荐行动\n\n继续。\n\n'
+        '## 当前时间\n第三天 清晨\n\n'
+        '## 世界状态\n$statusTail\n\n'
+        '## 角色状态\n\n## 记忆总结\n';
+    final ai = FakeStreamingAiService(finalContent: raw);
+    final provider = await pumpChatScreen(tester, ai: ai, seedRounds: 2);
+
+    final sendFuture = provider.sendRound(userInput: '继续剧情', book: book);
+    await tester.pump();
+    ai.emit(raw);
+    await tester.pump();
+
+    // 让流式正文完整排版，滚动到正文段落附近，再用真实手势离开底部。
+    await tester.pump(const Duration(milliseconds: 100));
+    final streaming = find.byWidgetPredicate(
+      (widget) => widget is StreamingMarkdown && widget.data.contains(marker),
+    );
+    expect(streaming, findsOneWidget, reason: '前提：流式正文已上屏');
+    final streamingMarker = find.textContaining(marker, findRichText: true);
+    expect(streamingMarker, findsOneWidget);
+    await Scrollable.ensureVisible(
+      tester.element(streamingMarker),
+      alignment: 0.4,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    await tester.drag(find.byType(ListView), const Offset(0, 40));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(chatBottomGap(tester), greaterThan(100), reason: '前提：读者已离开底部');
+    final beforeTop = tester.getTopLeft(streaming).dy;
+
+    expect(await finishStream(tester, ai, provider, sendFuture), isTrue);
+    await tester.pumpAndSettle();
+
+    final finalNarrative = find.descendant(
+      of: find.byType(ChatBubble),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is MarkdownPreview && widget.data.contains(marker),
+      ),
+    );
+    expect(finalNarrative, findsOneWidget, reason: '落库正文应已替换流式插槽');
+    final afterTop = tester.getTopLeft(finalNarrative).dy;
+    expect(
+      (afterTop - beforeTop).abs(),
+      lessThan(450),
+      reason: '生成结束后正文应留在半屏内，'
+          '实际差 ${(afterTop - beforeTop).abs().toStringAsFixed(1)}px',
+    );
+    expect(
+      chatBottomGap(tester),
+      greaterThan(100),
+      reason: '读者已离开底部，交接校准不得顺手把他拉回底部',
+    );
   });
 
   testWidgets('长列表生成完成后仍贴在底部', (tester) async {

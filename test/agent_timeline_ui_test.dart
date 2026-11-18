@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueKey;
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:narrchat/models/book.dart';
@@ -8,6 +8,9 @@ import 'package:narrchat/providers/ai_settings_provider.dart';
 import 'package:narrchat/services/agent/narr_agent_tool.dart';
 import 'package:narrchat/services/agent/web_search_tool.dart';
 import 'package:narrchat/services/ai_service.dart';
+import 'package:narrchat/widgets/chat_bubble.dart';
+import 'package:narrchat/widgets/markdown_preview.dart';
+import 'package:narrchat/widgets/streaming_markdown.dart';
 
 import 'helpers/chat_harness.dart';
 import 'helpers/fakes.dart';
@@ -382,6 +385,78 @@ void main() {
     expect(find.byKey(const ValueKey('agent_maintenance_done')), findsOneWidget);
     expect(find.text('状态维护已完成'), findsOneWidget);
     expect(provider.roundWarningsFor(1), isEmpty);
+  });
+
+  testWidgets('离底阅读 Agent 正文：维护结束落库后正文不跑出半屏', (tester) async {
+    const marker = 'Agent 正文交接锚点';
+    final narrative = List.generate(
+      36,
+      (i) => '第 $i 段 Agent 正文。',
+    ).join('\n\n');
+    final story = '## 剧情演绎\n$marker\n\n$narrative\n\n'
+        '## 推荐行动\n继续调查。\n\n'
+        '## 当前时间\n第三天 清晨\n\n'
+        '## 世界状态\n- 地点：青云宗\n\n'
+        '## 角色状态\n# 主角\n## 林远\n- 气血：70';
+    final maintenanceGate = Completer<void>();
+    final ai = _ScriptedStreamResponsesService([
+      _prepareReadFrame(),
+      _storyFrame(story),
+      _maintenanceAppendFrame(
+        entry: '- 第1轮｜日期：第三天 清晨｜主角继续调查',
+        startGate: maintenanceGate,
+      ),
+    ]);
+    final settings = AiSettingsProvider();
+    final provider = await pumpChatScreen(
+      tester,
+      ai: ai,
+      settings: settings,
+      aiSettingsProvider: settings,
+      experimentalSettings: AgentModeSettings(),
+    );
+
+    final future = provider.sendRound(userInput: '测试', book: book);
+    await _pumpUntil(tester, () => ai.calls == 3);
+    await tester.pump();
+    expect(provider.agentMaintenanceActive, isTrue);
+
+    final streaming = find.byWidgetPredicate(
+      (widget) => widget is StreamingMarkdown && widget.data.contains(marker),
+    );
+    expect(streaming, findsOneWidget);
+    final streamingMarker = find.textContaining(marker, findRichText: true);
+    expect(streamingMarker, findsOneWidget);
+    await Scrollable.ensureVisible(
+      tester.element(streamingMarker),
+      alignment: 0.4,
+      duration: Duration.zero,
+    );
+    await tester.pump();
+    // 真实手势让页面进入「离底阅读」；随后维护完成、正文落库。
+    await tester.drag(find.byType(ListView), const Offset(0, 40));
+    await tester.pump(const Duration(milliseconds: 200));
+    final beforeTop = tester.getTopLeft(streaming).dy;
+
+    maintenanceGate.complete();
+    await future;
+    await waitSendDone(tester, provider);
+    await tester.pumpAndSettle();
+
+    final finalNarrative = find.descendant(
+      of: find.byType(ChatBubble),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is MarkdownPreview && widget.data.contains(marker),
+      ),
+    );
+    expect(finalNarrative, findsOneWidget, reason: '落库后的 Agent 正文应可见');
+    final afterTop = tester.getTopLeft(finalNarrative).dy;
+    expect(
+      (afterTop - beforeTop).abs(),
+      lessThan(450),
+      reason: '第二步维护结束、正文落库后不应跳出半屏，'
+          '实际差 ${(afterTop - beforeTop).abs().toStringAsFixed(1)}px',
+    );
   });
 
   testWidgets('轮次常驻黄框：结束后警告仍挂在正文轮上，没有关闭入口', (tester) async {

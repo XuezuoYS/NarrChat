@@ -388,6 +388,21 @@ class AgentModeSettings extends ExperimentalSettingsProvider {
 /// 模拟逐 chunk 输出与生成结束；complete 后若已取消则抛
 /// [AiCancelledException]（对应真实流式路径）。
 class FakeStreamingAiService extends AiService {
+  /// [finalContent] 为空时用默认六区块正文；阅读位置类用例可注入与流式增量
+  /// 同源的完整正文，避免「流式看到的文字」与「落库文字」毫无关系。
+  FakeStreamingAiService({String? finalContent})
+      : finalContent = finalContent ?? _defaultFinalContent;
+
+  final String finalContent;
+
+  static const String _defaultFinalContent =
+      '## 剧情演绎\n流式生成的最终正文\n'
+      '## 推荐行动\n\n'
+      '## 当前时间\n第一天 午时\n'
+      '## 世界状态\n\n'
+      '## 角色状态\n\n'
+      '## 记忆总结\n';
+
   final Completer<void> _done = Completer<void>();
   void Function(AiStreamChunk chunk)? _onChunk;
 
@@ -418,14 +433,8 @@ class FakeStreamingAiService extends AiService {
       throw const AiCancelledException();
     }
     _onChunk?.call(const AiStreamChunk(done: true));
-    return const AiCallResult(
-      content:
-          '## 剧情演绎\n流式生成的最终正文\n'
-          '## 推荐行动\n\n'
-          '## 当前时间\n第一天 午时\n'
-          '## 世界状态\n\n'
-          '## 角色状态\n\n'
-          '## 记忆总结\n',
+    return AiCallResult(
+      content: finalContent,
       promptTokens: 10,
       completionTokens: 20,
     );

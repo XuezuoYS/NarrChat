@@ -77,6 +77,12 @@ class ChatBubble extends StatelessWidget {
   final int? roundIndex;
   final void Function(Offset globalPosition)? onContextMenu;
 
+  /// AI 正文 Markdown 容器的可选锚点 Key（仅正文，不含页眉 / 推荐行动 / footer）。
+  ///
+  /// 供对话页在「流式气泡 → 落库气泡」交接时量同一段正文在屏幕上的位置，
+  /// 见 `ChatScreen` 的生成正文锚点。
+  final Key? narrativeKey;
+
   const ChatBubble({
     super.key,
     required this.isUser,
@@ -88,6 +94,7 @@ class ChatBubble extends StatelessWidget {
     this.footer,
     this.roundIndex,
     this.onContextMenu,
+    this.narrativeKey,
   });
 
   @override
@@ -281,12 +288,15 @@ class ChatBubble extends StatelessWidget {
             ),
           )
         else
-          MarkdownPreview(
-            data: text,
-            base: TextStyle(
-              fontSize: 15,
-              height: 1.65,
-              color: context.narrColors.textPrimary,
+          KeyedSubtree(
+            key: narrativeKey,
+            child: MarkdownPreview(
+              data: text,
+              base: TextStyle(
+                fontSize: 15,
+                height: 1.65,
+                color: context.narrColors.textPrimary,
+              ),
             ),
           ),
         // 推荐下一步：AI 正文下方，极简样式。

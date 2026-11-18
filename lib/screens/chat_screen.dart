@@ -158,6 +158,34 @@ typedef _ChatShellSignals = ({
   int versionsRevision,
 });
 
+/// 一次「流式正文 → 落库正文」交接的位置快照。
+///
+/// 流式气泡和落库气泡是两个完全不同的渲染来源：`ReadingAnchor` 在来源更换时
+/// 会重新对基，因此**最后一次**高度差不会被它补偿。这里在流式正文卸载前记下
+/// 正文顶边的全局 y，等落库气泡挂载后按同一位置校准滚动偏移。
+class _NarrativeHandoffAnchor {
+  const _NarrativeHandoffAnchor({
+    required this.roundIndex,
+    required this.bookUuid,
+    required this.branchUuid,
+    required this.beforeTop,
+    required this.previousLastUuid,
+  });
+
+  /// 正文所属轮号。
+  final int roundIndex;
+
+  /// 捕获时活动链最后一轮的 uuid（用于识别最终是否真的新增了轮次）。
+  final String? previousLastUuid;
+
+  /// 捕获时的书 / 分支身份：不一致即说明用户已经离开这轮阅读。
+  final String bookUuid;
+  final String branchUuid;
+
+  /// 流式正文容器的全局 y（只量正文，不含思考 / 工具 / 维护 / footer）。
+  final double beforeTop;
+}
+
 /// 一次代次切换（或删代）的滚动锚点快照。
 ///
 /// **为什么按书坐标记**：切换会改写整条活动链——从「链尾那代」切回「有后续轮的
@@ -304,6 +332,31 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// 一次还没落地的切换锚点（新的活动链生效后由 [_applyVersionAnchor] 消费）。
   _VersionSwitchAnchor? _pendingVersionAnchor;
+
+  /// 「流式正文 → 落库正文」交接用的正文锚点 Key。
+  ///
+  /// 同一实例先挂在流式正文容器上，落库后再挂到同一轮正式气泡的正文容器上；
+  /// pending 行与正式行不会同时存在，因此可以复用同一个 [GlobalKey]。
+  final GlobalKey _narrativeAnchorKey =
+      GlobalKey(debugLabel: 'chat-narrative-anchor');
+
+  /// 已捕获、等待落库气泡出现的交接锚点。
+  _NarrativeHandoffAnchor? _pendingNarrativeAnchor;
+
+  /// 当前挂着 [_narrativeAnchorKey] 的落库轮次 uuid（null = 不在正式气泡上）。
+  String? _narrativeAnchorTargetUuid;
+
+  /// 取消凭据：每次取消自增，让已经排队的帧末回调自行失效。
+  int _narrativeHandoffToken = 0;
+
+  /// 上一帧的外壳展示模式（用于识别 `showTimeline` 的下降沿）。
+  bool _lastShellShowTimeline = false;
+
+  /// 本轮生成开始时的活动链末轮 uuid。
+  ///
+  /// 收尾时 `loadRounds` 可能与 `showTimeline=false` 落在同一帧，捕获阶段看到
+  /// 的「末轮」已经是新落库轮；用它区分「真的新增了轮次」和「写库失败链未变」。
+  String? _generationStartLastUuid;
 
   /// 代次切换在途：忽略重复点击（两次会互相覆盖锚点，第二次还会误报切换失败）。
   bool _versionSwitchInFlight = false;
@@ -694,6 +747,9 @@ class _ChatScreenState extends State<ChatScreen>
         notification.dragDetails != null) {
       // 用户按下并开始拖动：立刻放弃进行中的定点跳转复核。
       _chatLocator.cancelPendingJump();
+      // 交接锚点只服务于「读者没有主动改变位置」的那一次布局变化；
+      // 读者一旦拖动，以读者的手势为准，不再替他把内容拽回去。
+      _cancelNarrativeHandoff();
     }
     // 窗口预取：视口逼近窗口任一端时扩一页（列表只渲染窗口内轮次）。
     if (notification is ScrollUpdateNotification ||
@@ -742,7 +798,9 @@ class _ChatScreenState extends State<ChatScreen>
     // 帧末再判断，确保最后一块内容已完成布局、滚动范围已更新。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_isNearBottom()) {
+      // 用户已经主动离开底部：即使中间缩容让他暂时落进 80px 阈值，也不能
+      // 把阅读位置拉回底部；正文交接锚点会负责把正在看的内容留在原处。
+      if (!_userScrolledAway && _isNearBottom()) {
         _scrollToBottom();
       } else if (!_newContentDot) {
         setState(() => _newContentDot = true);
@@ -806,6 +864,114 @@ class _ChatScreenState extends State<ChatScreen>
   void _onRoundTick() {
     if (!mounted) return;
     _autoFollowIfNeeded();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 生成正文交接锚点：流式插槽 → 落库气泡
+  // ---------------------------------------------------------------------------
+
+  /// 流式正文即将换成「等待落库」的转圈气泡前，记下正文当前位置。
+  ///
+  /// 时机必须是 `showTimeline` 的下降沿：此刻正文还在树上、尚未卸载；
+  /// `isSending` 要到落库完成后的 `finally` 才变 false，等它再量就已经晚了。
+  void _captureNarrativeHandoff({
+    required int roundIndex,
+    required String bookUuid,
+    required String branchUuid,
+    required String? previousLastUuid,
+  }) {
+    if (!_userScrolledAway || bookUuid.isEmpty) return;
+    final beforeTop = _globalTopOf(_narrativeAnchorKey);
+    if (beforeTop == null) return;
+    _pendingNarrativeAnchor = _NarrativeHandoffAnchor(
+      roundIndex: roundIndex,
+      bookUuid: bookUuid,
+      branchUuid: branchUuid,
+      beforeTop: beforeTop,
+      previousLastUuid: previousLastUuid,
+    );
+  }
+
+  /// 放弃尚未落地的交接，并让已排队的帧末精修失效。
+  ///
+  /// [clearTarget] 为 true 时连正式气泡上的 Key 一起释放（换书 / 开新一轮）；
+  /// 用户只是接手滚动时保留 Key 无妨，下一次布局自然不会再动位置。
+  void _cancelNarrativeHandoff({bool clearTarget = false}) {
+    _narrativeHandoffToken++;
+    _pendingNarrativeAnchor = null;
+    if (clearTarget) _narrativeAnchorTargetUuid = null;
+  }
+
+  /// 落库气泡出现后，把同一轮正文接上交接 Key 并开始校准。
+  ///
+  /// 失败代 / 空正文没有可读正文可锚，直接放弃；书 / 分支变了说明用户已经
+  /// 离开这次交接，也不做跨链路跳转。
+  void _applyNarrativeHandoff(List<Round> chatRounds) {
+    final anchor = _pendingNarrativeAnchor;
+    if (anchor == null) return;
+    // 正常路径按落点轮号精确命中；收尾期间若轮号表已重排（例如投影尾号与
+    // 实际落库轮号相差一），退回「新出现的活动链末轮」——待定气泡本来就画在
+    // 链尾，落库后同一行就是最终正文。捕获时记录了旧末轮 uuid，因此数据库写
+    // 失败、链根本没变化时不会误锚到旧轮。
+    final exact = chatRounds
+        .where((r) => r.roundIndex == anchor.roundIndex)
+        .firstOrNull;
+    final last = chatRounds.isEmpty ? null : chatRounds.last;
+    final fallback = last != null && last.uuid != anchor.previousLastUuid
+        ? last
+        : null;
+    final round = exact != null && exact.uuid != anchor.previousLastUuid
+        ? exact
+        : fallback;
+    if (round == null) return; // 还在落库途中，等下一次 build。
+    _pendingNarrativeAnchor = null;
+    if (round.isError ||
+        round.aiNarrative.isEmpty ||
+        anchor.bookUuid != _indexBookUuid ||
+        anchor.branchUuid != _indexBranchUuid) {
+      return;
+    }
+    _narrativeAnchorTargetUuid = round.uuid;
+    _holdNarrativeHandoff(anchor);
+  }
+
+  /// 帧末按正文顶边的实际位移校准滚动偏移（最多 [_kAnchorRefineMax] 帧）。
+  ///
+  /// reverse 列表的视觉坐标为 `y = viewportDimension + pixels - offset`：
+  /// 滚动偏移增大内容**下移**，故目标为 `pixels - (afterTop - beforeTop)`。
+  /// 懒加载列表的实测高度随后几帧还在收敛，因此与代次切换同样逐帧复核。
+  void _holdNarrativeHandoff(_NarrativeHandoffAnchor anchor) {
+    final token = ++_narrativeHandoffToken;
+    var attempt = 0;
+    void step() {
+      if (!mounted ||
+          token != _narrativeHandoffToken ||
+          !_scrollController.hasClients) {
+        return;
+      }
+      final position = _scrollController.position;
+      final afterTop = _globalTopOf(_narrativeAnchorKey);
+      if (afterTop != null) {
+        final delta = afterTop - anchor.beforeTop;
+        if (delta.abs() >= _kAnchorShiftEpsilon) {
+          final target = (position.pixels - delta).clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
+          );
+          if ((target - position.pixels).abs() >= _kAnchorShiftEpsilon) {
+            _scrollController.jumpTo(target);
+          }
+        }
+      }
+      attempt++;
+      if (attempt < _kAnchorRefineMax) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => step());
+        WidgetsBinding.instance.scheduleFrame();
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => step());
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   // ---------------------------------------------------------------------------
@@ -2956,12 +3122,32 @@ class _ChatScreenState extends State<ChatScreen>
     final bookUuid = bookProvider.currentBook?.uuid ?? '';
     // 链身份：换书 / 换分支时窗口必须整体重来（旧链的轮号范围对新链没有意义）。
     final branchUuid = roundProvider.workingBranchUuid;
+    final showTimeline = shell.showTimeline;
     final chainChanged =
         bookUuid != _indexBookUuid || branchUuid != _indexBranchUuid;
     if (chainChanged) {
       _indexBookUuid = bookUuid;
       _indexBranchUuid = branchUuid;
       _initialWindowGrown = false;
+      // 跨书 / 跨分支的正文不是同一篇，旧交接不能带过去。
+      _cancelNarrativeHandoff(clearTarget: true);
+    }
+    // 流式正文的下降沿：必须在旧正文仍挂在树上时量位置。等最终落库通知
+    // （isSending 变 false）再量，流式插槽早已经被等待气泡替换掉了。
+    if (showTimeline != _lastShellShowTimeline) {
+      if (showTimeline) {
+        // 新一轮 / 重新生成开始：释放上一轮正式气泡上的 Key，交给新流式正文。
+        _generationStartLastUuid = rounds.isEmpty ? null : rounds.last.uuid;
+        _cancelNarrativeHandoff(clearTarget: true);
+      } else if (!chainChanged) {
+        _captureNarrativeHandoff(
+          roundIndex: shell.pendingRoundIndex ?? shell.nextRoundIndex,
+          bookUuid: bookUuid,
+          branchUuid: branchUuid,
+          previousLastUuid: _generationStartLastUuid,
+        );
+      }
+      _lastShellShowTimeline = showTimeline;
     }
     // 链是不是**当前这本书**的：换书是异步加载，首帧读到的可能还是上一本书的活动链。
     // 书没对齐时一层轮次都不建，否则窗口会拿旧书的总轮数建窗 → 负 delta → 倒置窗 →
@@ -2980,7 +3166,6 @@ class _ChatScreenState extends State<ChatScreen>
     // 生成中 / 流式回放：待定气泡（用户消息 + 流式插槽）也算几何条目，
     // 所以它们的出现与消失同样要重建几何（否则高度没有账，坐标会偏）。
     final isSending = shell.isSending;
-    final showTimeline = shell.showTimeline;
     final showPending = isSending || showTimeline;
     // 生成期间不隐藏用户刚发送的文本：作为用户气泡展示在流式气泡之前。
     final pendingInput = shell.pendingInput;
@@ -3049,6 +3234,9 @@ class _ChatScreenState extends State<ChatScreen>
     // 渲染行 = 窗口切片（几何条目，自旧到新）。分支头 / 真实气泡 / 待定气泡 /
     // 占位条目都在同一张表里：渲染位置就是几何位置，不存在"下标换算"。
     _syncChatRows();
+    // 落库气泡出现后接上正文交接 Key；必须在建列表之前，本帧 itemBuilder
+    // 才知道该给哪一轮的正文挂锚点。
+    if (!showPending) _applyNarrativeHandoff(chatRounds);
     // 代次切换的锚点补偿：几何 / 窗口基准都已就绪，登记给本帧布局落地
     // （见 [_applyVersionAnchor]；必须在建列表之前，布局才拿得到请求）。
     _applyVersionAnchor();
@@ -3100,10 +3288,11 @@ class _ChatScreenState extends State<ChatScreen>
               // 生成中的气泡插槽：**自身**订阅流式字段，使每个增量只重建这一块
               // （见 [_StreamingSlot]）。
               item = _StreamingSlot(
-                showTimeline: shell.showTimeline,
+                showTimeline: showTimeline,
                 // 与几何里的待定条目同源：刷新 / 修改轮 = 被重写的轮号，
                 // 普通新一轮 = 链尾 +1（`nextRoundIndex` 只作兜底）。
                 roundIndex: shell.pendingRoundIndex ?? shell.nextRoundIndex,
+                narrativeKey: _narrativeAnchorKey,
               );
             } else {
               // 生成中的用户气泡（未落库，紧跟历史消息之后）。
@@ -3157,6 +3346,9 @@ class _ChatScreenState extends State<ChatScreen>
                   onRecommendedActionInsert: _insertRecommendedAction,
                   onRecommendedActionCustomTap: _inputFocus.requestFocus,
                   roundIndex: round.roundIndex,
+                  narrativeKey: row.roundUuid == _narrativeAnchorTargetUuid
+                      ? _narrativeAnchorKey
+                      : null,
                   onContextMenu: (pos) =>
                       _onBubbleContextMenu(round, isAi, pos),
                   footer: Column(
@@ -5135,33 +5327,91 @@ class _ThinkingBoxState extends State<_ThinkingBox> {
 ///
 /// [showTimeline] / [roundIndex] 来自外壳的低频信号（见 [_ChatShellSignals]），
 /// 使本插槽无需自行判定展示模式。
-class _StreamingSlot extends StatelessWidget {
+class _StreamingSlot extends StatefulWidget {
   /// 是否处于块时间线展示模式（流式传输 / 非流式回放）。
   final bool showTimeline;
 
   /// 本轮序号（生成中的轮次）。
   final int roundIndex;
 
-  const _StreamingSlot({required this.showTimeline, required this.roundIndex});
+  /// 流式正文容器的锚点 Key（供流式 → 落库交接量同一段正文的位置）。
+  final Key? narrativeKey;
+
+  const _StreamingSlot({
+    required this.showTimeline,
+    required this.roundIndex,
+    this.narrativeKey,
+  });
+
+  @override
+  State<_StreamingSlot> createState() => _StreamingSlotState();
+}
+
+/// 时间线最后一帧的快照。
+///
+/// 生成收尾时 provider 会先清空 `streamingContent` 并令 `showTimeline=false`，
+/// 再异步落库、最后才令 `isSending=false`。若中间立刻换成小转圈气泡，整行高度
+/// 会骤减，读者正在看的正文会被甩出构建范围，最后连正文锚点都量不到。这里把
+/// 最后一帧保留到 `isSending` 结束，让「流式行 → 落库行」在一次布局里交接。
+class _StreamingSnapshot {
+  const _StreamingSnapshot({
+    required this.content,
+    required this.agentEvents,
+    required this.contentBoundaryIndex,
+    required this.agentWarnings,
+    required this.maintenanceActive,
+    required this.maintenanceContent,
+    required this.retryStatus,
+  });
+
+  final String content;
+  final List<AgentEvent> agentEvents;
+  final int contentBoundaryIndex;
+  final List<String> agentWarnings;
+  final bool maintenanceActive;
+  final String maintenanceContent;
+  final (int, int)? retryStatus;
+}
+
+class _StreamingSlotState extends State<_StreamingSlot> {
+  _StreamingSnapshot? _lastTimeline;
 
   @override
   Widget build(BuildContext context) {
     final rp = context.watch<RoundProvider>();
-    if (!showTimeline) {
+    final snapshot = widget.showTimeline
+        ? _StreamingSnapshot(
+            content: rp.streamingContent,
+            agentEvents: List<AgentEvent>.of(rp.agentEvents),
+            contentBoundaryIndex: rp.contentBoundaryIndex,
+            agentWarnings: List<String>.of(rp.agentWarnings),
+            maintenanceActive: rp.agentMaintenanceActive,
+            maintenanceContent: rp.agentMaintenanceContent,
+            retryStatus: rp.retryStatus,
+          )
+        : _lastTimeline;
+    if (widget.showTimeline && snapshot != null) _lastTimeline = snapshot;
+    // 收尾过渡期（showTimeline 已关、isSending 尚未结束）继续展示最后一帧，
+    // 避免整行高度先塌一次；最终落库行会在下一次外壳重建时替换它。
+    final showCached =
+        !widget.showTimeline && rp.isSending && _lastTimeline != null;
+    if (!widget.showTimeline && !showCached) {
       return _TypingBubble(
         retryStatus: rp.retryStatus,
-        roundIndex: roundIndex,
+        roundIndex: widget.roundIndex,
       );
     }
+    final shown = widget.showTimeline ? snapshot! : _lastTimeline!;
     return _StreamingBubble(
-      content: rp.streamingContent,
-      agentEvents: rp.agentEvents,
-      contentBoundaryIndex: rp.contentBoundaryIndex,
-      agentWarnings: rp.agentWarnings,
-      maintenanceActive: rp.agentMaintenanceActive,
-      maintenanceContent: rp.agentMaintenanceContent,
-      retryStatus: rp.retryStatus,
-      roundIndex: roundIndex,
+      content: shown.content,
+      agentEvents: shown.agentEvents,
+      contentBoundaryIndex: shown.contentBoundaryIndex,
+      agentWarnings: shown.agentWarnings,
+      maintenanceActive: shown.maintenanceActive,
+      maintenanceContent: shown.maintenanceContent,
+      retryStatus: shown.retryStatus,
+      roundIndex: widget.roundIndex,
+      narrativeKey: widget.narrativeKey,
     );
   }
 }
@@ -5194,6 +5444,9 @@ class _StreamingBubble extends StatefulWidget {
   /// 本轮序号（生成中的轮次），窄屏头部显示「第 n 轮」标注。
   final int roundIndex;
 
+  /// 正文容器锚点（只包正文，不含思考 / 工具 / 维护框和页眉）。
+  final Key? narrativeKey;
+
   const _StreamingBubble({
     required this.content,
     required this.agentEvents,
@@ -5203,6 +5456,7 @@ class _StreamingBubble extends StatefulWidget {
     this.maintenanceActive = false,
     this.maintenanceContent = '',
     this.retryStatus,
+    this.narrativeKey,
   });
 
   @override
@@ -5429,13 +5683,16 @@ class _StreamingBubbleState extends State<_StreamingBubble> {
   /// 每帧只重排尾部残块；末尾光标经 [StreamingMarkdown.trailing] 附着，
   /// 不参与块切分。
   Widget _narrativeText(BuildContext context, String content) {
-    return StreamingMarkdown(
-      data: content,
-      trailing: '▍',
-      base: TextStyle(
-        fontSize: 15,
-        height: 1.65,
-        color: context.narrColors.textPrimary,
+    return KeyedSubtree(
+      key: widget.narrativeKey,
+      child: StreamingMarkdown(
+        data: content,
+        trailing: '▍',
+        base: TextStyle(
+          fontSize: 15,
+          height: 1.65,
+          color: context.narrColors.textPrimary,
+        ),
       ),
     );
   }
