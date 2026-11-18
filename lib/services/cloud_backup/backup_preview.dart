@@ -11,6 +11,7 @@ import '../../database/sqflite_desktop.dart';
 import '../../models/preset_mods.dart';
 import '../../models/round_generation.dart';
 import '../../utils/timestamp_format.dart';
+import '../round_tree.dart';
 import '../sync/sync_conflict.dart';
 import 'backup_manifest.dart';
 import 'backup_mods_conflict.dart';
@@ -94,13 +95,12 @@ class BackupPreviewReader {
     for (final item in metas) {
       if (item.roundIndex > latestIndex) latestIndex = item.roundIndex;
     }
-    RoundMeta? latestMeta;
-    for (final item in metas) {
-      if (item.roundIndex != latestIndex) continue;
-      if (latestMeta == null || (item.isUsing && !latestMeta.isUsing)) {
-        latestMeta = item;
-      }
-    }
+    // 同一轮可能有多条 is_using（云端合并留下的脏数据）。按聊天页同一口径
+    // （is_using → 组内序号最大 → uuid 最小）选当前代，不能拿 listMeta 的
+    // 第一条——否则本地/云端会各显示一代，制造「看起来有差异」的假象。
+    final latestMeta = RoundTree.pickWinner(
+      metas.where((item) => item.roundIndex == latestIndex).toList(),
+    );
     var userInput = '';
     var narrative = '';
     if (latestMeta != null) {
@@ -161,17 +161,25 @@ class BackupPreviewReader {
     var narrative = '';
     var latestAt = '';
     if (latestIndex > 0) {
+      // 取该轮全部行，再按与本地侧完全相同的 pickWinner 规则选当前代；
+      // 不用 SQL 的 operated_at 排序，避免同轮多活动代时两侧选出不同代。
       final rows = await db.rawQuery(
-        'SELECT "user_input", "ai_narrative", "operated_at" FROM "round_stack" '
-        'WHERE "round_index" = ? '
-        'ORDER BY "is_using" DESC, "operated_at" DESC LIMIT 1',
+        'SELECT ${RoundMeta.metaColumns}, "user_input", "ai_narrative" '
+        'FROM "round_stack" WHERE "round_index" = ?',
         [latestIndex],
       );
-      if (rows.isNotEmpty) {
-        userInput = (rows.first['user_input'] as String?) ?? '';
-        narrative = (rows.first['ai_narrative'] as String?) ?? '';
-        latestAt = (rows.first['operated_at'] as String?) ?? '';
-      }
+      final winner = RoundTree.pickWinner([
+        for (final row in rows) RoundMeta.fromRow(row),
+      ]);
+      final winnerRow = winner == null
+          ? null
+          : rows.firstWhere(
+              (row) => row['uuid'] == winner.uuid,
+              orElse: () => const <String, Object?>{},
+            );
+      userInput = (winnerRow?['user_input'] as String?) ?? '';
+      narrative = (winnerRow?['ai_narrative'] as String?) ?? '';
+      latestAt = (winnerRow?['operated_at'] as String?) ?? '';
     }
 
     return BookSidePreview(

@@ -87,6 +87,25 @@ void main() {
     remote.put(unit.snapshotName(2), await File(sourcePath).readAsBytes());
   }
 
+  /// 测试专用：直接把某代改成 is_using = 1，造同轮多条活动代的真实脏数据
+  /// 形态（正常 append 路径会清掉同组其它代，造不出来）。
+  Future<void> markUsing(String dbPath, String uuid) async {
+    final db = await databaseFactory.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(readOnly: false, singleInstance: false),
+    );
+    try {
+      await db.update(
+        'round_stack',
+        {'is_using': 1},
+        where: 'uuid = ?',
+        whereArgs: [uuid],
+      );
+    } finally {
+      await db.close();
+    }
+  }
+
   test('本地书籍预览：设置 / 世界书 / 启用 Mod / 最新一轮取 is_using 那一代', () async {
     final uuid = await stack.seedBook(
       uuid: 'b1',
@@ -158,6 +177,85 @@ void main() {
     expect(book.roundGenerationCount, 2);
     expect(book.latestRoundIndex, 2);
     expect(book.latestNarrative, '云端第二轮');
+  });
+
+  test('最近一轮：同轮多活动代时两侧都按序号取活动代，不按时间', () async {
+    final uuid = await stack.seedBook(uuid: 'b1', title: '本地书');
+    final localFirst = await stack.seedRound(
+      uuid,
+      roundIndex: 2,
+      serialNum: 1,
+      isUsing: true,
+      userInput: '第一条提问',
+      aiNarrative: '第一条正文',
+      operatedAt: DateTime.utc(2026, 3, 1),
+    );
+    final localSecond = await stack.seedRound(
+      uuid,
+      roundIndex: 2,
+      serialNum: 2,
+      isUsing: false,
+      userInput: '第二条提问',
+      aiNarrative: '第二条正文',
+      operatedAt: DateTime.utc(2026, 1, 1),
+    );
+    expect(localFirst.meta.isUsing, isTrue);
+    await markUsing(stack.paths.bookDbPath(uuid), localSecond.meta.uuid);
+
+    final local = await reader.read(
+      conflictOf(BackupUnit.book(uuid)),
+      SyncPreviewSide.local,
+    );
+    final localBook = local.book!;
+    expect(localBook.roundGenerationCount, 2);
+    expect(localBook.latestRoundIndex, 2);
+    expect(localBook.latestUserInput, '第二条提问', reason: '同轮双活动代取序号大的');
+    expect(localBook.latestNarrative, '第二条正文');
+    expect(
+      localBook.latestRoundAt!.isAtSameMomentAs(DateTime.utc(2026, 1, 1)),
+      isTrue,
+      reason: '最近一轮时间也用选中的那一代',
+    );
+
+    final other = await TestStack.create(prefix: 'preview_latest_');
+    addTearDown(other.dispose);
+    await other.seedBook(uuid: uuid, title: '云端书');
+    final remoteFirst = await other.seedRound(
+      uuid,
+      roundIndex: 2,
+      serialNum: 1,
+      isUsing: true,
+      userInput: '第一条提问',
+      aiNarrative: '第一条正文',
+      operatedAt: DateTime.utc(2026, 3, 1),
+    );
+    final remoteSecond = await other.seedRound(
+      uuid,
+      roundIndex: 2,
+      serialNum: 2,
+      isUsing: false,
+      userInput: '第二条提问',
+      aiNarrative: '第二条正文',
+      operatedAt: DateTime.utc(2026, 1, 1),
+    );
+    expect(remoteFirst.meta.isUsing, isTrue);
+    await markUsing(other.paths.bookDbPath(uuid), remoteSecond.meta.uuid);
+    await putSnapshot(BackupUnit.book(uuid), other.paths.bookDbPath(uuid));
+
+    final remote = await reader.read(
+      conflictOf(BackupUnit.book(uuid)),
+      SyncPreviewSide.remote,
+    );
+    final remoteBook = remote.book!;
+    expect(remoteBook.roundGenerationCount, 2);
+    expect(remoteBook.latestRoundIndex, 2);
+    expect(remoteBook.latestUserInput, '第二条提问', reason: '云端与本地同一套选代规则');
+    expect(remoteBook.latestNarrative, '第二条正文');
+    expect(
+      remoteBook.latestRoundAt!.isAtSameMomentAs(DateTime.utc(2026, 1, 1)),
+      isTrue,
+      reason: '不能按 operated_at 取更晚的第一条',
+    );
   });
 
   test('Mod 库两侧预览：含墓碑标记与两侧条目', () async {

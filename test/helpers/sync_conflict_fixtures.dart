@@ -252,22 +252,42 @@ SyncConflict buildModsConflictOneSided({
 }
 
 /// 模拟页面侧的预览返回数据。
-SyncSidePreview buildPreview(SyncPreviewSide side) {
+///
+/// 可选参数给预览 UI 测试覆盖超长文本与不同的 Mod 名单；不传时保持冲突页
+/// 集成测试用的默认值。
+SyncSidePreview buildPreview(
+  SyncPreviewSide side, {
+  String? localUserInput,
+  String? remoteUserInput,
+  String? localNarrative,
+  String? remoteNarrative,
+  String? localCategory,
+  String? remoteCategory,
+  List<String>? localModNames,
+  List<String>? remoteModNames,
+}) {
   final isLocal = side == SyncPreviewSide.local;
+  const defaultModNames = ['预设 Mod', '自定义 Mod'];
   return SyncSidePreview(
     side: side,
     book: BookSidePreview(
       title: isLocal ? '本地书名' : '云端书名',
-      category: '奇幻',
+      category: isLocal ? (localCategory ?? '奇幻') : (remoteCategory ?? '奇幻'),
       baseSetting: isLocal ? '本地基础设定' : '云端基础设定',
       writingRequirements: '文笔要求',
       historyRounds: isLocal ? 3 : 5,
       worldBookCount: isLocal ? 2 : 3,
       roundGenerationCount: isLocal ? 4 : 6,
       latestRoundIndex: isLocal ? 3 : 2,
-      latestUserInput: isLocal ? '本地用户输入' : '云端用户输入',
-      latestNarrative: isLocal ? '本地正文' : '云端正文',
-      modNames: const ['预设 Mod', '自定义 Mod'],
+      latestUserInput: isLocal
+          ? (localUserInput ?? '本地用户输入')
+          : (remoteUserInput ?? '云端用户输入'),
+      latestNarrative: isLocal
+          ? (localNarrative ?? '本地正文')
+          : (remoteNarrative ?? '云端正文'),
+      modNames: isLocal
+          ? (localModNames ?? defaultModNames)
+          : (remoteModNames ?? defaultModNames),
     ),
   );
 }

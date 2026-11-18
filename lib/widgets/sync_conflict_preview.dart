@@ -190,12 +190,14 @@ class _SyncConflictPreviewDialogState
                 ),
               ),
               const SizedBox(height: 6),
-              SelectableText(
-                _error!,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: Theme.of(context).colorScheme.error,
+              SelectableTextArea(
+                child: Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -214,24 +216,29 @@ class _SyncConflictPreviewDialogState
     if (local == null || remote == null) {
       return const SizedBox.shrink();
     }
-    return switch (widget.conflict.kind) {
-      _ when local.book != null && remote.book != null => _buildBook(
-        context,
-        local.book!,
-        remote.book!,
-      ),
-      _ when local.mods != null && remote.mods != null => _buildMods(
-        context,
-        local.mods!,
-        remote.mods!,
-      ),
-      _ when local.library != null && remote.library != null => _buildLibrary(
-        context,
-        local.library!,
-        remote.library!,
-      ),
-      _ => const SizedBox.shrink(),
-    };
+    // 整个预览正文共用一个可选中作用域：跨字段连续选中，工具条也只出现一套。
+    // 长字段正文本身用 PlainTextPreview / MarkdownPreview（selectable: false），
+    // 避免在作用域内再嵌套 SelectionArea（两个 SelectableRegion 互为硬边界）。
+    return SelectableTextArea(
+      child: switch (widget.conflict.kind) {
+        _ when local.book != null && remote.book != null => _buildBook(
+          context,
+          local.book!,
+          remote.book!,
+        ),
+        _ when local.mods != null && remote.mods != null => _buildMods(
+          context,
+          local.mods!,
+          remote.mods!,
+        ),
+        _ when local.library != null && remote.library != null => _buildLibrary(
+          context,
+          local.library!,
+          remote.library!,
+        ),
+        _ => const SizedBox.shrink(),
+      },
+    );
   }
 
   // --- 书籍 -------------------------------------------------------------------
@@ -284,13 +291,17 @@ class _SyncConflictPreviewDialogState
           '${local.worldBookCount} 条',
           '${remote.worldBookCount} 条',
         ),
-        _compactRow(
-          context,
-          '启用的 Mod',
-          local.modNames.isEmpty ? '（无）' : local.modNames.join('、'),
-          remote.modNames.isEmpty ? '（无）' : remote.modNames.join('、'),
-        ),
+        // 两侧都没有 Mod 时保留紧凑的「（无）」行；只要有一侧有就交给长字段卡，
+        // 展开后能看到被两行摘要裁掉的完整名单，差异不会再被「看起来一样」吞掉。
+        if (local.modNames.isEmpty && remote.modNames.isEmpty)
+          _compactRow(context, '启用的 Mod', '（无）', '（无）'),
         const SizedBox(height: 6),
+        if (local.modNames.isNotEmpty || remote.modNames.isNotEmpty)
+          _LongCompareField(
+            label: '启用的 Mod',
+            localText: local.modNames.join('、'),
+            remoteText: remote.modNames.join('、'),
+          ),
         _LongCompareField(
           label: '基础设定',
           localText: local.baseSetting,
@@ -715,9 +726,10 @@ class _SyncConflictPreviewDialogState
             style: TextStyle(fontSize: 10, color: colors.textSecondary),
           ),
           const SizedBox(height: 2),
-          SelectableText(
+          Text(
             text.trim().isEmpty ? '（无）' : text,
             maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: 11.5,
               height: 1.4,
@@ -877,6 +889,25 @@ class _LongCompareFieldState extends State<_LongCompareField> {
     return '本地：$l\n云端：$r';
   }
 
+  /// 长字段正文的固定阅读区：超过 260 逻辑像素就在内部滚动，避免一段超长
+  /// 正文把整个预览撑高，也让本地/云端两块始终能互相看到。
+  ///
+  /// 内部滚动必须挂自己的 [PageStorageKey]：ExpansionTile 的
+  /// `PageStorageKey('long-…')` 存的是展开状态（bool），而滚动位置默认会去
+  /// 读最近的 PageStorageKey。读到 bool 再当滚动 offset 用会抛类型错误，
+  /// release 下就是一块没有文字的灰色错误块——旧版 `SelectableText` 的内部
+  /// 滚动同样会踩到这一点，这也是截图里展开后变灰的根因。
+  Widget _scrollableBody(String side, Widget child) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 260),
+      child: SingleChildScrollView(
+        key: PageStorageKey<String>('long-scroll-${widget.label}-$side'),
+        primary: false,
+        child: child,
+      ),
+    );
+  }
+
   Widget _content(BuildContext context, String side, String text) {
     final colors = context.narrColors;
     final body = text.isEmpty
@@ -888,23 +919,23 @@ class _LongCompareFieldState extends State<_LongCompareField> {
               color: colors.textSecondary,
             ),
           )
-        : widget.markdown
-        ? ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 260),
-            child: SingleChildScrollView(
-              child: MarkdownPreview(
-                data: text,
-                base: const TextStyle(fontSize: 12, height: 1.5),
-              ),
-            ),
-          )
-        : SelectableText(
-            text,
-            style: TextStyle(
-              fontSize: 12,
-              height: 1.5,
-              color: colors.textPrimary,
-            ),
+        : _scrollableBody(
+            side,
+            widget.markdown
+                ? MarkdownPreview(
+                    data: text,
+                    base: const TextStyle(fontSize: 12, height: 1.5),
+                    selectable: false,
+                  )
+                : PlainTextPreview(
+                    data: text,
+                    base: TextStyle(
+                      fontSize: 12,
+                      height: 1.5,
+                      color: colors.textPrimary,
+                    ),
+                    selectable: false,
+                  ),
           );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
